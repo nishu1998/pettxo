@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/constants/validators.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/custom_button.dart';
-import '../../core/constants/validators.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -18,49 +18,91 @@ class _SignupScreenState extends State<SignupScreen> {
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
 
-  bool isLoading = false;
+  final emailFocus = FocusNode();
+  final passwordFocus = FocusNode();
 
-  void signUp() async {
+  String? emailError;
+  String? passwordError;
+
+  bool isLoading = false;
+  bool obscurePassword = true;
+
+  @override
+  void dispose() {
+    emailController.dispose();
+    passwordController.dispose();
+    emailFocus.dispose();
+    passwordFocus.dispose();
+    super.dispose();
+  }
+
+  Future<void> handleSignup() async {
+
+    final email = emailController.text.trim();
+    final password = passwordController.text.trim();
+
+    setState(() {
+      emailError = Validators.validateEmail(email);
+      passwordError = Validators.validatePassword(password);
+    });
+
+    if (emailError != null || passwordError != null) return;
+
     setState(() => isLoading = true);
 
-    final user = await _authService.signUp(
-      email: emailController.text.trim(),
-      password: passwordController.text.trim(),
+    final result = await _authService.signUp(
+      email: email,
+      password: password,
     );
 
     setState(() => isLoading = false);
 
-    if (user != null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("Account created")));
+    if (result.isSuccess) {
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Account created successfully")),
+      );
+
+    } else {
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.error ?? "Signup failed")),
+      );
+
     }
   }
 
   @override
   Widget build(BuildContext context) {
+
     return Scaffold(
       backgroundColor: AppColors.background,
+
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24),
+
           child: Container(
             padding: const EdgeInsets.all(28),
+
             decoration: BoxDecoration(
               color: AppColors.card,
               borderRadius: BorderRadius.circular(20),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withOpacity(.05),
-                  blurRadius: 20,
+                  blurRadius: 25,
+                  spreadRadius: 1,
                   offset: const Offset(0,10),
                 )
               ],
             ),
+
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
 
-                /// Logo
+                /// LOGO
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -90,13 +132,28 @@ class _SignupScreenState extends State<SignupScreen> {
 
                 const SizedBox(height: 30),
 
-                /// Email
+                /// EMAIL FIELD
                 TextField(
                   controller: emailController,
+                  focusNode: emailFocus,
+                  textInputAction: TextInputAction.next,
+
+                  onChanged: (value) {
+                    setState(() {
+                      emailError = Validators.validateEmail(value);
+                    });
+                  },
+
+                  onSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(passwordFocus);
+                  },
+
                   decoration: InputDecoration(
                     labelText: "Email",
+                    errorText: emailError,
                     filled: true,
                     fillColor: Colors.grey.shade100,
+
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide.none,
@@ -106,66 +163,62 @@ class _SignupScreenState extends State<SignupScreen> {
 
                 const SizedBox(height: 16),
 
-                /// Password
+                /// PASSWORD FIELD
                 TextField(
                   controller: passwordController,
-                  obscureText: true,
+                  focusNode: passwordFocus,
+                  obscureText: obscurePassword,
+                  textInputAction: TextInputAction.done,
+
+                  onChanged: (value) {
+                    setState(() {
+                      passwordError = Validators.validatePassword(value);
+                    });
+                  },
+
+                  onSubmitted: (_) {
+                    handleSignup();
+                  },
+
                   decoration: InputDecoration(
                     labelText: "Password",
+                    errorText: passwordError,
                     filled: true,
                     fillColor: Colors.grey.shade100,
+
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide.none,
+                    ),
+
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        obscurePassword
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          obscurePassword = !obscurePassword;
+                        });
+                      },
                     ),
                   ),
                 ),
 
                 const SizedBox(height: 25),
 
-                /// Sign Up Button
+                /// SIGNUP BUTTON
                 CustomButton(
-                  text: "Sign Up with Email",
-                onPressed: () async {
-
-  final email = emailController.text.trim();
-  final password = passwordController.text.trim();
-
-  final emailError = Validators.validateEmail(email);
-  final passwordError = Validators.validatePassword(password);
-
-  if (emailError != null) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(emailError)));
-    return;
-  }
-
-  if (passwordError != null) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(passwordError)));
-    return;
-  }
-
-  final result = await _authService.signUp(
-    email: email,
-    password: password,
-  );
-
-  if (result.isSuccess) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Account created successfully")),
-    );
-  } else {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result.error!)),
-    );
-  }
-}
+                  text: isLoading
+                      ? "Creating account..."
+                      : "Sign Up with Email",
+                  onPressed: isLoading ? () {} : handleSignup,
                 ),
 
                 const SizedBox(height: 20),
 
-                Text( 
+                Text(
                   "Use Phone instead",
                   style: TextStyle(
                     color: AppColors.textGrey,
@@ -174,7 +227,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
                 const SizedBox(height: 20),
 
-                Divider(),
+                const Divider(),
 
                 const SizedBox(height: 10),
 
