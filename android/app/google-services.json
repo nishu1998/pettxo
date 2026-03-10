@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "81944777235",
+    "project_id": "pettexo-d9409",
+    "storage_bucket": "pettexo-d9409.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:81944777235:android:83240b20e11881ee11a5e6",
+        "android_client_info": {
+          "package_name": "com.pettexo.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAGEyEsh8nK2IVQqKLR_5lplDedLY-yo3Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
