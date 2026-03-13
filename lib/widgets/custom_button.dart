@@ -3,7 +3,7 @@ import '../core/constants/app_colors.dart';
 
 class CustomButton extends StatelessWidget {
   final String text;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   const CustomButton({
     super.key,

@@ -3,6 +3,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/validators.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/custom_button.dart';
+import '../auth/profile_type_screen.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -61,6 +62,12 @@ class _SignupScreenState extends State<SignupScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Account created successfully")),
+      );
+      Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+      builder: (_) => ProfileTypeScreen(),
+       ),
       );
 
     } else {

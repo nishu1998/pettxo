@@ -1,33 +1,26 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/auth_result.dart';
 
 class AuthService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  /// SIGN UP USER
   Future<AuthResult> signUp({
     required String email,
     required String password,
   }) async {
+
     try {
+
       UserCredential credential =
           await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
 
-      final user = credential.user;
+      return AuthResult(user: credential.user);
 
-      await _firestore.collection('users').doc(user!.uid).set({
-        'uid': user.uid,
-        'email': email,
-        'username': '',
-        'profileImage': '',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      return AuthResult(user: user);
     }
 
     on FirebaseAuthException catch (e) {
@@ -37,13 +30,17 @@ class AuthService {
     catch (e) {
       return AuthResult(error: "Unexpected error occurred.");
     }
+
   }
 
+  /// LOGIN USER
   Future<AuthResult> login({
     required String email,
     required String password,
   }) async {
+
     try {
+
       UserCredential credential =
           await _auth.signInWithEmailAndPassword(
         email: email,
@@ -51,6 +48,7 @@ class AuthService {
       );
 
       return AuthResult(user: credential.user);
+
     }
 
     on FirebaseAuthException catch (e) {
@@ -60,16 +58,23 @@ class AuthService {
     catch (e) {
       return AuthResult(error: "Unexpected login error.");
     }
+
   }
 
+  /// LOGOUT
   Future<void> logout() async {
     await _auth.signOut();
   }
 
+  /// CURRENT USER
   User? get currentUser => _auth.currentUser;
 
-  /// Converts Firebase errors to friendly messages
+  /// AUTH STATE STREAM (very important later)
+  Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  /// MAP FIREBASE ERRORS
   String _mapFirebaseError(FirebaseAuthException e) {
+
     switch (e.code) {
 
       case 'weak-password':
@@ -96,5 +101,7 @@ class AuthService {
       default:
         return "Authentication error. Please try again.";
     }
+
   }
+
 }
