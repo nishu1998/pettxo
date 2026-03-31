@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/auth/signup_screen.dart';
 import 'core/constants/app_colors.dart';
+import 'screens/splash/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,7 +42,7 @@ class PettexoApp extends StatelessWidget {
         ),
       ),
 
-      home: const SignupScreen(),
+      home: CinematicSplash(),
     );
   }
 }
