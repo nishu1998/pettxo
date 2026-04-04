@@ -116,7 +116,7 @@ class _SignupScreenState extends State<SignupScreen> {
                     const Icon(Icons.pets, color: AppColors.secondary),
                     const SizedBox(width: 8),
                     Text(
-                      "Pettexo",
+                      "Pettxo",
                       style: TextStyle(
                         color: AppColors.secondary,
                         fontWeight: FontWeight.bold,

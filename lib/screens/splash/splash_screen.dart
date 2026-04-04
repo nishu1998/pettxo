@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-import '../auth/signup_screen.dart';
+
+import '../../core/services/remote_config_service.dart';
+import '../../features/onboarding/screens/onboarding_screen.dart';
+
 
 class CinematicSplash extends StatefulWidget {
   const CinematicSplash({super.key});
@@ -16,6 +19,8 @@ class _CinematicSplashState extends State<CinematicSplash>
   late Animation<double> logoScale;
   late Animation<double> textOpacity;
   late Animation<Offset> textSlide;
+
+  final RemoteConfigService remote = RemoteConfigService(); // ✅ Added
 
   @override
   void initState() {
@@ -44,16 +49,23 @@ class _CinematicSplashState extends State<CinematicSplash>
     _start();
   }
 
-  void _start() async {
+  Future<void> _start() async {
     await _controller.forward();
+
+    // 🔥 Initialize Remote Config during splash
+    await remote.init();
+
     await Future.delayed(const Duration(milliseconds: 400));
+
     _goNext();
   }
 
   void _goNext() {
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => const SignupScreen()),
+      MaterialPageRoute(
+        builder: (_) => OnboardingScreen(),
+      ),
     );
   }
 
@@ -67,7 +79,6 @@ class _CinematicSplashState extends State<CinematicSplash>
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
 
-    /// 🔥 Adjust this if needed for perfect match with native
     final logoSize = size.width * 0.7;
 
     return Scaffold(
@@ -89,7 +100,7 @@ class _CinematicSplashState extends State<CinematicSplash>
                 ),
               ),
 
-              /// 🔥 LOGO (Perfect center — matches native)
+              /// 🔥 LOGO (center)
               Center(
                 child: Transform.scale(
                   scale: logoScale.value,
@@ -100,9 +111,9 @@ class _CinematicSplashState extends State<CinematicSplash>
                 ),
               ),
 
-              /// 🔥 TEXT (positioned separately so logo stays centered)
+              /// 🔥 TEXT
               Positioned(
-                top: size.height * 0.65, // tweak between 0.56–0.60 if needed
+                top: size.height * 0.65,
                 left: 0,
                 right: 0,
                 child: Opacity(
@@ -116,7 +127,7 @@ class _CinematicSplashState extends State<CinematicSplash>
                           fontSize: size.width * 0.07,
                           fontWeight: FontWeight.w600,
                           letterSpacing: 2,
-                          color: const Color(0xFFFF5A1F),
+                          color: const Color(0xFFF75927),
                         ),
                       ),
                     ),
