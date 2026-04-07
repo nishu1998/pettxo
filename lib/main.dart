@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 
 import 'core/services/analytics_service.dart';
+import 'features/auth/presentation/screens/signin_screen.dart';
+import 'features/auth/presentation/screens/signup_screen.dart';
+import 'features/home/presentation/screens/home_screen.dart';
+import 'features/splash/presentation/screens/splash_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
-import 'screens/splash/splash_screen.dart';
-import 'screens/auth/signup_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,7 +31,11 @@ class PettexoApp extends StatelessWidget {
       navigatorObservers: [AnalyticsService.instance.observer],
 
       home: const CinematicSplash(),
-      routes: {"/signup": (context) => SignupScreen()},
+      routes: {
+        "/signup": (context) => const SignupScreen(),
+        "/signin": (context) => const SigninScreen(),
+        "/home": (context) => const HomeScreen(),
+      },
     );
   }
 }

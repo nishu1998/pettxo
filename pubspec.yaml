@@ -36,6 +36,7 @@ flutter:
 
   assets:
     - assets/lottie/
+    - assets/brand/
     - assets/splash_bg.png
     - assets/logo1024.png
 

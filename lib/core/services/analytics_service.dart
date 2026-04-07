@@ -110,6 +110,31 @@ class AnalyticsService {
     );
   }
 
+  Future<void> logSignInViewed() {
+    return logScreenView(screenName: 'signin', screenClass: 'SigninScreen');
+  }
+
+  Future<void> logSignInAttempt({required String method}) {
+    return _analytics.logLogin(loginMethod: method);
+  }
+
+  Future<void> logSignInResult({
+    required String method,
+    required bool isSuccess,
+    String? errorCode,
+  }) {
+    return _analytics.logEvent(
+      name: 'sign_in_result',
+      parameters: {
+        'method': method,
+        'result': isSuccess ? 'success' : 'failure',
+        'error_code': errorCode ?? 'none',
+        'experiment_id': _activeExperimentId,
+        'variant_id': _activeVariantId,
+      },
+    );
+  }
+
   Future<void> logProfileTypeView() {
     return logScreenView(
       screenName: 'profile_type',
