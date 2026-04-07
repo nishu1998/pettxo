@@ -95,8 +95,8 @@ class OnboardingPage extends StatelessWidget {
                   child: ShaderMask(
                     shaderCallback: (bounds) =>
                         AppColors.brandGradient.createShader(bounds),
-                    child: const Text(
-                      'Premium pet experience',
+                    child: Text(
+                      data.tagLine,
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 12,

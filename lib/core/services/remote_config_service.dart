@@ -5,10 +5,13 @@ class RemoteConfigService {
 
   Future<void> init() async {
     await remoteConfig.setDefaults(const {
+      'tagline_1': 'Premium pet experience',
       'title_1': 'Connect & Explore Pets',
       'subtitle_1': 'Join a community of pet lovers and share moments.',
+      'tagline_2': 'Trusted care, easier',
       'title_2': 'Book Trusted Services',
       'subtitle_2': 'Find vets, groomers and trainers easily.',
+      'tagline_3': 'Discover what’s nearby',
       'title_3': 'Everything Nearby',
       'subtitle_3': 'Discover pet-friendly places around you.',
       'onboarding_experiment_id': 'default_onboarding',
