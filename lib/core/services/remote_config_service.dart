@@ -16,6 +16,8 @@ class RemoteConfigService {
       'subtitle_3': 'Discover pet-friendly places around you.',
       'onboarding_experiment_id': 'default_onboarding',
       'onboarding_variant_id': 'control',
+      'onboarding_display_version': 1,
+      'onboarding_force_show': false,
     });
 
     await remoteConfig.setConfigSettings(
@@ -39,4 +41,9 @@ class RemoteConfigService {
 
   String get onboardingVariantId =>
       getString('onboarding_variant_id', 'control');
+
+  int get onboardingDisplayVersion =>
+      remoteConfig.getInt('onboarding_display_version');
+
+  bool get onboardingForceShow => remoteConfig.getBool('onboarding_force_show');
 }

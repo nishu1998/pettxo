@@ -3,6 +3,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/services/analytics_service.dart';
+import '../data/services/onboarding_state_service.dart';
 import '../models/onboarding_model.dart';
 import '../widgets/onboarding_page.dart';
 import '../widgets/onboarding_button.dart';
@@ -21,6 +22,7 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController controller = PageController();
   final AnalyticsService analytics = AnalyticsService.instance;
+  final OnboardingStateService onboardingState = OnboardingStateService();
   int currentIndex = 0;
 
   late List<OnboardingModel> onboardingList;
@@ -46,7 +48,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     });
   }
 
-  void nextPage() {
+  Future<void> nextPage() async {
     if (currentIndex < onboardingList.length - 1) {
       analytics.logOnboardingAction(
         action: 'next_tapped',
@@ -63,16 +65,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         stepIndex: currentIndex,
         totalSteps: onboardingList.length,
       );
+      await onboardingState.markOnboardingSeen(remote.onboardingDisplayVersion);
+      if (!mounted) return;
       Navigator.pushReplacementNamed(context, "/signup");
     }
   }
 
-  void skip() {
+  Future<void> skip() async {
     analytics.logOnboardingAction(
       action: 'skipped',
       stepIndex: currentIndex,
       totalSteps: onboardingList.length,
     );
+    await onboardingState.markOnboardingSeen(remote.onboardingDisplayVersion);
+    if (!mounted) return;
     Navigator.pushReplacementNamed(context, "/signup");
   }
 

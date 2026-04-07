@@ -6,6 +6,8 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/services/remote_config_service.dart';
+import '../../../auth/presentation/screens/signup_screen.dart';
+import '../../../onboarding/data/services/onboarding_state_service.dart';
 import '../../../onboarding/screens/onboarding_screen.dart';
 
 class CinematicSplash extends StatefulWidget {
@@ -19,6 +21,7 @@ class _CinematicSplashState extends State<CinematicSplash>
     with TickerProviderStateMixin {
   final AnalyticsService analytics = AnalyticsService.instance;
   final RemoteConfigService remote = RemoteConfigService();
+  final OnboardingStateService onboardingState = OnboardingStateService();
 
   late AnimationController _controller;
   late Animation<double> logoScale;
@@ -61,13 +64,22 @@ class _CinematicSplashState extends State<CinematicSplash>
 
     await Future.delayed(const Duration(milliseconds: 400));
 
-    _goNext();
+    final shouldShowOnboarding = await onboardingState.shouldShowOnboarding(
+      currentVersion: remote.onboardingDisplayVersion,
+      forceShow: remote.onboardingForceShow,
+    );
+
+    _goNext(shouldShowOnboarding: shouldShowOnboarding);
   }
 
-  void _goNext() {
+  void _goNext({required bool shouldShowOnboarding}) {
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+      MaterialPageRoute(
+        builder: (_) => shouldShowOnboarding
+            ? const OnboardingScreen()
+            : const SignupScreen(),
+      ),
     );
   }
 
