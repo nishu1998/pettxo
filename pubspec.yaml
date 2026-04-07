@@ -24,6 +24,7 @@ dependencies:
   # SVG support
   flutter_svg: ^2.0.10
   flutter_native_splash: ^2.4.7
+  firebase_analytics: ^11.6.0
 
 dev_dependencies:
   flutter_test:

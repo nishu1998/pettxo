@@ -1,27 +1,36 @@
 import 'package:flutter/material.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/services/analytics_service.dart';
 import '../../models/profile_type.dart';
 import '../../widgets/profile_type_card.dart';
 import 'profile_details_screen.dart';
 
-class ProfileTypeScreen extends StatelessWidget {
-
+class ProfileTypeScreen extends StatefulWidget {
   const ProfileTypeScreen({super.key});
 
-  void navigate(BuildContext context, ProfileType type){
+  @override
+  State<ProfileTypeScreen> createState() => _ProfileTypeScreenState();
+}
 
+class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
+  void navigate(BuildContext context, ProfileType type) {
+    AnalyticsService.instance.logProfileTypeSelected(profileType: type.name);
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => ProfileDetailsScreen(type: type),
-      ),
+      MaterialPageRoute(builder: (_) => ProfileDetailsScreen(type: type)),
     );
+  }
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AnalyticsService.instance.logProfileTypeView();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
       backgroundColor: AppColors.background,
 
@@ -39,13 +48,9 @@ class ProfileTypeScreen extends StatelessWidget {
 
             child: Column(
               children: [
-
                 const Text(
                   "Choose Your Profile Type",
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
 
                 const SizedBox(height: 10),

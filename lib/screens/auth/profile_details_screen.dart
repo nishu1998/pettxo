@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import '../../models/profile_type.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/services/analytics_service.dart';
+import '../../models/profile_type.dart';
 import '../../widgets/custom_button.dart';
 import '../../services/user_service.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
-
   final ProfileType type;
 
   const ProfileDetailsScreen({super.key, required this.type});
@@ -15,16 +15,15 @@ class ProfileDetailsScreen extends StatefulWidget {
 }
 
 class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
-
   final nameController = TextEditingController();
   final usernameController = TextEditingController();
   final locationController = TextEditingController();
   final UserService _userService = UserService();
-   bool isLoading = false;
+  final AnalyticsService _analytics = AnalyticsService.instance;
+  bool isLoading = false;
 
-  String getTitle(){
-
-    switch(widget.type){
+  String getTitle() {
+    switch (widget.type) {
       case ProfileType.petParent:
         return "Pet Parent Information";
 
@@ -36,73 +35,76 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     }
   }
 
-  String getNameLabel(){
-
-    if(widget.type == ProfileType.serviceProvider){
+  String getNameLabel() {
+    if (widget.type == ProfileType.serviceProvider) {
       return "Business Name";
     }
 
     return "Full Name";
   }
 
-  Future<void> saveProfile() async {
+  String get profileTypeName => widget.type.name;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _analytics.logProfileDetailsView(profileType: profileTypeName);
+    });
+  }
+
+  Future<void> saveProfile() async {
     FocusScope.of(context).unfocus();
 
-  if(nameController.text.isEmpty ||
-     usernameController.text.isEmpty ||
-     locationController.text.isEmpty){
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Please fill all fields"))
-    );
-    return;
-  }
-
-  try{
-
-    setState(() {
-      isLoading = true;
-    });
-
-    await _userService.createUserProfile(
-      role: widget.type.name,
-      name: nameController.text.trim(),
-      username: usernameController.text.trim(),
-      location: locationController.text.trim(),
-    );
-
-    if(!mounted) return;
-
-    Navigator.pushReplacementNamed(context, "/home");
-
-  }catch(e){
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(e.toString()))
-    );
-
-  }finally{
-
-    if(mounted){
-      setState(() {
-        isLoading = false;
-      });
+    if (nameController.text.isEmpty ||
+        usernameController.text.isEmpty ||
+        locationController.text.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Please fill all fields")));
+      return;
     }
 
+    try {
+      setState(() {
+        isLoading = true;
+      });
+
+      await _userService.createUserProfile(
+        role: profileTypeName,
+        name: nameController.text.trim(),
+        username: usernameController.text.trim(),
+        location: locationController.text.trim(),
+      );
+      await _analytics.logProfileCompleted(profileType: profileTypeName);
+
+      if (!mounted) return;
+
+      Navigator.pushReplacementNamed(context, "/home");
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.toString())));
+    } finally {
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+        });
+      }
+    }
   }
 
-}
-@override
-void dispose() {
-  nameController.dispose();
-  usernameController.dispose();
-  locationController.dispose();
-  super.dispose();
-}
+  @override
+  void dispose() {
+    nameController.dispose();
+    usernameController.dispose();
+    locationController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
       backgroundColor: AppColors.background,
 
@@ -121,7 +123,6 @@ void dispose() {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-
                 const SizedBox(height: 10),
 
                 Row(
@@ -187,9 +188,9 @@ void dispose() {
                 const SizedBox(height: 30),
 
                 CustomButton(
-                text: isLoading ? "Saving..." : "Continue",
-                onPressed: isLoading ? null : () => saveProfile(),
-                )
+                  text: isLoading ? "Saving..." : "Continue",
+                  onPressed: isLoading ? null : () => saveProfile(),
+                ),
               ],
             ),
           ),

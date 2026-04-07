@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 
+import '../../core/services/analytics_service.dart';
 import '../../core/services/remote_config_service.dart';
 import '../../features/onboarding/screens/onboarding_screen.dart';
-
 
 class CinematicSplash extends StatefulWidget {
   const CinematicSplash({super.key});
@@ -14,6 +14,7 @@ class CinematicSplash extends StatefulWidget {
 
 class _CinematicSplashState extends State<CinematicSplash>
     with TickerProviderStateMixin {
+  final AnalyticsService analytics = AnalyticsService.instance;
 
   late AnimationController _controller;
   late Animation<double> logoScale;
@@ -31,9 +32,10 @@ class _CinematicSplashState extends State<CinematicSplash>
       duration: const Duration(milliseconds: 2500),
     );
 
-    logoScale = Tween(begin: 1.0, end: 1.08).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOut),
-    );
+    logoScale = Tween(
+      begin: 1.0,
+      end: 1.08,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
 
     textOpacity = Tween(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _controller, curve: const Interval(0.5, 1.0)),
@@ -42,9 +44,7 @@ class _CinematicSplashState extends State<CinematicSplash>
     textSlide = Tween(
       begin: const Offset(0, 0.3),
       end: Offset.zero,
-    ).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOut),
-    );
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
 
     _start();
   }
@@ -54,6 +54,10 @@ class _CinematicSplashState extends State<CinematicSplash>
 
     // 🔥 Initialize Remote Config during splash
     await remote.init();
+    await analytics.setOnboardingExperiment(
+      experimentId: remote.onboardingExperimentId,
+      variantId: remote.onboardingVariantId,
+    );
 
     await Future.delayed(const Duration(milliseconds: 400));
 
@@ -63,9 +67,7 @@ class _CinematicSplashState extends State<CinematicSplash>
   void _goNext() {
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(
-        builder: (_) => OnboardingScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => OnboardingScreen()),
     );
   }
 
@@ -88,7 +90,6 @@ class _CinematicSplashState extends State<CinematicSplash>
         builder: (context, child) {
           return Stack(
             children: [
-
               /// 🌄 Background
               Opacity(
                 opacity: _controller.value * 0.8,
@@ -104,10 +105,7 @@ class _CinematicSplashState extends State<CinematicSplash>
               Center(
                 child: Transform.scale(
                   scale: logoScale.value,
-                  child: Image.asset(
-                    'assets/logo1024.png',
-                    width: logoSize,
-                  ),
+                  child: Image.asset('assets/logo1024.png', width: logoSize),
                 ),
               ),
 

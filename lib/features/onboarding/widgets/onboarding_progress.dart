@@ -8,10 +8,23 @@ class OnboardingProgress extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LinearProgressIndicator(
-      value: (index + 1) / 3,
-      color: AppColors.primary,
-      backgroundColor: Colors.grey.shade300,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      child: TweenAnimationBuilder<double>(
+        duration: const Duration(milliseconds: 400),
+        tween: Tween(begin: 0, end: (index + 1) / 3),
+        builder: (context, value, _) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(
+              value: value,
+              minHeight: 6,
+              backgroundColor: Colors.grey.shade300,
+              valueColor: AlwaysStoppedAnimation(AppColors.primary),
+            ),
+          );
+        },
+      ),
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/validators.dart';
+import '../../core/services/analytics_service.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/custom_button.dart';
 import '../auth/profile_type_screen.dart';
@@ -13,8 +14,8 @@ class SignupScreen extends StatefulWidget {
 }
 
 class _SignupScreenState extends State<SignupScreen> {
-
   final AuthService _authService = AuthService();
+  final AnalyticsService _analytics = AnalyticsService.instance;
 
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
@@ -29,6 +30,14 @@ class _SignupScreenState extends State<SignupScreen> {
   bool obscurePassword = true;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _analytics.logSignUpViewed();
+    });
+  }
+
+  @override
   void dispose() {
     emailController.dispose();
     passwordController.dispose();
@@ -38,7 +47,6 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 
   Future<void> handleSignup() async {
-
     final email = emailController.text.trim();
     final password = passwordController.text.trim();
 
@@ -50,38 +58,38 @@ class _SignupScreenState extends State<SignupScreen> {
     if (emailError != null || passwordError != null) return;
 
     setState(() => isLoading = true);
+    await _analytics.logSignUpAttempt(method: 'email');
 
-    final result = await _authService.signUp(
-      email: email,
-      password: password,
-    );
+    final result = await _authService.signUp(email: email, password: password);
 
+    if (!mounted) return;
     setState(() => isLoading = false);
 
     if (result.isSuccess) {
-
+      await _analytics.logSignUpResult(method: 'email', isSuccess: true);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Account created successfully")),
       );
       Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-      builder: (_) => ProfileTypeScreen(),
-       ),
+        context,
+        MaterialPageRoute(builder: (_) => ProfileTypeScreen()),
       );
-
     } else {
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.error ?? "Signup failed")),
+      await _analytics.logSignUpResult(
+        method: 'email',
+        isSuccess: false,
+        errorCode: result.error,
       );
-
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(result.error ?? "Signup failed")));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
       backgroundColor: AppColors.background,
 
@@ -97,18 +105,17 @@ class _SignupScreenState extends State<SignupScreen> {
               borderRadius: BorderRadius.circular(20),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(.05),
+                  color: Colors.black.withValues(alpha: 0.05),
                   blurRadius: 25,
                   spreadRadius: 1,
-                  offset: const Offset(0,10),
-                )
+                  offset: const Offset(0, 10),
+                ),
               ],
             ),
 
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-
                 /// LOGO
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -227,9 +234,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
                 Text(
                   "Use Phone instead",
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                  ),
+                  style: TextStyle(color: AppColors.textGrey),
                 ),
 
                 const SizedBox(height: 20),
@@ -252,9 +257,9 @@ class _SignupScreenState extends State<SignupScreen> {
                         color: AppColors.secondary,
                         fontWeight: FontWeight.bold,
                       ),
-                    )
+                    ),
                   ],
-                )
+                ),
               ],
             ),
           ),

@@ -4,6 +4,17 @@ class RemoteConfigService {
   final remoteConfig = FirebaseRemoteConfig.instance;
 
   Future<void> init() async {
+    await remoteConfig.setDefaults(const {
+      'title_1': 'Connect & Explore Pets',
+      'subtitle_1': 'Join a community of pet lovers and share moments.',
+      'title_2': 'Book Trusted Services',
+      'subtitle_2': 'Find vets, groomers and trainers easily.',
+      'title_3': 'Everything Nearby',
+      'subtitle_3': 'Discover pet-friendly places around you.',
+      'onboarding_experiment_id': 'default_onboarding',
+      'onboarding_variant_id': 'control',
+    });
+
     await remoteConfig.setConfigSettings(
       RemoteConfigSettings(
         fetchTimeout: const Duration(seconds: 2),
@@ -19,4 +30,10 @@ class RemoteConfigService {
         ? fallback
         : remoteConfig.getString(key);
   }
+
+  String get onboardingExperimentId =>
+      getString('onboarding_experiment_id', 'default_onboarding');
+
+  String get onboardingVariantId =>
+      getString('onboarding_variant_id', 'control');
 }

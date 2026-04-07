@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/constants/app_colors.dart';
+import '../../../core/services/analytics_service.dart';
 import '../models/onboarding_model.dart';
 import '../widgets/onboarding_page.dart';
 import '../widgets/onboarding_button.dart';
@@ -9,18 +11,21 @@ import '../data/onboarding_repository.dart';
 import '../../../core/services/remote_config_service.dart';
 
 class OnboardingScreen extends StatefulWidget {
+  const OnboardingScreen({super.key});
+
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController controller = PageController();
+  final AnalyticsService analytics = AnalyticsService.instance;
   int currentIndex = 0;
 
   late List<OnboardingModel> onboardingList;
 
-  final remote = RemoteConfigService();          // ✅ Remote config
-  late OnboardingRepository repository;          // ✅ Repository
+  final remote = RemoteConfigService(); // ✅ Remote config
+  late OnboardingRepository repository; // ✅ Repository
 
   @override
   void initState() {
@@ -30,21 +35,52 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
     // 🔥 Now using repository instead of local data
     onboardingList = repository.getOnboardingData();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      analytics.logScreenView(
+        screenName: 'onboarding',
+        screenClass: 'OnboardingScreen',
+      );
+      _trackStepView(0);
+    });
   }
 
   void nextPage() {
     if (currentIndex < onboardingList.length - 1) {
+      analytics.logOnboardingAction(
+        action: 'next_tapped',
+        stepIndex: currentIndex,
+        totalSteps: onboardingList.length,
+      );
       controller.nextPage(
         duration: const Duration(milliseconds: 400),
         curve: Curves.easeInOut,
       );
     } else {
+      analytics.logOnboardingAction(
+        action: 'completed',
+        stepIndex: currentIndex,
+        totalSteps: onboardingList.length,
+      );
       Navigator.pushReplacementNamed(context, "/signup");
     }
   }
 
   void skip() {
+    analytics.logOnboardingAction(
+      action: 'skipped',
+      stepIndex: currentIndex,
+      totalSteps: onboardingList.length,
+    );
     Navigator.pushReplacementNamed(context, "/signup");
+  }
+
+  void _trackStepView(int index) {
+    analytics.logOnboardingStepViewed(
+      stepIndex: index,
+      totalSteps: onboardingList.length,
+      title: onboardingList[index].title,
+    );
   }
 
   @override
@@ -53,13 +89,53 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       body: SafeArea(
         child: Column(
           children: [
-
             /// 🔥 Skip Button
-            Align(
-              alignment: Alignment.topRight,
-              child: TextButton(
-                onPressed: skip,
-                child: const Text("Skip"),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+              child: Align(
+                alignment: Alignment.topRight,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.primary.withValues(alpha: 0.14),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withValues(alpha: 0.12),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: TextButton(
+                    onPressed: skip,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.textDark,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text("Skip"),
+                        SizedBox(width: 6),
+                        Icon(Icons.arrow_forward_rounded, size: 16),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
 
@@ -73,9 +149,28 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 itemCount: onboardingList.length,
                 onPageChanged: (index) {
                   setState(() => currentIndex = index);
+                  _trackStepView(index);
                 },
                 itemBuilder: (_, index) {
-                  return OnboardingPage(data: onboardingList[index]);
+                  return AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 400),
+                    transitionBuilder: (child, animation) {
+                      return FadeTransition(
+                        opacity: animation,
+                        child: ScaleTransition(
+                          scale: Tween(
+                            begin: 0.98,
+                            end: 1.0,
+                          ).animate(animation),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: OnboardingPage(
+                      key: ValueKey(index),
+                      data: onboardingList[index],
+                    ),
+                  );
                 },
               ),
             ),
