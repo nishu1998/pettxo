@@ -5,7 +5,12 @@ import 'core/services/analytics_service.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
+import 'features/services/presentation/screens/services_screen.dart';
 import 'features/splash/presentation/screens/splash_screen.dart';
+import 'features/social_feed/presentation/screens/create_post_screen.dart';
+import 'features/social_feed/presentation/screens/explore_screen.dart';
+import 'features/social_feed/presentation/screens/notifications_screen.dart';
+import 'features/social_feed/presentation/screens/profile_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
 
@@ -35,6 +40,11 @@ class PettexoApp extends StatelessWidget {
         "/signup": (context) => const SignupScreen(),
         "/signin": (context) => const SigninScreen(),
         "/home": (context) => const HomeScreen(),
+        "/services": (context) => const ServicesScreen(),
+        "/explore": (context) => const ExploreScreen(),
+        "/create": (context) => const CreatePostScreen(),
+        "/alerts": (context) => const NotificationsScreen(),
+        "/profile": (context) => const ProfileScreen(),
       },
     );
   }
