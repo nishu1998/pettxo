@@ -22,7 +22,8 @@ class UserService {
       "email": user.email,
       "role": role,
       "name": name,
-      "username": username,
+      "username": _normalizeUsername(username),
+      "usernameLowercase": _normalizeUsername(username),
       "location": location,
       "profileImage": "",
       "bio": "",
@@ -43,9 +44,20 @@ class UserService {
   Future<void> updateProfile(Map<String, dynamic> data) async {
     final uid = _auth.currentUser!.uid;
 
+    final updatedData = {...data};
+    final username = updatedData['username'] as String?;
+    if (username != null) {
+      updatedData['username'] = _normalizeUsername(username);
+      updatedData['usernameLowercase'] = _normalizeUsername(username);
+    }
+
     await _firestore
         .collection("users")
         .doc(uid)
-        .set(data, SetOptions(merge: true));
+        .set(updatedData, SetOptions(merge: true));
+  }
+
+  String _normalizeUsername(String username) {
+    return username.trim().replaceAll('@', '').toLowerCase();
   }
 }

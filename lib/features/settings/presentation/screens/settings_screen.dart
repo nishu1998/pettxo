@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/data/services/auth_service.dart';
+import '../../../profile/domain/models/user_profile.dart';
+import '../../../profile/data/repositories/profile_repository.dart';
 import '../../data/services/settings_service.dart';
 import '../../domain/models/app_settings.dart';
 
@@ -15,10 +17,13 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final AuthService _authService = AuthService();
+  final ProfileRepository _profileRepository = ProfileRepository();
   final SettingsService _settingsService = SettingsService();
   AppSettings _settings = const AppSettings.defaults();
+  UserProfile? _profile;
   bool _isLoading = true;
   bool _isSigningOut = false;
+  String? _loadError;
 
   @override
   void initState() {
@@ -27,13 +32,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
-    final settings = await _settingsService.loadSettings();
-    if (!mounted) return;
+    try {
+      final results = await Future.wait([
+        _settingsService.loadSettings(),
+        _profileRepository.getCurrentUserProfile(),
+      ]);
+      if (!mounted) return;
 
-    setState(() {
-      _settings = settings;
-      _isLoading = false;
-    });
+      setState(() {
+        _settings = results[0] as AppSettings;
+        _profile = results[1] as UserProfile;
+        _loadError = null;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _loadError = 'We could not load your settings right now.';
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _updateSettings(AppSettings settings) async {
@@ -65,11 +84,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final profile = _profile;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
+            : _loadError != null || profile == null
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.settings_suggest_outlined,
+                        size: 38,
+                        color: AppColors.textGrey,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _loadError ?? 'Settings are unavailable right now.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: AppColors.textDark,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: () {
+                          setState(() => _isLoading = true);
+                          _loadSettings();
+                        },
+                        child: const Text('Try again'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
             : ListView(
                 padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
                 children: [
@@ -128,6 +183,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 18),
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          AppColors.primary.withValues(alpha: 0.08),
+                          Colors.white,
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        _SettingsAvatar(profile: profile),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                profile.name.isEmpty
+                                    ? 'Your Name'
+                                    : profile.name,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.textDark,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                profile.displayUsername.isEmpty
+                                    ? '@username'
+                                    : profile.displayUsername,
+                                style: const TextStyle(
+                                  color: AppColors.textGrey,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                profile.roleLabel,
+                                style: const TextStyle(
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 18),
                   _SettingsSection(
                     title: 'Profile',
                     child: Column(
@@ -136,14 +250,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           icon: Icons.person_outline_rounded,
                           title: 'Profile details',
                           subtitle:
-                              'Keep profile edits and account basics inside settings.',
-                          onTap: () {
-                            AppFeedback.show(
+                              'Edit your name, username, bio, location, and photo.',
+                          onTap: () async {
+                            final updated = await Navigator.pushNamed(
                               context,
-                              message:
-                                  'Profile editing can be connected here next without crowding the profile screen.',
-                              tone: AppFeedbackTone.info,
+                              "/settings/profile",
                             );
+                            if (updated == true && mounted) {
+                              await _loadSettings();
+                            }
                           },
                         ),
                       ],
@@ -296,6 +411,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ],
               ),
+      ),
+    );
+  }
+}
+
+class _SettingsAvatar extends StatelessWidget {
+  final UserProfile profile;
+
+  const _SettingsAvatar({required this.profile});
+
+  @override
+  Widget build(BuildContext context) {
+    if (profile.profileImageUrl.isNotEmpty) {
+      return ClipOval(
+        child: Image.network(
+          profile.profileImageUrl,
+          width: 60,
+          height: 60,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => _fallback(),
+        ),
+      );
+    }
+
+    return _fallback();
+  }
+
+  Widget _fallback() {
+    return Container(
+      width: 60,
+      height: 60,
+      decoration: const BoxDecoration(
+        gradient: AppColors.brandGradientDiagonal,
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        profile.initials,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 24,
+          fontWeight: FontWeight.w800,
+        ),
       ),
     );
   }
