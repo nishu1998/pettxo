@@ -2,17 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../social_feed/data/social_feed_mock_repository.dart';
-import '../../../social_feed/presentation/widgets/social_app_tab.dart';
-import '../../../social_feed/presentation/widgets/social_feed_bottom_nav.dart';
-import '../../../social_feed/presentation/widgets/social_feed_post_card.dart';
+import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/social_bottom_nav.dart';
+import '../../../feed/data/repositories/feed_mock_repository.dart';
+import '../../../feed/presentation/widgets/feed_post_card.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final posts = const SocialFeedMockRepository().getPosts();
+    final posts = const FeedMockRepository().getPosts();
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -86,7 +86,7 @@ class HomeScreen extends StatelessWidget {
                     ),
                     child: IconButton(
                       onPressed: () {
-                        Navigator.pushReplacementNamed(context, "/alerts");
+                        Navigator.pushNamed(context, "/alerts");
                       },
                       icon: const Icon(Icons.notifications_none_rounded),
                     ),
@@ -101,14 +101,14 @@ class HomeScreen extends StatelessWidget {
                 separatorBuilder: (context, index) =>
                     const SizedBox(height: 18),
                 itemBuilder: (context, index) {
-                  return SocialFeedPostCard(post: posts[index]);
+                  return FeedPostCard(post: posts[index]);
                 },
               ),
             ),
           ],
         ),
       ),
-      bottomNavigationBar: const SocialFeedBottomNav(activeTab: SocialAppTab.home),
+      bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.home),
     );
   }
 }

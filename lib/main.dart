@@ -4,13 +4,14 @@ import 'package:firebase_core/firebase_core.dart';
 import 'core/services/analytics_service.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
+import 'features/create_post/presentation/screens/create_post_screen.dart';
+import 'features/explore/presentation/screens/explore_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
+import 'features/messages/presentation/screens/messages_screen.dart';
+import 'features/notifications/presentation/screens/notifications_screen.dart';
+import 'features/profile/presentation/screens/profile_screen.dart';
 import 'features/services/presentation/screens/services_screen.dart';
 import 'features/splash/presentation/screens/splash_screen.dart';
-import 'features/social_feed/presentation/screens/create_post_screen.dart';
-import 'features/social_feed/presentation/screens/explore_screen.dart';
-import 'features/social_feed/presentation/screens/notifications_screen.dart';
-import 'features/social_feed/presentation/screens/profile_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
 
@@ -44,6 +45,7 @@ class PettexoApp extends StatelessWidget {
         "/explore": (context) => const ExploreScreen(),
         "/create": (context) => const CreatePostScreen(),
         "/alerts": (context) => const NotificationsScreen(),
+        "/messages": (context) => const MessagesScreen(),
         "/profile": (context) => const ProfileScreen(),
       },
     );

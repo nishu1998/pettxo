@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../widgets/custom_button.dart';
-import '../../domain/models/social_feed_post.dart';
+import '../../domain/models/feed_post.dart';
 
-class SocialFeedPostCard extends StatelessWidget {
-  final SocialFeedPost post;
+class FeedPostCard extends StatelessWidget {
+  final FeedPost post;
 
-  const SocialFeedPostCard({super.key, required this.post});
+  const FeedPostCard({super.key, required this.post});
 
   @override
   Widget build(BuildContext context) {

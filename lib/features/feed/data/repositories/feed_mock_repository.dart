@@ -1,11 +1,11 @@
-import '../domain/models/social_feed_post.dart';
+import '../../domain/models/feed_post.dart';
 
-class SocialFeedMockRepository {
-  const SocialFeedMockRepository();
+class FeedMockRepository {
+  const FeedMockRepository();
 
-  List<SocialFeedPost> getPosts() {
+  List<FeedPost> getPosts() {
     return const [
-      SocialFeedPost(
+      FeedPost(
         displayName: "Sarah's Pet Care",
         username: "@sarahpetcare",
         roleLabel: "Provider",
@@ -18,7 +18,7 @@ class SocialFeedMockRepository {
         isServicePost: true,
         ctaLabel: "View Service",
       ),
-      SocialFeedPost(
+      FeedPost(
         displayName: "Max & Charlie",
         username: "@maxandcharlie",
         roleLabel: "Pet Parent",
@@ -30,7 +30,7 @@ class SocialFeedMockRepository {
         commentsCount: 32,
         isServicePost: false,
       ),
-      SocialFeedPost(
+      FeedPost(
         displayName: "Paws & Whiskers Club",
         username: "@pawswhiskersclub",
         roleLabel: "Pet Lover",

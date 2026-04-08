@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../social_feed/presentation/widgets/social_app_tab.dart';
-import '../../../social_feed/presentation/widgets/social_feed_bottom_nav.dart';
+import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/social_bottom_nav.dart';
 
 class ServicesScreen extends StatelessWidget {
   const ServicesScreen({super.key});
@@ -366,9 +366,7 @@ class ServicesScreen extends StatelessWidget {
           ],
         ),
       ),
-      bottomNavigationBar: const SocialFeedBottomNav(
-        activeTab: SocialAppTab.home,
-      ),
+      bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.home),
     );
   }
 }

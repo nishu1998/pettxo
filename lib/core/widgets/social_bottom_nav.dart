@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/constants/app_colors.dart';
-import '../widgets/social_app_tab.dart';
+import '../constants/app_colors.dart';
+import '../navigation/social_app_tab.dart';
 
-class SocialFeedBottomNav extends StatelessWidget {
+class SocialBottomNav extends StatelessWidget {
   final SocialAppTab activeTab;
 
-  const SocialFeedBottomNav({super.key, required this.activeTab});
+  const SocialBottomNav({super.key, required this.activeTab});
 
   @override
   Widget build(BuildContext context) {
@@ -51,7 +51,7 @@ class SocialFeedBottomNav extends StatelessWidget {
         SocialAppTab.home => "/home",
         SocialAppTab.explore => "/explore",
         SocialAppTab.create => "/create",
-        SocialAppTab.alerts => "/alerts",
+        SocialAppTab.messages => "/messages",
         SocialAppTab.profile => "/profile",
       };
 
@@ -96,10 +96,10 @@ class SocialFeedBottomNav extends StatelessWidget {
               onTap: () => navigateTo(SocialAppTab.create),
             ),
             navItem(
-              icon: Icons.notifications_none_rounded,
-              label: "Alerts",
-              isActive: activeTab == SocialAppTab.alerts,
-              onTap: () => navigateTo(SocialAppTab.alerts),
+              icon: Icons.chat_bubble_outline_rounded,
+              label: "Messages",
+              isActive: activeTab == SocialAppTab.messages,
+              onTap: () => navigateTo(SocialAppTab.messages),
             ),
             navItem(
               icon: Icons.person_outline_rounded,

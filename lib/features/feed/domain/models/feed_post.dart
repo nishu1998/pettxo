@@ -1,4 +1,4 @@
-class SocialFeedPost {
+class FeedPost {
   final String displayName;
   final String username;
   final String roleLabel;
@@ -9,7 +9,7 @@ class SocialFeedPost {
   final bool isServicePost;
   final String? ctaLabel;
 
-  const SocialFeedPost({
+  const FeedPost({
     required this.displayName,
     required this.username,
     required this.roleLabel,

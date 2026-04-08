@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../widgets/social_app_tab.dart';
-import '../widgets/social_feed_bottom_nav.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -44,7 +42,6 @@ class NotificationsScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      extendBody: true,
       body: SafeArea(
         child: Stack(
           children: [
@@ -76,15 +73,23 @@ class NotificationsScreen extends StatelessWidget {
                         color: AppColors.primary.withValues(alpha: 0.08),
                       ),
                     ),
-                    child: const Row(
+                    child: Row(
                       children: [
-                        Icon(
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(
+                            Icons.arrow_back_rounded,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(
                           Icons.notifications_active_outlined,
                           color: AppColors.primary,
                           size: 24,
                         ),
-                        SizedBox(width: 12),
-                        Expanded(
+                        const SizedBox(width: 12),
+                        const Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -114,7 +119,7 @@ class NotificationsScreen extends StatelessWidget {
                 ),
                 Expanded(
                   child: ListView(
-                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 120),
+                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
                     children: [
                       Container(
                         padding: const EdgeInsets.all(18),
@@ -271,9 +276,6 @@ class NotificationsScreen extends StatelessWidget {
             ),
           ],
         ),
-      ),
-      bottomNavigationBar: const SocialFeedBottomNav(
-        activeTab: SocialAppTab.alerts,
       ),
     );
   }

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../widgets/social_app_tab.dart';
-import '../widgets/social_feed_bottom_nav.dart';
+import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/social_bottom_nav.dart';
 
 class ExploreScreen extends StatelessWidget {
   const ExploreScreen({super.key});
@@ -99,7 +99,7 @@ class ExploreScreen extends StatelessWidget {
           ],
         ),
       ),
-      bottomNavigationBar: const SocialFeedBottomNav(
+      bottomNavigationBar: const SocialBottomNav(
         activeTab: SocialAppTab.explore,
       ),
     );
