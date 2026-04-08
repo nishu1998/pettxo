@@ -11,6 +11,7 @@ import 'features/messages/presentation/screens/messages_screen.dart';
 import 'features/notifications/presentation/screens/notifications_screen.dart';
 import 'features/profile/presentation/screens/profile_screen.dart';
 import 'features/services/presentation/screens/services_screen.dart';
+import 'features/settings/presentation/screens/settings_screen.dart';
 import 'features/splash/presentation/screens/splash_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
@@ -42,6 +43,7 @@ class PettexoApp extends StatelessWidget {
         "/signin": (context) => const SigninScreen(),
         "/home": (context) => const HomeScreen(),
         "/services": (context) => const ServicesScreen(),
+        "/settings": (context) => const SettingsScreen(),
         "/explore": (context) => const ExploreScreen(),
         "/create": (context) => const CreatePostScreen(),
         "/alerts": (context) => const NotificationsScreen(),
