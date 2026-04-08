@@ -115,10 +115,16 @@ class MessagesScreen extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
                                 children: [
-                                  Expanded(
+                                  ConstrainedBox(
+                                    constraints: BoxConstraints(
+                                      maxWidth:
+                                          MediaQuery.of(context).size.width *
+                                          0.42,
+                                    ),
                                     child: Text(
                                       thread.name,
                                       maxLines: 1,
@@ -130,7 +136,6 @@ class MessagesScreen extends StatelessWidget {
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 12),
                                   Text(
                                     thread.time,
                                     style: const TextStyle(

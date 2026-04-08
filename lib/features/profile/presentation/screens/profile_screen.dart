@@ -211,20 +211,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                             crossAxisAlignment:
                                                 CrossAxisAlignment.start,
                                             children: [
-                                              Row(
+                                              Wrap(
+                                                spacing: 10,
+                                                runSpacing: 8,
+                                                crossAxisAlignment:
+                                                    WrapCrossAlignment.center,
                                                 children: [
-                                                  Expanded(
-                                                    child: Text(
-                                                      profile.name.isEmpty
-                                                          ? 'Your Name'
-                                                          : profile.name,
-                                                      style: const TextStyle(
-                                                        fontSize: 24,
-                                                        fontWeight:
-                                                            FontWeight.w800,
-                                                        color:
-                                                            AppColors.textDark,
-                                                      ),
+                                                  Text(
+                                                    profile.name.isEmpty
+                                                        ? 'Your Name'
+                                                        : profile.name,
+                                                    style: const TextStyle(
+                                                      fontSize: 24,
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                      color: AppColors.textDark,
                                                     ),
                                                   ),
                                                   Container(
@@ -260,6 +261,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                 profile.displayUsername.isEmpty
                                                     ? '@username'
                                                     : profile.displayUsername,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
                                                 style: const TextStyle(
                                                   color: AppColors.textGrey,
                                                   fontSize: 15,
@@ -349,20 +352,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     ),
                                     const SizedBox(height: 22),
                                     const Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.spaceBetween,
                                       children: [
-                                        _ProfileStat(
-                                          label: "posts",
-                                          value: "24",
+                                        Expanded(
+                                          child: _ProfileStat(
+                                            label: "posts",
+                                            value: "24",
+                                          ),
                                         ),
-                                        _ProfileStat(
-                                          label: "followers",
-                                          value: "1234",
+                                        SizedBox(width: 8),
+                                        Expanded(
+                                          child: _ProfileStat(
+                                            label: "followers",
+                                            value: "1234",
+                                          ),
                                         ),
-                                        _ProfileStat(
-                                          label: "following",
-                                          value: "567",
+                                        SizedBox(width: 8),
+                                        Expanded(
+                                          child: _ProfileStat(
+                                            label: "following",
+                                            value: "567",
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -608,26 +617,37 @@ class _ProfileStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFFCFA),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: const TextStyle(fontSize: 16, color: AppColors.textGrey),
-          children: [
-            TextSpan(
-              text: "$value ",
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value,
+              maxLines: 1,
               style: const TextStyle(
                 color: AppColors.textDark,
+                fontSize: 22,
                 fontWeight: FontWeight.w800,
               ),
             ),
-            TextSpan(text: label),
-          ],
-        ),
+          ),
+          const SizedBox(height: 2),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

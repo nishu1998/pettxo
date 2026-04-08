@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../../core/constants/app_colors.dart';
 
@@ -8,7 +9,11 @@ class AuthInputField extends StatelessWidget {
   final TextInputAction? textInputAction;
   final String labelText;
   final String? errorText;
+  final String? helperText;
+  final String? prefixText;
   final bool obscureText;
+  final int? maxLength;
+  final List<TextInputFormatter>? inputFormatters;
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
   final Widget? suffixIcon;
@@ -20,7 +25,11 @@ class AuthInputField extends StatelessWidget {
     this.focusNode,
     this.textInputAction,
     this.errorText,
+    this.helperText,
+    this.prefixText,
     this.obscureText = false,
+    this.maxLength,
+    this.inputFormatters,
     this.onChanged,
     this.onSubmitted,
     this.suffixIcon,
@@ -33,11 +42,15 @@ class AuthInputField extends StatelessWidget {
       focusNode: focusNode,
       textInputAction: textInputAction,
       obscureText: obscureText,
+      maxLength: maxLength,
+      inputFormatters: inputFormatters,
       onChanged: onChanged,
       onSubmitted: onSubmitted,
       decoration: InputDecoration(
         labelText: labelText,
         errorText: errorText,
+        helperText: helperText,
+        prefixText: prefixText,
         filled: true,
         fillColor: Colors.white,
         contentPadding: const EdgeInsets.symmetric(

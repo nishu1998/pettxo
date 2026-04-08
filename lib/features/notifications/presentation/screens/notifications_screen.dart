@@ -203,6 +203,7 @@ class NotificationsScreen extends StatelessWidget {
                               ],
                             ),
                             child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 CircleAvatar(
                                   radius: 26,
@@ -252,6 +253,7 @@ class NotificationsScreen extends StatelessWidget {
                                     ],
                                   ),
                                 ),
+                                const SizedBox(width: 12),
                                 Container(
                                   width: 52,
                                   height: 52,

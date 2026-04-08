@@ -249,8 +249,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _SettingsTile(
                           icon: Icons.person_outline_rounded,
                           title: 'Profile details',
-                          subtitle:
-                              'Edit your name, username, bio, location, and photo.',
+                          subtitle: 'Edit your name, bio, location, and photo.',
                           onTap: () async {
                             final updated = await Navigator.pushNamed(
                               context,

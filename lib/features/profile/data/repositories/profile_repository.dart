@@ -83,22 +83,25 @@ class ProfileRepository {
 
   Future<void> updateCurrentUserProfile({
     required String name,
-    required String username,
     required String location,
     required String bio,
     String? profileImageUrl,
   }) async {
-    final normalizedUsername = _normalizeUsername(username);
-
-    await _firestore.collection('users').doc(_uid).set({
+    final payload = <String, dynamic>{
       'name': name.trim(),
-      'username': normalizedUsername,
-      'usernameLowercase': normalizedUsername.toLowerCase(),
       'location': location.trim(),
       'bio': bio.trim(),
-      'profileImage': profileImageUrl?.trim(),
       'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    };
+
+    if (profileImageUrl != null && profileImageUrl.trim().isNotEmpty) {
+      payload['profileImage'] = profileImageUrl.trim();
+    }
+
+    await _firestore
+        .collection('users')
+        .doc(_uid)
+        .set(payload, SetOptions(merge: true));
   }
 
   String normalizeUsername(String username) => _normalizeUsername(username);

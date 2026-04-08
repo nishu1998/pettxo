@@ -16,11 +16,12 @@ class EditProfileScreen extends StatefulWidget {
 }
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
+  static const int _bioCharacterLimit = 160;
+
   final ProfileRepository _profileRepository = ProfileRepository();
   final ImagePicker _imagePicker = ImagePicker();
 
   final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _bioController = TextEditingController();
 
@@ -28,7 +29,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _isSaving = false;
   String? _loadError;
   String? _nameError;
-  String? _usernameError;
   String? _locationError;
   File? _selectedImage;
   UserProfile? _initialProfile;
@@ -46,7 +46,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       _initialProfile = profile;
       _nameController.text = profile.name;
-      _usernameController.text = profile.username;
       _locationController.text = profile.location;
       _bioController.text = profile.bio;
 
@@ -84,26 +83,22 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     if (profile == null || _isSaving) return;
 
     final name = _nameController.text.trim();
-    final username = _usernameController.text.trim();
     final location = _locationController.text.trim();
     final bio = _bioController.text.trim();
 
     setState(() {
       _nameError = name.isEmpty ? 'Name is required' : null;
-      _usernameError = username.isEmpty ? 'Username is required' : null;
       _locationError = location.isEmpty ? 'Location is required' : null;
     });
 
-    if (_nameError != null ||
-        _usernameError != null ||
-        _locationError != null) {
+    if (_nameError != null || _locationError != null) {
       return;
     }
 
-    if (bio.length > 160) {
+    if (bio.length > _bioCharacterLimit) {
       AppFeedback.show(
         context,
-        message: 'Bio should stay under 160 characters.',
+        message: 'Sorry, your bio should stay within 160 characters.',
         tone: AppFeedbackTone.info,
       );
       return;
@@ -112,21 +107,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     setState(() => _isSaving = true);
 
     try {
-      final normalizedUsername = _profileRepository.normalizeUsername(username);
-      final isAvailable = await _profileRepository.isUsernameAvailable(
-        normalizedUsername,
-        excludeUid: profile.uid,
-      );
-
-      if (!isAvailable) {
-        if (!mounted) return;
-        setState(() {
-          _usernameError = 'That username is already taken';
-          _isSaving = false;
-        });
-        return;
-      }
-
       String? uploadedImageUrl;
       if (_selectedImage != null) {
         uploadedImageUrl = await _profileRepository.uploadProfileImage(
@@ -136,7 +116,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       await _profileRepository.updateCurrentUserProfile(
         name: name,
-        username: normalizedUsername,
         location: location,
         bio: bio,
         profileImageUrl: uploadedImageUrl,
@@ -149,22 +128,35 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         tone: AppFeedbackTone.success,
       );
       Navigator.pop(context, true);
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
       setState(() => _isSaving = false);
       AppFeedback.show(
         context,
-        message: 'We could not update your profile right now.',
+        message: _friendlySaveError(error),
         tone: AppFeedbackTone.error,
       );
       return;
     }
   }
 
+  String _friendlySaveError(Object error) {
+    final message = error.toString().toLowerCase();
+
+    if (message.contains('permission')) {
+      return 'Sorry, we could not update your profile because permission was denied. Please check your Firebase rules and try again.';
+    }
+
+    if (message.contains('storage')) {
+      return 'Sorry, profile photo upload is not available yet. Please save without changing the photo for now.';
+    }
+
+    return 'Sorry, we could not update your profile right now. Please try again in a moment.';
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
-    _usernameController.dispose();
     _locationController.dispose();
     _bioController.dispose();
     super.dispose();
@@ -260,7 +252,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               ),
                               SizedBox(height: 2),
                               Text(
-                                'Update your identity, avatar, and public details',
+                                'Update your identity, bio, avatar, and public details',
                                 style: TextStyle(
                                   color: AppColors.textGrey,
                                   fontSize: 13,
@@ -336,19 +328,20 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           controller: _nameController,
                           label: 'Name',
                           errorText: _nameError,
-                        ),
-                        const SizedBox(height: 14),
-                        _ProfileTextField(
-                          controller: _usernameController,
-                          label: 'Username',
-                          prefixText: '@',
-                          errorText: _usernameError,
+                          onChanged: (_) {
+                            if (_nameError == null) return;
+                            setState(() => _nameError = null);
+                          },
                         ),
                         const SizedBox(height: 14),
                         _ProfileTextField(
                           controller: _locationController,
                           label: 'Location',
                           errorText: _locationError,
+                          onChanged: (_) {
+                            if (_locationError == null) return;
+                            setState(() => _locationError = null);
+                          },
                         ),
                         const SizedBox(height: 14),
                         _ProfileTextField(
@@ -356,6 +349,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           label: 'Bio',
                           maxLines: 4,
                           helperText: 'Keep it short, warm, and trustworthy.',
+                          maxLength: _bioCharacterLimit,
+                          counterText:
+                              '${_bioController.text.length}/$_bioCharacterLimit',
+                          onChanged: (_) {
+                            setState(() {});
+                          },
                         ),
                         const SizedBox(height: 22),
                         SizedBox(
@@ -392,17 +391,21 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 class _ProfileTextField extends StatelessWidget {
   final TextEditingController controller;
   final String label;
-  final String? prefixText;
   final String? errorText;
   final String? helperText;
+  final String? counterText;
+  final ValueChanged<String>? onChanged;
+  final int? maxLength;
   final int maxLines;
 
   const _ProfileTextField({
     required this.controller,
     required this.label,
-    this.prefixText,
     this.errorText,
     this.helperText,
+    this.counterText,
+    this.onChanged,
+    this.maxLength,
     this.maxLines = 1,
   });
 
@@ -411,11 +414,13 @@ class _ProfileTextField extends StatelessWidget {
     return TextField(
       controller: controller,
       maxLines: maxLines,
+      onChanged: onChanged,
+      maxLength: maxLength,
       decoration: InputDecoration(
         labelText: label,
-        prefixText: prefixText,
         errorText: errorText,
         helperText: helperText,
+        counterText: counterText,
         filled: true,
         fillColor: const Color(0xFFFCFBFA),
         border: OutlineInputBorder(

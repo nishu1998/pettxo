@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
@@ -19,6 +20,8 @@ class ProfileDetailsScreen extends StatefulWidget {
 }
 
 class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
+  static final RegExp _usernamePattern = RegExp(r'^[a-z0-9_]{3,20}$');
+
   final nameController = TextEditingController();
   final usernameController = TextEditingController();
   final locationController = TextEditingController();
@@ -28,6 +31,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   final UserService _userService = UserService();
   final AnalyticsService _analytics = AnalyticsService.instance;
   bool isLoading = false;
+  String? usernameError;
 
   String getTitle() {
     switch (widget.type) {
@@ -61,14 +65,23 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   Future<void> saveProfile() async {
     FocusScope.of(context).unfocus();
 
-    if (nameController.text.isEmpty ||
-        usernameController.text.isEmpty ||
-        locationController.text.isEmpty) {
+    final normalizedUsername = _normalizeUsername(usernameController.text);
+    final usernameValidationError = _validateUsername(normalizedUsername);
+
+    if (nameController.text.isEmpty || locationController.text.isEmpty) {
       AppFeedback.show(
         context,
         message: "Please fill all fields",
         tone: AppFeedbackTone.info,
       );
+      return;
+    }
+
+    setState(() {
+      usernameError = usernameValidationError;
+    });
+
+    if (usernameValidationError != null) {
       return;
     }
 
@@ -80,7 +93,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       await _userService.createUserProfile(
         role: profileTypeName,
         name: nameController.text.trim(),
-        username: usernameController.text.trim(),
+        username: normalizedUsername,
         location: locationController.text.trim(),
       );
       await _analytics.logProfileCompleted(profileType: profileTypeName);
@@ -118,6 +131,22 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     usernameFocus.dispose();
     locationFocus.dispose();
     super.dispose();
+  }
+
+  String _normalizeUsername(String value) {
+    return value.trim().replaceAll('@', '').toLowerCase();
+  }
+
+  String? _validateUsername(String username) {
+    if (username.isEmpty) {
+      return 'Username is required';
+    }
+
+    if (!_usernamePattern.hasMatch(username)) {
+      return 'Use 3-20 lowercase letters, numbers, or underscores';
+    }
+
+    return null;
   }
 
   @override
@@ -176,6 +205,26 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             focusNode: usernameFocus,
             textInputAction: TextInputAction.next,
             labelText: "Username",
+            prefixText: "@",
+            helperText: "3-20 lowercase letters, numbers, or underscores",
+            errorText: usernameError,
+            maxLength: 20,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_]')),
+            ],
+            onChanged: (value) {
+              final normalized = _normalizeUsername(value);
+              if (normalized != value) {
+                usernameController.value = TextEditingValue(
+                  text: normalized,
+                  selection: TextSelection.collapsed(offset: normalized.length),
+                );
+              }
+
+              setState(() {
+                usernameError = _validateUsername(normalized);
+              });
+            },
             onSubmitted: (_) {
               FocusScope.of(context).requestFocus(locationFocus);
             },
