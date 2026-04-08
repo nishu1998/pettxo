@@ -1,12 +1,14 @@
 import 'dart:async';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/services/remote_config_service.dart';
-import '../../../auth/presentation/screens/signup_screen.dart';
+import '../../../auth/presentation/screens/signin_screen.dart';
+import '../../../home/presentation/screens/home_screen.dart';
 import '../../../onboarding/data/services/onboarding_state_service.dart';
 import '../../../onboarding/screens/onboarding_screen.dart';
 
@@ -56,19 +58,28 @@ class _CinematicSplashState extends State<CinematicSplash>
 
   Future<void> _start() async {
     await _controller.forward();
+    await Future.delayed(const Duration(milliseconds: 400));
+
+    if (!mounted) return;
+
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser != null) {
+      _goToHome();
+      return;
+    }
+
     await remote.init();
     await analytics.setOnboardingExperiment(
       experimentId: remote.onboardingExperimentId,
       variantId: remote.onboardingVariantId,
     );
 
-    await Future.delayed(const Duration(milliseconds: 400));
-
     final shouldShowOnboarding = await onboardingState.shouldShowOnboarding(
       currentVersion: remote.onboardingDisplayVersion,
       forceShow: remote.onboardingForceShow,
     );
 
+    if (!mounted) return;
     _goNext(shouldShowOnboarding: shouldShowOnboarding);
   }
 
@@ -78,8 +89,15 @@ class _CinematicSplashState extends State<CinematicSplash>
       MaterialPageRoute(
         builder: (_) => shouldShowOnboarding
             ? const OnboardingScreen()
-            : const SignupScreen(),
+            : const SigninScreen(),
       ),
+    );
+  }
+
+  void _goToHome() {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
     );
   }
 
