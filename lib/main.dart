@@ -9,6 +9,7 @@ import 'features/explore/presentation/screens/explore_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
 import 'features/messages/presentation/screens/messages_screen.dart';
 import 'features/notifications/presentation/screens/notifications_screen.dart';
+import 'features/profile/presentation/screens/add_service_screen.dart';
 import 'features/profile/presentation/screens/profile_screen.dart';
 import 'features/services/presentation/screens/services_screen.dart';
 import 'features/settings/presentation/screens/edit_profile_screen.dart';
@@ -51,6 +52,7 @@ class PettexoApp extends StatelessWidget {
         "/alerts": (context) => const NotificationsScreen(),
         "/messages": (context) => const MessagesScreen(),
         "/profile": (context) => const ProfileScreen(),
+        "/profile/services/add": (context) => const AddServiceScreen(),
       },
     );
   }
