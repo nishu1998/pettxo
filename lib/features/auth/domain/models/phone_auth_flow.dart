@@ -1,0 +1,1 @@
+enum PhoneAuthFlow { signIn, signUp }

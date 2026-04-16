@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/location_service.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../widgets/custom_button.dart';
@@ -9,6 +9,8 @@ import '../../data/services/user_service.dart';
 import '../../domain/models/profile_type.dart';
 import '../widgets/auth_input_field.dart';
 import '../widgets/auth_shell.dart';
+import '../widgets/common_phone_field.dart';
+import '../widgets/searchable_selection_field.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
   final ProfileType type;
@@ -21,17 +23,26 @@ class ProfileDetailsScreen extends StatefulWidget {
 
 class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   static final RegExp _usernamePattern = RegExp(r'^[a-z0-9_]{3,20}$');
+  static final RegExp _phonePattern = RegExp(r'^\+\d{10,15}$');
 
   final nameController = TextEditingController();
   final usernameController = TextEditingController();
-  final locationController = TextEditingController();
   final nameFocus = FocusNode();
   final usernameFocus = FocusNode();
-  final locationFocus = FocusNode();
+  final phoneFocus = FocusNode();
   final UserService _userService = UserService();
   final AnalyticsService _analytics = AnalyticsService.instance;
   bool isLoading = false;
+  bool isLocationLoading = true;
   String? usernameError;
+  String? phoneError;
+  String? stateError;
+  String? cityError;
+  String? _selectedState;
+  String? _selectedCity;
+  String _fullPhoneNumber = '';
+  List<String> _states = const [];
+  List<String> _cities = const [];
 
   String getTitle() {
     switch (widget.type) {
@@ -57,8 +68,18 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    _loadLocations();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _analytics.logProfileDetailsView(profileType: profileTypeName);
+    });
+  }
+
+  Future<void> _loadLocations() async {
+    await LocationService.instance.load();
+    if (!mounted) return;
+    setState(() {
+      _states = LocationService.instance.getStates();
+      isLocationLoading = false;
     });
   }
 
@@ -67,8 +88,18 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
     final normalizedUsername = _normalizeUsername(usernameController.text);
     final usernameValidationError = _validateUsername(normalizedUsername);
+    final phoneValidationError = _validatePhoneNumber(_fullPhoneNumber);
+    final stateValidationError = _selectedState == null
+        ? 'State is required'
+        : null;
+    final cityValidationError = _selectedCity == null
+        ? 'City is required'
+        : null;
 
-    if (nameController.text.isEmpty || locationController.text.isEmpty) {
+    if (nameController.text.isEmpty ||
+        _fullPhoneNumber.isEmpty ||
+        _selectedState == null ||
+        _selectedCity == null) {
       AppFeedback.show(
         context,
         message: "Please fill all fields",
@@ -79,9 +110,15 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
     setState(() {
       usernameError = usernameValidationError;
+      phoneError = phoneValidationError;
+      stateError = stateValidationError;
+      cityError = cityValidationError;
     });
 
-    if (usernameValidationError != null) {
+    if (usernameValidationError != null ||
+        phoneValidationError != null ||
+        stateValidationError != null ||
+        cityValidationError != null) {
       return;
     }
 
@@ -94,7 +131,9 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         role: profileTypeName,
         name: nameController.text.trim(),
         username: normalizedUsername,
-        location: locationController.text.trim(),
+        phone: _fullPhoneNumber,
+        state: _selectedState!,
+        city: _selectedCity!,
       );
       await _analytics.logProfileCompleted(profileType: profileTypeName);
 
@@ -126,10 +165,9 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   void dispose() {
     nameController.dispose();
     usernameController.dispose();
-    locationController.dispose();
     nameFocus.dispose();
     usernameFocus.dispose();
-    locationFocus.dispose();
+    phoneFocus.dispose();
     super.dispose();
   }
 
@@ -149,6 +187,18 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     return null;
   }
 
+  String? _validatePhoneNumber(String phoneNumber) {
+    if (phoneNumber.isEmpty) {
+      return 'Phone number is required';
+    }
+
+    if (!_phonePattern.hasMatch(phoneNumber)) {
+      return 'Enter a valid phone number';
+    }
+
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return AuthShell(
@@ -158,38 +208,11 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          TextButton.icon(
-            onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(
-              foregroundColor: AppColors.textDark,
-              padding: EdgeInsets.zero,
+          if (isLocationLoading)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 20),
+              child: LinearProgressIndicator(minHeight: 2),
             ),
-            icon: const Icon(Icons.arrow_back_rounded, size: 18),
-            label: const Text(
-              "Back",
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF4EE),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Text(
-              widget.type == ProfileType.serviceProvider
-                  ? "This information will help customers trust your business."
-                  : "This helps your profile feel complete and more discoverable.",
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark,
-                height: 1.4,
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
           AuthInputField(
             controller: nameController,
             focusNode: nameFocus,
@@ -226,17 +249,58 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
               });
             },
             onSubmitted: (_) {
-              FocusScope.of(context).requestFocus(locationFocus);
+              FocusScope.of(context).requestFocus(phoneFocus);
             },
           ),
           const SizedBox(height: 16),
-          AuthInputField(
-            controller: locationController,
-            focusNode: locationFocus,
-            textInputAction: TextInputAction.done,
-            labelText: "Location",
+          CommonPhoneField(
+            focusNode: phoneFocus,
+            textInputAction: TextInputAction.next,
+            labelText: "Phone Number",
+            errorText: phoneError,
+            onChanged: (value) {
+              setState(() {
+                _fullPhoneNumber = value.trim();
+                phoneError = _validatePhoneNumber(_fullPhoneNumber);
+              });
+            },
             onSubmitted: (_) {
-              saveProfile();
+              FocusScope.of(context).unfocus();
+            },
+          ),
+          const SizedBox(height: 16),
+          SearchableSelectionField(
+            labelText: 'State',
+            hintText: 'Select your state',
+            options: _states,
+            value: _selectedState,
+            errorText: stateError,
+            enabled: !isLocationLoading,
+            onSelected: (value) {
+              setState(() {
+                _selectedState = value;
+                _selectedCity = null;
+                _cities = LocationService.instance.getCities(value);
+                stateError = null;
+                cityError = null;
+              });
+            },
+          ),
+          const SizedBox(height: 16),
+          SearchableSelectionField(
+            labelText: 'City',
+            hintText: _selectedState == null
+                ? 'Select state first'
+                : 'Select your city',
+            options: _cities,
+            value: _selectedCity,
+            errorText: cityError,
+            enabled: _selectedState != null && !isLocationLoading,
+            onSelected: (value) {
+              setState(() {
+                _selectedCity = value;
+                cityError = null;
+              });
             },
           ),
           const SizedBox(height: 24),

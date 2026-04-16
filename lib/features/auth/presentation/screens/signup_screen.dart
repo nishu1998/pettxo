@@ -7,6 +7,7 @@ import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import 'profile_type_screen.dart';
 import 'signin_screen.dart';
+import 'signup_with_phone_screen.dart';
 import '../widgets/auth_input_field.dart';
 import '../widgets/auth_shell.dart';
 
@@ -143,24 +144,20 @@ class _SignupScreenState extends State<SignupScreen> {
             ),
           ),
           const SizedBox(height: 18),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF4EE),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.smartphone_rounded, size: 18),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    "Phone sign up is coming next.",
-                    style: TextStyle(fontWeight: FontWeight.w500),
+          Center(
+            child: TextButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const SignUpWithPhoneScreen(),
                   ),
-                ),
-              ],
+                );
+              },
+              child: const Text(
+                'Sign up with Phone',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
             ),
           ),
           const SizedBox(height: 18),

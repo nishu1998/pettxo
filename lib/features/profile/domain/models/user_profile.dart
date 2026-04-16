@@ -5,7 +5,10 @@ class UserProfile {
   final String name;
   final String username;
   final String usernameLowercase;
-  final String location;
+  final String phone;
+  final String state;
+  final String city;
+  final String legacyLocation;
   final String bio;
   final String profileImageUrl;
 
@@ -16,7 +19,10 @@ class UserProfile {
     required this.name,
     required this.username,
     required this.usernameLowercase,
-    required this.location,
+    required this.phone,
+    required this.state,
+    required this.city,
+    required this.legacyLocation,
     required this.bio,
     required this.profileImageUrl,
   });
@@ -35,7 +41,11 @@ class UserProfile {
           (data['usernameLowercase'] as String? ?? normalizedUsername)
               .trim()
               .toLowerCase(),
-      location: (data['location'] as String? ?? '').trim(),
+      phone: (data['phone'] as String? ?? data['mobileNumber'] as String? ?? '')
+          .trim(),
+      state: (data['state'] as String? ?? '').trim(),
+      city: (data['city'] as String? ?? '').trim(),
+      legacyLocation: (data['location'] as String? ?? '').trim(),
       bio: (data['bio'] as String? ?? '').trim(),
       profileImageUrl: (data['profileImage'] as String? ?? '').trim(),
     );
@@ -49,10 +59,24 @@ class UserProfile {
       'name': name,
       'username': username,
       'usernameLowercase': usernameLowercase,
+      'phone': phone,
+      'state': state,
+      'city': city,
       'location': location,
       'bio': bio,
       'profileImage': profileImageUrl,
     };
+  }
+
+  String get mobileNumber => phone;
+
+  String get location {
+    if (city.isNotEmpty && state.isNotEmpty) {
+      return '$city, $state';
+    }
+    if (city.isNotEmpty) return city;
+    if (state.isNotEmpty) return state;
+    return legacyLocation;
   }
 
   bool get isServiceProvider => role == 'serviceProvider';

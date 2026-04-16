@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../domain/models/profile_type.dart';
 import '../widgets/auth_shell.dart';
@@ -35,52 +34,15 @@ class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
   Widget build(BuildContext context) {
     return AuthShell(
       title: "Choose Your Path",
-      subtitle:
-          "Set up Pettexo around the way you’ll use it, so your feed, bookings, and tools feel personal from day one.",
+      subtitle: "Make your experience truly yours.",
       child: Column(
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF4EE),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    gradient: AppColors.brandGradient,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.auto_awesome_rounded,
-                    color: Colors.white,
-                    size: 18,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    "This helps us personalize your experience right away.",
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textDark,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
           ProfileTypeCard(
             icon: Icons.pets_rounded,
             badge: "For pet owners",
             title: "Pet Parent",
             description:
-                "Share your pet's journey, book trusted services, and manage daily care in one place.",
+                "Manage care, book services and track your pet’s journey.",
             onTap: () => navigate(context, ProfileType.petParent),
           ),
           const SizedBox(height: 14),
@@ -88,8 +50,7 @@ class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
             icon: Icons.work_outline_rounded,
             badge: "For professionals",
             title: "Service Provider",
-            description:
-                "Showcase services, receive bookings, and build trust with pet families nearby.",
+            description: "List services, get bookings and grow your business.",
             onTap: () => navigate(context, ProfileType.serviceProvider),
           ),
           const SizedBox(height: 14),
@@ -97,8 +58,7 @@ class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
             icon: Icons.favorite_border_rounded,
             badge: "For community",
             title: "Pet Lover",
-            description:
-                "Follow inspiring pet stories, discover places, and stay connected to the community.",
+            description: "Explore pet stories and connect with the community.",
             onTap: () => navigate(context, ProfileType.petLover),
           ),
         ],

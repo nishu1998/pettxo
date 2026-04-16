@@ -27,6 +27,7 @@ dependencies:
   firebase_analytics: ^11.6.0
   shared_preferences: ^2.5.5
   image_picker: ^1.1.2
+  intl_phone_field: ^3.2.0
 
 dev_dependencies:
   flutter_test:
@@ -40,6 +41,7 @@ flutter:
   assets:
     - assets/lottie/
     - assets/brand/
+    - assets/data/
     - assets/splash_bg.png
     - assets/logo1024.png
 
@@ -51,7 +53,7 @@ fonts:
         - asset: assets/fonts/Poppins-SemiBold.ttf
 
 flutter_native_splash:
-  color: "#ffffff"
+  color: "#fcf8f5"
 
   image: assets/logo1024.png
 
@@ -60,7 +62,7 @@ flutter_native_splash:
 
   android_12:
     image: assets/logo1024.png
-    color: "#ffffff"
+    color: "#fcf8f5"
 
   android_gravity: center
   ios_content_mode: center

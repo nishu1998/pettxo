@@ -41,6 +41,61 @@ class AuthService {
     }
   }
 
+  Future<void> sendPasswordResetEmail({required String email}) async {
+    await _auth.sendPasswordResetEmail(email: email);
+  }
+
+  Future<void> verifyPhoneNumber({
+    required String phoneNumber,
+    required Future<void> Function(PhoneAuthCredential credential)
+    verificationCompleted,
+    required Future<void> Function(String verificationId, int? resendToken)
+    codeSent,
+    required Future<void> Function(String message) verificationFailed,
+    Future<void> Function(String verificationId)? codeAutoRetrievalTimeout,
+    int? forceResendingToken,
+  }) async {
+    try {
+      await _auth.verifyPhoneNumber(
+        phoneNumber: phoneNumber,
+        forceResendingToken: forceResendingToken,
+        verificationCompleted: (credential) async {
+          await verificationCompleted(credential);
+        },
+        verificationFailed: (e) async {
+          await verificationFailed(_mapFirebaseError(e));
+        },
+        codeSent: (verificationId, resendToken) async {
+          await codeSent(verificationId, resendToken);
+        },
+        codeAutoRetrievalTimeout: (verificationId) async {
+          if (codeAutoRetrievalTimeout != null) {
+            await codeAutoRetrievalTimeout(verificationId);
+          }
+        },
+      );
+    } on FirebaseAuthException catch (e) {
+      await verificationFailed(_mapFirebaseError(e));
+    } catch (_) {
+      await verificationFailed("Unable to verify phone number right now.");
+    }
+  }
+
+  Future<UserCredential> signInWithPhoneCredential({
+    required String verificationId,
+    required String smsCode,
+  }) {
+    final credential = PhoneAuthProvider.credential(
+      verificationId: verificationId,
+      smsCode: smsCode,
+    );
+    return _auth.signInWithCredential(credential);
+  }
+
+  Future<UserCredential> signInWithCredential(PhoneAuthCredential credential) {
+    return _auth.signInWithCredential(credential);
+  }
+
   Future<void> logout() async {
     await _auth.signOut();
   }
@@ -65,6 +120,12 @@ class AuthService {
         return "Network error. Check your internet connection.";
       case 'too-many-requests':
         return "Too many attempts. Try again later.";
+      case 'invalid-verification-code':
+        return "The OTP you entered is invalid.";
+      case 'session-expired':
+        return "This OTP has expired. Please request a new one.";
+      case 'invalid-phone-number':
+        return "Enter a valid phone number.";
       default:
         return "Authentication error. Please try again.";
     }

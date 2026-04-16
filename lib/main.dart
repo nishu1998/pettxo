@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 
 import 'core/services/analytics_service.dart';
+import 'features/auth/presentation/screens/profile_type_screen.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
+import 'features/auth/presentation/screens/signin_with_phone_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
+import 'features/auth/presentation/screens/signup_with_phone_screen.dart';
 import 'features/create_post/presentation/screens/create_post_screen.dart';
 import 'features/explore/presentation/screens/explore_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
@@ -43,6 +46,9 @@ class PettexoApp extends StatelessWidget {
       routes: {
         "/signup": (context) => const SignupScreen(),
         "/signin": (context) => const SigninScreen(),
+        "/signup/phone": (context) => const SignUpWithPhoneScreen(),
+        "/signin/phone": (context) => const SignInWithPhoneScreen(),
+        "/profile-type": (context) => const ProfileTypeScreen(),
         "/home": (context) => const HomeScreen(),
         "/services": (context) => const ServicesScreen(),
         "/settings": (context) => const SettingsScreen(),

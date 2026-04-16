@@ -1,12 +1,14 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/services/remote_config_service.dart';
+import '../../../auth/data/services/user_service.dart';
+import '../../../auth/presentation/screens/profile_type_screen.dart';
 import '../../../auth/presentation/screens/signin_screen.dart';
 import '../../../home/presentation/screens/home_screen.dart';
 import '../../../onboarding/data/services/onboarding_state_service.dart';
@@ -24,11 +26,11 @@ class _CinematicSplashState extends State<CinematicSplash>
   final AnalyticsService analytics = AnalyticsService.instance;
   final RemoteConfigService remote = RemoteConfigService();
   final OnboardingStateService onboardingState = OnboardingStateService();
+  final UserService userService = UserService();
 
   late AnimationController _controller;
   late Animation<double> logoScale;
-  late Animation<double> textOpacity;
-  late Animation<Offset> textSlide;
+  late Animation<double> logoOpacity;
 
   @override
   void initState() {
@@ -36,21 +38,17 @@ class _CinematicSplashState extends State<CinematicSplash>
 
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2500),
+      duration: const Duration(milliseconds: 1400),
     );
 
     logoScale = Tween(
-      begin: 1.0,
-      end: 1.08,
+      begin: 0.96,
+      end: 1.0,
     ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
 
-    textOpacity = Tween(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: const Interval(0.5, 1.0)),
-    );
-
-    textSlide = Tween(
-      begin: const Offset(0, 0.3),
-      end: Offset.zero,
+    logoOpacity = Tween(
+      begin: 0.0,
+      end: 1.0,
     ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
 
     _start();
@@ -58,13 +56,19 @@ class _CinematicSplashState extends State<CinematicSplash>
 
   Future<void> _start() async {
     await _controller.forward();
-    await Future.delayed(const Duration(milliseconds: 400));
+    await Future.delayed(const Duration(milliseconds: 250));
 
     if (!mounted) return;
 
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser != null) {
-      _goToHome();
+      final hasProfile = await userService.hasUserProfile();
+      if (!mounted) return;
+      if (hasProfile) {
+        _goToHome();
+      } else {
+        _goToProfileType();
+      }
       return;
     }
 
@@ -101,6 +105,13 @@ class _CinematicSplashState extends State<CinematicSplash>
     );
   }
 
+  void _goToProfileType() {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
+    );
+  }
+
   @override
   void dispose() {
     _controller.dispose();
@@ -110,117 +121,26 @@ class _CinematicSplashState extends State<CinematicSplash>
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
-    final logoSize = size.width * 0.48;
+    final logoSize = math.min(size.width * 0.36, 144.0);
 
     return Scaffold(
       backgroundColor: AppColors.background,
       body: AnimatedBuilder(
         animation: _controller,
         builder: (context, child) {
-          return Stack(
-            children: [
-              Opacity(
-                opacity: _controller.value * 0.8,
+          return Center(
+            child: Opacity(
+              opacity: logoOpacity.value,
+              child: Transform.scale(
+                scale: logoScale.value,
                 child: Image.asset(
-                  'assets/splash_bg.png',
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
+                  'assets/logo1024.png',
+                  width: logoSize,
+                  height: logoSize,
+                  fit: BoxFit.contain,
                 ),
               ),
-              Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      AppColors.background.withValues(alpha: 0.55),
-                      Colors.white.withValues(alpha: 0.25),
-                      AppColors.background.withValues(alpha: 0.86),
-                    ],
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                  ),
-                ),
-              ),
-              Positioned(
-                top: -40,
-                right: -30,
-                child: Container(
-                  width: 170,
-                  height: 170,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: AppColors.primary.withValues(alpha: 0.08),
-                  ),
-                ),
-              ),
-              Center(
-                child: Transform.scale(
-                  scale: logoScale.value,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: logoSize,
-                        height: logoSize,
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          gradient: AppColors.brandGradientDiagonal,
-                          borderRadius: BorderRadius.circular(40),
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.primary.withValues(alpha: 0.18),
-                              blurRadius: 35,
-                              offset: const Offset(0, 18),
-                            ),
-                          ],
-                        ),
-                        child: SvgPicture.asset(
-                          'assets/brand/pettxo_logo.svg',
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                      const SizedBox(height: 22),
-                      ShaderMask(
-                        shaderCallback: (bounds) =>
-                            AppColors.brandGradient.createShader(bounds),
-                        child: Text(
-                          'PETTXO',
-                          style: TextStyle(
-                            fontSize: size.width * 0.078,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1.6,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Positioned(
-                top: size.height * 0.73,
-                left: 0,
-                right: 0,
-                child: Opacity(
-                  opacity: textOpacity.value,
-                  child: SlideTransition(
-                    position: textSlide,
-                    child: Center(
-                      child: Text(
-                        'For pet people, services, and stories',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: size.width * 0.037,
-                          fontWeight: FontWeight.w500,
-                          letterSpacing: 0.2,
-                          color: AppColors.textGrey,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
+            ),
           );
         },
       ),

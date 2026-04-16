@@ -1,45 +1,33 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:intl_phone_field/intl_phone_field.dart';
 
 import '../../../../core/constants/app_colors.dart';
 
-class AuthInputField extends StatefulWidget {
-  final TextEditingController controller;
+class CommonPhoneField extends StatefulWidget {
+  final String labelText;
+  final String? initialNumber;
+  final String? errorText;
   final FocusNode? focusNode;
   final TextInputAction? textInputAction;
-  final String labelText;
-  final String? errorText;
-  final String? helperText;
-  final String? prefixText;
-  final bool obscureText;
-  final int? maxLength;
-  final List<TextInputFormatter>? inputFormatters;
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
-  final Widget? suffixIcon;
 
-  const AuthInputField({
+  const CommonPhoneField({
     super.key,
-    required this.controller,
-    required this.labelText,
+    this.labelText = 'Phone Number',
+    this.initialNumber,
+    this.errorText,
     this.focusNode,
     this.textInputAction,
-    this.errorText,
-    this.helperText,
-    this.prefixText,
-    this.obscureText = false,
-    this.maxLength,
-    this.inputFormatters,
     this.onChanged,
     this.onSubmitted,
-    this.suffixIcon,
   });
 
   @override
-  State<AuthInputField> createState() => _AuthInputFieldState();
+  State<CommonPhoneField> createState() => _CommonPhoneFieldState();
 }
 
-class _AuthInputFieldState extends State<AuthInputField> {
+class _CommonPhoneFieldState extends State<CommonPhoneField> {
   late final FocusNode _focusNode;
   late final bool _ownsFocusNode;
   bool _isFocused = false;
@@ -87,20 +75,20 @@ class _AuthInputFieldState extends State<AuthInputField> {
               ]
             : const [],
       ),
-      child: TextField(
-        controller: widget.controller,
+      child: IntlPhoneField(
         focusNode: _focusNode,
+        initialCountryCode: 'IN',
+        initialValue: widget.initialNumber,
         textInputAction: widget.textInputAction,
-        obscureText: widget.obscureText,
-        maxLength: widget.maxLength,
-        inputFormatters: widget.inputFormatters,
-        onChanged: widget.onChanged,
-        onSubmitted: widget.onSubmitted,
+        disableLengthCheck: true,
+        dropdownIconPosition: IconPosition.trailing,
+        flagsButtonPadding: const EdgeInsets.only(left: 12),
+        showDropdownIcon: true,
+        invalidNumberMessage: 'Enter a valid phone number',
         decoration: InputDecoration(
           labelText: widget.labelText,
           errorText: widget.errorText,
-          helperText: widget.helperText,
-          prefixText: widget.prefixText,
+          counterText: '',
           filled: true,
           fillColor: Colors.white,
           contentPadding: const EdgeInsets.symmetric(
@@ -131,8 +119,9 @@ class _AuthInputFieldState extends State<AuthInputField> {
             color: AppColors.textGrey,
             fontWeight: FontWeight.w500,
           ),
-          suffixIcon: widget.suffixIcon,
         ),
+        onChanged: (phone) => widget.onChanged?.call(phone.completeNumber),
+        onSubmitted: widget.onSubmitted,
       ),
     );
   }

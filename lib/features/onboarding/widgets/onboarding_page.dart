@@ -11,6 +11,8 @@ class OnboardingPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final illustrationHeight = MediaQuery.sizeOf(context).height * 0.28;
+
     return TweenAnimationBuilder<double>(
       duration: const Duration(milliseconds: 700),
       curve: Curves.easeOutCubic,
@@ -19,113 +21,53 @@ class OnboardingPage extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           Expanded(
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Positioned(
-                  top: 30,
-                  child: Container(
-                    width: 240,
-                    height: 240,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: RadialGradient(
-                        colors: [
-                          AppColors.secondary.withValues(alpha: 0.22),
-                          AppColors.secondary.withValues(alpha: 0.02),
-                        ],
-                      ),
-                    ),
-                  ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+              child: Center(
+                child: Lottie.asset(
+                  data.lottie,
+                  height: illustrationHeight.clamp(260.0, 320.0),
+                  fit: BoxFit.contain,
                 ),
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 24),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.84),
-                    borderRadius: BorderRadius.circular(34),
-                    border: Border.all(
-                      color: AppColors.primary.withValues(alpha: 0.07),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 26,
-                        offset: const Offset(0, 14),
-                      ),
-                    ],
-                  ),
-                  child: Lottie.asset(
-                    data.lottie,
-                    height: 250,
-                    fit: BoxFit.contain,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
-          Container(
-            margin: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-            padding: const EdgeInsets.fromLTRB(22, 22, 22, 26),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.94),
-              borderRadius: BorderRadius.circular(30),
-              border: Border.all(
-                color: AppColors.primary.withValues(alpha: 0.08),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.06),
-                  blurRadius: 28,
-                  offset: const Offset(0, 16),
-                ),
-              ],
-            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
             child: Column(
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFF4EE),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: ShaderMask(
-                    shaderCallback: (bounds) =>
-                        AppColors.brandGradient.createShader(bounds),
-                    child: Text(
-                      data.tagLine,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
+                Text(
+                  data.tagLine,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 14),
                 Text(
                   data.title,
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                     fontSize: 30,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w700,
                     height: 1.12,
-                    letterSpacing: -0.8,
-                    color: AppColors.textDark,
+                    letterSpacing: -0.6,
+                    color: Colors.black,
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
                 Text(
                   data.subtitle,
                   textAlign: TextAlign.center,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(height: 1.6),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    height: 1.6,
+                    color: const Color(0xFF4A4A4A),
+                  ),
                 ),
+                const SizedBox(height: 8),
               ],
             ),
           ),

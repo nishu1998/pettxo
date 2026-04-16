@@ -9,7 +9,9 @@ class UserService {
     required String role,
     required String name,
     required String username,
-    required String location,
+    required String phone,
+    required String state,
+    required String city,
   }) async {
     final user = _auth.currentUser;
 
@@ -24,7 +26,9 @@ class UserService {
       "name": name,
       "username": _normalizeUsername(username),
       "usernameLowercase": _normalizeUsername(username),
-      "location": location,
+      "phone": phone.trim(),
+      "state": state.trim(),
+      "city": city.trim(),
       "profileImage": "",
       "bio": "",
       "createdAt": FieldValue.serverTimestamp(),
@@ -39,6 +43,21 @@ class UserService {
     }
 
     return _firestore.collection("users").doc(user.uid).get();
+  }
+
+  Future<bool> hasUserProfile() async {
+    final user = _auth.currentUser;
+
+    if (user == null) {
+      return false;
+    }
+
+    final snapshot = await _firestore.collection('users').doc(user.uid).get();
+    return snapshot.exists && snapshot.data() != null;
+  }
+
+  Future<String> getPostAuthRoute() async {
+    return await hasUserProfile() ? '/home' : '/profile-type';
   }
 
   Future<void> updateProfile(Map<String, dynamic> data) async {
