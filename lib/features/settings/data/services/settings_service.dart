@@ -8,6 +8,7 @@ class SettingsService {
   static const _bookingNotificationsKey = 'settings_booking_notifications';
   static const _hasListedServicesKey = 'settings_has_listed_services';
   static const _showManageServicesKey = 'settings_show_manage_services';
+  static const _profileSpotlightSeenKey = 'settings_profile_spotlight_seen';
 
   Future<AppSettings> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
@@ -21,6 +22,8 @@ class SettingsService {
       hasListedServices: prefs.getBool(_hasListedServicesKey) ?? false,
       showManageServicesOnProfile:
           prefs.getBool(_showManageServicesKey) ?? false,
+      hasSeenProfileSpotlight:
+          prefs.getBool(_profileSpotlightSeenKey) ?? false,
     );
   }
 
@@ -40,6 +43,10 @@ class SettingsService {
     await prefs.setBool(
       _showManageServicesKey,
       settings.showManageServicesOnProfile && settings.hasListedServices,
+    );
+    await prefs.setBool(
+      _profileSpotlightSeenKey,
+      settings.hasSeenProfileSpotlight,
     );
   }
 }

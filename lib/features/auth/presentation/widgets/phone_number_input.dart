@@ -112,6 +112,7 @@ class _PhoneNumberInputState extends State<PhoneNumberInput> {
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     value: widget.selectedDialCode,
+                    dropdownColor: Colors.white,
                     borderRadius: BorderRadius.circular(12),
                     icon: const Icon(
                       Icons.keyboard_arrow_down_rounded,

@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'core/services/analytics_service.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
+import 'features/bookings/presentation/screens/bookings_screen.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
 import 'features/auth/presentation/screens/signin_with_phone_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
@@ -51,6 +52,7 @@ class PettexoApp extends StatelessWidget {
         "/profile-type": (context) => const ProfileTypeScreen(),
         "/home": (context) => const HomeScreen(),
         "/services": (context) => const ServicesScreen(),
+        "/bookings": (context) => const BookingsScreen(),
         "/settings": (context) => const SettingsScreen(),
         "/settings/profile": (context) => const EditProfileScreen(),
         "/explore": (context) => const ExploreScreen(),

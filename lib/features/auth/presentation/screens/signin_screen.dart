@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/validators.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
@@ -399,19 +400,9 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                     const SizedBox(height: 20),
                     SizedBox(
                       width: double.infinity,
-                      child: ElevatedButton(
+                      child: GradientButton(
+                        label: _isSubmitting ? 'Sending...' : 'Send Reset Link',
                         onPressed: _isSubmitting ? null : _submit,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                        child: Text(
-                          _isSubmitting ? 'Sending...' : 'Send Reset Link',
-                        ),
                       ),
                     ),
                   ],

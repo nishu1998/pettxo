@@ -25,10 +25,8 @@ class ProfileContentRepository {
   }
 
   Future<List<ProfileServiceListing>> getServicesForProfile(
-    UserProfile profile, {
-    required bool hasListedServices,
-  }) async {
-    if (!profile.isServiceProvider || !hasListedServices) return const [];
+    UserProfile profile,
+  ) async {
 
     final prefs = await SharedPreferences.getInstance();
     final deletedIds = _readStringSet(prefs, _deletedServicesKey);
@@ -36,7 +34,7 @@ class ProfileContentRepository {
     final pauseAll = prefs.getBool(_pauseAllServicesKey) ?? false;
 
     final services = [
-      ..._seedServices(profile),
+      if (profile.isServiceProvider) ..._seedServices(profile),
       ..._readCustomServices(prefs, profile.uid),
     ];
 
@@ -135,6 +133,12 @@ class ProfileContentRepository {
         id: '${profile.uid}_grooming',
         title: '$ownerName Grooming',
         serviceType: 'Grooming',
+        animalType: 'Dog',
+        category: 'Grooming',
+        serviceRadiusKm: 10,
+        bookingServiceType: 'At provider location',
+        latitude: 12.9716,
+        longitude: 77.5946,
         description: 'Gentle grooming, bath, brushing, and coat care.',
         rate: '\$45-80',
         location: profile.location.isEmpty ? 'Nearby' : profile.location,
@@ -150,6 +154,12 @@ class ProfileContentRepository {
         id: '${profile.uid}_walking',
         title: 'Walk & care visits',
         serviceType: 'Walking',
+        animalType: 'Dog',
+        category: 'Walking',
+        serviceRadiusKm: 8,
+        bookingServiceType: 'Home visit available',
+        latitude: 12.9716,
+        longitude: 77.5946,
         description: 'Daily walks, feeding visits, and pet check-ins.',
         rate: '\$20/walk',
         location: profile.location.isEmpty ? 'Nearby' : profile.location,

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../../widgets/custom_button.dart';
 
@@ -284,29 +284,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                         Row(
                           children: [
                             Expanded(
-                              child: OutlinedButton(
+                              child: SecondaryButton(
+                                label: "Cancel",
                                 onPressed: () => Navigator.pushReplacementNamed(
                                   context,
                                   "/home",
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: AppColors.textDark,
-                                  minimumSize: const Size.fromHeight(56),
-                                  side: BorderSide(
-                                    color: AppColors.primary.withValues(
-                                      alpha: 0.12,
-                                    ),
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(18),
-                                  ),
-                                ),
-                                child: const Text(
-                                  "Cancel",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 16,
-                                  ),
                                 ),
                               ),
                             ),
@@ -328,9 +310,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: const SocialBottomNav(
-        activeTab: SocialAppTab.create,
-      ),
+      bottomNavigationBar: const SocialBottomNav(activeTab: null),
     );
   }
 }

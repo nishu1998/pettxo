@@ -3,10 +3,10 @@ import 'package:flutter/services.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
-import '../../data/repositories/profile_content_repository.dart';
-import '../../data/repositories/profile_repository.dart';
-import '../../domain/models/profile_service_listing.dart';
-import '../../domain/models/user_profile.dart';
+import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/glass_surface.dart';
+import '../../domain/models/service_details_draft.dart';
+import 'add_service_booking_setup_screen.dart';
 
 class AddServiceScreen extends StatefulWidget {
   const AddServiceScreen({super.key});
@@ -16,724 +16,716 @@ class AddServiceScreen extends StatefulWidget {
 }
 
 class _AddServiceScreenState extends State<AddServiceScreen> {
-  final ProfileRepository _profileRepository = ProfileRepository();
-  final ProfileContentRepository _contentRepository =
-      const ProfileContentRepository();
-
-  final TextEditingController _titleController = TextEditingController();
-  final TextEditingController _descriptionController = TextEditingController();
-  final TextEditingController _locationController = TextEditingController();
-  final TextEditingController _priceController = TextEditingController();
-  final TextEditingController _durationController = TextEditingController();
-  final TextEditingController _notesController = TextEditingController();
-
-  final List<String> _serviceTypes = const [
-    'Grooming',
-    'Dog Walking',
-    'Cat Sitting',
-    'Pet Sitting',
-    'Boarding',
-    'Day Care',
-    'Training',
-    'Vet Visit Support',
-    'Pet Taxi',
-    'Home Visit',
-    'Medication Support',
-    'Puppy Care',
-    'Senior Pet Care',
-    'Litter Box Care',
-    'Nail Trim',
-    'Bathing',
-    'Deshedding',
+  static const Color _screenBackground = Color(0xFFFCF8F5);
+  static const List<String> _animalOptions = [
+    'Dog',
+    'Cat',
+    'Bird',
+    'Rabbit',
+    'Fish',
+    'Guinea Pig',
+    'Hamster',
+    'Turtle / Tortoise',
+    'Lizard / Reptile',
     'Other',
   ];
-  final List<String> _petSizes = const [
-    'Small pets',
-    'Medium pets',
-    'Large pets',
-    'All friendly pets',
-  ];
-  late Future<UserProfile> _profileFuture;
-  String _selectedServiceType = 'Grooming';
-  String _selectedPetSize = 'All friendly pets';
-  final Set<DateTime> _selectedDates = {};
-  final List<String> _timeSlots = [];
-  int _selectedDurationHours = 1;
-  int _selectedDurationMinutes = 0;
-  bool _isSaving = false;
+
+  static const Map<String, List<String>> _categoryOptionsByAnimal = {
+    'Dog': [
+      'Walking',
+      'Grooming',
+      'Training',
+      'Boarding',
+      'Sitting',
+      'Vet Visit',
+      'Nail Trimming',
+      'Bath & Brush',
+      'Other',
+    ],
+    'Cat': [
+      'Grooming',
+      'Boarding',
+      'Sitting',
+      'Vet Visit',
+      'Nail Trimming',
+      'Other',
+    ],
+    'Bird': [
+      'Grooming',
+      'Sitting',
+      'Vet Visit',
+      'Wing Clipping',
+      'Other',
+    ],
+    'Rabbit': ['Grooming', 'Sitting', 'Vet Visit', 'Other'],
+    'Guinea Pig': ['Grooming', 'Sitting', 'Vet Visit', 'Other'],
+    'Hamster': ['Grooming', 'Sitting', 'Vet Visit', 'Other'],
+    'Fish': ['Tank Cleaning', 'Feeding Care', 'Vet Visit', 'Other'],
+    'Lizard / Reptile': ['Sitting', 'Vet Visit', 'Other'],
+    'Turtle / Tortoise': ['Sitting', 'Vet Visit', 'Other'],
+    'Other': ['General Care', 'Sitting', 'Vet Visit', 'Other'],
+  };
+
+  static const Map<String, String> _serviceNameSuggestions = {
+    'Dog|Walking': 'Daily Dog Walk',
+    'Dog|Grooming': 'Dog Grooming Session',
+    'Dog|Training': 'Dog Training Session',
+    'Dog|Boarding': 'Dog Boarding',
+    'Dog|Sitting': 'Dog Sitting',
+    'Dog|Vet Visit': 'Dog Vet Visit',
+    'Dog|Nail Trimming': 'Dog Nail Trimming',
+    'Dog|Bath & Brush': 'Dog Bath & Brush',
+    'Cat|Grooming': 'Cat Grooming Session',
+    'Cat|Boarding': 'Cat Boarding',
+    'Cat|Sitting': 'Cat Sitting',
+    'Bird|Wing Clipping': 'Bird Wing Clipping',
+    'Fish|Tank Cleaning': 'Fish Tank Cleaning',
+  };
+
+  final TextEditingController _animalController = TextEditingController();
+  final TextEditingController _customAnimalController = TextEditingController();
+  final TextEditingController _categoryController = TextEditingController();
+  final TextEditingController _customCategoryController =
+      TextEditingController();
+  final TextEditingController _serviceNameController = TextEditingController();
+  final TextEditingController _priceController = TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
+  final FocusNode _animalFocusNode = FocusNode();
+  final FocusNode _customAnimalFocusNode = FocusNode();
+  final FocusNode _categoryFocusNode = FocusNode();
+  final FocusNode _customCategoryFocusNode = FocusNode();
+  final FocusNode _serviceNameFocusNode = FocusNode();
+  final FocusNode _priceFocusNode = FocusNode();
+  final FocusNode _descriptionFocusNode = FocusNode();
+  final GlobalKey _animalFieldKey = GlobalKey();
+  final GlobalKey _customAnimalFieldKey = GlobalKey();
+  final GlobalKey _categoryFieldKey = GlobalKey();
+  final GlobalKey _customCategoryFieldKey = GlobalKey();
+  final GlobalKey _serviceNameFieldKey = GlobalKey();
+  final GlobalKey _priceFieldKey = GlobalKey();
+  final GlobalKey _descriptionFieldKey = GlobalKey();
+
+  String? _selectedAnimal;
+  String? _selectedCategory;
+
+  String? _animalError;
+  String? _customAnimalError;
+  String? _categoryError;
+  String? _customCategoryError;
+  String? _serviceNameError;
+  String? _priceError;
+  String? _descriptionError;
+
+  bool _isApplyingSuggestion = false;
+  String _lastSuggestedServiceName = '';
+  _ServiceDetailsField? _highlightedField;
+
+  bool get _isOtherAnimal => _selectedAnimal == 'Other';
+  bool get _isOtherCategory => _selectedCategory == 'Other';
+
+  List<String> get _categoryOptions {
+    if (_selectedAnimal == null) return const [];
+    return _categoryOptionsByAnimal[_selectedAnimal] ?? const [];
+  }
+
+  bool get _isFormValid {
+    final animal = _selectedAnimal;
+    final category = _selectedCategory;
+    final customAnimal = _customAnimalController.text.trim();
+    final customCategory = _customCategoryController.text.trim();
+    final serviceName = _serviceNameController.text.trim();
+    final description = _descriptionController.text.trim();
+    final price = int.tryParse(_priceController.text.trim());
+
+    return animal != null &&
+        (!_isOtherAnimal || customAnimal.isNotEmpty) &&
+        category != null &&
+        (!_isOtherCategory || customCategory.isNotEmpty) &&
+        serviceName.isNotEmpty &&
+        serviceName.length <= 60 &&
+        price != null &&
+        price >= 1 &&
+        price <= 99999 &&
+        description.length >= 30 &&
+        description.length <= 500;
+  }
 
   @override
   void initState() {
     super.initState();
-    _profileFuture = _profileRepository.getCurrentUserProfile();
+    _serviceNameController.addListener(_handleServiceNameEdit);
   }
 
-  Future<void> _saveService(UserProfile profile) async {
-    if (_isSaving) return;
-
-    final title = _titleController.text.trim();
-    final description = _descriptionController.text.trim();
-    final location = _locationController.text.trim();
-    final price = _priceController.text.trim();
-    final duration = _durationController.text.trim();
-
-    if (title.isEmpty ||
-        description.isEmpty ||
-        location.isEmpty ||
-        price.isEmpty ||
-        duration.isEmpty ||
-        _selectedDates.isEmpty ||
-        _timeSlots.isEmpty) {
-      AppFeedback.show(
-        context,
-        message:
-            'Please complete service name, details, location, pricing, duration, and availability.',
-        tone: AppFeedbackTone.info,
-      );
-      return;
+  void _handleServiceNameEdit() {
+    if (_isApplyingSuggestion) return;
+    final currentText = _serviceNameController.text.trim();
+    if (currentText != _lastSuggestedServiceName) {
+      _serviceNameError = null;
     }
-
-    setState(() => _isSaving = true);
-
-    try {
-      final service = ProfileServiceListing(
-        id: '${profile.uid}_${DateTime.now().millisecondsSinceEpoch}',
-        title: title,
-        serviceType: _selectedServiceType,
-        description: _notesController.text.trim().isEmpty
-            ? description
-            : '$description ${_notesController.text.trim()}',
-        rate: price.startsWith('₹') ? price : '₹$price',
-        location: location,
-        availability: _availabilitySummary,
-        duration: duration,
-        petSize: _selectedPetSize,
-        rating: 'New',
-        distance: location,
-        imageUrl: _imageForServiceType(_selectedServiceType),
-      );
-
-      await _contentRepository.addServiceForProfile(profile, service);
-
-      if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: 'Service added to your profile.',
-        tone: AppFeedbackTone.success,
-      );
-      Navigator.pop(context, true);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _isSaving = false);
-      AppFeedback.show(
-        context,
-        message: 'Sorry, we could not add this service right now.',
-        tone: AppFeedbackTone.error,
-      );
-    }
-  }
-
-  String get _availabilitySummary {
-    final selectedDates = _selectedDates.toList()..sort();
-
-    return '${selectedDates.map(_formatShortDate).join(', ')} - ${_timeSlots.join(', ')}';
-  }
-
-  void _toggleDate(DateTime date) {
-    final normalizedDate = _dateOnly(date);
-
-    setState(() {
-      if (_selectedDates.contains(normalizedDate)) {
-        _selectedDates.remove(normalizedDate);
-      } else {
-        _selectedDates.add(normalizedDate);
-      }
-    });
-  }
-
-  void _removeTimeSlot(String value) {
-    setState(() {
-      _timeSlots.remove(value);
-    });
-  }
-
-  Future<void> _pickAndAddTimeSlot(BuildContext context) async {
-    final pickedTime = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.now(),
-      initialEntryMode: TimePickerEntryMode.dial,
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
-              primary: AppColors.primary,
-              onPrimary: Colors.white,
-              surface: AppColors.background,
-              onSurface: AppColors.textDark,
-            ),
-            timePickerTheme: TimePickerThemeData(
-              backgroundColor: AppColors.background,
-              dialBackgroundColor: Colors.white,
-              dialHandColor: AppColors.primary,
-              dialTextColor: AppColors.textDark,
-              dayPeriodColor: AppColors.primary.withValues(alpha: 0.12),
-              dayPeriodTextColor: AppColors.textDark,
-              entryModeIconColor: AppColors.primary,
-              hourMinuteColor: Colors.white,
-              hourMinuteTextColor: AppColors.textDark,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(28),
-              ),
-            ),
-          ),
-          child: child!,
-        );
-      },
-    );
-
-    if (pickedTime == null || !mounted || !context.mounted) return;
-
-    final formattedTime = pickedTime.format(context);
-    if (_timeSlots.contains(formattedTime)) {
-      AppFeedback.show(
-        context,
-        message: 'This time slot is already added.',
-        tone: AppFeedbackTone.info,
-      );
-      return;
-    }
-
-    setState(() {
-      _timeSlots.add(formattedTime);
-    });
-  }
-
-  Future<void> _pickDuration(BuildContext context) async {
-    var selectedHours = _selectedDurationHours;
-    var selectedMinutes = _selectedDurationMinutes;
-
-    final pickedDuration =
-        await showModalBottomSheet<({int hours, int minutes})>(
-          context: context,
-          backgroundColor: Colors.transparent,
-          isScrollControlled: true,
-          builder: (context) {
-            return StatefulBuilder(
-              builder: (context, setSheetState) {
-                return SafeArea(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      return Container(
-                        margin: const EdgeInsets.all(14),
-                        constraints: BoxConstraints(
-                          maxHeight: constraints.maxHeight * 0.82,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.background,
-                          borderRadius: BorderRadius.circular(30),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.14),
-                              blurRadius: 28,
-                              offset: const Offset(0, 14),
-                            ),
-                          ],
-                        ),
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  const Expanded(
-                                    child: Text(
-                                      'Service duration',
-                                      style: TextStyle(
-                                        color: AppColors.textDark,
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                    ),
-                                  ),
-                                  IconButton(
-                                    onPressed: () => Navigator.pop(context),
-                                    icon: const Icon(Icons.close_rounded),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              const Text(
-                                'Choose how long one booking usually takes.',
-                                style: TextStyle(
-                                  color: AppColors.textGrey,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 18),
-                              const Text(
-                                'Hours',
-                                style: TextStyle(
-                                  color: AppColors.textDark,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              _DurationChoiceWrap(
-                                values: const [0, 1, 2, 3, 4, 5, 6, 7, 8],
-                                selected: selectedHours,
-                                suffix: 'h',
-                                onChanged: (value) {
-                                  setSheetState(() => selectedHours = value);
-                                },
-                              ),
-                              const SizedBox(height: 18),
-                              const Text(
-                                'Minutes',
-                                style: TextStyle(
-                                  color: AppColors.textDark,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              _DurationChoiceWrap(
-                                values: const [0, 15, 30, 45],
-                                selected: selectedMinutes,
-                                suffix: 'm',
-                                onChanged: (value) {
-                                  setSheetState(() => selectedMinutes = value);
-                                },
-                              ),
-                              const SizedBox(height: 20),
-                              SizedBox(
-                                width: double.infinity,
-                                child: ElevatedButton(
-                                  onPressed:
-                                      selectedHours == 0 && selectedMinutes == 0
-                                      ? null
-                                      : () {
-                                          Navigator.pop(context, (
-                                            hours: selectedHours,
-                                            minutes: selectedMinutes,
-                                          ));
-                                        },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.primary,
-                                    foregroundColor: Colors.white,
-                                    minimumSize: const Size.fromHeight(54),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(18),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    'Set duration',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                );
-              },
-            );
-          },
-        );
-
-    if (pickedDuration == null || !mounted) return;
-
-    setState(() {
-      _selectedDurationHours = pickedDuration.hours;
-      _selectedDurationMinutes = pickedDuration.minutes;
-      _durationController.text = _formatDuration(
-        pickedDuration.hours,
-        pickedDuration.minutes,
-      );
-    });
-  }
-
-  String _formatDuration(int hours, int minutes) {
-    final parts = <String>[];
-    if (hours > 0) parts.add(hours == 1 ? '1 hour' : '$hours hours');
-    if (minutes > 0) parts.add('$minutes min');
-    return parts.join(' ');
-  }
-
-  DateTime _dateOnly(DateTime date) {
-    return DateTime(date.year, date.month, date.day);
-  }
-
-  String _formatShortDate(DateTime date) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${months[date.month - 1]} ${date.day}';
-  }
-
-  String _imageForServiceType(String serviceType) {
-    return switch (serviceType) {
-      'Dog Walking' =>
-        'https://images.unsplash.com/photo-1548199973-03cce0bbc87b?auto=format&fit=crop&w=700&q=80',
-      'Cat Sitting' || 'Pet Sitting' || 'Boarding' || 'Day Care' =>
-        'https://images.unsplash.com/photo-1519052537078-e6302a4968d4?auto=format&fit=crop&w=700&q=80',
-      'Training' =>
-        'https://images.unsplash.com/photo-1601758064130-56e02bbadf17?auto=format&fit=crop&w=700&q=80',
-      'Vet Visit Support' =>
-        'https://images.unsplash.com/photo-1612531386530-97286d97c2d2?auto=format&fit=crop&w=700&q=80',
-      _ =>
-        'https://images.unsplash.com/photo-1518717758536-85ae29035b6d?auto=format&fit=crop&w=700&q=80',
-    };
   }
 
   @override
   void dispose() {
-    _titleController.dispose();
-    _descriptionController.dispose();
-    _locationController.dispose();
+    _animalController.dispose();
+    _customAnimalController.dispose();
+    _categoryController.dispose();
+    _customCategoryController.dispose();
+    _serviceNameController.dispose();
     _priceController.dispose();
-    _durationController.dispose();
-    _notesController.dispose();
+    _descriptionController.dispose();
+    _animalFocusNode.dispose();
+    _customAnimalFocusNode.dispose();
+    _categoryFocusNode.dispose();
+    _customCategoryFocusNode.dispose();
+    _serviceNameFocusNode.dispose();
+    _priceFocusNode.dispose();
+    _descriptionFocusNode.dispose();
     super.dispose();
+  }
+
+  void _onAnimalSelected(String value) {
+    if (_selectedAnimal == value) return;
+
+    // Category depends on animal type, so we reset it whenever the animal
+    // changes to avoid leaving a stale category selected.
+    setState(() {
+      _selectedAnimal = value;
+      _animalController.text = value;
+      _selectedCategory = null;
+      _categoryController.clear();
+      _customAnimalController.clear();
+      _customCategoryController.clear();
+      _animalError = null;
+      _customAnimalError = null;
+      _categoryError = null;
+      _customCategoryError = null;
+      _clearHighlight();
+    });
+
+    _applyServiceNameSuggestion();
+  }
+
+  void _onCategorySelected(String value) {
+    setState(() {
+      _selectedCategory = value;
+      _categoryController.text = value;
+      _customCategoryController.clear();
+      _categoryError = null;
+      _customCategoryError = null;
+      _clearHighlight();
+    });
+
+    _applyServiceNameSuggestion();
+  }
+
+  void _applyServiceNameSuggestion() {
+    final animal = _selectedAnimal;
+    final category = _selectedCategory;
+    if (animal == null || category == null) return;
+
+    final suggestion = _serviceNameSuggestions['$animal|$category'] ?? '';
+    final currentText = _serviceNameController.text.trim();
+
+    // Only overwrite when the field is empty or still matches the last
+    // generated suggestion, so manual edits always stay under user control.
+    final canReplace =
+        currentText.isEmpty || currentText == _lastSuggestedServiceName;
+
+    if (!canReplace) {
+      _lastSuggestedServiceName = suggestion;
+      return;
+    }
+
+    _isApplyingSuggestion = true;
+    _serviceNameController.text = suggestion;
+    _serviceNameController.selection = TextSelection.collapsed(
+      offset: _serviceNameController.text.length,
+    );
+    _isApplyingSuggestion = false;
+    _lastSuggestedServiceName = suggestion;
+    setState(() {
+      _serviceNameError = null;
+    });
+  }
+
+  bool _validateForm() {
+    final serviceName = _serviceNameController.text.trim();
+    final description = _descriptionController.text.trim();
+    final priceValue = int.tryParse(_priceController.text.trim());
+
+    setState(() {
+      _animalError = _selectedAnimal == null ? 'Animal type is required' : null;
+      _customAnimalError = _isOtherAnimal &&
+              _customAnimalController.text.trim().isEmpty
+          ? 'Please specify the animal'
+          : null;
+      _categoryError = _selectedCategory == null ? 'Category is required' : null;
+      _customCategoryError = _isOtherCategory &&
+              _customCategoryController.text.trim().isEmpty
+          ? 'Please enter a custom category'
+          : null;
+      _serviceNameError = serviceName.isEmpty
+          ? 'Service name is required'
+          : serviceName.length > 60
+          ? 'Service name must be 60 characters or less'
+          : null;
+      _priceError = priceValue == null || priceValue < 1 || priceValue > 99999
+          ? 'Price must be between ₹1 and ₹99,999'
+          : null;
+      _descriptionError = description.isEmpty
+          ? 'Description is required'
+          : description.length < 30
+          ? 'Description must be at least 30 characters'
+          : description.length > 500
+          ? 'Description must be 500 characters or less'
+          : null;
+    });
+
+    return _isFormValid;
+  }
+
+  void _clearHighlight() {
+    if (_highlightedField == null) return;
+    _highlightedField = null;
+  }
+
+  _FieldIssue? _firstInvalidField() {
+    final serviceName = _serviceNameController.text.trim();
+    final description = _descriptionController.text.trim();
+    final priceValue = int.tryParse(_priceController.text.trim());
+
+    if (_selectedAnimal == null) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.animal,
+        key: _animalFieldKey,
+        focusNode: _animalFocusNode,
+        message: 'Select which animal this service is for.',
+      );
+    }
+
+    if (_isOtherAnimal && _customAnimalController.text.trim().isEmpty) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.customAnimal,
+        key: _customAnimalFieldKey,
+        focusNode: _customAnimalFocusNode,
+        message: 'Specify the animal so people know what this service covers.',
+      );
+    }
+
+    if (_selectedCategory == null) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.category,
+        key: _categoryFieldKey,
+        focusNode: _categoryFocusNode,
+        message: 'Choose a category for this service.',
+      );
+    }
+
+    if (_isOtherCategory && _customCategoryController.text.trim().isEmpty) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.customCategory,
+        key: _customCategoryFieldKey,
+        focusNode: _customCategoryFocusNode,
+        message: 'Add a custom category name before continuing.',
+      );
+    }
+
+    if (serviceName.isEmpty) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.serviceName,
+        key: _serviceNameFieldKey,
+        focusNode: _serviceNameFocusNode,
+        message: 'Enter a service name.',
+      );
+    }
+
+    if (serviceName.length > 60) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.serviceName,
+        key: _serviceNameFieldKey,
+        focusNode: _serviceNameFocusNode,
+        message: 'Service name must be 60 characters or less.',
+      );
+    }
+
+    if (priceValue == null || priceValue < 1 || priceValue > 99999) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.price,
+        key: _priceFieldKey,
+        focusNode: _priceFocusNode,
+        message: 'Price must be between ₹1 and ₹99,999.',
+      );
+    }
+
+    if (description.isEmpty) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.description,
+        key: _descriptionFieldKey,
+        focusNode: _descriptionFocusNode,
+        message: 'Add a description before continuing.',
+      );
+    }
+
+    if (description.length < 30) {
+      final remaining = 30 - description.length;
+      return _FieldIssue(
+        field: _ServiceDetailsField.description,
+        key: _descriptionFieldKey,
+        focusNode: _descriptionFocusNode,
+        message:
+            'Description needs $remaining more character${remaining == 1 ? '' : 's'} to continue.',
+      );
+    }
+
+    if (description.length > 500) {
+      return _FieldIssue(
+        field: _ServiceDetailsField.description,
+        key: _descriptionFieldKey,
+        focusNode: _descriptionFocusNode,
+        message: 'Description must be 500 characters or less.',
+      );
+    }
+
+    return null;
+  }
+
+  Future<void> _showFieldGuidance(_FieldIssue issue) async {
+    setState(() {
+      _highlightedField = issue.field;
+    });
+
+    AppFeedback.show(
+      context,
+      message: issue.message,
+      tone: AppFeedbackTone.info,
+    );
+
+    final fieldContext = issue.key.currentContext;
+    if (fieldContext != null) {
+      await Scrollable.ensureVisible(
+        fieldContext,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+        alignment: 0.18,
+      );
+    }
+
+    issue.focusNode.requestFocus();
+  }
+
+  Future<void> _handleNextPress() async {
+    if (_validateForm()) {
+      await _goToNext();
+      return;
+    }
+
+    final issue = _firstInvalidField();
+    if (issue != null) {
+      await _showFieldGuidance(issue);
+    }
+  }
+
+  Future<void> _goToNext() async {
+    if (!_validateForm()) return;
+
+    final draft = ServiceDetailsDraft(
+      animalType: _selectedAnimal!,
+      customAnimalType: _isOtherAnimal ? _customAnimalController.text.trim() : null,
+      category: _selectedCategory!,
+      customCategory:
+          _isOtherCategory ? _customCategoryController.text.trim() : null,
+      serviceName: _serviceNameController.text.trim(),
+      pricePerSession: int.parse(_priceController.text.trim()),
+      description: _descriptionController.text.trim(),
+    );
+
+    final published = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddServiceBookingSetupScreen(draft: draft),
+      ),
+    );
+
+    if (published == true && mounted) {
+      Navigator.pop(context, true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final topContentPadding = topInset + 108;
+
     return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: FutureBuilder<UserProfile>(
-          future: _profileFuture,
-          builder: (context, snapshot) {
-            if (!snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            final profile = snapshot.data!;
-
-            return Stack(
+      backgroundColor: _screenBackground,
+      body: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: Stack(
+          children: [
+            // The form is rendered first so it can scroll behind the floating
+            // glass header while still reserving safe top spacing.
+            ListView(
+              padding: EdgeInsets.fromLTRB(
+                18,
+                topContentPadding,
+                18,
+                bottomInset + 28,
+              ),
               children: [
-                Positioned(
-                  top: -80,
-                  right: -60,
-                  child: Container(
-                    width: 240,
-                    height: 240,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: AppColors.primary.withValues(alpha: 0.07),
-                    ),
-                  ),
-                ),
-                ListView(
-                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
+                _FormSectionCard(
+                  title: 'Service Details',
+                  subtitle:
+                      'Define the service clearly so pet parents understand exactly what they are booking.',
                   children: [
-                    _HeaderCard(onBack: () => Navigator.pop(context)),
-                    const SizedBox(height: 18),
-                    _PremiumIntroCard(profile: profile),
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'Service details',
-                      subtitle:
-                          'Make it easy for pet parents to understand what you offer.',
-                      children: [
-                        _ServiceTypeDropdown(
-                          options: _serviceTypes,
-                          selected: _selectedServiceType,
-                          onChanged: (value) {
-                            setState(() => _selectedServiceType = value);
-                          },
-                        ),
-                        const SizedBox(height: 14),
-                        _ServiceField(
-                          controller: _titleController,
-                          label: 'Service name',
-                          hintText: 'Example: Calm home grooming',
-                        ),
-                        const SizedBox(height: 14),
-                        _ServiceField(
-                          controller: _descriptionController,
-                          label: 'What is included?',
-                          hintText:
-                              'Bath, brushing, nail trim, calm handling...',
-                          maxLines: 4,
-                        ),
-                      ],
+                    _SearchableDropdownField(
+                      fieldKey: _animalFieldKey,
+                      label: 'Which animal is this service for?',
+                      controller: _animalController,
+                      focusNode: _animalFocusNode,
+                      options: _animalOptions,
+                      errorText: _animalError,
+                      isHighlighted: _highlightedField == _ServiceDetailsField.animal,
+                      noResultsText:
+                          'Not listed? Select Other and type your animal below.',
+                      onSelected: _onAnimalSelected,
+                      onChanged: () {
+                        setState(() {
+                          _animalError = null;
+                          if (_highlightedField == _ServiceDetailsField.animal) {
+                            _clearHighlight();
+                          }
+                        });
+                      },
                     ),
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'Location and pricing',
-                      subtitle:
-                          'Clear pricing and location build trust before booking.',
-                      children: [
-                        _ServiceField(
-                          controller: _locationController,
-                          label: 'Service location',
-                          hintText: profile.location.isEmpty
-                              ? 'City, area, or service radius'
-                              : profile.location,
-                        ),
-                        const SizedBox(height: 14),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _ServiceField(
-                                controller: _priceController,
-                                label: 'Price',
-                                hintText: '499 or 499-899',
-                                keyboardType: TextInputType.number,
-                                prefixText: '₹ ',
-                                inputFormatters: [
-                                  FilteringTextInputFormatter.allow(
-                                    RegExp(r'[0-9\-]'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _ServiceField(
-                                controller: _durationController,
-                                label: 'Duration',
-                                hintText: 'Select',
-                                readOnly: true,
-                                suffixIcon: const Icon(
-                                  Icons.timer_outlined,
-                                  color: AppColors.textGrey,
-                                ),
-                                onTap: () => _pickDuration(context),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        _PetSizeSelector(
-                          options: _petSizes,
-                          selected: _selectedPetSize,
-                          onChanged: (value) {
-                            setState(() => _selectedPetSize = value);
-                          },
-                        ),
-                      ],
+                    if (_isOtherAnimal) ...[
+                      const SizedBox(height: 14),
+                      _ServiceTextField(
+                        fieldKey: _customAnimalFieldKey,
+                        controller: _customAnimalController,
+                        focusNode: _customAnimalFocusNode,
+                        label: 'Specify animal',
+                        hintText: 'e.g. Monkey, Parrot, Snake',
+                        errorText: _customAnimalError,
+                        isHighlighted:
+                            _highlightedField == _ServiceDetailsField.customAnimal,
+                        maxLength: 30,
+                        onChanged: (_) {
+                          setState(() {
+                            _customAnimalError = null;
+                            if (_highlightedField ==
+                                _ServiceDetailsField.customAnimal) {
+                              _clearHighlight();
+                            }
+                          });
+                        },
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    if (_selectedAnimal != null)
+                      _SearchableDropdownField(
+                        fieldKey: _categoryFieldKey,
+                        label: 'Category',
+                        controller: _categoryController,
+                        focusNode: _categoryFocusNode,
+                        options: _categoryOptions,
+                        hintText: 'Select a category',
+                        errorText: _categoryError,
+                        isHighlighted:
+                            _highlightedField == _ServiceDetailsField.category,
+                        onSelected: _onCategorySelected,
+                        onChanged: () {
+                          setState(() {
+                            _categoryError = null;
+                            if (_highlightedField ==
+                                _ServiceDetailsField.category) {
+                              _clearHighlight();
+                            }
+                          });
+                        },
+                      ),
+                    if (_isOtherCategory) ...[
+                      const SizedBox(height: 14),
+                      _ServiceTextField(
+                        fieldKey: _customCategoryFieldKey,
+                        controller: _customCategoryController,
+                        focusNode: _customCategoryFocusNode,
+                        label: 'Custom category',
+                        hintText: 'e.g. Pet taxi, Aquarium cleaning',
+                        errorText: _customCategoryError,
+                        isHighlighted: _highlightedField ==
+                            _ServiceDetailsField.customCategory,
+                        maxLength: 30,
+                        onChanged: (_) {
+                          setState(() {
+                            _customCategoryError = null;
+                            if (_highlightedField ==
+                                _ServiceDetailsField.customCategory) {
+                              _clearHighlight();
+                            }
+                          });
+                        },
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    _ServiceTextField(
+                      fieldKey: _serviceNameFieldKey,
+                      controller: _serviceNameController,
+                      focusNode: _serviceNameFocusNode,
+                      label: 'Service name',
+                      hintText:
+                          'e.g. Dog grooming, Cat boarding, Daily dog walk',
+                      errorText: _serviceNameError,
+                      isHighlighted:
+                          _highlightedField == _ServiceDetailsField.serviceName,
+                      maxLength: 60,
+                      onChanged: (_) {
+                        setState(() {
+                          _serviceNameError = null;
+                          if (_highlightedField ==
+                              _ServiceDetailsField.serviceName) {
+                            _clearHighlight();
+                          }
+                        });
+                      },
                     ),
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'Availability calendar',
-                      subtitle:
-                          'Select bookable dates for the next two months and add your own time slots.',
-                      children: [
-                        _TwoMonthCalendarPicker(
-                          selectedDates: _selectedDates,
-                          dateOnly: _dateOnly,
-                          onToggle: _toggleDate,
-                        ),
-                        const SizedBox(height: 16),
-                        _CustomTimeSlotPicker(
-                          slots: _timeSlots,
-                          onPickTime: () => _pickAndAddTimeSlot(context),
-                          onRemove: _removeTimeSlot,
-                        ),
-                        const SizedBox(height: 14),
-                        _AvailabilityPreview(summary: _availabilitySummary),
-                      ],
+                    const SizedBox(height: 14),
+                    _ServiceTextField(
+                      fieldKey: _priceFieldKey,
+                      controller: _priceController,
+                      focusNode: _priceFocusNode,
+                      label: 'Price per session',
+                      hintText: 'Enter amount',
+                      prefixText: '₹ ',
+                      helperText:
+                          'This is the full price paid upfront by the pet parent.',
+                      errorText: _priceError,
+                      isHighlighted:
+                          _highlightedField == _ServiceDetailsField.price,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      onChanged: (_) {
+                        setState(() {
+                          _priceError = null;
+                          if (_highlightedField == _ServiceDetailsField.price) {
+                            _clearHighlight();
+                          }
+                        });
+                      },
                     ),
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'Premium trust notes',
-                      subtitle:
-                          'Optional details help families book with confidence.',
-                      children: [
-                        _ServiceField(
-                          controller: _notesController,
-                          label: 'Safety, cancellation, or requirements',
-                          hintText:
-                              'Example: pets must be vaccinated, free cancellation up to 24h...',
-                          maxLines: 3,
-                        ),
-                      ],
+                    const SizedBox(height: 14),
+                    _ServiceTextField(
+                      fieldKey: _descriptionFieldKey,
+                      controller: _descriptionController,
+                      focusNode: _descriptionFocusNode,
+                      label: 'Description',
+                      hintText:
+                          "Describe what's included, who it's for, and any important details.",
+                      helperText:
+                          'This helps pet parents understand your service before booking.',
+                      errorText: _descriptionError,
+                      isHighlighted:
+                          _highlightedField == _ServiceDetailsField.description,
+                      maxLines: 6,
+                      maxLength: 500,
+                      showCounter: true,
+                      onChanged: (_) {
+                        setState(() {
+                          _descriptionError = null;
+                          if (_highlightedField ==
+                              _ServiceDetailsField.description) {
+                            _clearHighlight();
+                          }
+                        });
+                      },
                     ),
-                    const SizedBox(height: 22),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: _isSaving
-                            ? null
-                            : () => _saveService(profile),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size.fromHeight(56),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20),
+                  ],
+                ),
+                const SizedBox(height: 22),
+                Stack(
+                  children: [
+                    GradientButton(
+                      label: 'Next',
+                      onPressed: _isFormValid ? _handleNextPress : null,
+                    ),
+                    if (!_isFormValid)
+                      Positioned.fill(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(16),
+                            onTap: _handleNextPress,
                           ),
                         ),
-                        child: Text(
-                          _isSaving ? 'Publishing...' : 'Add service',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                          ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+            Positioned(
+              left: 16,
+              right: 16,
+              top: topInset + 10,
+              child: GlassSurface(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                borderRadius: BorderRadius.circular(24),
+                backgroundColor: Colors.white.withValues(alpha: 0.72),
+                blurSigma: 20,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.06),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
+                  ),
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+                child: Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.56),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.arrow_back_rounded),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Service Details',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textDark,
                         ),
                       ),
                     ),
                   ],
                 ),
-              ],
-            );
-          },
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _HeaderCard extends StatelessWidget {
-  final VoidCallback onBack;
-
-  const _HeaderCard({required this.onBack});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.96),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: IconButton(
-              onPressed: onBack,
-              icon: const Icon(Icons.arrow_back_rounded),
-            ),
-          ),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Add Service',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textDark,
-                  ),
-                ),
-                SizedBox(height: 2),
-                Text(
-                  'Create a bookable pet care offer',
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PremiumIntroCard extends StatelessWidget {
-  final UserProfile profile;
-
-  const _PremiumIntroCard({required this.profile});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: AppColors.brandGradientDiagonal,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.22),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Premium booking setup',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Add clear pricing, pet fit, and availability so ${profile.name.isEmpty ? 'pet parents' : profile.name} can receive better booking requests.',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.9),
-                    height: 1.42,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Container(
-            width: 54,
-            height: 54,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: const Icon(
-              Icons.event_available_rounded,
-              color: Colors.white,
-              size: 30,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionCard extends StatelessWidget {
+class _FormSectionCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final List<Widget> children;
 
-  const _SectionCard({
+  const _FormSectionCard({
     required this.title,
     required this.subtitle,
     required this.children,
@@ -742,16 +734,16 @@ class _SectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.97),
+        color: Colors.white.withValues(alpha: 0.94),
         borderRadius: BorderRadius.circular(28),
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.035),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
           ),
         ],
       ),
@@ -761,21 +753,22 @@ class _SectionCard extends StatelessWidget {
           Text(
             title,
             style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w800,
               color: AppColors.textDark,
-              fontSize: 18,
-              fontWeight: FontWeight.w900,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
           Text(
             subtitle,
             style: const TextStyle(
               color: AppColors.textGrey,
-              height: 1.4,
+              fontSize: 15,
               fontWeight: FontWeight.w500,
+              height: 1.5,
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           ...children,
         ],
       ),
@@ -783,549 +776,330 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-class _ServiceField extends StatelessWidget {
+class _ServiceTextField extends StatelessWidget {
+  final Key? fieldKey;
   final TextEditingController controller;
+  final FocusNode? focusNode;
   final String label;
   final String hintText;
+  final String? helperText;
+  final String? errorText;
+  final String? prefixText;
+  final bool isHighlighted;
   final int maxLines;
+  final int? maxLength;
+  final bool showCounter;
   final TextInputType? keyboardType;
   final List<TextInputFormatter>? inputFormatters;
-  final String? prefixText;
-  final Widget? suffixIcon;
-  final bool readOnly;
-  final VoidCallback? onTap;
+  final ValueChanged<String>? onChanged;
 
-  const _ServiceField({
+  const _ServiceTextField({
+    this.fieldKey,
     required this.controller,
+    this.focusNode,
     required this.label,
     required this.hintText,
+    this.helperText,
+    this.errorText,
+    this.prefixText,
+    this.isHighlighted = false,
     this.maxLines = 1,
+    this.maxLength,
+    this.showCounter = false,
     this.keyboardType,
     this.inputFormatters,
-    this.prefixText,
-    this.suffixIcon,
-    this.readOnly = false,
-    this.onTap,
+    this.onChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      maxLines: maxLines,
-      keyboardType: keyboardType,
-      inputFormatters: inputFormatters,
-      readOnly: readOnly,
-      onTap: onTap,
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hintText,
-        prefixText: prefixText,
-        suffixIcon: suffixIcon,
-        filled: true,
-        fillColor: const Color(0xFFFCFBFA),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide(
-            color: AppColors.primary.withValues(alpha: 0.32),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ServiceTypeDropdown extends StatelessWidget {
-  final List<String> options;
-  final String selected;
-  final ValueChanged<String> onChanged;
-
-  const _ServiceTypeDropdown({
-    required this.options,
-    required this.selected,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return DropdownButtonFormField<String>(
-      initialValue: selected,
-      isExpanded: true,
-      borderRadius: BorderRadius.circular(24),
-      dropdownColor: const Color(0xFFFFFCFA),
-      menuMaxHeight: 360,
-      icon: const Icon(
-        Icons.keyboard_arrow_down_rounded,
-        color: AppColors.primary,
-      ),
-      style: const TextStyle(
-        color: AppColors.textDark,
-        fontWeight: FontWeight.w800,
-        fontSize: 15,
-      ),
-      items: options.map((option) {
-        return DropdownMenuItem(
-          value: option,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Text(option),
-          ),
-        );
-      }).toList(),
-      onChanged: (value) {
-        if (value != null) onChanged(value);
-      },
-      decoration: InputDecoration(
-        labelText: 'Service category',
-        helperText: 'This will power Explore grouping later.',
-        filled: true,
-        fillColor: const Color(0xFFFCFBFA),
-        prefixIcon: const Icon(
-          Icons.category_outlined,
-          color: AppColors.primary,
-        ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide(
-            color: AppColors.primary.withValues(alpha: 0.32),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PetSizeSelector extends StatelessWidget {
-  final List<String> options;
-  final String selected;
-  final ValueChanged<String> onChanged;
-
-  const _PetSizeSelector({
-    required this.options,
-    required this.selected,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return DropdownButtonFormField<String>(
-      initialValue: selected,
-      isExpanded: true,
-      borderRadius: BorderRadius.circular(24),
-      dropdownColor: const Color(0xFFFFFCFA),
-      icon: const Icon(
-        Icons.keyboard_arrow_down_rounded,
-        color: AppColors.primary,
-      ),
-      style: const TextStyle(
-        color: AppColors.textDark,
-        fontWeight: FontWeight.w800,
-        fontSize: 15,
-      ),
-      items: options.map((option) {
-        return DropdownMenuItem(
-          value: option,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Text(option),
-          ),
-        );
-      }).toList(),
-      onChanged: (value) {
-        if (value != null) onChanged(value);
-      },
-      decoration: InputDecoration(
-        labelText: 'Accepted pet size',
-        filled: true,
-        fillColor: const Color(0xFFFCFBFA),
-        prefixIcon: const Icon(Icons.pets_rounded, color: AppColors.primary),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide(
-            color: AppColors.primary.withValues(alpha: 0.32),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DurationChoiceWrap extends StatelessWidget {
-  final List<int> values;
-  final int selected;
-  final String suffix;
-  final ValueChanged<int> onChanged;
-
-  const _DurationChoiceWrap({
-    required this.values,
-    required this.selected,
-    required this.suffix,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: values.map((value) {
-        final isSelected = value == selected;
-        return ChoiceChip(
-          label: Text('$value$suffix'),
-          selected: isSelected,
-          onSelected: (_) => onChanged(value),
-          selectedColor: AppColors.primary.withValues(alpha: 0.16),
-          backgroundColor: Colors.white,
-          labelStyle: TextStyle(
-            color: isSelected ? AppColors.primary : AppColors.textDark,
-            fontWeight: FontWeight.w900,
-          ),
-          side: BorderSide(
-            color: isSelected
-                ? AppColors.primary.withValues(alpha: 0.26)
-                : AppColors.primary.withValues(alpha: 0.08),
-          ),
-        );
-      }).toList(),
-    );
-  }
-}
-
-class _TwoMonthCalendarPicker extends StatelessWidget {
-  final Set<DateTime> selectedDates;
-  final DateTime Function(DateTime date) dateOnly;
-  final ValueChanged<DateTime> onToggle;
-
-  const _TwoMonthCalendarPicker({
-    required this.selectedDates,
-    required this.dateOnly,
-    required this.onToggle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final today = dateOnly(DateTime.now());
-    final lastDate = today.add(const Duration(days: 60));
-    final firstMonth = DateTime(today.year, today.month);
-    final secondMonth = DateTime(today.year, today.month + 1);
+    final counterText = showCounter && maxLength != null
+        ? '${controller.text.length} / $maxLength'
+        : null;
 
     return Column(
-      children: [
-        _CalendarMonth(
-          month: firstMonth,
-          today: today,
-          lastDate: lastDate,
-          selectedDates: selectedDates,
-          dateOnly: dateOnly,
-          onToggle: onToggle,
-        ),
-        const SizedBox(height: 16),
-        _CalendarMonth(
-          month: secondMonth,
-          today: today,
-          lastDate: lastDate,
-          selectedDates: selectedDates,
-          dateOnly: dateOnly,
-          onToggle: onToggle,
-        ),
-      ],
-    );
-  }
-}
-
-class _CalendarMonth extends StatelessWidget {
-  final DateTime month;
-  final DateTime today;
-  final DateTime lastDate;
-  final Set<DateTime> selectedDates;
-  final DateTime Function(DateTime date) dateOnly;
-  final ValueChanged<DateTime> onToggle;
-
-  const _CalendarMonth({
-    required this.month,
-    required this.today,
-    required this.lastDate,
-    required this.selectedDates,
-    required this.dateOnly,
-    required this.onToggle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final days = _calendarDaysForMonth(month);
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFFCFA),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  _monthLabel(month),
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              Text(
-                'Next 60 days',
-                style: TextStyle(
-                  color: AppColors.primary.withValues(alpha: 0.82),
-                  fontWeight: FontWeight.w800,
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          const Row(
-            children: [
-              _WeekdayLabel('M'),
-              _WeekdayLabel('T'),
-              _WeekdayLabel('W'),
-              _WeekdayLabel('T'),
-              _WeekdayLabel('F'),
-              _WeekdayLabel('S'),
-              _WeekdayLabel('S'),
-            ],
-          ),
-          const SizedBox(height: 8),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: days.length,
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 7,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-            ),
-            itemBuilder: (context, index) {
-              final date = days[index];
-              if (date == null) return const SizedBox.shrink();
-
-              final normalizedDate = dateOnly(date);
-              final isAvailable =
-                  !normalizedDate.isBefore(today) &&
-                  !normalizedDate.isAfter(lastDate);
-              final isSelected = selectedDates.contains(normalizedDate);
-
-              return GestureDetector(
-                onTap: isAvailable ? () => onToggle(normalizedDate) : null,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    gradient: isSelected ? AppColors.brandGradient : null,
-                    color: isSelected
-                        ? null
-                        : isAvailable
-                        ? Colors.white
-                        : AppColors.textGrey.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: isSelected
-                          ? Colors.transparent
-                          : AppColors.primary.withValues(alpha: 0.08),
-                    ),
-                  ),
-                  child: Text(
-                    '${date.day}',
-                    style: TextStyle(
-                      color: isSelected
-                          ? Colors.white
-                          : isAvailable
-                          ? AppColors.textDark
-                          : AppColors.textGrey.withValues(alpha: 0.45),
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<DateTime?> _calendarDaysForMonth(DateTime month) {
-    final firstDay = DateTime(month.year, month.month);
-    final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
-    final leadingEmptyDays = firstDay.weekday - 1;
-
-    return [
-      ...List<DateTime?>.filled(leadingEmptyDays, null),
-      ...List.generate(daysInMonth, (index) {
-        return DateTime(month.year, month.month, index + 1);
-      }),
-    ];
-  }
-
-  String _monthLabel(DateTime date) {
-    const months = [
-      'January',
-      'February',
-      'March',
-      'April',
-      'May',
-      'June',
-      'July',
-      'August',
-      'September',
-      'October',
-      'November',
-      'December',
-    ];
-    return '${months[date.month - 1]} ${date.year}';
-  }
-}
-
-class _WeekdayLabel extends StatelessWidget {
-  final String label;
-
-  const _WeekdayLabel(this.label);
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Text(
-        label,
-        textAlign: TextAlign.center,
-        style: const TextStyle(
-          color: AppColors.textGrey,
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomTimeSlotPicker extends StatelessWidget {
-  final List<String> slots;
-  final VoidCallback onPickTime;
-  final ValueChanged<String> onRemove;
-
-  const _CustomTimeSlotPicker({
-    required this.slots,
-    required this.onPickTime,
-    required this.onRemove,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
+      key: fieldKey,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: onPickTime,
-            icon: const Icon(Icons.schedule_rounded),
-            label: const Text('Pick time slot'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.textDark,
-              foregroundColor: Colors.white,
-              minimumSize: const Size.fromHeight(56),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18),
-              ),
-            ),
+        Text(
+          label,
+          style: const TextStyle(
+            color: AppColors.textGrey,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
           ),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Select from the clock so every slot is a valid booking time.',
-          style: TextStyle(
-            color: AppColors.textGrey,
-            fontWeight: FontWeight.w600,
-            height: 1.35,
+        TextField(
+          controller: controller,
+          focusNode: focusNode,
+          maxLines: maxLines,
+          maxLength: maxLength,
+          keyboardType: keyboardType,
+          inputFormatters: inputFormatters,
+          onChanged: onChanged,
+          decoration: InputDecoration(
+            hintText: hintText,
+            helperText: helperText,
+            errorText: errorText,
+            prefixText: prefixText,
+            counterText: counterText,
+            filled: true,
+            fillColor: const Color(0xFFFCFBFA),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: isHighlighted
+                  ? const BorderSide(color: AppColors.primary, width: 1.6)
+                  : BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: isHighlighted
+                  ? const BorderSide(color: AppColors.primary, width: 1.6)
+                  : BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: const BorderSide(color: AppColors.primary, width: 1.6),
+            ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: const BorderSide(color: Colors.redAccent),
+            ),
+            focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: const BorderSide(color: Colors.redAccent, width: 1.6),
+            ),
           ),
         ),
-        const SizedBox(height: 12),
-        if (slots.isEmpty)
-          const Text(
-            'Add at least one custom time slot for this service.',
-            style: TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w600,
-            ),
-          )
-        else
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: slots.map((slot) {
-              return InputChip(
-                label: Text(slot),
-                onDeleted: () => onRemove(slot),
-                backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                deleteIconColor: AppColors.primary,
-                labelStyle: const TextStyle(
-                  color: AppColors.textDark,
-                  fontWeight: FontWeight.w800,
-                ),
-                side: BorderSide(
-                  color: AppColors.primary.withValues(alpha: 0.14),
-                ),
-              );
-            }).toList(),
-          ),
       ],
     );
   }
 }
 
-class _AvailabilityPreview extends StatelessWidget {
-  final String summary;
+class _SearchableDropdownField extends StatefulWidget {
+  final Key? fieldKey;
+  final String label;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final List<String> options;
+  final String? hintText;
+  final String? errorText;
+  final bool isHighlighted;
+  final String? noResultsText;
+  final ValueChanged<String> onSelected;
+  final VoidCallback? onChanged;
 
-  const _AvailabilityPreview({required this.summary});
+  const _SearchableDropdownField({
+    this.fieldKey,
+    required this.label,
+    required this.controller,
+    this.focusNode,
+    required this.options,
+    required this.onSelected,
+    this.hintText,
+    this.errorText,
+    this.isHighlighted = false,
+    this.noResultsText,
+    this.onChanged,
+  });
+
+  @override
+  State<_SearchableDropdownField> createState() =>
+      _SearchableDropdownFieldState();
+}
+
+class _SearchableDropdownFieldState extends State<_SearchableDropdownField> {
+  late final FocusNode _focusNode;
+  late final bool _ownsFocusNode;
+  bool _isExpanded = false;
+
+  List<String> get _filteredOptions {
+    final query = widget.controller.text.trim().toLowerCase();
+    if (query.isEmpty) return widget.options;
+    return widget.options
+        .where((option) => option.toLowerCase().contains(query))
+        .toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _ownsFocusNode = widget.focusNode == null;
+    _focusNode = widget.focusNode ?? FocusNode();
+    _focusNode.addListener(() {
+      if (!_focusNode.hasFocus) return;
+      setState(() {
+        _isExpanded = true;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    if (_ownsFocusNode) {
+      _focusNode.dispose();
+    }
+    super.dispose();
+  }
+
+  void _selectOption(String value) {
+    widget.controller.text = value;
+    widget.controller.selection = TextSelection.collapsed(offset: value.length);
+    widget.onSelected(value);
+    setState(() {
+      _isExpanded = false;
+    });
+    FocusScope.of(context).unfocus();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.primary.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.calendar_month_rounded, color: AppColors.primary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              summary,
-              style: const TextStyle(
-                color: AppColors.textDark,
-                fontWeight: FontWeight.w800,
-                height: 1.35,
-              ),
+    final filteredOptions = _filteredOptions;
+
+    return Column(
+      key: widget.fieldKey,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.label,
+          style: const TextStyle(
+            color: AppColors.textGrey,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: widget.controller,
+          focusNode: _focusNode,
+          onTap: () => setState(() => _isExpanded = true),
+          onChanged: (_) {
+            setState(() => _isExpanded = true);
+            widget.onChanged?.call();
+          },
+          decoration: InputDecoration(
+            hintText: widget.hintText,
+            errorText: widget.errorText,
+            filled: true,
+            fillColor: const Color(0xFFFCFBFA),
+            suffixIcon: Icon(
+              _isExpanded
+                  ? Icons.keyboard_arrow_up_rounded
+                  : Icons.keyboard_arrow_down_rounded,
+              color: AppColors.textGrey,
+            ),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: widget.isHighlighted
+                  ? const BorderSide(color: AppColors.primary, width: 1.6)
+                  : BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: widget.isHighlighted
+                  ? const BorderSide(color: AppColors.primary, width: 1.6)
+                  : BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: const BorderSide(color: AppColors.primary, width: 1.6),
+            ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: const BorderSide(color: Colors.redAccent),
+            ),
+            focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: const BorderSide(color: Colors.redAccent, width: 1.6),
             ),
           ),
+        ),
+        if (_isExpanded) ...[
+          const SizedBox(height: 8),
+          Container(
+            constraints: const BoxConstraints(maxHeight: 220),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 18,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: filteredOptions.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      widget.noResultsText ?? 'No matching options found.',
+                      style: const TextStyle(
+                        color: AppColors.textGrey,
+                        fontSize: 13,
+                        height: 1.5,
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    shrinkWrap: true,
+                    itemCount: filteredOptions.length,
+                    separatorBuilder: (_, _) => Divider(
+                      height: 1,
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                    ),
+                    itemBuilder: (context, index) {
+                      final option = filteredOptions[index];
+                      return ListTile(
+                        title: Text(
+                          option,
+                          style: const TextStyle(
+                            color: AppColors.textDark,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        onTap: () => _selectOption(option),
+                      );
+                    },
+                  ),
+          ),
         ],
-      ),
+      ],
     );
   }
+}
+
+enum _ServiceDetailsField {
+  animal,
+  customAnimal,
+  category,
+  customCategory,
+  serviceName,
+  price,
+  description,
+}
+
+class _FieldIssue {
+  final _ServiceDetailsField field;
+  final GlobalKey key;
+  final FocusNode focusNode;
+  final String message;
+
+  const _FieldIssue({
+    required this.field,
+    required this.key,
+    required this.focusNode,
+    required this.message,
+  });
 }

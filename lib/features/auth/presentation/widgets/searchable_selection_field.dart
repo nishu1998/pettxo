@@ -215,7 +215,7 @@ class _SelectionSheetState extends State<_SelectionSheet> {
           height: MediaQuery.sizeOf(context).height * 0.72,
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
           decoration: const BoxDecoration(
-            color: AppColors.background,
+            color: Colors.white,
             borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
           ),
           child: Column(

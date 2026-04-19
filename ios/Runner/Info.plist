@@ -28,6 +28,12 @@
 		<true/>
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>Pettexo needs photo library access so you can choose a profile picture.</string>
+		<key>NSLocationWhenInUseUsageDescription</key>
+		<string>Pettexo uses your location so you can set service availability and show nearby booking areas.</string>
+		<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+		<string>Pettexo uses your location so you can set service availability and show nearby booking areas.</string>
+		<key>GMSApiKey</key>
+		<string>$(MAPS_API_KEY)</string>
 		<key>UIApplicationSceneManifest</key>
 		<dict>
 			<key>UIApplicationSupportsMultipleScenes</key>

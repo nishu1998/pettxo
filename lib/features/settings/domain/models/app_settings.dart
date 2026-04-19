@@ -4,6 +4,7 @@ class AppSettings {
   final bool bookingNotificationsEnabled;
   final bool hasListedServices;
   final bool showManageServicesOnProfile;
+  final bool hasSeenProfileSpotlight;
 
   const AppSettings({
     required this.socialNotificationsEnabled,
@@ -11,6 +12,7 @@ class AppSettings {
     required this.bookingNotificationsEnabled,
     required this.hasListedServices,
     required this.showManageServicesOnProfile,
+    required this.hasSeenProfileSpotlight,
   });
 
   const AppSettings.defaults()
@@ -18,7 +20,8 @@ class AppSettings {
       messagePreviewsEnabled = true,
       bookingNotificationsEnabled = true,
       hasListedServices = false,
-      showManageServicesOnProfile = false;
+      showManageServicesOnProfile = false,
+      hasSeenProfileSpotlight = false;
 
   AppSettings copyWith({
     bool? socialNotificationsEnabled,
@@ -26,6 +29,7 @@ class AppSettings {
     bool? bookingNotificationsEnabled,
     bool? hasListedServices,
     bool? showManageServicesOnProfile,
+    bool? hasSeenProfileSpotlight,
   }) {
     return AppSettings(
       socialNotificationsEnabled:
@@ -37,6 +41,8 @@ class AppSettings {
       hasListedServices: hasListedServices ?? this.hasListedServices,
       showManageServicesOnProfile:
           showManageServicesOnProfile ?? this.showManageServicesOnProfile,
+      hasSeenProfileSpotlight:
+          hasSeenProfileSpotlight ?? this.hasSeenProfileSpotlight,
     );
   }
 }

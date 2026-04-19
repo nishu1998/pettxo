@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 
 class ServicesScreen extends StatelessWidget {
@@ -9,6 +10,11 @@ class ServicesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top;
+    const topBarHeight = 84.0;
+    final topContentPadding = topInset + topBarHeight + 26;
+    final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
+
     const services = [
       (
         "Pawsome Grooming",
@@ -66,307 +72,307 @@ class ServicesScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       extendBody: true,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Positioned(
-              top: -70,
-              right: -50,
-              child: Container(
-                width: 220,
-                height: 220,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                ),
+      body: Stack(
+        children: [
+          Positioned(
+            top: -70,
+            right: -50,
+            child: Container(
+              width: 220,
+              height: 220,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.primary.withValues(alpha: 0.06),
               ),
             ),
-            Positioned(
-              top: 120,
-              left: -80,
-              child: Container(
-                width: 180,
-                height: 180,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.secondary.withValues(alpha: 0.08),
-                ),
+          ),
+          Positioned(
+            top: 120,
+            left: -80,
+            child: Container(
+              width: 180,
+              height: 180,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.secondary.withValues(alpha: 0.08),
               ),
             ),
-            Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 10),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 14,
+          ),
+          // The scroll view fills the whole screen so cards can move under the
+          // glass overlays. Internal padding preserves access to the first and
+          // last interactive elements.
+          ListView(
+            padding: EdgeInsets.fromLTRB(
+              18,
+              topContentPadding,
+              18,
+              bottomContentPadding,
+            ),
+            children: [
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.92),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFFCFA),
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(
+                            Icons.location_on_outlined,
+                            color: AppColors.textGrey,
+                          ),
+                          SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              "Search services, sitters or nearby care...",
+                              style: TextStyle(
+                                color: AppColors.textGrey,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
+                    const SizedBox(height: 18),
+                    SizedBox(
+                      height: 46,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          categoryChip("All Services", true),
+                          const SizedBox(width: 12),
+                          categoryChip("Groomer", false),
+                          const SizedBox(width: 12),
+                          categoryChip("Pet Sitter", false),
+                          const SizedBox(width: 12),
+                          categoryChip("Doctor", false),
+                          const SizedBox(width: 12),
+                          categoryChip("Walker", false),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+              ...services.map((service) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Container(
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.94),
-                      borderRadius: BorderRadius.circular(28),
+                      borderRadius: BorderRadius.circular(26),
                       border: Border.all(
                         color: AppColors.primary.withValues(alpha: 0.08),
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.04),
-                          blurRadius: 24,
-                          offset: const Offset(0, 10),
+                          color: Colors.black.withValues(alpha: 0.035),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
                         ),
                       ],
                     ),
                     child: Row(
                       children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: AppColors.background,
-                            borderRadius: BorderRadius.circular(14),
+                        ClipRRect(
+                          borderRadius: const BorderRadius.horizontal(
+                            left: Radius.circular(26),
                           ),
-                          child: IconButton(
-                            onPressed: () => Navigator.pushReplacementNamed(
-                              context,
-                              "/home",
+                          child: SizedBox(
+                            width: 132,
+                            height: 152,
+                            child: Image.network(
+                              service.$6,
+                              fit: BoxFit.cover,
                             ),
-                            icon: const Icon(Icons.arrow_back_rounded),
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                "Services",
-                                style: TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w800,
-                                  color: AppColors.textDark,
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  service.$1,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.textDark,
+                                  ),
                                 ),
-                              ),
-                              SizedBox(height: 2),
-                              Text(
-                                "Trusted care, grooming and wellness nearby",
-                                style: TextStyle(
-                                  color: AppColors.textGrey,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500,
+                                const SizedBox(height: 8),
+                                Text(
+                                  service.$2,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: AppColors.textGrey,
+                                    height: 1.35,
+                                    fontSize: 14,
+                                  ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: AppColors.background,
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: IconButton(
-                            onPressed: () {},
-                            icon: const Icon(Icons.tune_rounded),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.star_rounded,
+                                      color: AppColors.primary,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      service.$3,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.location_on_outlined,
+                                      color: AppColors.textGrey,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        service.$4,
+                                        style: const TextStyle(
+                                          color: AppColors.textGrey,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                    Text(
+                                      service.$5,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 15,
+                                        color: AppColors.textDark,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ],
                     ),
                   ),
+                );
+              }),
+            ],
+          ),
+          Positioned(
+            left: 18,
+            right: 18,
+            top: topInset + 14,
+            child: GlassSurface(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+              borderRadius: BorderRadius.circular(28),
+              backgroundColor: Colors.white.withValues(alpha: 0.72),
+              blurSigma: 20,
+              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.06),
+                  blurRadius: 24,
+                  offset: const Offset(0, 10),
                 ),
-                Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 120),
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.92),
-                          borderRadius: BorderRadius.circular(28),
-                          border: Border.all(
-                            color: AppColors.primary.withValues(alpha: 0.08),
-                          ),
-                        ),
-                        child: Column(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 14,
-                              ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFFFFCFA),
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                              child: const Row(
-                                children: [
-                                  Icon(
-                                    Icons.location_on_outlined,
-                                    color: AppColors.textGrey,
-                                  ),
-                                  SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      "Search services, sitters or nearby care...",
-                                      style: TextStyle(
-                                        color: AppColors.textGrey,
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 18),
-                            SizedBox(
-                              height: 46,
-                              child: ListView(
-                                scrollDirection: Axis.horizontal,
-                                children: [
-                                  categoryChip("All Services", true),
-                                  const SizedBox(width: 12),
-                                  categoryChip("Groomer", false),
-                                  const SizedBox(width: 12),
-                                  categoryChip("Pet Sitter", false),
-                                  const SizedBox(width: 12),
-                                  categoryChip("Doctor", false),
-                                  const SizedBox(width: 12),
-                                  categoryChip("Walker", false),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      ...services.map((service) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 16),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(26),
-                              border: Border.all(
-                                color: AppColors.primary.withValues(
-                                  alpha: 0.08,
-                                ),
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.035),
-                                  blurRadius: 18,
-                                  offset: const Offset(0, 8),
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              children: [
-                                ClipRRect(
-                                  borderRadius: const BorderRadius.horizontal(
-                                    left: Radius.circular(26),
-                                  ),
-                                  child: SizedBox(
-                                    width: 132,
-                                    height: 152,
-                                    child: Image.network(
-                                      service.$6,
-                                      fit: BoxFit.cover,
-                                    ),
-                                  ),
-                                ),
-                                Expanded(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(16),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          service.$1,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.w800,
-                                            color: AppColors.textDark,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          service.$2,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: AppColors.textGrey,
-                                            height: 1.35,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 12),
-                                        Row(
-                                          children: [
-                                            const Icon(
-                                              Icons.star_rounded,
-                                              color: AppColors.primary,
-                                              size: 18,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              service.$3,
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w700,
-                                                fontSize: 14,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 10),
-                                        Row(
-                                          children: [
-                                            const Icon(
-                                              Icons.location_on_outlined,
-                                              color: AppColors.textGrey,
-                                              size: 18,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            Expanded(
-                                              child: Text(
-                                                service.$4,
-                                                style: const TextStyle(
-                                                  color: AppColors.textGrey,
-                                                  fontSize: 14,
-                                                ),
-                                              ),
-                                            ),
-                                            Text(
-                                              service.$5,
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w800,
-                                                fontSize: 15,
-                                                color: AppColors.textDark,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 18,
+                  offset: const Offset(0, 8),
                 ),
               ],
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.56),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: IconButton(
+                      onPressed: () => Navigator.pushReplacementNamed(
+                        context,
+                        "/home",
+                      ),
+                      icon: const Icon(Icons.arrow_back_rounded),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Services",
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          "Trusted care, grooming and wellness nearby",
+                          style: TextStyle(
+                            color: AppColors.textGrey,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.56),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: IconButton(
+                      onPressed: () {},
+                      icon: const Icon(Icons.tune_rounded),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
-      bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.home),
+      bottomNavigationBar: const SocialBottomNav(
+        activeTab: SocialAppTab.services,
+      ),
     );
   }
 }

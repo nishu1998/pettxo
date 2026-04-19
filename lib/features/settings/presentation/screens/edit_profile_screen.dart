@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -359,23 +360,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         const SizedBox(height: 22),
                         SizedBox(
                           width: double.infinity,
-                          child: ElevatedButton(
+                          child: GradientButton(
+                            label: _isSaving ? 'Saving...' : 'Save changes',
                             onPressed: _isSaving ? null : _saveProfile,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.primary,
-                              foregroundColor: Colors.white,
-                              minimumSize: const Size.fromHeight(54),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                            ),
-                            child: Text(
-                              _isSaving ? 'Saving...' : 'Save changes',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
                           ),
                         ),
                       ],

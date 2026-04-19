@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
+import 'package:intl_phone_field/country_picker_dialog.dart';
 
 import '../../../../core/constants/app_colors.dart';
 
@@ -81,10 +82,38 @@ class _CommonPhoneFieldState extends State<CommonPhoneField> {
         initialValue: widget.initialNumber,
         textInputAction: widget.textInputAction,
         disableLengthCheck: true,
+        dropdownDecoration: const BoxDecoration(color: Colors.white),
         dropdownIconPosition: IconPosition.trailing,
         flagsButtonPadding: const EdgeInsets.only(left: 12),
         showDropdownIcon: true,
         invalidNumberMessage: 'Enter a valid phone number',
+        pickerDialogStyle: PickerDialogStyle(
+          backgroundColor: Colors.white,
+          searchFieldInputDecoration: InputDecoration(
+            hintText: 'Search country',
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 14,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(borderRadius),
+              borderSide: const BorderSide(color: Color(0xFFDADADA)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(borderRadius),
+              borderSide: const BorderSide(color: Color(0xFFDADADA)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(borderRadius),
+              borderSide: const BorderSide(
+                color: AppColors.primary,
+                width: 1.4,
+              ),
+            ),
+          ),
+        ),
         decoration: InputDecoration(
           labelText: widget.labelText,
           errorText: widget.errorText,

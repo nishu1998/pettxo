@@ -1,1 +1,1 @@
-enum SocialAppTab { home, explore, create, messages, profile }
+enum SocialAppTab { home, explore, services, messages, profile }

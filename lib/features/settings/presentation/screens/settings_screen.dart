@@ -243,28 +243,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 18),
                   _SettingsSection(
-                    title: 'Profile',
-                    child: Column(
-                      children: [
-                        _SettingsTile(
-                          icon: Icons.person_outline_rounded,
-                          title: 'Profile details',
-                          subtitle: 'Edit your name, bio, location, and photo.',
-                          onTap: () async {
-                            final updated = await Navigator.pushNamed(
-                              context,
-                              "/settings/profile",
-                            );
-                            if (updated == true && mounted) {
-                              await _loadSettings();
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _SettingsSection(
                     title: 'Social',
                     child: Column(
                       children: [
@@ -312,40 +290,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             _updateSettings(
                               _settings.copyWith(
                                 bookingNotificationsEnabled: value,
-                              ),
-                            );
-                          },
-                        ),
-                        const Divider(height: 1),
-                        _SwitchTile(
-                          icon: Icons.storefront_outlined,
-                          title: 'I have listed services',
-                          subtitle:
-                              'Use this when your profile should expose service controls',
-                          value: _settings.hasListedServices,
-                          onChanged: (value) {
-                            _updateSettings(
-                              _settings.copyWith(
-                                hasListedServices: value,
-                                showManageServicesOnProfile: value
-                                    ? _settings.showManageServicesOnProfile
-                                    : false,
-                              ),
-                            );
-                          },
-                        ),
-                        const Divider(height: 1),
-                        _SwitchTile(
-                          icon: Icons.build_circle_outlined,
-                          title: 'Show Manage Services on profile',
-                          subtitle:
-                              'Only enable this when you want that single CTA visible',
-                          value: _settings.showManageServicesOnProfile,
-                          enabled: _settings.hasListedServices,
-                          onChanged: (value) {
-                            _updateSettings(
-                              _settings.copyWith(
-                                showManageServicesOnProfile: value,
                               ),
                             );
                           },
@@ -499,17 +443,19 @@ class _SettingsSection extends StatelessWidget {
   }
 }
 
-class _SettingsTile extends StatelessWidget {
+class _SwitchTile extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final VoidCallback onTap;
+  final bool value;
+  final ValueChanged<bool> onChanged;
 
-  const _SettingsTile({
+  const _SwitchTile({
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.onTap,
+    required this.value,
+    required this.onChanged,
   });
 
   @override
@@ -531,56 +477,11 @@ class _SettingsTile extends StatelessWidget {
         subtitle,
         style: const TextStyle(color: AppColors.textGrey, height: 1.4),
       ),
-      trailing: const Icon(Icons.chevron_right_rounded),
-      onTap: onTap,
-    );
-  }
-}
-
-class _SwitchTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool value;
-  final bool enabled;
-  final ValueChanged<bool> onChanged;
-
-  const _SwitchTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.value,
-    required this.onChanged,
-    this.enabled = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: enabled ? 1 : 0.5,
-      child: ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: CircleAvatar(
-          backgroundColor: const Color(0xFFFFF2EA),
-          child: Icon(icon, color: AppColors.primary),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textDark,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        subtitle: Text(
-          subtitle,
-          style: const TextStyle(color: AppColors.textGrey, height: 1.4),
-        ),
-        trailing: Switch(
-          value: value,
-          onChanged: enabled ? onChanged : null,
-          activeTrackColor: AppColors.primary,
-          activeThumbColor: Colors.white,
-        ),
+      trailing: Switch(
+        value: value,
+        onChanged: onChanged,
+        activeTrackColor: AppColors.primary,
+        activeThumbColor: Colors.white,
       ),
     );
   }

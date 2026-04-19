@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_content_repository.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
@@ -26,11 +28,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final SettingsService _settingsService = SettingsService();
   late Future<AppSettings> _settingsFuture;
   int _selectedSectionIndex = 0;
+  bool _showProfileSpotlight = false;
 
   @override
   void initState() {
     super.initState();
-    _settingsFuture = _settingsService.loadSettings();
+    _settingsFuture = _loadInitialSettings();
+  }
+
+  Future<AppSettings> _loadInitialSettings() async {
+    final settings = await _settingsService.loadSettings();
+
+    // The spotlight is meant to be a one-time helper. We persist that the user
+    // has seen it in local settings, but keep it visible for the current visit.
+    if (!settings.hasSeenProfileSpotlight) {
+      _showProfileSpotlight = true;
+      final updatedSettings = settings.copyWith(hasSeenProfileSpotlight: true);
+      await _settingsService.saveSettings(updatedSettings);
+      return updatedSettings;
+    }
+
+    return settings;
   }
 
   Future<void> _refreshSettings() async {
@@ -141,7 +159,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 4),
                 SizedBox(
                   width: double.infinity,
-                  child: OutlinedButton.icon(
+                  child: SecondaryButton(
+                    label: 'Pause all services',
+                    icon: Icons.pause_circle_outline_rounded,
                     onPressed: () async {
                       await _contentRepository.pauseAllServices();
                       if (!mounted ||
@@ -157,18 +177,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         tone: AppFeedbackTone.success,
                       );
                     },
-                    icon: const Icon(Icons.pause_circle_outline_rounded),
-                    label: const Text('Pause all services'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.textDark,
-                      minimumSize: const Size.fromHeight(50),
-                      side: BorderSide(
-                        color: AppColors.primary.withValues(alpha: 0.16),
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                    ),
                   ),
                 ),
               ],
@@ -181,164 +189,69 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top;
+    const topBarHeight = 76.0;
+    final topContentPadding = topInset + topBarHeight + 24;
+    final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
+
     return Scaffold(
       backgroundColor: AppColors.background,
       extendBody: true,
-      body: SafeArea(
-        child: FutureBuilder<AppSettings>(
-          future: _settingsFuture,
-          builder: (context, settingsSnapshot) {
-            if (!settingsSnapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
+      body: FutureBuilder<AppSettings>(
+        future: _settingsFuture,
+        builder: (context, settingsSnapshot) {
+          if (!settingsSnapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
 
-            final settings = settingsSnapshot.data!;
+          return StreamBuilder<UserProfile>(
+            stream: _profileRepository.watchCurrentUserProfile(),
+            builder: (context, profileSnapshot) {
+              if (profileSnapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-            return StreamBuilder<UserProfile>(
-              stream: _profileRepository.watchCurrentUserProfile(),
-              builder: (context, profileSnapshot) {
-                if (profileSnapshot.connectionState ==
-                    ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+              if (profileSnapshot.hasError || !profileSnapshot.hasData) {
+                return const _ProfileErrorState();
+              }
 
-                if (profileSnapshot.hasError || !profileSnapshot.hasData) {
-                  return const _ProfileErrorState();
-                }
+              final profile = profileSnapshot.data!;
+              final posts = _contentRepository.getPostsForProfile(profile);
 
-                final profile = profileSnapshot.data!;
-                final posts = _contentRepository.getPostsForProfile(profile);
+              return FutureBuilder<List<ProfileServiceListing>>(
+                future: _contentRepository.getServicesForProfile(
+                  profile,
+                ),
+                builder: (context, servicesSnapshot) {
+                  final services = servicesSnapshot.data ?? const [];
+                  final selectedSectionIndex = _selectedSectionIndex;
 
-                return FutureBuilder<List<ProfileServiceListing>>(
-                  future: _contentRepository.getServicesForProfile(
-                    profile,
-                    hasListedServices: settings.hasListedServices,
-                  ),
-                  builder: (context, servicesSnapshot) {
-                    final services = servicesSnapshot.data ?? const [];
-                    final selectedSectionIndex = services.isEmpty
-                        ? 0
-                        : _selectedSectionIndex;
-
-                    return Stack(
-                      children: [
-                        Positioned(
-                          top: -50,
-                          right: -30,
-                          child: Container(
-                            width: 180,
-                            height: 180,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppColors.primary.withValues(alpha: 0.07),
-                            ),
+                  return Stack(
+                    children: [
+                      Positioned(
+                        top: -50,
+                        right: -30,
+                        child: Container(
+                          width: 180,
+                          height: 180,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: AppColors.primary.withValues(alpha: 0.07),
                           ),
                         ),
-                        Column(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                18,
-                                14,
-                                18,
-                                10,
-                              ),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 14,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.95),
-                                  borderRadius: BorderRadius.circular(28),
-                                  border: Border.all(
-                                    color: AppColors.primary.withValues(
-                                      alpha: 0.08,
-                                    ),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      width: 42,
-                                      height: 42,
-                                      decoration: BoxDecoration(
-                                        color: AppColors.background,
-                                        borderRadius: BorderRadius.circular(14),
-                                      ),
-                                      child: IconButton(
-                                        onPressed: () =>
-                                            Navigator.pushReplacementNamed(
-                                              context,
-                                              "/home",
-                                            ),
-                                        icon: const Icon(
-                                          Icons.arrow_back_rounded,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    const Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            "Profile",
-                                            style: TextStyle(
-                                              fontSize: 22,
-                                              fontWeight: FontWeight.w800,
-                                              color: AppColors.textDark,
-                                            ),
-                                          ),
-                                          SizedBox(height: 2),
-                                          Text(
-                                            "Your presence, services and pet stories",
-                                            style: TextStyle(
-                                              color: AppColors.textGrey,
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Container(
-                                      width: 42,
-                                      height: 42,
-                                      decoration: BoxDecoration(
-                                        color: AppColors.background,
-                                        borderRadius: BorderRadius.circular(14),
-                                      ),
-                                      child: IconButton(
-                                        onPressed: () async {
-                                          await Navigator.pushNamed(
-                                            context,
-                                            "/settings",
-                                          );
-                                          if (!mounted) return;
-                                          await _refreshSettings();
-                                        },
-                                        icon: const Icon(
-                                          Icons.settings_outlined,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            Expanded(
-                              child: ListView(
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  0,
-                                  18,
-                                  120,
-                                ),
-                                children: [
+                      ),
+                      // The profile list fills the screen first so cards can
+                      // move behind the glass header and bottom nav overlays.
+                      ListView(
+                        padding: EdgeInsets.fromLTRB(
+                          18,
+                          topContentPadding,
+                          18,
+                          bottomContentPadding,
+                        ),
+                        children: [
                                   Container(
-                                    padding: const EdgeInsets.all(22),
+                                    padding: const EdgeInsets.all(20),
                                     decoration: BoxDecoration(
                                       color: Colors.white.withValues(
                                         alpha: 0.97,
@@ -489,7 +402,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                             ),
                                           ],
                                         ),
-                                        const SizedBox(height: 22),
+                                        const SizedBox(height: 16),
                                         Row(
                                           children: [
                                             Expanded(
@@ -498,14 +411,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                 value: "${posts.length}",
                                               ),
                                             ),
-                                            SizedBox(width: 8),
+                                            const SizedBox(width: 6),
                                             Expanded(
                                               child: _ProfileStat(
                                                 label: "followers",
                                                 value: "1234",
                                               ),
                                             ),
-                                            SizedBox(width: 8),
+                                            const SizedBox(width: 6),
                                             Expanded(
                                               child: _ProfileStat(
                                                 label: "services",
@@ -514,71 +427,108 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                             ),
                                           ],
                                         ),
+                                        const SizedBox(height: 12),
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: GradientButton(
+                                                label: "Edit Profile",
+                                                size: AppButtonSize.compact,
+                                                // Profile is now the primary
+                                                // entry point to the existing
+                                                // edit screen that used to live
+                                                // only inside Settings.
+                                                onPressed: () async {
+                                                  await Navigator.pushNamed(
+                                                    context,
+                                                    "/settings/profile",
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: SecondaryButton(
+                                                label: "Bookings",
+                                                size: AppButtonSize.compact,
+                                                onPressed: () {
+                                                  Navigator.pushNamed(
+                                                    context,
+                                                    "/bookings",
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ],
                                     ),
                                   ),
-                                  const SizedBox(height: 18),
-                                  Container(
-                                    padding: const EdgeInsets.all(18),
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        colors: [
-                                          AppColors.primary.withValues(
+                                  if (_showProfileSpotlight) ...[
+                                    const SizedBox(height: 18),
+                                    Container(
+                                      padding: const EdgeInsets.all(18),
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          colors: [
+                                            AppColors.primary.withValues(
+                                              alpha: 0.08,
+                                            ),
+                                            Colors.white,
+                                          ],
+                                          begin: Alignment.topLeft,
+                                          end: Alignment.bottomRight,
+                                        ),
+                                        borderRadius: BorderRadius.circular(24),
+                                        border: Border.all(
+                                          color: AppColors.primary.withValues(
                                             alpha: 0.08,
                                           ),
-                                          Colors.white,
-                                        ],
-                                        begin: Alignment.topLeft,
-                                        end: Alignment.bottomRight,
-                                      ),
-                                      borderRadius: BorderRadius.circular(24),
-                                      border: Border.all(
-                                        color: AppColors.primary.withValues(
-                                          alpha: 0.08,
                                         ),
                                       ),
-                                    ),
-                                    child: const Row(
-                                      children: [
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                "Profile spotlight",
-                                                style: TextStyle(
-                                                  color: AppColors.primary,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
+                                      child: const Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  "Profile spotlight",
+                                                  style: TextStyle(
+                                                    color: AppColors.primary,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
                                                 ),
-                                              ),
-                                              SizedBox(height: 6),
-                                              Text(
-                                                "Showcase both personality and services so followers can trust you before they book.",
-                                                style: TextStyle(
-                                                  color: AppColors.textDark,
-                                                  fontSize: 15,
-                                                  fontWeight: FontWeight.w600,
-                                                  height: 1.45,
+                                                SizedBox(height: 6),
+                                                Text(
+                                                  "Showcase both personality and services so followers can trust you before they book.",
+                                                  style: TextStyle(
+                                                    color: AppColors.textDark,
+                                                    fontSize: 15,
+                                                    fontWeight:
+                                                        FontWeight.w600,
+                                                    height: 1.45,
+                                                  ),
                                                 ),
-                                              ),
-                                            ],
+                                              ],
+                                            ),
                                           ),
-                                        ),
-                                        SizedBox(width: 12),
-                                        Icon(
-                                          Icons.workspace_premium_outlined,
-                                          color: AppColors.primary,
-                                          size: 28,
-                                        ),
-                                      ],
+                                          SizedBox(width: 12),
+                                          Icon(
+                                            Icons.workspace_premium_outlined,
+                                            color: AppColors.primary,
+                                            size: 28,
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ),
+                                  ],
                                   const SizedBox(height: 18),
                                   ProfileSectionTabs(
                                     selectedIndex: selectedSectionIndex,
-                                    showServices: services.isNotEmpty,
+                                    showServices: true,
                                     onChanged: (index) {
                                       setState(() {
                                         _selectedSectionIndex = index;
@@ -591,9 +541,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   else
                                     ProfileServicesSection(
                                       services: services,
-                                      canManage:
-                                          profile.isServiceProvider &&
-                                          settings.showManageServicesOnProfile,
+                                      canManage: true,
                                       onAdd: () async {
                                         final added = await Navigator.pushNamed(
                                           context,
@@ -612,18 +560,109 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       ),
                                     ),
                                 ],
-                              ),
+                      ),
+                      Positioned(
+                        left: 16,
+                        right: 16,
+                        top: topInset + 10,
+                        child: GlassSurface(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 14,
+                          ),
+                          borderRadius: BorderRadius.circular(24),
+                          backgroundColor: Colors.white.withValues(alpha: 0.72),
+                          blurSigma: 20,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.62),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primary.withValues(alpha: 0.06),
+                              blurRadius: 22,
+                              offset: const Offset(0, 10),
+                            ),
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.05),
+                              blurRadius: 18,
+                              offset: const Offset(0, 8),
                             ),
                           ],
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 42,
+                                height: 42,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.56),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: IconButton(
+                                  onPressed: () =>
+                                      Navigator.pushReplacementNamed(
+                                        context,
+                                        "/home",
+                                      ),
+                                  icon: const Icon(Icons.arrow_back_rounded),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      "Profile",
+                                      style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppColors.textDark,
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      "Your presence, services and pet stories",
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: AppColors.textGrey,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                width: 42,
+                                height: 42,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.56),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: IconButton(
+                                  onPressed: () async {
+                                    await Navigator.pushNamed(
+                                      context,
+                                      "/settings",
+                                    );
+                                    if (!mounted) return;
+                                    await _refreshSettings();
+                                  },
+                                  icon: const Icon(Icons.settings_outlined),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ],
-                    );
-                  },
-                );
-              },
-            );
-          },
-        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          );
+        },
       ),
       bottomNavigationBar: const SocialBottomNav(
         activeTab: SocialAppTab.profile,
@@ -727,8 +766,15 @@ class _ProfileStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBF8),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppColors.primary.withValues(alpha: 0.08),
+        ),
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -739,12 +785,12 @@ class _ProfileStat extends StatelessWidget {
               maxLines: 1,
               style: const TextStyle(
                 color: AppColors.textDark,
-                fontSize: 22,
+                fontSize: 17,
                 fontWeight: FontWeight.w800,
               ),
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 1),
           FittedBox(
             fit: BoxFit.scaleDown,
             child: Text(
@@ -752,8 +798,8 @@ class _ProfileStat extends StatelessWidget {
               maxLines: 1,
               style: const TextStyle(
                 color: AppColors.textGrey,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
