@@ -1,10 +1,13 @@
 import 'dart:io';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../bookings/presentation/screens/slot_selection_screen.dart';
 import '../../domain/models/profile_service_listing.dart';
 
 class ServiceDetailScreen extends StatelessWidget {
@@ -12,40 +15,48 @@ class ServiceDetailScreen extends StatelessWidget {
 
   const ServiceDetailScreen({super.key, required this.service});
 
+  void _openBookingFlow(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SlotSelectionScreen(
+          serviceId: service.id,
+          serviceName: service.title,
+          price: _resolvedPrice,
+          durationMinutes: _resolvedDurationMinutes,
+          providerId: service.ownerUserId,
+        ),
+      ),
+    );
+  }
+
+  int get _resolvedPrice {
+    if (service.pricePerSession > 0) return service.pricePerSession;
+    final match = RegExp(r'\d+').firstMatch(service.rate.replaceAll(',', ''));
+    return int.tryParse(match?.group(0) ?? '') ?? 0;
+  }
+
+  int get _resolvedDurationMinutes {
+    if (service.durationMinutes > 0) return service.durationMinutes;
+    if (service.duration.toLowerCase().contains('whole')) return 24 * 60;
+    final match = RegExp(r'\d+').firstMatch(service.duration);
+    return int.tryParse(match?.group(0) ?? '') ?? 60;
+  }
+
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
     final topContentPadding = topInset + 108;
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final isOwner =
+        currentUserId.isNotEmpty && currentUserId == service.ownerUserId;
+    final canBook = currentUserId.isNotEmpty && !isOwner;
 
     return Scaffold(
       backgroundColor: const Color(0xFFFCF8F5),
       body: Stack(
         children: [
-          Positioned(
-            top: -70,
-            right: -30,
-            child: Container(
-              width: 220,
-              height: 220,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.primary.withValues(alpha: 0.07),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 220,
-            left: -50,
-            child: Container(
-              width: 180,
-              height: 180,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.secondary.withValues(alpha: 0.06),
-              ),
-            ),
-          ),
           ListView(
             padding: EdgeInsets.fromLTRB(
               18,
@@ -54,7 +65,12 @@ class ServiceDetailScreen extends StatelessWidget {
               bottomInset + 28,
             ),
             children: [
-              _ServiceHero(service: service),
+              _ServiceHero(
+                service: service,
+                canBook: canBook,
+                isOwner: isOwner,
+                onBookNow: () => _openBookingFlow(context),
+              ),
               const SizedBox(height: 18),
               _InsightStrip(service: service),
               const SizedBox(height: 18),
@@ -69,10 +85,9 @@ class ServiceDetailScreen extends StatelessWidget {
                   ),
                   _DetailRow(label: 'Price', value: service.rate),
                   _DetailRow(label: 'Duration', value: service.duration),
-                  _DetailRow(label: 'Availability', value: service.availability),
                   _DetailRow(
-                    label: 'Travel radius',
-                    value: '${service.serviceRadiusKm.round()} km',
+                    label: 'Availability',
+                    value: service.availability,
                   ),
                 ],
               ),
@@ -171,7 +186,9 @@ class ServiceDetailScreen extends StatelessWidget {
                               borderRadius: BorderRadius.circular(16),
                               boxShadow: [
                                 BoxShadow(
-                                  color: AppColors.primary.withValues(alpha: 0.24),
+                                  color: AppColors.primary.withValues(
+                                    alpha: 0.24,
+                                  ),
                                   blurRadius: 16,
                                   offset: const Offset(0, 8),
                                 ),
@@ -202,6 +219,13 @@ class ServiceDetailScreen extends StatelessWidget {
                   ),
                 ],
               ),
+              const SizedBox(height: 22),
+              if (canBook)
+                GradientButton(
+                  label: 'Book Now',
+                  icon: Icons.calendar_month_rounded,
+                  onPressed: () => _openBookingFlow(context),
+                ),
             ],
           ),
           Positioned(
@@ -265,8 +289,16 @@ class ServiceDetailScreen extends StatelessWidget {
 
 class _ServiceHero extends StatelessWidget {
   final ProfileServiceListing service;
+  final bool canBook;
+  final bool isOwner;
+  final VoidCallback onBookNow;
 
-  const _ServiceHero({required this.service});
+  const _ServiceHero({
+    required this.service,
+    required this.canBook,
+    required this.isOwner,
+    required this.onBookNow,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -297,7 +329,7 @@ class _ServiceHero extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _ServiceImage(service: service),
+                  _ServiceImageCarousel(service: service),
                   DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
@@ -348,6 +380,39 @@ class _ServiceHero extends StatelessWidget {
               ),
             ),
           ),
+          if (canBook)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
+              child: GradientButton(
+                label: 'Book Now',
+                icon: Icons.calendar_month_rounded,
+                onPressed: onBookNow,
+              ),
+            )
+          else if (isOwner)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.14),
+                  ),
+                ),
+                child: const Text(
+                  'Your service',
+                  style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.all(18),
             child: Column(
@@ -445,9 +510,9 @@ class _InsightStrip extends StatelessWidget {
         const SizedBox(width: 10),
         Expanded(
           child: _InsightTile(
-            icon: Icons.near_me_rounded,
-            label: 'Radius',
-            value: '${service.serviceRadiusKm.round()} km',
+            icon: Icons.category_rounded,
+            label: 'Category',
+            value: service.category,
           ),
         ),
       ],
@@ -513,14 +578,49 @@ class _InsightTile extends StatelessWidget {
   }
 }
 
-class _ServiceImage extends StatelessWidget {
+class _ServiceImageCarousel extends StatefulWidget {
   final ProfileServiceListing service;
 
-  const _ServiceImage({required this.service});
+  const _ServiceImageCarousel({required this.service});
+
+  @override
+  State<_ServiceImageCarousel> createState() => _ServiceImageCarouselState();
+}
+
+class _ServiceImageCarouselState extends State<_ServiceImageCarousel> {
+  late final PageController _pageController;
+  int _activePage = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  List<String> get _images {
+    final values = <String>[
+      ...widget.service.photoPaths,
+      widget.service.imageUrl,
+    ];
+    final images = <String>[];
+    for (final rawPath in values) {
+      final path = rawPath.trim();
+      if (path.isEmpty || images.contains(path)) continue;
+      images.add(path);
+    }
+    return images;
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (service.imageUrl.isEmpty) {
+    final images = _images;
+    if (images.isEmpty) {
       return const DecoratedBox(
         decoration: BoxDecoration(gradient: AppColors.brandGradientDiagonal),
         child: Center(
@@ -529,9 +629,75 @@ class _ServiceImage extends StatelessWidget {
       );
     }
 
-    if (service.imageUrl.startsWith('http')) {
+    if (images.length == 1) {
+      return _ServiceImageFrame(imagePath: images.first);
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        PageView.builder(
+          controller: _pageController,
+          itemCount: images.length,
+          onPageChanged: (index) {
+            if (!mounted) return;
+            setState(() => _activePage = index);
+          },
+          itemBuilder: (context, index) {
+            return _ServiceImageFrame(imagePath: images[index]);
+          },
+        ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: GlassSurface(
+            borderRadius: BorderRadius.circular(999),
+            backgroundColor: Colors.white.withValues(alpha: 0.74),
+            blurSigma: 14,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(images.length, (index) {
+                final isActive = index == _activePage;
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  width: isActive ? 18 : 6,
+                  height: 6,
+                  margin: EdgeInsets.only(right: index == images.length - 1 ? 0 : 6),
+                  decoration: BoxDecoration(
+                    color: isActive ? AppColors.primary : AppColors.textGrey.withValues(alpha: 0.35),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                );
+              }),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ServiceImageFrame extends StatelessWidget {
+  final String imagePath;
+
+  const _ServiceImageFrame({required this.imagePath});
+
+  @override
+  Widget build(BuildContext context) {
+    final path = imagePath.trim();
+    if (path.isEmpty) {
+      return const DecoratedBox(
+        decoration: BoxDecoration(gradient: AppColors.brandGradientDiagonal),
+        child: Center(
+          child: Icon(Icons.pets_rounded, color: Colors.white, size: 44),
+        ),
+      );
+    }
+
+    if (path.startsWith('http')) {
       return Image.network(
-        service.imageUrl,
+        path,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => const DecoratedBox(
           decoration: BoxDecoration(gradient: AppColors.brandGradientDiagonal),
@@ -543,7 +709,7 @@ class _ServiceImage extends StatelessWidget {
     }
 
     return Image.file(
-      File(service.imageUrl),
+      File(path),
       fit: BoxFit.cover,
       errorBuilder: (_, _, _) => const DecoratedBox(
         decoration: BoxDecoration(gradient: AppColors.brandGradientDiagonal),

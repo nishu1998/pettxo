@@ -8,6 +8,7 @@ import 'status_chip.dart';
 class BookingCard extends StatelessWidget {
   final BookingRecord booking;
   final String? countdownText;
+  final String? loadingActionLabel;
   final VoidCallback? onTap;
   final void Function(BookingActionData action)? onActionTap;
 
@@ -15,6 +16,7 @@ class BookingCard extends StatelessWidget {
     super.key,
     required this.booking,
     this.countdownText,
+    this.loadingActionLabel,
     this.onTap,
     this.onActionTap,
   });
@@ -42,7 +44,9 @@ class BookingCard extends StatelessWidget {
       child: Container(
         decoration: booking.isRequestHighlighted
             ? const BoxDecoration(
-                border: Border(left: BorderSide(color: AppColors.primary, width: 3)),
+                border: Border(
+                  left: BorderSide(color: AppColors.primary, width: 3),
+                ),
               )
             : null,
         padding: const EdgeInsets.all(16),
@@ -98,7 +102,10 @@ class BookingCard extends StatelessWidget {
             if (countdownText != null) ...[
               const SizedBox(height: 10),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFFEFF6FF),
                   borderRadius: BorderRadius.circular(12),
@@ -115,7 +122,10 @@ class BookingCard extends StatelessWidget {
                         text: 'Waiting for provider',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      TextSpan(text: ' · Request expires in $countdownText'),
+                      TextSpan(
+                        text:
+                            ' · Response window ends in $countdownText',
+                      ),
                     ],
                   ),
                 ),
@@ -128,12 +138,16 @@ class BookingCard extends StatelessWidget {
               Row(
                 children: booking.actions.map((action) {
                   final isLast = action == booking.actions.last;
+                  final isLoading = loadingActionLabel == action.label;
                   return Expanded(
                     child: Padding(
                       padding: EdgeInsets.only(right: isLast ? 0 : 10),
                       child: _ActionButton(
                         action: action,
-                        onTap: () => onActionTap?.call(action),
+                        isLoading: isLoading,
+                        onTap: loadingActionLabel == null
+                            ? () => onActionTap?.call(action)
+                            : null,
                       ),
                     ),
                   );
@@ -196,16 +210,22 @@ class _TimerPill extends StatelessWidget {
 
 class _ActionButton extends StatelessWidget {
   final BookingActionData action;
-  final VoidCallback onTap;
+  final bool isLoading;
+  final VoidCallback? onTap;
 
-  const _ActionButton({required this.action, required this.onTap});
+  const _ActionButton({
+    required this.action,
+    required this.isLoading,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final label = isLoading ? '${action.label}...' : action.label;
     if (action.style == BookingActionStyle.primary) {
-      return GradientButton(label: action.label, onPressed: onTap);
+      return GradientButton(label: label, onPressed: onTap);
     }
 
-    return SecondaryButton(label: action.label, onPressed: onTap);
+    return SecondaryButton(label: label, onPressed: onTap);
   }
 }
