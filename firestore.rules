@@ -1,0 +1,252 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function existingOwnerId() {
+      return resource.data.ownerUserId;
+    }
+
+    function safeServiceOwnerUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'title',
+        'titleLowercase',
+        'animalType',
+        'animalTypeLowercase',
+        'category',
+        'categoryLowercase',
+        'description',
+        'privateNotes',
+        'pricePerSession',
+        'sessionDurationMinutes',
+        'capacity',
+        'availableDays',
+        'startMinutes',
+        'endMinutes',
+        'sameForAllDays',
+        'serviceRadiusKm',
+        'serviceType',
+        'location',
+        'photoUrls',
+        'primaryPhotoUrl',
+        'status',
+        'isActive',
+        'isDeleted',
+        'isPaused',
+        'isVisibleToMarketplace',
+        'updatedAt',
+        'removedAt'
+      ]);
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if isOwner(userId) && request.resource.data.uid == userId;
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+
+      match /notificationTokens/{tokenId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
+      match /adminNotes/{noteId} {
+        allow read, write: if isAdmin();
+      }
+    }
+
+    match /userPrivate/{userId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+    }
+
+    match /services/{serviceId} {
+      allow read: if signedIn() &&
+        (resource.data.isDeleted != true) &&
+        (
+          resource.data.isVisibleToMarketplace == true ||
+          resource.data.ownerUserId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow create: if signedIn() &&
+        request.resource.data.ownerUserId == request.auth.uid &&
+        request.resource.data.isDeleted == false &&
+        request.resource.data.moderationStatus == 'pending';
+
+      allow update: if isAdmin() ||
+        (
+          signedIn() &&
+          existingOwnerId() == request.auth.uid &&
+          request.resource.data.ownerUserId == resource.data.ownerUserId &&
+          request.resource.data.moderationStatus == resource.data.moderationStatus &&
+          safeServiceOwnerUpdate()
+        );
+
+      allow delete: if false;
+
+      match /reviews/{reviewId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.reviewerId == request.auth.uid;
+        allow update, delete: if isAdmin();
+      }
+
+      match /slots/{slotId} {
+        allow read: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/services/$(serviceId)).data.isVisibleToMarketplace == true ||
+            get(/databases/$(database)/documents/services/$(serviceId)).data.ownerUserId == request.auth.uid ||
+            isAdmin()
+          );
+
+        // Slot creation, regeneration, acceptedCount, and capacity transitions
+        // are server-owned so customers and providers cannot bypass capacity.
+        allow create, update, delete: if isAdmin();
+      }
+
+      match /moderationEvents/{eventId} {
+        allow read, write: if isAdmin();
+      }
+    }
+
+    match /bookings/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.customerId == request.auth.uid ||
+          resource.data.serviceOwnerId == request.auth.uid ||
+          isAdmin()
+        );
+
+      // Creation, status transitions, OTP verification, completion, and payout
+      // changes are intentionally blocked for clients and handled by Cloud
+      // Functions using the Admin SDK.
+      allow create, update, delete: if isAdmin();
+
+      match /events/{eventId} {
+        allow read: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
+            isAdmin()
+          );
+        allow write: if isAdmin();
+      }
+
+      match /statusHistory/{historyId} {
+        allow read: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
+            isAdmin()
+          );
+        allow write: if isAdmin();
+      }
+
+      match /messages/{messageId} {
+        allow read, create: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
+            isAdmin()
+          );
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    match /payoutReadiness/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if isAdmin();
+    }
+
+    match /payouts/{payoutId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if isAdmin();
+    }
+
+    match /reports/{reportId} {
+      allow read: if isAdmin() ||
+        (signedIn() && resource.data.reporterId == request.auth.uid);
+      allow create: if signedIn() &&
+        request.resource.data.reporterId == request.auth.uid &&
+        request.resource.data.status == 'open';
+      allow update, delete: if isAdmin();
+    }
+
+    match /disputes/{disputeId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.customerId == request.auth.uid ||
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow create: if signedIn() &&
+        (
+          request.resource.data.customerId == request.auth.uid ||
+          request.resource.data.providerId == request.auth.uid
+        ) &&
+        request.resource.data.status == 'open';
+      allow update, delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read, create: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/disputes/$(disputeId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/disputes/$(disputeId)).data.providerId == request.auth.uid ||
+            isAdmin()
+          );
+        allow update, delete: if isAdmin();
+      }
+
+      match /evidence/{evidenceId} {
+        allow read, create: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/disputes/$(disputeId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/disputes/$(disputeId)).data.providerId == request.auth.uid ||
+            isAdmin()
+          );
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    match /moderationQueue/{moderationItemId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /adminAuditLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow update: if signedIn() &&
+        resource.data.userId == request.auth.uid &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'read',
+          'isRead',
+          'updatedAt'
+        ]) &&
+        request.resource.data.read == true &&
+        request.resource.data.isRead == true &&
+        request.resource.data.updatedAt == request.time;
+      allow create, delete: if isAdmin();
+    }
+  }
+}

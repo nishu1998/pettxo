@@ -1,1 +1,45 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"pettexo-d9409","appId":"1:81944777235:android:83240b20e11881ee11a5e6","fileOutput":"android/app/google-services.json"}},"ios":{"default":{"projectId":"pettexo-d9409","appId":"1:81944777235:ios:0d2059a6ccaeaa2f11a5e6","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}},"dart":{"lib/firebase_options.dart":{"projectId":"pettexo-d9409","configurations":{"android":"1:81944777235:android:83240b20e11881ee11a5e6","ios":"1:81944777235:ios:0d2059a6ccaeaa2f11a5e6","web":"1:81944777235:web:4a59101805f7bdd611a5e6"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "pettexo-d9409",
+          "appId": "1:81944777235:android:83240b20e11881ee11a5e6",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "pettexo-d9409",
+          "appId": "1:81944777235:ios:0d2059a6ccaeaa2f11a5e6",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "pettexo-d9409",
+          "configurations": {
+            "android": "1:81944777235:android:83240b20e11881ee11a5e6",
+            "ios": "1:81944777235:ios:0d2059a6ccaeaa2f11a5e6",
+            "web": "1:81944777235:web:4a59101805f7bdd611a5e6"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs22",
+    "predeploy": [
+      "npm --prefix \"$RESOURCE_DIR\" run build"
+    ]
+  }
+}
