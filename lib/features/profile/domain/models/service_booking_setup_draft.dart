@@ -8,7 +8,6 @@ class ServiceBookingSetupDraft {
   final int startMinutes;
   final int endMinutes;
   final bool sameForAllDays;
-  final double serviceRadiusKm;
   final String serviceType;
   final ServiceLocation location;
 
@@ -20,7 +19,6 @@ class ServiceBookingSetupDraft {
     required this.startMinutes,
     required this.endMinutes,
     required this.sameForAllDays,
-    required this.serviceRadiusKm,
     required this.serviceType,
     required this.location,
   });

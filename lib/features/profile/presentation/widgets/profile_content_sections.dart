@@ -357,7 +357,7 @@ class _ProfileServiceCard extends StatelessWidget {
                                     },
                               child: Text(
                                 service.location.isEmpty
-                                    ? service.distance
+                                    ? 'Location shared after booking'
                                     : service.location,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,

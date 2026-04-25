@@ -62,7 +62,6 @@ class _AddServiceBookingSetupScreenState
   int? _startMinutes = 9 * 60;
   int? _endMinutes = 17 * 60;
   bool _sameForAllDays = true;
-  double _serviceRadius = 10;
   String? _selectedServiceType = _serviceTypeOptions.first;
   ServiceLocation? _selectedLocation;
   bool _isLoadingLocation = true;
@@ -107,12 +106,6 @@ class _AddServiceBookingSetupScreenState
 
   int? get _selectedDurationMinutes => _durationOptions[_selectedDurationLabel];
 
-  String get _radiusHelperText {
-    return _selectedServiceType == 'Home visit available'
-        ? 'Defines how far you are willing to travel.'
-        : 'Defines how far pet parents can discover your service.';
-  }
-
   List<String> get _slotPreview {
     final duration = _selectedDurationMinutes;
     final start = _startMinutes;
@@ -128,8 +121,8 @@ class _AddServiceBookingSetupScreenState
     final slots = <String>[];
     var cursor = start;
 
-    // Backend booking logic will later enforce lead-time rules like "slot must
-    // start at least 30 minutes in the future". For now this preview stays local.
+    // Backend booking logic enforces lead-time rules like "slot must
+    // start at least 1 hour in the future". For now this preview stays local.
     while (cursor + duration <= end) {
       final slotEnd = cursor + duration;
       slots.add('${_formatTime(cursor)} - ${_formatTime(slotEnd)}');
@@ -141,8 +134,9 @@ class _AddServiceBookingSetupScreenState
 
   bool _validateForm() {
     setState(() {
-      _durationError =
-          _selectedDurationLabel == null ? 'Session duration is required' : null;
+      _durationError = _selectedDurationLabel == null
+          ? 'Session duration is required'
+          : null;
       _availabilityError = _selectedDays.isEmpty
           ? 'Select at least one available day'
           : _startMinutes == null || _endMinutes == null
@@ -150,9 +144,11 @@ class _AddServiceBookingSetupScreenState
           : _endMinutes! <= _startMinutes!
           ? 'End time must be after start time'
           : null;
-      _serviceTypeError =
-          _selectedServiceType == null ? 'Service type is required' : null;
-      _locationError = _selectedLocation == null ||
+      _serviceTypeError = _selectedServiceType == null
+          ? 'Service type is required'
+          : null;
+      _locationError =
+          _selectedLocation == null ||
               _selectedLocation!.displayAddress.trim().isEmpty
           ? 'Location is required'
           : null;
@@ -250,9 +246,8 @@ class _AddServiceBookingSetupScreenState
     final selected = await Navigator.push<ServiceLocation>(
       context,
       MaterialPageRoute(
-        builder: (_) => ServiceLocationPickerScreen(
-          initialLocation: initialLocation,
-        ),
+        builder: (_) =>
+            ServiceLocationPickerScreen(initialLocation: initialLocation),
       ),
     );
 
@@ -438,7 +433,6 @@ class _AddServiceBookingSetupScreenState
         alignment: 0.18,
       );
     }
-
   }
 
   Future<void> _handleNextPress() async {
@@ -453,16 +447,11 @@ class _AddServiceBookingSetupScreenState
     }
   }
 
-  Future<void> _pickTime({
-    required bool isStart,
-  }) async {
+  Future<void> _pickTime({required bool isStart}) async {
     final currentMinutes = isStart ? _startMinutes : _endMinutes;
     final initialTime = currentMinutes == null
         ? const TimeOfDay(hour: 9, minute: 0)
-        : TimeOfDay(
-            hour: currentMinutes ~/ 60,
-            minute: currentMinutes % 60,
-          );
+        : TimeOfDay(hour: currentMinutes ~/ 60, minute: currentMinutes % 60);
 
     final picked = await showTimePicker(
       context: context,
@@ -525,7 +514,6 @@ class _AddServiceBookingSetupScreenState
       startMinutes: _startMinutes!,
       endMinutes: _endMinutes!,
       sameForAllDays: _sameForAllDays,
-      serviceRadiusKm: _serviceRadius,
       serviceType: _selectedServiceType!,
       location: _selectedLocation!,
     );
@@ -649,7 +637,9 @@ class _AddServiceBookingSetupScreenState
                             });
                           },
                           backgroundColor: Colors.white,
-                          selectedColor: AppColors.primary.withValues(alpha: 0.12),
+                          selectedColor: AppColors.primary.withValues(
+                            alpha: 0.12,
+                          ),
                           checkmarkColor: AppColors.primary,
                           side: BorderSide(
                             color: selected
@@ -722,7 +712,8 @@ class _AddServiceBookingSetupScreenState
                       isPrimarySelected: _sameForAllDays,
                       primaryLabel: 'Yes',
                       secondaryLabel: 'No',
-                      onPrimaryTap: () => setState(() => _sameForAllDays = true),
+                      onPrimaryTap: () =>
+                          setState(() => _sameForAllDays = true),
                       onSecondaryTap: () =>
                           setState(() => _sameForAllDays = false),
                     ),
@@ -783,7 +774,9 @@ class _AddServiceBookingSetupScreenState
                               color: Colors.white,
                               borderRadius: BorderRadius.circular(14),
                               border: Border.all(
-                                color: AppColors.primary.withValues(alpha: 0.10),
+                                color: AppColors.primary.withValues(
+                                  alpha: 0.10,
+                                ),
                               ),
                             ),
                             child: Text(
@@ -800,16 +793,8 @@ class _AddServiceBookingSetupScreenState
                 ),
                 const SizedBox(height: 18),
                 _SectionCard(
-                  title: 'Discovery & Location',
+                  title: 'Service Type & Location',
                   children: [
-                    _SliderField(
-                      value: _serviceRadius,
-                      helperText: _radiusHelperText,
-                      onChanged: (value) {
-                        setState(() => _serviceRadius = value);
-                      },
-                    ),
-                    const SizedBox(height: 18),
                     _RadioGroupField(
                       fieldKey: _serviceTypeFieldKey,
                       label: 'Service type',
@@ -875,7 +860,10 @@ class _AddServiceBookingSetupScreenState
               right: 16,
               top: topInset + 10,
               child: GlassSurface(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
                 borderRadius: BorderRadius.circular(24),
                 backgroundColor: Colors.white.withValues(alpha: 0.72),
                 blurSigma: 20,
@@ -1100,8 +1088,9 @@ class _DropdownField extends StatelessWidget {
               helperText: helperText,
               errorText: errorText,
               filled: true,
-              fillColor:
-                  enabled ? const Color(0xFFFCFBFA) : Colors.grey.shade100,
+              fillColor: enabled
+                  ? const Color(0xFFFCFBFA)
+                  : Colors.grey.shade100,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(18),
                 borderSide: isHighlighted
@@ -1381,84 +1370,6 @@ class _SegmentChoiceButton extends StatelessWidget {
   }
 }
 
-class _SliderField extends StatelessWidget {
-  final double value;
-  final String helperText;
-  final ValueChanged<double> onChanged;
-
-  const _SliderField({
-    required this.value,
-    required this.helperText,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Service radius',
-          style: TextStyle(
-            color: AppColors.textGrey,
-            fontWeight: FontWeight.w600,
-            fontSize: 14,
-          ),
-        ),
-        const SizedBox(height: 10),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFCFBFA),
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  Text(
-                    '${value.round()} km',
-                    style: const TextStyle(
-                      color: AppColors.textDark,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const Spacer(),
-                  const Text(
-                    '1 km - 50 km',
-                    style: TextStyle(
-                      color: AppColors.textGrey,
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-              Slider(
-                value: value,
-                min: 1,
-                max: 50,
-                divisions: 49,
-                activeColor: AppColors.primary,
-                onChanged: onChanged,
-              ),
-              Text(
-                helperText,
-                style: const TextStyle(
-                  color: AppColors.textGrey,
-                  fontSize: 12.5,
-                  height: 1.5,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _RadioGroupField extends StatelessWidget {
   final Key? fieldKey;
   final String label;
@@ -1697,12 +1608,7 @@ class _RadioDot extends StatelessWidget {
   }
 }
 
-enum _BookingSetupField {
-  duration,
-  availability,
-  serviceType,
-  location,
-}
+enum _BookingSetupField { duration, availability, serviceType, location }
 
 class _BookingFieldIssue {
   final _BookingSetupField field;

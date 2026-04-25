@@ -84,12 +84,15 @@ class ProfileRepository {
   Future<void> updateCurrentUserProfile({
     required String name,
     required String location,
+    required String phone,
     required String bio,
     String? profileImageUrl,
   }) async {
     final payload = <String, dynamic>{
       'name': name.trim(),
       'location': location.trim(),
+      'phone': phone.trim(),
+      'mobileNumber': phone.trim(),
       'bio': bio.trim(),
       'updatedAt': FieldValue.serverTimestamp(),
     };

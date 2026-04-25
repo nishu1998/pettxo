@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../auth/presentation/widgets/common_phone_field.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 
@@ -18,6 +19,7 @@ class EditProfileScreen extends StatefulWidget {
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
   static const int _bioCharacterLimit = 160;
+  static final RegExp _phonePattern = RegExp(r'^\+\d{10,15}$');
 
   final ProfileRepository _profileRepository = ProfileRepository();
   final ImagePicker _imagePicker = ImagePicker();
@@ -25,12 +27,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _bioController = TextEditingController();
+  final FocusNode _phoneFocus = FocusNode();
 
   bool _isLoading = true;
   bool _isSaving = false;
   String? _loadError;
   String? _nameError;
   String? _locationError;
+  String? _phoneError;
+  String _fullPhoneNumber = '';
   File? _selectedImage;
   UserProfile? _initialProfile;
 
@@ -49,6 +54,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _nameController.text = profile.name;
       _locationController.text = profile.location;
       _bioController.text = profile.bio;
+      _fullPhoneNumber = profile.phone;
 
       setState(() => _isLoading = false);
     } catch (_) {
@@ -85,14 +91,20 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
     final name = _nameController.text.trim();
     final location = _locationController.text.trim();
+    final phone = _fullPhoneNumber.trim();
     final bio = _bioController.text.trim();
+    final phoneValidationError = _validatePhoneNumber(phone);
 
     setState(() {
       _nameError = name.isEmpty ? 'Name is required' : null;
       _locationError = location.isEmpty ? 'Location is required' : null;
+      _phoneError = phoneValidationError;
     });
 
-    if (_nameError != null || _locationError != null) {
+    if (_nameError != null || _locationError != null || _phoneError != null) {
+      if (_phoneError != null) {
+        FocusScope.of(context).requestFocus(_phoneFocus);
+      }
       return;
     }
 
@@ -118,6 +130,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       await _profileRepository.updateCurrentUserProfile(
         name: name,
         location: location,
+        phone: phone,
         bio: bio,
         profileImageUrl: uploadedImageUrl,
       );
@@ -155,11 +168,31 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return 'Sorry, we could not update your profile right now. Please try again in a moment.';
   }
 
+  String? _validatePhoneNumber(String phoneNumber) {
+    if (phoneNumber.isEmpty) {
+      return 'Phone number is required';
+    }
+    if (!_phonePattern.hasMatch(phoneNumber)) {
+      return 'Enter a valid phone number';
+    }
+    return null;
+  }
+
+  String? _initialPhoneNumber(String phoneNumber) {
+    final trimmed = phoneNumber.trim();
+    if (trimmed.isEmpty) return null;
+    if (trimmed.startsWith('+91') && trimmed.length > 3) {
+      return trimmed.substring(3);
+    }
+    return trimmed;
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
     _locationController.dispose();
     _bioController.dispose();
+    _phoneFocus.dispose();
     super.dispose();
   }
 
@@ -342,6 +375,23 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           onChanged: (_) {
                             if (_locationError == null) return;
                             setState(() => _locationError = null);
+                          },
+                        ),
+                        const SizedBox(height: 14),
+                        CommonPhoneField(
+                          labelText: 'Phone number',
+                          initialNumber: _initialPhoneNumber(profile.phone),
+                          focusNode: _phoneFocus,
+                          errorText: _phoneError,
+                          textInputAction: TextInputAction.next,
+                          onChanged: (value) {
+                            _fullPhoneNumber = value.trim();
+                            if (_phoneError == null) return;
+                            setState(() {
+                              _phoneError = _validatePhoneNumber(
+                                _fullPhoneNumber,
+                              );
+                            });
                           },
                         ),
                         const SizedBox(height: 14),

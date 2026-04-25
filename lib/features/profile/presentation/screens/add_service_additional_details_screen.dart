@@ -4,14 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
-import '../../data/repositories/profile_content_repository.dart';
 import '../../data/repositories/profile_repository.dart';
 import '../../domain/models/add_service_flow_draft.dart';
-import '../../domain/models/profile_service_listing.dart';
 import '../../domain/models/user_profile.dart';
+import '../../../services/data/repositories/services_repository.dart';
+import '../../../services/domain/models/service_model.dart';
 
 class AddServiceAdditionalDetailsScreen extends StatefulWidget {
   final AddServiceFlowDraft draft;
@@ -28,20 +29,14 @@ class _AddServiceAdditionalDetailsScreenState
   static const Color _screenBackground = Color(0xFFFCF8F5);
   static const int _maxPhotos = 6;
   static const int _maxPhotoSizeBytes = 5 * 1024 * 1024;
-  static const List<String> _allowedExtensions = [
-    'jpg',
-    'jpeg',
-    'png',
-    'webp',
-  ];
+  static const List<String> _allowedExtensions = ['jpg', 'jpeg', 'png', 'webp'];
 
   final ImagePicker _imagePicker = ImagePicker();
   final TextEditingController _notesController = TextEditingController();
   final FocusNode _notesFocusNode = FocusNode();
   final GlobalKey _notesFieldKey = GlobalKey();
   final ProfileRepository _profileRepository = ProfileRepository();
-  final ProfileContentRepository _contentRepository =
-      const ProfileContentRepository();
+  final ServicesRepository _servicesRepository = ServicesRepository();
 
   final List<_SelectedPhoto> _selectedPhotos = [];
   String? _notesError;
@@ -117,12 +112,7 @@ class _AddServiceAdditionalDetailsScreenState
         continue;
       }
 
-      accepted.add(
-        _SelectedPhoto(
-          path: file.path,
-          name: file.name,
-        ),
-      );
+      accepted.add(_SelectedPhoto(path: file.path, name: file.name));
     }
 
     if (!mounted || accepted.isEmpty) return;
@@ -194,25 +184,33 @@ class _AddServiceAdditionalDetailsScreenState
     if (!_validateForm() || _isPublishing) return;
 
     setState(() => _isPublishing = true);
+    AppLoader.showWithMessage(
+      _selectedPhotos.isEmpty
+          ? 'Setting up your service...'
+          : 'Uploading images...',
+    );
 
     try {
       final profile = await _profileRepository.getCurrentUserProfile();
-      final service = _buildMockService(profile);
+      final service = _buildServiceModel(profile);
+      final photos = _selectedPhotos.map((photo) => File(photo.path)).toList();
 
-      // The full publish flow stays local for now: we combine B1, B2, and B3
-      // data into one mock listing, store it in the existing local repository,
-      // and bubble `true` back so Profile refreshes the Services tab.
-      await _contentRepository.addServiceForProfile(profile, service);
+      // Publish now writes to Firestore and uploads selected photos to Storage.
+      // Moderation fields are included so admin review can be added without
+      // reshaping service documents later.
+      await _servicesRepository.createService(service: service, photos: photos);
 
+      AppLoader.hide();
       if (!mounted) return;
 
       AppFeedback.show(
         context,
-        message: 'Service published locally and added to your profile.',
+        message: 'Service published and added to your profile.',
         tone: AppFeedbackTone.success,
       );
       Navigator.pop(context, true);
     } catch (_) {
+      AppLoader.hide();
       if (!mounted) return;
       AppFeedback.show(
         context,
@@ -220,39 +218,55 @@ class _AddServiceAdditionalDetailsScreenState
         tone: AppFeedbackTone.error,
       );
     } finally {
+      AppLoader.hide();
       if (mounted) {
         setState(() => _isPublishing = false);
       }
     }
   }
 
-  ProfileServiceListing _buildMockService(UserProfile profile) {
+  ServiceModel _buildServiceModel(UserProfile profile) {
     final details = widget.draft.details;
     final setup = widget.draft.bookingSetup;
-    final photoPaths = _selectedPhotos.map((photo) => photo.path).toList();
 
-    return ProfileServiceListing(
-      id: '${profile.uid}_${DateTime.now().millisecondsSinceEpoch}',
+    return ServiceModel(
+      id: '',
+      ownerUserId: profile.uid,
+      ownerName: profile.name,
+      ownerUsername: profile.username,
+      ownerPhotoUrl: profile.profileImageUrl,
+      ownerCity: profile.city,
+      ownerState: profile.state,
       title: details.serviceName,
-      serviceType: details.resolvedCategory,
       animalType: details.resolvedAnimalType,
       category: details.resolvedCategory,
-      serviceRadiusKm: setup.serviceRadiusKm,
-      bookingServiceType: setup.serviceType,
       description: details.description,
-      rate: '₹${details.pricePerSession}/session',
-      location: setup.location.displayAddress,
-      availability:
-          '${setup.availableDays.join(', ')} - ${_formatTime(setup.startMinutes)} to ${_formatTime(setup.endMinutes)}',
-      duration: '${setup.sessionDurationMinutes} min',
-      petSize: details.resolvedAnimalType,
-      rating: 'New',
-      distance: '${setup.serviceRadiusKm.round()} km radius',
+      privateNotes: _notesController.text.trim(),
+      pricePerSession: details.pricePerSession,
+      currency: 'INR',
+      sessionDurationMinutes: setup.sessionDurationMinutes,
+      capacity: setup.capacity,
+      availableDays: setup.availableDays,
+      startMinutes: setup.startMinutes,
+      endMinutes: setup.endMinutes,
+      sameForAllDays: setup.sameForAllDays,
+      serviceType: setup.serviceType,
+      displayAddress: setup.location.displayAddress,
       latitude: setup.location.latitude,
       longitude: setup.location.longitude,
-      imageUrl: photoPaths.isEmpty ? '' : photoPaths.first,
-      notes: _notesController.text.trim(),
-      photoPaths: photoPaths,
+      city: profile.city,
+      state: profile.state,
+      photoUrls: const [],
+      primaryPhotoUrl: '',
+      status: 'active',
+      isActive: true,
+      isDeleted: false,
+      isPaused: false,
+      moderationStatus: 'pending',
+      isVisibleToMarketplace: true,
+      createdAt: null,
+      updatedAt: null,
+      publishedAt: null,
     );
   }
 
@@ -354,20 +368,22 @@ class _AddServiceAdditionalDetailsScreenState
                 const SizedBox(height: 18),
                 _SectionCard(
                   title: 'Ready to publish',
-                  children: const [
-                    _WarningNotice(),
-                  ],
+                  children: const [_WarningNotice()],
                 ),
                 const SizedBox(height: 22),
                 Stack(
                   children: [
                     GradientButton(
-                      label: _isPublishing ? 'Publishing...' : 'Publish Service',
-                      onPressed: _isFormValid && _hasValidFlowDraft && !_isPublishing
+                      label: _isPublishing
+                          ? 'Publishing...'
+                          : 'Publish Service',
+                      onPressed:
+                          _isFormValid && _hasValidFlowDraft && !_isPublishing
                           ? _handlePublishPress
                           : null,
                     ),
-                    if ((!_isFormValid || !_hasValidFlowDraft) && !_isPublishing)
+                    if ((!_isFormValid || !_hasValidFlowDraft) &&
+                        !_isPublishing)
                       Positioned.fill(
                         child: Material(
                           color: Colors.transparent,
@@ -386,7 +402,10 @@ class _AddServiceAdditionalDetailsScreenState
               right: 16,
               top: topInset + 10,
               child: GlassSurface(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
                 borderRadius: BorderRadius.circular(24),
                 backgroundColor: Colors.white.withValues(alpha: 0.72),
                 blurSigma: 20,
@@ -437,24 +456,13 @@ class _AddServiceAdditionalDetailsScreenState
       ),
     );
   }
-
-  static String _formatTime(int totalMinutes) {
-    final hour = totalMinutes ~/ 60;
-    final minute = totalMinutes % 60;
-    final suffix = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
-  }
 }
 
 class _SelectedPhoto {
   final String path;
   final String name;
 
-  const _SelectedPhoto({
-    required this.path,
-    required this.name,
-  });
+  const _SelectedPhoto({required this.path, required this.name});
 }
 
 class _IntroCard extends StatelessWidget {
@@ -510,10 +518,7 @@ class _SectionCard extends StatelessWidget {
   final String title;
   final List<Widget> children;
 
-  const _SectionCard({
-    required this.title,
-    required this.children,
-  });
+  const _SectionCard({required this.title, required this.children});
 
   @override
   Widget build(BuildContext context) {
@@ -587,10 +592,7 @@ class _PhotoTile extends StatelessWidget {
   final _SelectedPhoto photo;
   final VoidCallback onRemove;
 
-  const _PhotoTile({
-    required this.photo,
-    required this.onRemove,
-  });
+  const _PhotoTile({required this.photo, required this.onRemove});
 
   @override
   Widget build(BuildContext context) {
@@ -721,7 +723,10 @@ class _NotesField extends StatelessWidget {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(18),
-              borderSide: const BorderSide(color: AppColors.primary, width: 1.6),
+              borderSide: const BorderSide(
+                color: AppColors.primary,
+                width: 1.6,
+              ),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(18),
@@ -739,7 +744,9 @@ class _NotesField extends StatelessWidget {
           child: Text(
             '$currentLength / 300',
             style: TextStyle(
-              color: currentLength > 300 ? Colors.redAccent : AppColors.textGrey,
+              color: currentLength > 300
+                  ? Colors.redAccent
+                  : AppColors.textGrey,
               fontSize: 12.5,
               fontWeight: FontWeight.w600,
             ),
@@ -766,10 +773,7 @@ class _WarningNotice extends StatelessWidget {
       child: const Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.info_outline_rounded,
-            color: AppColors.primary,
-          ),
+          Icon(Icons.info_outline_rounded, color: AppColors.primary),
           SizedBox(width: 12),
           Expanded(
             child: Text(

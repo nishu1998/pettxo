@@ -1,20 +1,27 @@
 class ProfileServiceListing {
   final String id;
+  final String ownerUserId;
   final String title;
   final String serviceType;
   final String animalType;
   final String category;
+  // Deprecated: still read from older stored payloads so they deserialize
+  // safely, but no active UI or write path depends on this field anymore.
   final double serviceRadiusKm;
   final String bookingServiceType;
   final double latitude;
   final double longitude;
   final String description;
   final String rate;
+  final int pricePerSession;
+  final int durationMinutes;
   final String location;
   final String availability;
   final String duration;
   final String petSize;
   final String rating;
+  // Deprecated: preserved only for backward-compatible reads of older local
+  // payloads/doc snapshots.
   final String distance;
   final String imageUrl;
   final String notes;
@@ -23,6 +30,7 @@ class ProfileServiceListing {
 
   const ProfileServiceListing({
     required this.id,
+    this.ownerUserId = '',
     required this.title,
     required this.serviceType,
     this.animalType = '',
@@ -33,6 +41,8 @@ class ProfileServiceListing {
     this.longitude = 0,
     required this.description,
     required this.rate,
+    this.pricePerSession = 0,
+    this.durationMinutes = 0,
     required this.location,
     required this.availability,
     required this.duration,
@@ -48,6 +58,7 @@ class ProfileServiceListing {
   ProfileServiceListing copyWith({bool? isPaused}) {
     return ProfileServiceListing(
       id: id,
+      ownerUserId: ownerUserId,
       title: title,
       serviceType: serviceType,
       animalType: animalType,
@@ -58,6 +69,8 @@ class ProfileServiceListing {
       longitude: longitude,
       description: description,
       rate: rate,
+      pricePerSession: pricePerSession,
+      durationMinutes: durationMinutes,
       location: location,
       availability: availability,
       duration: duration,
@@ -74,6 +87,7 @@ class ProfileServiceListing {
   factory ProfileServiceListing.fromMap(Map<String, dynamic> data) {
     return ProfileServiceListing(
       id: (data['id'] as String? ?? '').trim(),
+      ownerUserId: (data['ownerUserId'] as String? ?? '').trim(),
       title: (data['title'] as String? ?? '').trim(),
       serviceType: (data['serviceType'] as String? ?? 'Pet Care').trim(),
       animalType: (data['animalType'] as String? ?? '').trim(),
@@ -84,6 +98,8 @@ class ProfileServiceListing {
       longitude: (data['longitude'] as num?)?.toDouble() ?? 0,
       description: (data['description'] as String? ?? '').trim(),
       rate: (data['rate'] as String? ?? '').trim(),
+      pricePerSession: (data['pricePerSession'] as num?)?.toInt() ?? 0,
+      durationMinutes: (data['durationMinutes'] as num?)?.toInt() ?? 0,
       location: (data['location'] as String? ?? '').trim(),
       availability: (data['availability'] as String? ?? '').trim(),
       duration: (data['duration'] as String? ?? '').trim(),
@@ -102,22 +118,23 @@ class ProfileServiceListing {
   Map<String, dynamic> toMap() {
     return {
       'id': id,
+      'ownerUserId': ownerUserId,
       'title': title,
       'serviceType': serviceType,
       'animalType': animalType,
       'category': category,
-      'serviceRadiusKm': serviceRadiusKm,
       'bookingServiceType': bookingServiceType,
       'latitude': latitude,
       'longitude': longitude,
       'description': description,
       'rate': rate,
+      'pricePerSession': pricePerSession,
+      'durationMinutes': durationMinutes,
       'location': location,
       'availability': availability,
       'duration': duration,
       'petSize': petSize,
       'rating': rating,
-      'distance': distance,
       'imageUrl': imageUrl,
       'notes': notes,
       'photoPaths': photoPaths,
