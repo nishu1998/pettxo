@@ -53,6 +53,7 @@ class DefaultFirebaseOptions {
     projectId: 'pettexo-d9409',
     authDomain: 'pettexo-d9409.firebaseapp.com',
     storageBucket: 'pettexo-d9409.firebasestorage.app',
+    measurementId: 'G-RSSKWLXNSQ',
   );
 
   static const FirebaseOptions android = FirebaseOptions(

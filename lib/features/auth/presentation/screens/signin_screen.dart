@@ -5,6 +5,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import '../../data/services/user_service.dart';
@@ -47,11 +48,7 @@ class _SigninScreenState extends State<SigninScreen> {
     if (didSend == true && mounted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        final messenger = ScaffoldMessenger.maybeOf(context);
-        messenger?.hideCurrentSnackBar();
-        messenger?.showSnackBar(
-          const SnackBar(content: Text("Password reset email sent")),
-        );
+        AppSnackbar.showSuccess(context, "Password reset email sent");
       });
     }
   }
@@ -266,11 +263,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
     final email = _controller.text.trim();
 
     if (email.isEmpty) {
-      final messenger = ScaffoldMessenger.maybeOf(context);
-      messenger?.hideCurrentSnackBar();
-      messenger?.showSnackBar(
-        const SnackBar(content: Text("Enter your email first")),
-      );
+      AppSnackbar.showWarning(context, "Enter your email first");
       return;
     }
 
@@ -291,10 +284,9 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
-      final messenger = ScaffoldMessenger.maybeOf(context);
-      messenger?.hideCurrentSnackBar();
-      messenger?.showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      AppSnackbar.showError(
+        context,
+        e.toString().replaceFirst('Exception: ', ''),
       );
       setState(() {
         _isSubmitting = false;

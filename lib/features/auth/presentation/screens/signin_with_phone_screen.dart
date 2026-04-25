@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import '../../data/services/user_service.dart';
@@ -89,9 +90,7 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
         setState(() {
           _isLoading = false;
         });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
+        AppSnackbar.showError(context, message);
       },
     );
 

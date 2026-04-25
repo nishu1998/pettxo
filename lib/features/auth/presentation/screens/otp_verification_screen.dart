@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import '../../data/services/user_service.dart';
@@ -128,8 +129,9 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
       await _handleVerifiedUser();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      AppSnackbar.showError(
+        context,
+        e.toString().replaceFirst('Exception: ', ''),
       );
     } finally {
       if (mounted) {
@@ -157,15 +159,11 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
         _resendToken = resendToken;
         _startTimer();
         setState(() {});
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('OTP resent successfully')),
-        );
+        AppSnackbar.showSuccess(context, 'OTP resent successfully');
       },
       verificationFailed: (message) async {
         if (!mounted) return;
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
+        AppSnackbar.showError(context, message);
       },
     );
   }

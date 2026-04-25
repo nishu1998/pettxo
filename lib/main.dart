@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 
 import 'core/services/analytics_service.dart';
+import 'core/services/app_loader.dart';
+import 'core/services/push_notification_service.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
 import 'features/bookings/presentation/screens/bookings_screen.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
@@ -26,6 +28,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await PushNotificationService.instance.initialize();
 
   runApp(const PettexoApp());
 }
@@ -38,6 +41,7 @@ class PettexoApp extends StatelessWidget {
     return MaterialApp(
       title: 'Pettexo',
       debugShowCheckedModeBanner: false,
+      navigatorKey: AppLoader.navigatorKey,
 
       // ✅ Apply global theme (Poppins + colors)
       theme: AppTheme.lightTheme,
