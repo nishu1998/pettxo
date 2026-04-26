@@ -346,6 +346,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                               fontWeight: FontWeight.w500,
                                             ),
                                           ),
+                                          if (profile.isServiceProvider) ...[
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              profile.providerReviewSummary,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: profile.hasReviews
+                                                    ? const Color(0xFF9A3412)
+                                                    : AppColors.textGrey,
+                                                fontSize: 13.5,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ],
                                         ],
                                       ),
                                     ),

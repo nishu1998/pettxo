@@ -264,6 +264,8 @@ class _AddServiceAdditionalDetailsScreenState
       isPaused: false,
       moderationStatus: 'pending',
       isVisibleToMarketplace: true,
+      ratingAverage: 0,
+      ratingCount: 0,
       createdAt: null,
       updatedAt: null,
       publishedAt: null,

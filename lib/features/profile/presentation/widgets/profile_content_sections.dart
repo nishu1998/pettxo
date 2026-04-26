@@ -274,6 +274,27 @@ class _ProfileServiceCard extends StatelessWidget {
                               ),
                             ),
                           ),
+                          if (service.isSponsorActive) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFF2EA),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: const Text(
+                                'Sponsored',
+                                style: TextStyle(
+                                  color: AppColors.primary,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ],
                           if (service.isPaused) ...[
                             const SizedBox(width: 8),
                             Container(
@@ -317,6 +338,19 @@ class _ProfileServiceCard extends StatelessWidget {
                           color: AppColors.textGrey,
                           height: 1.35,
                           fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        service.reviewSummary,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: service.hasReviews
+                              ? const Color(0xFF9A3412)
+                              : AppColors.textGrey,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                       const SizedBox(height: 12),

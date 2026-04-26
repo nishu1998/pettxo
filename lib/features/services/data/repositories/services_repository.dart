@@ -64,6 +64,15 @@ class ServicesRepository {
         .map(_mapSnapshot);
   }
 
+  Future<ServiceModel?> fetchServiceById(String serviceId) async {
+    final id = serviceId.trim();
+    if (id.isEmpty) return null;
+
+    final snapshot = await _services.doc(id).get();
+    if (!snapshot.exists) return null;
+    return ServiceModel.fromDocument(snapshot);
+  }
+
   Future<ServicesPage> fetchActiveServicesPage({
     int limit = 20,
     String? category,
@@ -148,6 +157,8 @@ class ServicesRepository {
       isPaused: service.isPaused,
       moderationStatus: service.moderationStatus,
       isVisibleToMarketplace: service.isVisibleToMarketplace,
+      ratingAverage: service.ratingAverage,
+      ratingCount: service.ratingCount,
       createdAt: service.createdAt,
       updatedAt: service.updatedAt,
       publishedAt: service.publishedAt,

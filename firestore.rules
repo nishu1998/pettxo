@@ -18,6 +18,24 @@ service cloud.firestore {
       return resource.data.ownerUserId;
     }
 
+    function safeUserOwnerCreate() {
+      return request.resource.data.diff({}).changedKeys().hasOnly([
+        'uid',
+        'email',
+        'role',
+        'name',
+        'username',
+        'usernameLowercase',
+        'phone',
+        'state',
+        'city',
+        'profileImage',
+        'bio',
+        'createdAt'
+      ]) &&
+      request.resource.data.createdAt == request.time;
+    }
+
     function safeServiceOwnerUpdate() {
       return request.resource.data.diff(resource.data).changedKeys().hasOnly([
         'title',
@@ -50,10 +68,75 @@ service cloud.firestore {
       ]);
     }
 
+    function safeServiceOwnerCreate() {
+      return request.resource.data.diff({}).changedKeys().hasOnly([
+        'ownerUserId',
+        'ownerName',
+        'ownerUsername',
+        'ownerPhotoUrl',
+        'ownerSnapshot',
+        'title',
+        'titleLowercase',
+        'animalType',
+        'animalTypeLowercase',
+        'category',
+        'categoryLowercase',
+        'description',
+        'privateNotes',
+        'pricePerSession',
+        'currency',
+        'sessionDurationMinutes',
+        'capacity',
+        'availableDays',
+        'startMinutes',
+        'endMinutes',
+        'sameForAllDays',
+        'serviceType',
+        'location',
+        'photoUrls',
+        'primaryPhotoUrl',
+        'status',
+        'isActive',
+        'isDeleted',
+        'isPaused',
+        'moderationStatus',
+        'isVisibleToMarketplace',
+        'createdAt',
+        'updatedAt',
+        'publishedAt'
+      ]) &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time &&
+      request.resource.data.publishedAt == request.time;
+    }
+
+    function safeUserOwnerUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'name',
+        'username',
+        'usernameLowercase',
+        'email',
+        'phone',
+        'mobileNumber',
+        'bio',
+        'profileType',
+        'profileImage',
+        'city',
+        'state',
+        'country',
+        'location',
+        'address',
+        'updatedAt'
+      ]) &&
+      request.resource.data.updatedAt == request.time;
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
-      allow create: if isOwner(userId) && request.resource.data.uid == userId;
-      allow update: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) &&
+        request.resource.data.uid == userId &&
+        safeUserOwnerCreate();
+      allow update: if isAdmin() || (isOwner(userId) && safeUserOwnerUpdate());
       allow delete: if isAdmin();
 
       match /notificationTokens/{tokenId} {
@@ -81,7 +164,8 @@ service cloud.firestore {
       allow create: if signedIn() &&
         request.resource.data.ownerUserId == request.auth.uid &&
         request.resource.data.isDeleted == false &&
-        request.resource.data.moderationStatus == 'pending';
+        request.resource.data.moderationStatus == 'pending' &&
+        safeServiceOwnerCreate();
 
       allow update: if isAdmin() ||
         (

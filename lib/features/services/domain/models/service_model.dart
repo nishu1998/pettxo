@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/utils/geohash.dart';
+import '../../../../core/utils/service_ranking.dart';
 import '../../../profile/domain/models/profile_service_listing.dart';
 
 class ServiceModel {
@@ -41,6 +42,21 @@ class ServiceModel {
   final bool isPaused;
   final String moderationStatus;
   final bool isVisibleToMarketplace;
+  final double ratingAverage;
+  final int ratingCount;
+  final int completedBookingCount;
+  final int reviewedBookingCount;
+  final double trustScore;
+  final double rankingScore;
+  final double organicRankingScore;
+  final double distanceKm;
+  final bool isSponsored;
+  final double sponsorBoost;
+  final DateTime? sponsorStartAt;
+  final DateTime? sponsorEndAt;
+  final double adminRankBoost;
+  final DateTime? adminPinnedUntil;
+  final String promotionLabel;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final DateTime? publishedAt;
@@ -81,6 +97,21 @@ class ServiceModel {
     required this.isPaused,
     required this.moderationStatus,
     required this.isVisibleToMarketplace,
+    required this.ratingAverage,
+    required this.ratingCount,
+    this.completedBookingCount = 0,
+    this.reviewedBookingCount = 0,
+    this.trustScore = 0,
+    this.rankingScore = 0,
+    this.organicRankingScore = 0,
+    this.distanceKm = 0,
+    this.isSponsored = false,
+    this.sponsorBoost = 0,
+    this.sponsorStartAt,
+    this.sponsorEndAt,
+    this.adminRankBoost = 0,
+    this.adminPinnedUntil,
+    this.promotionLabel = '',
     required this.createdAt,
     required this.updatedAt,
     required this.publishedAt,
@@ -96,13 +127,29 @@ class ServiceModel {
     final location = data['location'] as Map<String, dynamic>? ?? const {};
     final ownerSnapshot =
         data['ownerSnapshot'] as Map<String, dynamic>? ?? const {};
+    final stats = data['stats'] as Map<String, dynamic>? ?? const {};
 
     return ServiceModel(
       id: id,
       ownerUserId: (data['ownerUserId'] as String? ?? '').trim(),
-      ownerName: (ownerSnapshot['name'] as String? ?? '').trim(),
-      ownerUsername: (ownerSnapshot['username'] as String? ?? '').trim(),
-      ownerPhotoUrl: (ownerSnapshot['photoUrl'] as String? ?? '').trim(),
+      ownerName:
+          (ownerSnapshot['name'] as String? ??
+                  data['ownerName'] as String? ??
+                  data['providerName'] as String? ??
+                  '')
+              .trim(),
+      ownerUsername:
+          (ownerSnapshot['username'] as String? ??
+                  data['ownerUsername'] as String? ??
+                  data['providerUsername'] as String? ??
+                  '')
+              .trim()
+              .replaceFirst('@', ''),
+      ownerPhotoUrl:
+          (ownerSnapshot['photoUrl'] as String? ??
+                  data['ownerPhotoUrl'] as String? ??
+                  '')
+              .trim(),
       ownerCity: (ownerSnapshot['city'] as String? ?? '').trim(),
       ownerState: (ownerSnapshot['state'] as String? ?? '').trim(),
       title: (data['title'] as String? ?? '').trim(),
@@ -139,6 +186,38 @@ class ServiceModel {
       moderationStatus: (data['moderationStatus'] as String? ?? 'pending')
           .trim(),
       isVisibleToMarketplace: data['isVisibleToMarketplace'] as bool? ?? false,
+      ratingAverage:
+          (stats['ratingAverage'] as num?)?.toDouble() ??
+          (data['ratingAverage'] as num?)?.toDouble() ??
+          0,
+      ratingCount:
+          (stats['ratingCount'] as num?)?.toInt() ??
+          (data['ratingCount'] as num?)?.toInt() ??
+          0,
+      completedBookingCount:
+          (stats['completedBookingsCount'] as num?)?.toInt() ??
+          (data['completedBookingCount'] as num?)?.toInt() ??
+          (data['completedBookingsCount'] as num?)?.toInt() ??
+          0,
+      reviewedBookingCount:
+          (stats['reviewedBookingCount'] as num?)?.toInt() ??
+          (data['reviewedBookingCount'] as num?)?.toInt() ??
+          0,
+      trustScore:
+          (stats['trustScore'] as num?)?.toDouble() ??
+          (data['trustScore'] as num?)?.toDouble() ??
+          0,
+      rankingScore: (data['rankingScore'] as num?)?.toDouble() ?? 0,
+      organicRankingScore:
+          (data['organicRankingScore'] as num?)?.toDouble() ?? 0,
+      distanceKm: (data['distanceKm'] as num?)?.toDouble() ?? 0,
+      isSponsored: data['isSponsored'] as bool? ?? false,
+      sponsorBoost: (data['sponsorBoost'] as num?)?.toDouble() ?? 0,
+      sponsorStartAt: _readDate(data['sponsorStartAt']),
+      sponsorEndAt: _readDate(data['sponsorEndAt']),
+      adminRankBoost: (data['adminRankBoost'] as num?)?.toDouble() ?? 0,
+      adminPinnedUntil: _readDate(data['adminPinnedUntil']),
+      promotionLabel: (data['promotionLabel'] as String? ?? '').trim(),
       createdAt: _readDate(data['createdAt']),
       updatedAt: _readDate(data['updatedAt']),
       publishedAt: _readDate(data['publishedAt']),
@@ -148,6 +227,9 @@ class ServiceModel {
   Map<String, dynamic> toCreateMap() {
     return {
       'ownerUserId': ownerUserId,
+      'ownerName': ownerName,
+      'ownerUsername': ownerUsername,
+      'ownerPhotoUrl': ownerPhotoUrl,
       'ownerSnapshot': {
         'name': ownerName,
         'username': ownerUsername,
@@ -191,13 +273,6 @@ class ServiceModel {
       // New services remain visible until admin tooling introduces review gates.
       'moderationStatus': moderationStatus,
       'isVisibleToMarketplace': isVisibleToMarketplace,
-      'stats': {
-        'ratingAverage': 0,
-        'ratingCount': 0,
-        'completedBookingsCount': 0,
-        'activeBookingsCount': 0,
-        'requestCount': 0,
-      },
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'publishedAt': FieldValue.serverTimestamp(),
@@ -208,6 +283,8 @@ class ServiceModel {
     return ProfileServiceListing(
       id: id,
       ownerUserId: ownerUserId,
+      ownerName: ownerName,
+      ownerUsername: ownerUsername,
       title: title,
       serviceType: category,
       animalType: animalType,
@@ -227,14 +304,81 @@ class ServiceModel {
           ? 'Whole day'
           : '$sessionDurationMinutes min',
       petSize: animalType,
-      rating: 'New',
+      rating: ratingCount > 0
+          ? ratingLabel
+          : 'No reviews yet',
       distance: '',
       imageUrl: primaryPhotoUrl,
       notes: privateNotes,
       photoPaths: photoUrls,
       isPaused: isPaused || status == 'paused',
+      ratingAverage: ratingAverage,
+      ratingCount: ratingCount,
+      completedBookingCount: completedBookingCount,
+      reviewedBookingCount: reviewedBookingCount,
+      trustScore: trustScore,
+      rankingScore: rankingScore,
+      organicRankingScore: organicRankingScore,
+      distanceKm: distanceKm,
+      isSponsored: isSponsored,
+      sponsorBoost: sponsorBoost,
+      sponsorStartAt: sponsorStartAt,
+      sponsorEndAt: sponsorEndAt,
+      adminRankBoost: adminRankBoost,
+      adminPinnedUntil: adminPinnedUntil,
+      promotionLabel: promotionLabel,
     );
   }
+
+  bool get hasReviews => ratingCount > 0;
+
+  String get ratingLabel {
+    if (!hasReviews) return 'No reviews yet';
+    return '⭐ ${ratingAverage.toStringAsFixed(1)} · '
+        '$ratingCount ${ratingCount == 1 ? 'review' : 'reviews'}';
+  }
+
+  bool get isSponsorActive {
+    if (!isSponsored) return false;
+    final now = DateTime.now();
+    if (sponsorStartAt != null && sponsorStartAt!.isAfter(now)) return false;
+    if (sponsorEndAt != null && sponsorEndAt!.isBefore(now)) return false;
+    return true;
+  }
+
+  bool get isAdminPinnedActive {
+    final until = adminPinnedUntil;
+    if (until == null) return adminRankBoost > 0;
+    return until.isAfter(DateTime.now());
+  }
+
+  double get activeSponsorBoost => isSponsorActive ? sponsorBoost : 0;
+
+  double get activeAdminRankBoost => isAdminPinnedActive ? adminRankBoost : 0;
+
+  String get sponsoredLabel => isSponsorActive ? 'Sponsored' : '';
+
+  ServiceRankingInput get rankingInput {
+    return ServiceRankingInput(
+      ratingAverage: ratingAverage,
+      ratingCount: ratingCount,
+      completedBookingCount: completedBookingCount,
+      distanceKm: distanceKm,
+      updatedAt: updatedAt,
+      publishedAt: publishedAt,
+      isActive: isActive && !isDeleted && !isPaused,
+      activeSponsorBoost: activeSponsorBoost,
+      activeAdminRankBoost: activeAdminRankBoost,
+    );
+  }
+
+  ServiceRankingBreakdown get rankingBreakdown {
+    return ServiceRanking.calculate(rankingInput);
+  }
+
+  double get calculatedOrganicRankingScore => rankingBreakdown.organicScore;
+
+  double get calculatedFinalRankingScore => rankingBreakdown.finalRankingScore;
 
   static DateTime? _readDate(Object? value) {
     if (value is Timestamp) return value.toDate();

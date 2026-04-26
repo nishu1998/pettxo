@@ -11,6 +11,8 @@ class UserProfile {
   final String legacyLocation;
   final String bio;
   final String profileImageUrl;
+  final double ratingAverage;
+  final int ratingCount;
 
   const UserProfile({
     required this.uid,
@@ -25,6 +27,8 @@ class UserProfile {
     required this.legacyLocation,
     required this.bio,
     required this.profileImageUrl,
+    required this.ratingAverage,
+    required this.ratingCount,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> data) {
@@ -48,6 +52,8 @@ class UserProfile {
       legacyLocation: (data['location'] as String? ?? '').trim(),
       bio: (data['bio'] as String? ?? '').trim(),
       profileImageUrl: (data['profileImage'] as String? ?? '').trim(),
+      ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
+      ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -65,6 +71,8 @@ class UserProfile {
       'location': location,
       'bio': bio,
       'profileImage': profileImageUrl,
+      'ratingAverage': ratingAverage,
+      'ratingCount': ratingCount,
     };
   }
 
@@ -90,6 +98,13 @@ class UserProfile {
   }
 
   String get displayUsername => username.isEmpty ? '' : '@$username';
+
+  bool get hasReviews => ratingCount > 0;
+
+  String get providerReviewSummary {
+    if (!hasReviews) return 'New provider';
+    return '⭐ ${ratingAverage.toStringAsFixed(1)} · $ratingCount ${ratingCount == 1 ? 'review' : 'reviews'}';
+  }
 
   String get initials {
     final trimmed = name.trim();
