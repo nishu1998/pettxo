@@ -84,6 +84,17 @@ class ProfileServiceListing {
     );
   }
 
+  List<String> get galleryImages {
+    final values = <String>[imageUrl, ...photoPaths];
+    final images = <String>[];
+    for (final rawPath in values) {
+      final path = rawPath.trim();
+      if (path.isEmpty || images.contains(path)) continue;
+      images.add(path);
+    }
+    return images;
+  }
+
   factory ProfileServiceListing.fromMap(Map<String, dynamic> data) {
     return ProfileServiceListing(
       id: (data['id'] as String? ?? '').trim(),

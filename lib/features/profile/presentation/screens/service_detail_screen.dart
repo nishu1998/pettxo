@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -330,49 +331,53 @@ class _ServiceHero extends StatelessWidget {
                 fit: StackFit.expand,
                 children: [
                   _ServiceImageCarousel(service: service),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.transparent,
-                          Colors.black.withValues(alpha: 0.18),
-                        ],
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
+                  IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withValues(alpha: 0.18),
+                          ],
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                        ),
                       ),
                     ),
                   ),
                   Positioned(
                     left: 16,
                     top: 16,
-                    child: GlassSurface(
-                      borderRadius: BorderRadius.circular(999),
-                      backgroundColor: Colors.white.withValues(alpha: 0.78),
-                      blurSigma: 14,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.design_services_rounded,
-                            size: 16,
-                            color: AppColors.primary,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            service.bookingServiceType.isEmpty
-                                ? service.serviceType
-                                : service.bookingServiceType,
-                            style: const TextStyle(
-                              color: AppColors.textDark,
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w800,
+                    child: IgnorePointer(
+                      child: GlassSurface(
+                        borderRadius: BorderRadius.circular(999),
+                        backgroundColor: Colors.white.withValues(alpha: 0.78),
+                        blurSigma: 14,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.design_services_rounded,
+                              size: 16,
+                              color: AppColors.primary,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 6),
+                            Text(
+                              service.bookingServiceType.isEmpty
+                                  ? service.serviceType
+                                  : service.bookingServiceType,
+                              style: const TextStyle(
+                                color: AppColors.textDark,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -603,23 +608,23 @@ class _ServiceImageCarouselState extends State<_ServiceImageCarousel> {
     super.dispose();
   }
 
-  List<String> get _images {
-    final values = <String>[
-      ...widget.service.photoPaths,
-      widget.service.imageUrl,
-    ];
-    final images = <String>[];
-    for (final rawPath in values) {
-      final path = rawPath.trim();
-      if (path.isEmpty || images.contains(path)) continue;
-      images.add(path);
-    }
-    return images;
-  }
-
   @override
   Widget build(BuildContext context) {
-    final images = _images;
+    final images = widget.service.galleryImages;
+    if (kDebugMode) {
+      debugPrint(
+        'ServiceDetail gallery debug -> imageUrl: ${widget.service.imageUrl}',
+      );
+      debugPrint(
+        'ServiceDetail gallery debug -> photoPaths: ${widget.service.photoPaths}',
+      );
+      debugPrint(
+        'ServiceDetail gallery debug -> galleryImages: ${widget.service.galleryImages}',
+      );
+      debugPrint(
+        'ServiceDetail gallery debug -> galleryImages.length: ${images.length}',
+      );
+    }
     if (images.isEmpty) {
       return const DecoratedBox(
         decoration: BoxDecoration(gradient: AppColors.brandGradientDiagonal),
@@ -638,38 +643,50 @@ class _ServiceImageCarouselState extends State<_ServiceImageCarousel> {
       children: [
         PageView.builder(
           controller: _pageController,
+          scrollDirection: Axis.horizontal,
+          physics: const PageScrollPhysics(),
+          allowImplicitScrolling: true,
           itemCount: images.length,
           onPageChanged: (index) {
             if (!mounted) return;
             setState(() => _activePage = index);
           },
           itemBuilder: (context, index) {
-            return _ServiceImageFrame(imagePath: images[index]);
+            return _ServiceImageFrame(
+              key: ValueKey('${widget.service.id}_${images[index]}'),
+              imagePath: images[index],
+            );
           },
         ),
         Positioned(
           right: 16,
           bottom: 16,
-          child: GlassSurface(
-            borderRadius: BorderRadius.circular(999),
-            backgroundColor: Colors.white.withValues(alpha: 0.74),
-            blurSigma: 14,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(images.length, (index) {
-                final isActive = index == _activePage;
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 220),
-                  width: isActive ? 18 : 6,
-                  height: 6,
-                  margin: EdgeInsets.only(right: index == images.length - 1 ? 0 : 6),
-                  decoration: BoxDecoration(
-                    color: isActive ? AppColors.primary : AppColors.textGrey.withValues(alpha: 0.35),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                );
-              }),
+          child: IgnorePointer(
+            child: GlassSurface(
+              borderRadius: BorderRadius.circular(999),
+              backgroundColor: Colors.white.withValues(alpha: 0.74),
+              blurSigma: 14,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: List.generate(images.length, (index) {
+                  final isActive = index == _activePage;
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 220),
+                    width: isActive ? 18 : 6,
+                    height: 6,
+                    margin: EdgeInsets.only(
+                      right: index == images.length - 1 ? 0 : 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isActive
+                          ? AppColors.primary
+                          : AppColors.textGrey.withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  );
+                }),
+              ),
             ),
           ),
         ),
@@ -681,7 +698,7 @@ class _ServiceImageCarouselState extends State<_ServiceImageCarousel> {
 class _ServiceImageFrame extends StatelessWidget {
   final String imagePath;
 
-  const _ServiceImageFrame({required this.imagePath});
+  const _ServiceImageFrame({super.key, required this.imagePath});
 
   @override
   Widget build(BuildContext context) {
