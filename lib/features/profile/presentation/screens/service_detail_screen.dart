@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,13 +9,22 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../bookings/data/repositories/booking_review_repository.dart';
+import '../../../bookings/domain/models/booking_review_model.dart';
 import '../../../bookings/presentation/screens/slot_selection_screen.dart';
 import '../../domain/models/profile_service_listing.dart';
 
 class ServiceDetailScreen extends StatelessWidget {
   final ProfileServiceListing service;
+  final bool showRebookHint;
+  final DateTime? suggestedSlotStartAt;
 
-  const ServiceDetailScreen({super.key, required this.service});
+  const ServiceDetailScreen({
+    super.key,
+    required this.service,
+    this.showRebookHint = false,
+    this.suggestedSlotStartAt,
+  });
 
   void _openBookingFlow(BuildContext context) {
     Navigator.push(
@@ -26,6 +36,7 @@ class ServiceDetailScreen extends StatelessWidget {
           price: _resolvedPrice,
           durationMinutes: _resolvedDurationMinutes,
           providerId: service.ownerUserId,
+          suggestedSlotStartAt: suggestedSlotStartAt,
         ),
       ),
     );
@@ -70,6 +81,7 @@ class ServiceDetailScreen extends StatelessWidget {
                 service: service,
                 canBook: canBook,
                 isOwner: isOwner,
+                showRebookHint: showRebookHint,
                 onBookNow: () => _openBookingFlow(context),
               ),
               const SizedBox(height: 18),
@@ -125,6 +137,8 @@ class ServiceDetailScreen extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 18),
+              _ServiceReviewsSection(service: service),
+              const SizedBox(height: 18),
               _DetailCard(
                 title: 'Location',
                 children: [
@@ -165,8 +179,11 @@ class ServiceDetailScreen extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 14),
-                        GestureDetector(
-                          onTap: service.latitude == 0 && service.longitude == 0
+                        SecondaryButton(
+                          label: 'Open in Google Maps',
+                          icon: Icons.map_outlined,
+                          onPressed:
+                              service.latitude == 0 && service.longitude == 0
                               ? null
                               : () async {
                                   final uri = Uri.parse(
@@ -177,43 +194,6 @@ class ServiceDetailScreen extends StatelessWidget {
                                     mode: LaunchMode.externalApplication,
                                   );
                                 },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 12,
-                            ),
-                            decoration: BoxDecoration(
-                              gradient: AppColors.brandGradient,
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppColors.primary.withValues(
-                                    alpha: 0.24,
-                                  ),
-                                  blurRadius: 16,
-                                  offset: const Offset(0, 8),
-                                ),
-                              ],
-                            ),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  Icons.map_outlined,
-                                  color: Colors.white,
-                                  size: 18,
-                                ),
-                                SizedBox(width: 8),
-                                Text(
-                                  'Open in Google Maps',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                         ),
                       ],
                     ),
@@ -292,12 +272,14 @@ class _ServiceHero extends StatelessWidget {
   final ProfileServiceListing service;
   final bool canBook;
   final bool isOwner;
+  final bool showRebookHint;
   final VoidCallback onBookNow;
 
   const _ServiceHero({
     required this.service,
     required this.canBook,
     required this.isOwner,
+    required this.showRebookHint,
     required this.onBookNow,
   });
 
@@ -376,6 +358,27 @@ class _ServiceHero extends StatelessWidget {
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
+                            if (service.isSponsorActive) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF2EA),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: const Text(
+                                  'Sponsored',
+                                  style: TextStyle(
+                                    color: AppColors.primary,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -440,6 +443,44 @@ class _ServiceHero extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
+                if (showRebookHint) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF4EC),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: AppColors.primary.withValues(alpha: 0.12),
+                      ),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(
+                          Icons.refresh_rounded,
+                          color: AppColors.primary,
+                          size: 16,
+                        ),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Booking again with this provider',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                _ProviderIdentityRow(service: service),
                 const SizedBox(height: 10),
                 Text(
                   service.description,
@@ -521,6 +562,395 @@ class _InsightStrip extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _ProviderIdentityRow extends StatefulWidget {
+  final ProfileServiceListing service;
+
+  const _ProviderIdentityRow({required this.service});
+
+  @override
+  State<_ProviderIdentityRow> createState() => _ProviderIdentityRowState();
+}
+
+class _ProviderIdentityRowState extends State<_ProviderIdentityRow> {
+  String? _resolvedProviderName;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolvedProviderName = _snapshotProviderLabel;
+    if (_resolvedProviderName == 'Service provider') {
+      _loadProviderNameFallback();
+    }
+  }
+
+  String get _snapshotProviderLabel {
+    final ownerName = widget.service.ownerName.trim();
+    if (ownerName.isNotEmpty) return ownerName;
+    final ownerUsername = widget.service.ownerUsername.trim().replaceFirst(
+      '@',
+      '',
+    );
+    if (ownerUsername.isNotEmpty) return ownerUsername;
+    return 'Service provider';
+  }
+
+  Future<void> _loadProviderNameFallback() async {
+    final ownerUserId = widget.service.ownerUserId.trim();
+    if (ownerUserId.isEmpty) return;
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(ownerUserId)
+          .get();
+      final data = snapshot.data();
+      if (data == null || !mounted) return;
+      final name = (data['name'] as String? ?? '').trim();
+      final username = (data['username'] as String? ?? '').trim().replaceFirst(
+        '@',
+        '',
+      );
+      final resolved = name.isNotEmpty
+          ? name
+          : username.isNotEmpty
+          ? username
+          : 'Service provider';
+      setState(() => _resolvedProviderName = resolved);
+    } catch (_) {
+      // Detail UI can gracefully keep the generic provider fallback.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final providerName = _resolvedProviderName ?? 'Service provider';
+    return Row(
+      children: [
+        const Icon(
+          Icons.person_outline_rounded,
+          color: AppColors.textGrey,
+          size: 18,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            'Provided by $providerName',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ServiceReviewsSection extends StatelessWidget {
+  final ProfileServiceListing service;
+
+  const _ServiceReviewsSection({required this.service});
+
+  @override
+  Widget build(BuildContext context) {
+    final reviewRepository = BookingReviewRepository();
+
+    return StreamBuilder<List<BookingReviewModel>>(
+      stream: reviewRepository.watchServiceReviews(service.id, limit: 20),
+      builder: (context, snapshot) {
+        final allReviews = snapshot.data ?? const <BookingReviewModel>[];
+        final approvedReviews = allReviews
+            .where((review) => review.isApprovedForPublicDisplay)
+            .toList(growable: false);
+        final latestReviews = approvedReviews.take(3).toList(growable: false);
+        final hasMoreReviews = approvedReviews.length > 3;
+
+        return _DetailCard(
+          title: 'Reviews',
+          children: [
+            Text(
+              service.hasReviews
+                  ? '⭐ ${service.ratingAverage.toStringAsFixed(1)} · ${service.ratingCount} ${service.ratingCount == 1 ? 'review' : 'reviews'}'
+                  : 'No reviews yet',
+              style: TextStyle(
+                color: service.hasReviews
+                    ? AppColors.textDark
+                    : AppColors.textGrey,
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (!service.hasReviews)
+              const Text(
+                'Be the first pet parent to review this service.',
+                style: TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 13.5,
+                  height: 1.45,
+                  fontWeight: FontWeight.w500,
+                ),
+              )
+            else if (snapshot.connectionState == ConnectionState.waiting &&
+                approvedReviews.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (latestReviews.isEmpty)
+              const Text(
+                'No approved reviews yet.',
+                style: TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 13.5,
+                  height: 1.45,
+                  fontWeight: FontWeight.w500,
+                ),
+              )
+            else ...[
+              ...latestReviews.map(
+                (review) => Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: _ReviewPreviewCard(review: review),
+                ),
+              ),
+              if (hasMoreReviews) ...[
+                const SizedBox(height: 14),
+                SecondaryButton(
+                  label: 'View all reviews',
+                  size: AppButtonSize.compact,
+                  onPressed: () => _showAllReviewsSheet(
+                    context: context,
+                    service: service,
+                    reviews: approvedReviews,
+                  ),
+                ),
+              ],
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+void _showAllReviewsSheet({
+  required BuildContext context,
+  required ProfileServiceListing service,
+  required List<BookingReviewModel> reviews,
+}) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    builder: (context) {
+      final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+      final safeBottom = MediaQuery.paddingOf(context).bottom;
+      return SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + bottomInset),
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+            ),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFCF8F5),
+              borderRadius: BorderRadius.circular(28),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 28,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'All Reviews',
+                              style: TextStyle(
+                                color: AppColors.textDark,
+                                fontSize: 21,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        service.hasReviews
+                            ? '⭐ ${service.ratingAverage.toStringAsFixed(1)} · ${service.ratingCount} ${service.ratingCount == 1 ? 'review' : 'reviews'}'
+                            : 'No reviews yet',
+                        style: const TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    padding: EdgeInsets.fromLTRB(20, 16, 20, 16 + safeBottom),
+                    itemCount: reviews.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    itemBuilder: (context, index) {
+                      return _ReviewPreviewCard(review: reviews[index]);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _ReviewPreviewCard extends StatelessWidget {
+  final BookingReviewModel review;
+
+  const _ReviewPreviewCard({required this.review});
+
+  @override
+  Widget build(BuildContext context) {
+    final reviewerLabel = review.reviewerFirstName.isNotEmpty
+        ? review.reviewerFirstName
+        : 'Pet parent';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBF9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF0E8),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  reviewerLabel.substring(0, 1).toUpperCase(),
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  reviewerLabel,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              _ReviewStars(rating: review.rating),
+            ],
+          ),
+          if (review.comment.trim().isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              review.comment.trim(),
+              style: const TextStyle(
+                color: AppColors.textDark,
+                height: 1.45,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+          if (review.tags.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: review.tags
+                  .map((tag) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF1EA),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        tag,
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    );
+                  })
+                  .toList(growable: false),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ReviewStars extends StatelessWidget {
+  final int rating;
+
+  const _ReviewStars({required this.rating});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(5, (index) {
+        return Padding(
+          padding: EdgeInsets.only(left: index == 0 ? 0 : 2),
+          child: Icon(
+            index < rating ? Icons.star_rounded : Icons.star_border_rounded,
+            size: 16,
+            color: AppColors.primary,
+          ),
+        );
+      }),
     );
   }
 }

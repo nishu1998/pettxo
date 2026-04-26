@@ -19,6 +19,8 @@ class BookingModel {
   final String providerPhotoUrl;
   final String providerPhoneMasked;
   final String providerPhone;
+  final double providerRatingAverage;
+  final int providerRatingCount;
   final String customerName;
   final String customerUsername;
   final String customerPhotoUrl;
@@ -46,6 +48,8 @@ class BookingModel {
   final DateTime? otpVerifiedAt;
   final String payoutStatus;
   final DateTime? payoutEligibleAt;
+  final String reviewStatus;
+  final String reviewId;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -66,6 +70,8 @@ class BookingModel {
     required this.providerPhotoUrl,
     required this.providerPhoneMasked,
     required this.providerPhone,
+    required this.providerRatingAverage,
+    required this.providerRatingCount,
     required this.customerName,
     required this.customerUsername,
     required this.customerPhotoUrl,
@@ -93,6 +99,8 @@ class BookingModel {
     this.otpVerifiedAt,
     required this.payoutStatus,
     this.payoutEligibleAt,
+    required this.reviewStatus,
+    required this.reviewId,
     this.createdAt,
     this.updatedAt,
   });
@@ -109,6 +117,7 @@ class BookingModel {
     final pricing = _map(data['pricing']);
     final otp = _map(data['otp']);
     final payoutReadiness = _map(data['payoutReadiness']);
+    final review = _map(data['review']);
 
     return BookingModel(
       id: snapshot.id,
@@ -136,6 +145,10 @@ class BookingModel {
         providerSnapshot['phoneNumber'],
         providerSnapshot['mobileNumber'],
       ]),
+      providerRatingAverage:
+          (providerSnapshot['ratingAverage'] as num?)?.toDouble() ?? 0,
+      providerRatingCount:
+          (providerSnapshot['ratingCount'] as num?)?.toInt() ?? 0,
       customerName: _string(customerSnapshot['name'], fallback: 'Pet parent'),
       customerUsername: _string(customerSnapshot['username']),
       customerPhotoUrl: _string(customerSnapshot['photoUrl']),
@@ -166,6 +179,14 @@ class BookingModel {
       otpVerifiedAt: _dateTime(otp['verifiedAt']),
       payoutStatus: _string(payoutReadiness['status']),
       payoutEligibleAt: _dateTime(payoutReadiness['eligibleAt']),
+      reviewStatus: _string(
+        review['status'],
+        fallback: _string(data['reviewStatus']),
+      ),
+      reviewId: _string(
+        review['reviewId'],
+        fallback: _string(data['reviewId']),
+      ),
       createdAt: _dateTime(data['createdAt']),
       updatedAt: _dateTime(data['updatedAt']),
     );
@@ -257,6 +278,14 @@ class BookingModel {
     }.contains(normalizedStatus);
   }
 
+  bool get hasReview => reviewId.trim().isNotEmpty;
+
+  String get providerReviewSummary {
+    if (providerRatingCount <= 0) return 'New provider';
+    return '⭐ ${providerRatingAverage.toStringAsFixed(1)} · '
+        '$providerRatingCount ${providerRatingCount == 1 ? 'review' : 'reviews'}';
+  }
+
   bool get belongsInReceivingUpcoming {
     if (isRequested || isConfirmedLike) return true;
     final start = scheduledStartAt;
@@ -280,11 +309,15 @@ class BookingModel {
 
     return BookingRecord(
       id: id,
+      serviceId: serviceId,
       context: contextMode,
       tab: tab,
       title: title,
       subtitle: subtitleParts.join(' · '),
       meta: _scheduleMeta,
+      reviewSummary: normalizedStatus == 'completed' ? providerReviewSummary : '',
+      providerUserId: providerId,
+      scheduledStartAt: scheduledStartAt,
       statusLabel: _statusLabel(contextMode),
       statusTone: _statusTone(contextMode),
       countdownSeconds: countdownSeconds,
@@ -319,7 +352,15 @@ class BookingModel {
 
   List<BookingActionData> _actionsFor(BookingContextMode contextMode) {
     if (contextMode == BookingContextMode.receiving) {
-      if (isFinished && normalizedStatus != 'completed') return const [];
+      if (normalizedStatus == 'completed') {
+        return const [
+          BookingActionData(
+            label: 'Book Again',
+            style: BookingActionStyle.primary,
+          ),
+        ];
+      }
+      if (isFinished) return const [];
       return const [
         BookingActionData(
           label: 'View booking',

@@ -14,6 +14,7 @@ class SlotSelectionScreen extends StatefulWidget {
   final int price;
   final int durationMinutes;
   final String providerId;
+  final DateTime? suggestedSlotStartAt;
 
   const SlotSelectionScreen({
     super.key,
@@ -22,6 +23,7 @@ class SlotSelectionScreen extends StatefulWidget {
     required this.price,
     required this.durationMinutes,
     required this.providerId,
+    this.suggestedSlotStartAt,
   });
 
   @override
@@ -32,6 +34,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   static const Color _screenBackground = Color(0xFFFCF8F5);
   final BookingRepository _bookingRepository = BookingRepository();
   late DateTime _selectedDate;
+  late DateTime _focusedMonth;
   ServiceSlotModel? _selectedSlot;
   String? _slotError;
 
@@ -39,13 +42,50 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   void initState() {
     super.initState();
     final now = DateTime.now();
-    _selectedDate = DateTime(now.year, now.month, now.day);
+    final suggestedDate = widget.suggestedSlotStartAt?.toLocal();
+    final normalizedToday = DateTime(now.year, now.month, now.day);
+    final normalizedSuggested = suggestedDate == null
+        ? null
+        : DateTime(suggestedDate.year, suggestedDate.month, suggestedDate.day);
+    final lastSelectableDate = normalizedToday.add(const Duration(days: 29));
+    final canUseSuggestedDate =
+        normalizedSuggested != null &&
+        !normalizedSuggested.isBefore(normalizedToday) &&
+        !normalizedSuggested.isAfter(lastSelectableDate);
+    _selectedDate = canUseSuggestedDate ? normalizedSuggested : normalizedToday;
+    _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
   }
 
-  List<DateTime> get _visibleDates {
-    final today = DateTime.now();
-    final base = DateTime(today.year, today.month, today.day);
-    return List.generate(7, (index) => base.add(Duration(days: index)));
+  DateTime get _today {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  DateTime get _lastSelectableDate => _today.add(const Duration(days: 29));
+
+  bool get _canGoToPreviousMonth {
+    final currentMonth = DateTime(_today.year, _today.month);
+    return _focusedMonth.isAfter(currentMonth);
+  }
+
+  bool get _canGoToNextMonth {
+    final lastMonth = DateTime(
+      _lastSelectableDate.year,
+      _lastSelectableDate.month,
+    );
+    return _focusedMonth.isBefore(lastMonth);
+  }
+
+  bool _isSelectableDate(DateTime date) {
+    return !date.isBefore(_today) && !date.isAfter(_lastSelectableDate);
+  }
+
+  void _moveMonth(int delta) {
+    final next = DateTime(_focusedMonth.year, _focusedMonth.month + delta);
+    final earliest = DateTime(_today.year, _today.month);
+    final latest = DateTime(_lastSelectableDate.year, _lastSelectableDate.month);
+    if (next.isBefore(earliest) || next.isAfter(latest)) return;
+    setState(() => _focusedMonth = next);
   }
 
   void _continue() {
@@ -99,28 +139,23 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               const SizedBox(height: 18),
               _SectionCard(
                 title: 'Select date',
-                child: SizedBox(
-                  height: 86,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: _visibleDates.length,
-                    separatorBuilder: (_, _) => const SizedBox(width: 10),
-                    itemBuilder: (context, index) {
-                      final date = _visibleDates[index];
-                      final isSelected = _isSameDay(date, _selectedDate);
-                      return _DateChip(
-                        date: date,
-                        isSelected: isSelected,
-                        onTap: () {
-                          setState(() {
-                            _selectedDate = date;
-                            _selectedSlot = null;
-                            _slotError = null;
-                          });
-                        },
-                      );
-                    },
-                  ),
+                child: _CalendarMonthSection(
+                  focusedMonth: _focusedMonth,
+                  selectedDate: _selectedDate,
+                  canGoPrevious: _canGoToPreviousMonth,
+                  canGoNext: _canGoToNextMonth,
+                  onPrevious: () => _moveMonth(-1),
+                  onNext: () => _moveMonth(1),
+                  onDateSelected: (date) {
+                    if (!_isSelectableDate(date)) return;
+                    setState(() {
+                      _selectedDate = date;
+                      _selectedSlot = null;
+                      _slotError = null;
+                    });
+                  },
+                  isSelectable: _isSelectableDate,
+                  isSameDay: _isSameDay,
                 ),
               ),
               const SizedBox(height: 18),
@@ -146,6 +181,41 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                     }
 
                     final slots = snapshot.data ?? const <ServiceSlotModel>[];
+                    if (_selectedSlot == null &&
+                        widget.suggestedSlotStartAt != null &&
+                        _isSameDay(
+                          widget.suggestedSlotStartAt!,
+                          _selectedDate,
+                        )) {
+                      final suggestedSlot = slots
+                          .where(
+                            (slot) =>
+                                slot.canRequest &&
+                                slot.startAt.toLocal().year ==
+                                    widget.suggestedSlotStartAt!.toLocal().year &&
+                                slot.startAt.toLocal().month ==
+                                    widget.suggestedSlotStartAt!.toLocal().month &&
+                                slot.startAt.toLocal().day ==
+                                    widget.suggestedSlotStartAt!.toLocal().day &&
+                                slot.startAt.toLocal().hour ==
+                                    widget.suggestedSlotStartAt!.toLocal().hour &&
+                                slot.startAt.toLocal().minute ==
+                                    widget.suggestedSlotStartAt!.toLocal().minute,
+                          )
+                          .cast<ServiceSlotModel?>()
+                          .firstWhere((slot) => slot != null, orElse: () => null);
+                      if (suggestedSlot != null) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (!mounted || _selectedSlot?.id == suggestedSlot.id) {
+                            return;
+                          }
+                          setState(() {
+                            _selectedSlot = suggestedSlot;
+                            _slotError = null;
+                          });
+                        });
+                      }
+                    }
                     if (slots.isEmpty) {
                       return const _SlotStateMessage(
                         icon: Icons.event_busy_outlined,
@@ -155,47 +225,57 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                       );
                     }
 
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: slots.length,
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 2,
-                                crossAxisSpacing: 10,
-                                mainAxisSpacing: 10,
-                                childAspectRatio: 2.35,
-                              ),
-                          itemBuilder: (context, index) {
-                            final slot = slots[index];
-                            return _SlotTile(
-                              slot: slot,
-                              isSelected: _selectedSlot?.id == slot.id,
-                              onTap: slot.canRequest
-                                  ? () {
-                                      setState(() {
-                                        _selectedSlot = slot;
-                                        _slotError = null;
-                                      });
-                                    }
-                                  : null,
-                            );
-                          },
-                        ),
-                        if (_slotError != null) ...[
-                          const SizedBox(height: 10),
-                          Text(
-                            _slotError!,
-                            style: const TextStyle(
-                              color: Colors.redAccent,
-                              fontWeight: FontWeight.w700,
+                    return LayoutBuilder(
+                      builder: (context, constraints) {
+                        final crossAxisSpacing = 10.0;
+                        final availableWidth = constraints.maxWidth;
+                        final tileWidth =
+                            (availableWidth - crossAxisSpacing) / 2;
+                        final tileHeight = tileWidth < 150 ? 88.0 : 82.0;
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            GridView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: slots.length,
+                              gridDelegate:
+                                  SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    crossAxisSpacing: crossAxisSpacing,
+                                    mainAxisSpacing: 10,
+                                    mainAxisExtent: tileHeight,
+                                  ),
+                              itemBuilder: (context, index) {
+                                final slot = slots[index];
+                                return _SlotTile(
+                                  slot: slot,
+                                  isSelected: _selectedSlot?.id == slot.id,
+                                  onTap: slot.canRequest
+                                      ? () {
+                                          setState(() {
+                                            _selectedSlot = slot;
+                                            _slotError = null;
+                                          });
+                                        }
+                                      : null,
+                                );
+                              },
                             ),
-                          ),
-                        ],
-                      ],
+                            if (_slotError != null) ...[
+                              const SizedBox(height: 10),
+                              Text(
+                                _slotError!,
+                                style: const TextStyle(
+                                  color: Colors.redAccent,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ],
+                        );
+                      },
                     );
                   },
                 ),
@@ -331,49 +411,225 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-class _DateChip extends StatelessWidget {
-  final DateTime date;
-  final bool isSelected;
+class _CalendarMonthSection extends StatelessWidget {
+  final DateTime focusedMonth;
+  final DateTime selectedDate;
+  final bool canGoPrevious;
+  final bool canGoNext;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+  final ValueChanged<DateTime> onDateSelected;
+  final bool Function(DateTime date) isSelectable;
+  final bool Function(DateTime a, DateTime b) isSameDay;
+
+  const _CalendarMonthSection({
+    required this.focusedMonth,
+    required this.selectedDate,
+    required this.canGoPrevious,
+    required this.canGoNext,
+    required this.onPrevious,
+    required this.onNext,
+    required this.onDateSelected,
+    required this.isSelectable,
+    required this.isSameDay,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    final firstDate = DateTime(focusedMonth.year, focusedMonth.month, 1);
+    final daysInMonth = DateTime(
+      focusedMonth.year,
+      focusedMonth.month + 1,
+      0,
+    ).day;
+    final leadingEmptySlots = firstDate.weekday - 1;
+    final totalCells = ((leadingEmptySlots + daysInMonth + 6) ~/ 7) * 7;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: Row(
+            children: [
+              _MonthArrowButton(
+                icon: Icons.chevron_left_rounded,
+                enabled: canGoPrevious,
+                onTap: onPrevious,
+              ),
+              Expanded(
+                child: Text(
+                  '${_monthLabel(focusedMonth.month)} ${focusedMonth.year}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              _MonthArrowButton(
+                icon: Icons.chevron_right_rounded,
+                enabled: canGoNext,
+                onTap: onNext,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: weekdayLabels.map((label) {
+            return Expanded(
+              child: Center(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 10),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: totalCells,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 7,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 8,
+            mainAxisExtent: 72,
+          ),
+          itemBuilder: (context, index) {
+            if (index < leadingEmptySlots) {
+              return const SizedBox.shrink();
+            }
+
+            final dayNumber = index - leadingEmptySlots + 1;
+            if (dayNumber > daysInMonth) {
+              return const SizedBox.shrink();
+            }
+            final date = DateTime(
+              focusedMonth.year,
+              focusedMonth.month,
+              dayNumber,
+            );
+            return _DateChip(
+              date: date,
+              isSelected: isSameDay(date, selectedDate),
+              isEnabled: isSelectable(date),
+              onTap: () => onDateSelected(date),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  String _monthLabel(int month) {
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    return months[(month - 1).clamp(0, 11)];
+  }
+}
+
+class _MonthArrowButton extends StatelessWidget {
+  final IconData icon;
+  final bool enabled;
   final VoidCallback onTap;
 
-  const _DateChip({
-    required this.date,
-    required this.isSelected,
+  const _MonthArrowButton({
+    required this.icon,
+    required this.enabled,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return GestureDetector(
-      onTap: onTap,
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(12),
       child: Container(
-        width: 74,
-        padding: const EdgeInsets.all(12),
+        width: 34,
+        height: 34,
         decoration: BoxDecoration(
-          gradient: isSelected ? AppColors.brandGradient : null,
-          color: isSelected ? null : const Color(0xFFFFF8F2),
-          borderRadius: BorderRadius.circular(20),
+          color: enabled ? const Color(0xFFFFF8F2) : const Color(0xFFF4EFEB),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: AppColors.primary.withValues(alpha: isSelected ? 0 : 0.10),
+            color: AppColors.primary.withValues(alpha: enabled ? 0.10 : 0.04),
+          ),
+        ),
+        child: Icon(
+          icon,
+          color: enabled ? AppColors.primary : AppColors.textGrey,
+          size: 20,
+        ),
+      ),
+    );
+  }
+}
+
+class _DateChip extends StatelessWidget {
+  final DateTime date;
+  final bool isSelected;
+  final bool isEnabled;
+  final VoidCallback onTap;
+
+  const _DateChip({
+    required this.date,
+    required this.isSelected,
+    required this.isEnabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: isEnabled ? onTap : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        decoration: BoxDecoration(
+          gradient: isSelected && isEnabled ? AppColors.brandGradient : null,
+          color: isSelected && isEnabled
+              ? null
+              : isEnabled
+              ? const Color(0xFFFFF8F2)
+              : const Color(0xFFF5F0EC),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: AppColors.primary.withValues(
+              alpha: isSelected && isEnabled ? 0 : isEnabled ? 0.10 : 0.05,
+            ),
           ),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              weekdays[date.weekday - 1],
-              style: TextStyle(
-                color: isSelected ? Colors.white : AppColors.textGrey,
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
               '${date.day}',
               style: TextStyle(
-                color: isSelected ? Colors.white : AppColors.textDark,
+                color: isSelected && isEnabled
+                    ? Colors.white
+                    : isEnabled
+                    ? AppColors.textDark
+                    : AppColors.textGrey.withValues(alpha: 0.65),
                 fontWeight: FontWeight.w900,
                 fontSize: 20,
               ),
@@ -400,12 +656,12 @@ class _SlotTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDisabled = onTap == null;
     final label = slot.isTooSoon
-        ? 'Starts in under 1 hour'
+        ? 'Starts in under\n1 hour'
         : slot.isFull
         ? 'Full'
         : !slot.isOpen
         ? 'Unavailable'
-        : '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}';
+        : '${_formatTime(slot.startAt)} -\n${_formatTime(slot.endAt)}';
     final helper = slot.canRequest
         ? '${slot.remainingCapacity} spot${slot.remainingCapacity == 1 ? '' : 's'} left'
         : null;
@@ -437,7 +693,8 @@ class _SlotTile extends StatelessWidget {
               label,
               textAlign: TextAlign.center,
               maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+              softWrap: true,
+              overflow: TextOverflow.visible,
               style: TextStyle(
                 color: isSelected
                     ? Colors.white
@@ -445,12 +702,12 @@ class _SlotTile extends StatelessWidget {
                     ? AppColors.textGrey
                     : AppColors.textDark,
                 fontWeight: FontWeight.w800,
-                fontSize: slot.isTooSoon ? 11.5 : 12.5,
-                height: 1.15,
+                fontSize: slot.isTooSoon ? 11 : 12,
+                height: 1.2,
               ),
             ),
             if (helper != null) ...[
-              const SizedBox(height: 3),
+              const SizedBox(height: 4),
               Text(
                 helper,
                 maxLines: 1,

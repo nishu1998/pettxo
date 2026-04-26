@@ -9,9 +9,11 @@ import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
+import '../../../profile/presentation/screens/service_detail_screen.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_model.dart';
 import '../../domain/models/booking_flow_models.dart';
+import '../../../services/data/repositories/services_repository.dart';
 import '../widgets/booking_card.dart';
 import 'booking_detail_screen.dart';
 
@@ -24,6 +26,7 @@ class BookingsScreen extends StatefulWidget {
 
 class _BookingsScreenState extends State<BookingsScreen> {
   final BookingRepository _bookingRepository = BookingRepository();
+  final ServicesRepository _servicesRepository = ServicesRepository();
   BookingContextMode _context = BookingContextMode.receiving;
   BookingTab _receivingTab = BookingTab.upcoming;
   BookingTab _deliveringTab = BookingTab.requests;
@@ -143,13 +146,18 @@ class _BookingsScreenState extends State<BookingsScreen> {
     BookingRecord booking,
     BookingActionData action,
   ) async {
+    final normalizedLabel = action.label.toLowerCase().trim();
+    if (normalizedLabel == 'book again') {
+      await _openRebookService(booking);
+      return;
+    }
+
     if (action.opensDetail ||
         action.toastMessage == null && booking.detailType != null) {
       _openBookingDetail(booking);
       return;
     }
 
-    final normalizedLabel = action.label.toLowerCase().trim();
     if (normalizedLabel == 'accept' || normalizedLabel == 'reject') {
       await _runRequestAction(
         bookingId: booking.id,
@@ -161,6 +169,63 @@ class _BookingsScreenState extends State<BookingsScreen> {
 
     if (action.toastMessage != null) {
       _showToast(action.toastMessage!);
+    }
+  }
+
+  Future<void> _openRebookService(BookingRecord booking) async {
+    // In Pettxo's booking context naming, "receiving" is the customer-side
+    // view (bookings where currentUser == customerId) and "delivering" is the
+    // provider-side received-work view (bookings where currentUser ==
+    // serviceOwnerId). Rebooking must stay customer-only.
+    final isCustomerSideBooking = booking.context == BookingContextMode.receiving;
+    if (!isCustomerSideBooking) {
+      _showToast(
+        'Book Again is only available for your completed bookings.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+
+    final serviceId = booking.serviceId.trim();
+    if (serviceId.isEmpty) {
+      _showToast(
+        'This service is not available to book again right now.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+
+    AppLoader.showWithMessage('Loading service details...');
+    try {
+      final service = await _servicesRepository.fetchServiceById(serviceId);
+      AppLoader.hide();
+      if (!mounted) return;
+
+      if (service == null || service.isDeleted || !service.isActive) {
+        _showToast(
+          'This service is no longer available.',
+          tone: AppSnackbarTone.warning,
+        );
+        return;
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ServiceDetailScreen(
+            service: service.toProfileListing(),
+            showRebookHint: true,
+            suggestedSlotStartAt: booking.scheduledStartAt,
+          ),
+        ),
+      );
+    } catch (_) {
+      AppLoader.hide();
+      if (!mounted) return;
+      _showToast(
+        'Could not open this service right now.',
+        tone: AppSnackbarTone.error,
+      );
     }
   }
 

@@ -38,11 +38,15 @@ class BookingActionData {
 
 class BookingRecord {
   final String id;
+  final String serviceId;
   final BookingContextMode context;
   final BookingTab tab;
   final String title;
   final String subtitle;
   final String meta;
+  final String reviewSummary;
+  final String providerUserId;
+  final DateTime? scheduledStartAt;
   final String? sectionLabel;
   final String statusLabel;
   final BookingStatusTone statusTone;
@@ -53,11 +57,15 @@ class BookingRecord {
 
   const BookingRecord({
     required this.id,
+    required this.serviceId,
     required this.context,
     required this.tab,
     required this.title,
     required this.subtitle,
     required this.meta,
+    this.reviewSummary = '',
+    this.providerUserId = '',
+    this.scheduledStartAt,
     required this.statusLabel,
     required this.statusTone,
     this.sectionLabel,
