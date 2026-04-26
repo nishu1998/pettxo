@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -103,7 +107,7 @@ class HomeScreen extends StatelessWidget {
                       const Text(
                         "Pettxo",
                         style: TextStyle(
-                          color: AppColors.textDark,
+                          color: AppColors.primary,
                           fontSize: 22,
                           fontWeight: FontWeight.w800,
                           letterSpacing: -0.4,
@@ -119,12 +123,7 @@ class HomeScreen extends StatelessWidget {
                       color: Colors.white.withValues(alpha: 0.56),
                       borderRadius: BorderRadius.circular(14),
                     ),
-                    child: IconButton(
-                      onPressed: () {
-                        Navigator.pushNamed(context, "/alerts");
-                      },
-                      icon: const Icon(Icons.notifications_none_rounded),
-                    ),
+                    child: const _NotificationsBellButton(),
                   ),
                 ],
               ),
@@ -133,6 +132,161 @@ class HomeScreen extends StatelessWidget {
         ],
       ),
       bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.home),
+    );
+  }
+}
+
+class _NotificationsBellButton extends StatefulWidget {
+  const _NotificationsBellButton();
+
+  @override
+  State<_NotificationsBellButton> createState() =>
+      _NotificationsBellButtonState();
+}
+
+class _NotificationsBellButtonState extends State<_NotificationsBellButton>
+    with SingleTickerProviderStateMixin {
+  static const Duration _ringDuration = Duration(milliseconds: 720);
+  static const Duration _ringInterval = Duration(seconds: 8);
+
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: _ringDuration,
+  );
+  late final Animation<double> _rotation = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: 0,
+        end: -0.12,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: -0.12,
+        end: 0.1,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: 0.1,
+        end: -0.07,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: -0.07,
+        end: 0.05,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+    TweenSequenceItem(
+      tween: Tween<double>(
+        begin: 0.05,
+        end: 0,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
+      weight: 1,
+    ),
+  ]).animate(_controller);
+
+  StreamSubscription<User?>? _authSubscription;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+  _notificationSubscription;
+  Timer? _ringTimer;
+  bool _hasUnreadNotifications = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _bindNotificationStream(_auth.currentUser);
+    _authSubscription = _auth.authStateChanges().listen(
+      _bindNotificationStream,
+    );
+  }
+
+  @override
+  void dispose() {
+    _ringTimer?.cancel();
+    _notificationSubscription?.cancel();
+    _authSubscription?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _bindNotificationStream(User? user) {
+    _notificationSubscription?.cancel();
+    _updateUnreadState(false);
+
+    if (user == null) return;
+
+    _notificationSubscription = _firestore
+        .collection('notifications')
+        .where('userId', isEqualTo: user.uid)
+        .limit(50)
+        .snapshots()
+        .listen((snapshot) {
+          final hasUnread = snapshot.docs.any((doc) {
+            final data = doc.data();
+            return data['read'] != true && data['isRead'] != true;
+          });
+          _updateUnreadState(hasUnread);
+        });
+  }
+
+  void _updateUnreadState(bool hasUnread) {
+    if (_hasUnreadNotifications == hasUnread) return;
+    _hasUnreadNotifications = hasUnread;
+
+    if (hasUnread) {
+      _startRingLoop();
+    } else {
+      _stopRingLoop();
+    }
+  }
+
+  void _startRingLoop() {
+    _ringTimer?.cancel();
+    _controller.forward(from: 0);
+    _ringTimer = Timer.periodic(_ringInterval, (_) {
+      if (!_hasUnreadNotifications || _controller.isAnimating) return;
+      _controller.forward(from: 0);
+    });
+  }
+
+  void _stopRingLoop() {
+    _ringTimer?.cancel();
+    _ringTimer = null;
+    if (_controller.isAnimating || _controller.value != 0) {
+      _controller.animateTo(0, duration: const Duration(milliseconds: 160));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: () {
+        Navigator.pushNamed(context, "/alerts");
+      },
+      icon: AnimatedBuilder(
+        animation: _rotation,
+        builder: (context, child) {
+          return Transform.rotate(
+            angle: _rotation.value,
+            alignment: const Alignment(0, -0.65),
+            child: Icon(
+              Icons.notifications_none_rounded,
+              color: _hasUnreadNotifications
+                  ? AppColors.primary
+                  : AppColors.textDark,
+            ),
+          );
+        },
+      ),
     );
   }
 }
