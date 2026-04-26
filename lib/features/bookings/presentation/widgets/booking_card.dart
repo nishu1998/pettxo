@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -99,6 +100,11 @@ class BookingCard extends StatelessWidget {
                 fontWeight: FontWeight.w500,
               ),
             ),
+            if (booking.reviewSummary.isNotEmpty ||
+                booking.statusTone == BookingStatusTone.completed) ...[
+              const SizedBox(height: 8),
+              _BookingReviewSummaryLine(booking: booking),
+            ],
             if (countdownText != null) ...[
               const SizedBox(height: 10),
               Container(
@@ -165,6 +171,61 @@ class BookingCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
       child: card,
+    );
+  }
+}
+
+class _BookingReviewSummaryLine extends StatelessWidget {
+  final BookingRecord booking;
+
+  const _BookingReviewSummaryLine({required this.booking});
+
+  @override
+  Widget build(BuildContext context) {
+    if (booking.reviewSummary.isNotEmpty) {
+      return _ReviewSummaryText(text: booking.reviewSummary);
+    }
+
+    final providerUserId = booking.providerUserId.trim();
+    if (providerUserId.isEmpty) {
+      return const _ReviewSummaryText(text: 'New provider');
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(providerUserId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data() ?? const <String, dynamic>{};
+        final ratingAverage = (data['ratingAverage'] as num?)?.toDouble() ?? 0;
+        final ratingCount = (data['ratingCount'] as num?)?.toInt() ?? 0;
+        final text = ratingCount > 0
+            ? '⭐ ${ratingAverage.toStringAsFixed(1)} · $ratingCount ${ratingCount == 1 ? 'review' : 'reviews'}'
+            : 'New provider';
+        return _ReviewSummaryText(text: text);
+      },
+    );
+  }
+}
+
+class _ReviewSummaryText extends StatelessWidget {
+  final String text;
+
+  const _ReviewSummaryText({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final highlighted = text.startsWith('⭐');
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 12.5,
+        color: highlighted ? const Color(0xFF9A3412) : AppColors.textGrey,
+        fontWeight: FontWeight.w700,
+      ),
     );
   }
 }

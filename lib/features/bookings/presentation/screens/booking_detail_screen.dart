@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -13,6 +14,7 @@ import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/repositories/booking_repository.dart';
+import '../../data/repositories/booking_review_repository.dart';
 import '../../domain/models/booking_model.dart';
 import '../../domain/models/booking_flow_models.dart';
 import '../widgets/section_block.dart';
@@ -36,11 +38,25 @@ class BookingDetailScreen extends StatefulWidget {
 
 class _BookingDetailScreenState extends State<BookingDetailScreen> {
   final BookingRepository _bookingRepository = BookingRepository();
+  final BookingReviewRepository _bookingReviewRepository =
+      BookingReviewRepository();
   late final Timer _timer;
-  int _starRating = 4;
+  static const List<String> _reviewQuickTags = [
+    'Friendly provider',
+    'On time',
+    'Handled with care',
+    'Clean setup',
+    'Great communication',
+    'Would book again',
+  ];
+
+  int _starRating = 0;
   String? _activeRequestAction;
   String? _activeLifecycleAction;
   String? _generatedOtp;
+  bool _isSubmittingReview = false;
+  bool _reviewSubmittedLocally = false;
+  final Set<String> _selectedReviewTags = <String>{};
   final Map<String, Future<BookingContactSnapshot>> _contactDetailsCache = {};
   final TextEditingController _reviewController = TextEditingController();
   final List<TextEditingController> _otpControllers = List.generate(
@@ -369,6 +385,75 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     return 'Could not update booking. Please try again.';
   }
 
+  String _friendlyReviewError(Object error) {
+    final text = error.toString();
+    if (text.contains('failed-precondition')) {
+      return 'This booking has already been reviewed or is not ready for review.';
+    }
+    if (text.contains('permission-denied')) {
+      return 'Only the pet parent can submit a review for this booking.';
+    }
+    if (text.contains('invalid-argument')) {
+      return 'Please select a rating before submitting your review.';
+    }
+    if (text.contains('not-found')) {
+      return 'Booking details could not be found.';
+    }
+    return 'Could not submit review. Please try again.';
+  }
+
+  Future<void> _submitReview(BookingModel booking) async {
+    if (_isSubmittingReview || booking.hasReview || _reviewSubmittedLocally) {
+      return;
+    }
+    if (_starRating < 1) {
+      _showToast(
+        'Select a star rating before submitting your review.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+
+    setState(() => _isSubmittingReview = true);
+    AppLoader.showWithMessage('Submitting your review...');
+
+    try {
+      await _bookingReviewRepository.submitBookingReview(
+        bookingId: booking.id,
+        rating: _starRating,
+        comment: _reviewController.text,
+        tags: _selectedReviewTags.toList(growable: false),
+      );
+      if (kDebugMode) {
+        debugPrint(
+          'Review submit debug -> success | bookingId=${booking.id} | rating=$_starRating | tags=${_selectedReviewTags.toList(growable: false)}',
+        );
+      }
+      if (!mounted) return;
+      setState(() => _reviewSubmittedLocally = true);
+      _showToast(
+        'Review submitted successfully.',
+        tone: AppSnackbarTone.success,
+      );
+      Future<void>.delayed(const Duration(milliseconds: 700), () {
+        if (!mounted) return;
+        Navigator.of(context).maybePop(true);
+      });
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          'Review submit debug -> failure | bookingId=${booking.id} | error=$error',
+        );
+      }
+      _showToast(_friendlyReviewError(error), tone: AppSnackbarTone.error);
+    } finally {
+      AppLoader.hide();
+      if (mounted) {
+        setState(() => _isSubmittingReview = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
@@ -388,6 +473,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             stream: _bookingRepository.watchBookingById(widget.bookingId),
             builder: (context, snapshot) {
               final booking = snapshot.data;
+              if (kDebugMode && booking != null) {
+                debugPrint(
+                  'Booking review state debug -> bookingId=${booking.id} | hasReview=${booking.hasReview} | reviewStatus=${booking.reviewStatus} | reviewId=${booking.reviewId}',
+                );
+              }
               return ListView(
                 padding: EdgeInsets.fromLTRB(
                   18,
@@ -680,6 +770,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     BookingModel booking,
     BookingRecord record,
   ) {
+    final hasSubmittedReview =
+        booking.hasReview ||
+        booking.reviewStatus.trim().toLowerCase() == 'submitted' ||
+        _reviewSubmittedLocally;
+
     return [
       Container(
         padding: const EdgeInsets.all(16),
@@ -710,58 +805,114 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
       const SizedBox(height: 12),
       SectionBlock(
         title: 'REVIEW ${booking.providerName.toUpperCase()}',
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'How was your experience?',
-              style: TextStyle(color: AppColors.textGrey, fontSize: 13),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(5, (index) {
-                final isLit = index < _starRating;
-                return IconButton(
-                  onPressed: () => setState(() => _starRating = index + 1),
-                  icon: Icon(
-                    Icons.star_rounded,
-                    color: isLit
-                        ? const Color(0xFFF59E0B)
-                        : const Color(0xFFD1D5DB),
-                    size: 30,
+        child: hasSubmittedReview
+            ? const _ReviewSubmittedState()
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'How was your experience?',
+                    style: TextStyle(color: AppColors.textGrey, fontSize: 13),
                   ),
-                );
-              }),
-            ),
-            TextField(
-              controller: _reviewController,
-              maxLines: 4,
-              decoration: InputDecoration(
-                hintText: 'Tell others about your experience...',
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Color(0x1A000000)),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Color(0x1A000000)),
-                ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(5, (index) {
+                      final isLit = index < _starRating;
+                      return IconButton(
+                        onPressed: _isSubmittingReview
+                            ? null
+                            : () => setState(() => _starRating = index + 1),
+                        icon: Icon(
+                          Icons.star_rounded,
+                          color: isLit
+                              ? const Color(0xFFF59E0B)
+                              : const Color(0xFFD1D5DB),
+                          size: 30,
+                        ),
+                      );
+                    }),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _reviewQuickTags.map((tag) {
+                      final selected = _selectedReviewTags.contains(tag);
+                      return FilterChip(
+                        label: Text(tag),
+                        selected: selected,
+                        onSelected: _isSubmittingReview
+                            ? null
+                            : (value) {
+                                setState(() {
+                                  if (value) {
+                                    _selectedReviewTags.add(tag);
+                                  } else {
+                                    _selectedReviewTags.remove(tag);
+                                  }
+                                });
+                              },
+                        backgroundColor: Colors.white,
+                        selectedColor: const Color(0xFFFEF0EB),
+                        checkmarkColor: AppColors.primary,
+                        side: BorderSide(
+                          color: selected
+                              ? const Color(0xFFF7A07A)
+                              : const Color(0x1A000000),
+                        ),
+                        labelStyle: TextStyle(
+                          color: selected
+                              ? AppColors.primary
+                              : AppColors.textDark,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        materialTapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _reviewController,
+                    enabled: !_isSubmittingReview,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: 'Tell others about your experience...',
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0x1A000000)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0x1A000000)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _DualActionRow(
+                    primaryLabel: _isSubmittingReview
+                        ? 'Submitting...'
+                        : 'Submit review',
+                    primaryStyle: BookingActionStyle.primary,
+                    secondaryLabel: 'Skip',
+                    secondaryStyle: BookingActionStyle.secondary,
+                    onPrimaryTap: _starRating > 0 && !_isSubmittingReview
+                        ? () => _submitReview(booking)
+                        : null,
+                    onSecondaryTap: _isSubmittingReview
+                        ? null
+                        : () => Navigator.of(context).maybePop(),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 10),
-            _DualActionRow(
-              primaryLabel: 'Submit review',
-              primaryStyle: BookingActionStyle.primary,
-              secondaryLabel: 'Skip',
-              secondaryStyle: BookingActionStyle.secondary,
-              onPrimaryTap: () => _showToast('Review submitted!'),
-              onSecondaryTap: () => _showToast('Review skipped'),
-            ),
-          ],
-        ),
       ),
       const SizedBox(height: 12),
       SectionBlock(
@@ -1286,6 +1437,56 @@ class _OtpNotice extends StatelessWidget {
   }
 }
 
+class _ReviewSubmittedState extends StatelessWidget {
+  const _ReviewSubmittedState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFDCFCE7),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0x3315803D)),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 14,
+                backgroundColor: Color(0xFF15803D),
+                child: Icon(Icons.check_rounded, color: Colors.white, size: 18),
+              ),
+              SizedBox(width: 10),
+              Text(
+                'Review Submitted',
+                style: TextStyle(
+                  color: Color(0xFF15803D),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 10),
+          Text(
+            'Thanks for sharing your experience. Your review is now part of the provider profile.',
+            style: TextStyle(
+              color: Color(0xFF166534),
+              fontSize: 12.5,
+              height: 1.45,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _CustomerOtpPanel extends StatelessWidget {
   final BookingModel booking;
   final String? generatedOtp;
@@ -1805,7 +2006,7 @@ class _DualActionRow extends StatelessWidget {
           child: _DetailActionButton(
             label: secondaryLabel,
             styleKind: secondaryStyle,
-            onTap: onSecondaryTap ?? () {},
+            onTap: onSecondaryTap,
           ),
         ),
       ],

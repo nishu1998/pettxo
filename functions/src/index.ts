@@ -65,6 +65,28 @@ function toInt(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
 }
 
+function toFiniteNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function nextRatingAverage(currentAverage: number, currentCount: number, nextRating: number): number {
+  const safeCount = Math.max(0, currentCount);
+  const total = (currentAverage * safeCount) + nextRating;
+  return roundTo(total / (safeCount + 1), 2);
+}
+
+function computeTrustScore(ratingAverage: number, completedBookingCount: number): number {
+  const ratingSignal = Math.min(Math.max(ratingAverage / 5, 0), 1);
+  const completionSignal = Math.min(Math.max(completedBookingCount, 0) / 25, 1);
+  return Math.round(((ratingSignal * 0.8) + (completionSignal * 0.2)) * 100);
+}
+
 function dateKey(year: number, month: number, day: number): string {
   return `${year.toString().padStart(4, "0")}-${month
     .toString()
@@ -1248,6 +1270,7 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
 
   const bookingRef = db.collection("bookings").doc(bookingId);
   const payoutRef = db.collection("payoutReadiness").doc(bookingId);
+  const now = FieldValue.serverTimestamp();
   let providerId = "";
 
   await db.runTransaction(async (transaction) => {
@@ -1264,13 +1287,20 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
 
     providerId = booking.serviceOwnerId;
     const pricing = booking.pricing ?? {};
+    const serviceId = String(booking.serviceId ?? "").trim();
+    const serviceRef = serviceId ? db.collection("services").doc(serviceId) : null;
+    const providerRef = providerId ? db.collection("users").doc(providerId) : null;
+    const [serviceSnapshot, providerSnapshot] = await Promise.all([
+      serviceRef ? transaction.get(serviceRef) : Promise.resolve(null),
+      providerRef ? transaction.get(providerRef) : Promise.resolve(null),
+    ]);
 
     transaction.update(bookingRef, {
       status: "completed",
-      completedAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
+      completedAt: now,
+      updatedAt: now,
       "payoutReadiness.status": "eligible",
-      "payoutReadiness.eligibleAt": FieldValue.serverTimestamp(),
+      "payoutReadiness.eligibleAt": now,
       "notificationState.completionNotificationSent": true,
     });
 
@@ -1285,11 +1315,71 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
       currency: pricing.currency ?? "INR",
       status: "eligible",
       eligibilityReason: "Booking completed after OTP verification.",
-      eligibleAt: FieldValue.serverTimestamp(),
+      eligibleAt: now,
       payoutId: "",
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
+      createdAt: now,
+      updatedAt: now,
     });
+
+    if (serviceRef && serviceSnapshot?.exists == true) {
+      const serviceData = serviceSnapshot.data() ?? {};
+      const serviceStats = (serviceData.stats as Record<string, unknown> | undefined) ?? {};
+      const currentCompletedCount = Math.max(
+        0,
+        toInt(serviceStats.completedBookingsCount ?? serviceData.completedBookingCount, 0),
+      );
+      const nextCompletedCount = currentCompletedCount + 1;
+      const ratingAverage = toFiniteNumber(
+        serviceStats.ratingAverage ?? serviceData.ratingAverage,
+        0,
+      );
+
+      transaction.set(serviceRef, {
+        completedBookingCount: nextCompletedCount,
+        trustScore: computeTrustScore(ratingAverage, nextCompletedCount),
+        stats: {
+          ...serviceStats,
+          completedBookingsCount: nextCompletedCount,
+          trustScore: computeTrustScore(ratingAverage, nextCompletedCount),
+        },
+        updatedAt: now,
+      }, {merge: true});
+      console.log(
+        "[completeBooking] service completedBookingCount updated",
+        {
+          bookingId,
+          serviceId,
+          previousCompletedBookingCount: currentCompletedCount,
+          nextCompletedBookingCount: nextCompletedCount,
+        },
+      );
+    }
+
+    if (providerRef && providerSnapshot?.exists == true) {
+      const providerData = providerSnapshot.data() ?? {};
+      const currentCompletedCount = Math.max(
+        0,
+        toInt(providerData.completedBookingCount ?? providerData.completedBookingsCount, 0),
+      );
+      const nextCompletedCount = currentCompletedCount + 1;
+      const ratingAverage = toFiniteNumber(providerData.ratingAverage, 0);
+
+      transaction.set(providerRef, {
+        completedBookingCount: nextCompletedCount,
+        completedBookingsCount: nextCompletedCount,
+        trustScore: computeTrustScore(ratingAverage, nextCompletedCount),
+        updatedAt: now,
+      }, {merge: true});
+      console.log(
+        "[completeBooking] provider completedBookingCount updated",
+        {
+          bookingId,
+          providerId,
+          previousCompletedBookingCount: currentCompletedCount,
+          nextCompletedBookingCount: nextCompletedCount,
+        },
+      );
+    }
 
     queueBookingNotification({
       transaction,
@@ -1331,6 +1421,234 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
   });
 
   return {ok: true};
+});
+
+export const submitBookingReview = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = String(request.data?.bookingId ?? "").trim();
+  const rating = toInt(request.data?.rating, 0);
+  const comment = String(request.data?.comment ?? "").trim();
+  const rawTags = Array.isArray(request.data?.tags) ? request.data?.tags : [];
+  const tags = rawTags
+    .map((value: unknown) => String(value ?? "").trim())
+    .filter((value: string) => value.length > 0);
+
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+  if (rating < 1 || rating > 5) {
+    throw new HttpsError("invalid-argument", "rating must be between 1 and 5.");
+  }
+
+  const bookingRef = db.collection("bookings").doc(bookingId);
+  let reviewRefPath = "";
+  const now = FieldValue.serverTimestamp();
+
+  await db.runTransaction(async (transaction) => {
+    const bookingSnapshot = await transaction.get(bookingRef);
+    if (!bookingSnapshot.exists) {
+      throw new HttpsError("not-found", "Booking not found.");
+    }
+
+    const booking = bookingSnapshot.data()!;
+    if ((booking.status as BookingStatus) !== "completed") {
+      throw new HttpsError("failed-precondition", "Only completed bookings can be reviewed.");
+    }
+    if (String(booking.customerId ?? "") !== uid) {
+      console.log("[submitBookingReview] invalid reviewer blocked", {
+        bookingId,
+        requesterUid: uid,
+        customerId: String(booking.customerId ?? ""),
+      });
+      throw new HttpsError("permission-denied", "Only the booking customer can submit a review.");
+    }
+
+    const existingReviewId = String(booking.reviewId ?? booking.review?.reviewId ?? "").trim();
+    const existingReviewStatus = String(
+      booking.reviewStatus ?? booking.review?.status ?? "",
+    ).trim();
+    if (existingReviewId || existingReviewStatus.toLowerCase() === "submitted") {
+      console.log("[submitBookingReview] duplicate review blocked", {
+        bookingId,
+        existingReviewId,
+        existingReviewStatus,
+        requesterUid: uid,
+      });
+      throw new HttpsError("failed-precondition", "Only one review is allowed per booking.");
+    }
+
+    const serviceId = String(booking.serviceId ?? "").trim();
+    const providerUserId = String(
+      booking.serviceOwnerId ?? booking.providerId ?? "",
+    ).trim();
+    if (!serviceId || !providerUserId) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Booking is missing service or provider details.",
+      );
+    }
+
+    const reviewRef = db.collection("services").doc(serviceId).collection("reviews").doc(bookingId);
+    const serviceRef = db.collection("services").doc(serviceId);
+    const providerRef = db.collection("users").doc(providerUserId);
+    reviewRefPath = reviewRef.path;
+
+    const [reviewSnapshot, serviceSnapshot, providerSnapshot] = await Promise.all([
+      transaction.get(reviewRef),
+      transaction.get(serviceRef),
+      transaction.get(providerRef),
+    ]);
+    if (reviewSnapshot.exists) {
+      console.log("[submitBookingReview] duplicate review blocked", {
+        bookingId,
+        reviewPath: reviewRef.path,
+        requesterUid: uid,
+      });
+      throw new HttpsError("failed-precondition", "Only one review is allowed per booking.");
+    }
+    if (!serviceSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "Service no longer exists.");
+    }
+    if (!providerSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "Provider profile no longer exists.");
+    }
+
+    const serviceData = serviceSnapshot.data() ?? {};
+    const serviceStats = (serviceData.stats as Record<string, unknown> | undefined) ?? {};
+    const currentServiceRatingCount = Math.max(
+      0,
+      toInt(serviceStats.ratingCount ?? serviceData.ratingCount, 0),
+    );
+    const currentServiceRatingAverage = toFiniteNumber(
+      serviceStats.ratingAverage ?? serviceData.ratingAverage,
+      0,
+    );
+    const currentServiceCompletedCount = Math.max(
+      0,
+      toInt(serviceStats.completedBookingsCount ?? serviceData.completedBookingCount, 0),
+    );
+    const nextServiceRatingCount = currentServiceRatingCount + 1;
+    const nextServiceRatingAverage = nextRatingAverage(
+      currentServiceRatingAverage,
+      currentServiceRatingCount,
+      rating,
+    );
+    const nextServiceTrustScore = computeTrustScore(
+      nextServiceRatingAverage,
+      currentServiceCompletedCount,
+    );
+    const currentServiceReviewedCount = Math.max(
+      0,
+      toInt(serviceStats.reviewedBookingCount ?? serviceData.reviewedBookingCount, 0),
+    );
+
+    const providerData = providerSnapshot.data() ?? {};
+    const currentProviderRatingCount = Math.max(
+      0,
+      toInt(providerData.ratingCount, 0),
+    );
+    const currentProviderRatingAverage = toFiniteNumber(providerData.ratingAverage, 0);
+    const currentProviderCompletedCount = Math.max(
+      0,
+      toInt(providerData.completedBookingCount ?? providerData.completedBookingsCount, 0),
+    );
+    const nextProviderRatingCount = currentProviderRatingCount + 1;
+    const nextProviderRatingAverage = nextRatingAverage(
+      currentProviderRatingAverage,
+      currentProviderRatingCount,
+      rating,
+    );
+    const nextProviderTrustScore = computeTrustScore(
+      nextProviderRatingAverage,
+      currentProviderCompletedCount,
+    );
+    const currentProviderReviewedCount = Math.max(
+      0,
+      toInt(providerData.reviewedBookingCount, 0),
+    );
+
+    const customerSnapshot = booking.customerSnapshot ?? {};
+    transaction.set(reviewRef, {
+      bookingId,
+      serviceId,
+      providerUserId,
+      reviewerUserId: uid,
+      reviewerId: uid,
+      reviewerName: customerSnapshot.name ?? "",
+      reviewerPhotoUrl: customerSnapshot.photoUrl ?? "",
+      rating,
+      comment,
+      tags,
+      isEdited: false,
+      moderationStatus: "approved",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    transaction.update(bookingRef, {
+      reviewStatus: "submitted",
+      reviewId: reviewRef.id,
+      review: {
+        status: "submitted",
+        reviewId: reviewRef.id,
+        submittedAt: now,
+      },
+      updatedAt: now,
+    });
+
+    transaction.set(serviceRef, {
+      ratingAverage: nextServiceRatingAverage,
+      ratingCount: nextServiceRatingCount,
+      reviewedBookingCount: currentServiceReviewedCount + 1,
+      trustScore: nextServiceTrustScore,
+      stats: {
+        ...serviceStats,
+        ratingAverage: nextServiceRatingAverage,
+        ratingCount: nextServiceRatingCount,
+        reviewedBookingCount: currentServiceReviewedCount + 1,
+        trustScore: nextServiceTrustScore,
+      },
+      updatedAt: now,
+    }, {merge: true});
+
+    transaction.set(providerRef, {
+      ratingAverage: nextProviderRatingAverage,
+      ratingCount: nextProviderRatingCount,
+      reviewedBookingCount: currentProviderReviewedCount + 1,
+      trustScore: nextProviderTrustScore,
+      updatedAt: now,
+    }, {merge: true});
+
+    console.log("[submitBookingReview] service rating summary updated", {
+      bookingId,
+      serviceId,
+      ratingAverage: nextServiceRatingAverage,
+      ratingCount: nextServiceRatingCount,
+      trustScore: nextServiceTrustScore,
+      reviewedBookingCount: currentServiceReviewedCount + 1,
+    });
+    console.log("[submitBookingReview] provider rating summary updated", {
+      bookingId,
+      providerUserId,
+      ratingAverage: nextProviderRatingAverage,
+      ratingCount: nextProviderRatingCount,
+      trustScore: nextProviderTrustScore,
+      reviewedBookingCount: currentProviderReviewedCount + 1,
+    });
+  });
+
+  await writeBookingEvent({
+    bookingId,
+    actorId: uid,
+    actorType: "customer",
+    type: "reviewSubmitted",
+    fromStatus: "completed",
+    toStatus: "completed",
+    message: "Booking review submitted.",
+    metadata: {reviewRefPath, rating},
+  });
+
+  return {ok: true, reviewId: bookingId};
 });
 
 export const moderateService = onCall(async (request) => {
