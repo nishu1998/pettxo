@@ -407,9 +407,22 @@ class _BookingsScreenState extends State<BookingsScreen> {
                   offset: const Offset(0, 8),
                 ),
               ],
-              child: const Row(
+              child: Row(
                 children: [
-                  Expanded(
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.56),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back_rounded),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
                     child: Text(
                       'Bookings',
                       style: TextStyle(
