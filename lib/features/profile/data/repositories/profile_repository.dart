@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
+import '../../../restrictions/domain/models/user_restriction_state.dart';
 import '../../domain/models/user_profile.dart';
 
 class ProfileRepository {
@@ -38,6 +39,15 @@ class ProfileRepository {
     }
 
     return UserProfile.fromMap(data);
+  }
+
+  Stream<UserRestrictionState> watchCurrentUserRestrictionState() {
+    return watchCurrentUserProfile().map((profile) => profile.restrictionState);
+  }
+
+  Future<UserRestrictionState> getCurrentUserRestrictionState() async {
+    final profile = await getCurrentUserProfile();
+    return profile.restrictionState;
   }
 
   Future<bool> isUsernameAvailable(

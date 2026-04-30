@@ -5,6 +5,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/service_details_draft.dart';
 import 'add_service_booking_setup_screen.dart';
 
@@ -154,6 +155,12 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
   void initState() {
     super.initState();
     _serviceNameController.addListener(_handleServiceNameEdit);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+        Navigator.pushReplacementNamed(context, "/profile");
+      }
+    });
   }
 
   void _handleServiceNameEdit() {

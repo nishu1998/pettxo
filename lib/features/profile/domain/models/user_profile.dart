@@ -1,3 +1,5 @@
+import '../../../restrictions/domain/models/user_restriction_state.dart';
+
 class UserProfile {
   final String uid;
   final String email;
@@ -13,6 +15,8 @@ class UserProfile {
   final String profileImageUrl;
   final double ratingAverage;
   final int ratingCount;
+  final String accountStatus;
+  final UserRestrictionState restrictionState;
 
   const UserProfile({
     required this.uid,
@@ -29,6 +33,8 @@ class UserProfile {
     required this.profileImageUrl,
     required this.ratingAverage,
     required this.ratingCount,
+    required this.accountStatus,
+    required this.restrictionState,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> data) {
@@ -54,6 +60,8 @@ class UserProfile {
       profileImageUrl: (data['profileImage'] as String? ?? '').trim(),
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
+      accountStatus: (data['accountStatus'] as String? ?? 'active').trim(),
+      restrictionState: UserRestrictionState.fromMap(data),
     );
   }
 
@@ -73,6 +81,7 @@ class UserProfile {
       'profileImage': profileImageUrl,
       'ratingAverage': ratingAverage,
       'ratingCount': ratingCount,
+      'accountStatus': accountStatus,
     };
   }
 

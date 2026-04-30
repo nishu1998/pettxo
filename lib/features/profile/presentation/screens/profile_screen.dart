@@ -11,6 +11,7 @@ import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/profile_service_listing.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/presentation/widgets/profile_content_sections.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../../../settings/data/services/settings_service.dart';
 import '../../../settings/domain/models/app_settings.dart';
@@ -544,6 +545,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               services: services,
                               canManage: true,
                               onAdd: () async {
+                                if (!UserRestrictionService.instance
+                                    .ensureCanUseBookingFeatures(context)) {
+                                  return;
+                                }
                                 final added = await Navigator.pushNamed(
                                   context,
                                   "/profile/services/add",

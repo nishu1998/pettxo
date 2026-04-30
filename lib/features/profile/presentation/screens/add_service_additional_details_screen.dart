@@ -8,6 +8,7 @@ import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/profile_repository.dart';
 import '../../domain/models/add_service_flow_draft.dart';
 import '../../domain/models/user_profile.dart';
@@ -172,6 +173,9 @@ class _AddServiceAdditionalDetailsScreenState
   }
 
   Future<void> _handlePublishPress() async {
+    if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+      return;
+    }
     if (_validateForm()) {
       await _publishService();
       return;

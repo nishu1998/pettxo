@@ -4,6 +4,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../../widgets/custom_button.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 
 class CreatePostScreen extends StatefulWidget {
   const CreatePostScreen({super.key});
@@ -14,6 +15,17 @@ class CreatePostScreen extends StatefulWidget {
 
 class _CreatePostScreenState extends State<CreatePostScreen> {
   bool isServicePost = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
+        Navigator.pushReplacementNamed(context, "/home");
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

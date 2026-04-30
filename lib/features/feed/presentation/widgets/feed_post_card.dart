@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_feedback.dart';
 import '../../../../widgets/custom_button.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/feed_post.dart';
 
 class FeedPostCard extends StatelessWidget {
@@ -142,9 +144,23 @@ class FeedPostCard extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(width: 18),
-                const Icon(
-                  Icons.mode_comment_outlined,
-                  color: AppColors.textDark,
+                InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () {
+                    if (!UserRestrictionService.instance
+                        .ensureCanUseSocialFeatures(context)) {
+                      return;
+                    }
+                    AppFeedback.show(
+                      context,
+                      message: 'Comments will be available soon.',
+                      tone: AppFeedbackTone.info,
+                    );
+                  },
+                  child: const Icon(
+                    Icons.mode_comment_outlined,
+                    color: AppColors.textDark,
+                  ),
                 ),
                 const SizedBox(width: 6),
                 Text(

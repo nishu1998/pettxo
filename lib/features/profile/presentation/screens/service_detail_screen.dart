@@ -12,6 +12,8 @@ import '../../../../core/widgets/glass_surface.dart';
 import '../../../bookings/data/repositories/booking_review_repository.dart';
 import '../../../bookings/domain/models/booking_review_model.dart';
 import '../../../bookings/presentation/screens/slot_selection_screen.dart';
+import '../../../moderation/presentation/widgets/report_sheet.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/profile_service_listing.dart';
 
 class ServiceDetailScreen extends StatelessWidget {
@@ -27,6 +29,9 @@ class ServiceDetailScreen extends StatelessWidget {
   });
 
   void _openBookingFlow(BuildContext context) {
+    if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+      return;
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -199,6 +204,23 @@ class ServiceDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerRight,
+                child: SecondaryButton(
+                  label: 'Report service',
+                  icon: Icons.flag_outlined,
+                  size: AppButtonSize.compact,
+                  expand: false,
+                  onPressed: currentUserId.isEmpty || isOwner
+                      ? null
+                      : () => ReportSheet.show(
+                          context: context,
+                          type: 'service',
+                          targetId: service.id,
+                        ),
+                ),
               ),
               const SizedBox(height: 22),
               if (canBook)
@@ -625,6 +647,10 @@ class _ProviderIdentityRowState extends State<_ProviderIdentityRow> {
     }
   }
 
+  // TODO(nishant): Add a real "Report user" entry point when Pettxo has a
+  // public provider profile screen. The current profile screen is the owner's
+  // private area, so reporting from there would be the wrong UX.
+
   @override
   Widget build(BuildContext context) {
     final providerName = _resolvedProviderName ?? 'Service provider';
@@ -926,6 +952,23 @@ class _ReviewPreviewCard extends StatelessWidget {
                   .toList(growable: false),
             ),
           ],
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: SecondaryButton(
+              label: 'Report review',
+              icon: Icons.outlined_flag_rounded,
+              size: AppButtonSize.compact,
+              expand: false,
+              onPressed: FirebaseAuth.instance.currentUser == null
+                  ? null
+                  : () => ReportSheet.show(
+                      context: context,
+                      type: 'review',
+                      targetId: review.id,
+                    ),
+            ),
+          ),
         ],
       ),
     );

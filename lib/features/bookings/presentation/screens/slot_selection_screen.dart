@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_checkout_draft.dart';
 import '../../domain/models/service_slot_model.dart';
@@ -54,6 +55,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
         !normalizedSuggested.isAfter(lastSelectableDate);
     _selectedDate = canUseSuggestedDate ? normalizedSuggested : normalizedToday;
     _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+        Navigator.maybePop(context);
+      }
+    });
   }
 
   DateTime get _today {
@@ -89,6 +96,9 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   void _continue() {
+    if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+      return;
+    }
     final selectedSlot = _selectedSlot;
     if (selectedSlot == null) {
       setState(() => _slotError = 'Choose an available slot to continue.');
