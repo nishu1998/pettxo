@@ -13,6 +13,7 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../data/repositories/booking_review_repository.dart';
 import '../../domain/models/booking_model.dart';
@@ -235,18 +236,42 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   Future<void> _cancelBooking(BookingModel booking) async {
     if (_activeLifecycleAction != null) return;
 
-    setState(() => _activeLifecycleAction = 'cancelBooking');
-    AppLoader.showWithMessage('Cancelling booking...');
-
     try {
-      await _bookingRepository.cancelBooking(
+      final preview = await _bookingRepository.previewCancellation(
+        bookingId: booking.id,
+      );
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Cancel booking?'),
+            content: Text(
+              'Refund will be ${_moneyFromPaise(preview.refundAmountPaise)} based on current timing.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Go Back'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Confirm Cancel'),
+              ),
+            ],
+          );
+        },
+      );
+      if (confirmed != true) return;
+
+      setState(() => _activeLifecycleAction = 'cancelBooking');
+      AppLoader.showWithMessage('Cancelling booking...');
+      final result = await _bookingRepository.cancelBookingWithBreakdown(
         bookingId: booking.id,
         reason: 'Cancelled from booking details',
       );
       _showToast(
-        booking.isAccepted
-            ? 'Booking cancelled. Slot capacity released.'
-            : 'Booking request cancelled.',
+        'Booking cancelled. Refund: ${_moneyFromPaise(result.refundAmountPaise)}.',
         tone: AppSnackbarTone.success,
       );
     } catch (error) {
@@ -255,6 +280,106 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         tone: AppSnackbarTone.error,
       );
     } finally {
+      AppLoader.hide();
+      if (mounted) setState(() => _activeLifecycleAction = null);
+    }
+  }
+
+  Future<void> _raiseDispute(BookingModel booking) async {
+    if (_activeLifecycleAction != null) return;
+    final reasonController = TextEditingController();
+    final descriptionController = TextEditingController();
+
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+          ),
+          child: Container(
+            margin: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Raise dispute',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: reasonController,
+                  decoration: const InputDecoration(
+                    labelText: 'Reason',
+                    hintText: 'Service issue, payment concern, no-show...',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: descriptionController,
+                  minLines: 3,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Description',
+                    hintText: 'Tell us what happened.',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(sheetContext, false),
+                        child: const Text('Close'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => Navigator.pop(sheetContext, true),
+                        child: const Text('Submit'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _activeLifecycleAction = 'raiseDispute');
+    AppLoader.showWithMessage('Submitting dispute...');
+    try {
+      await _bookingRepository.raiseDispute(
+        bookingId: booking.id,
+        reason: reasonController.text,
+        description: descriptionController.text,
+      );
+      _showToast(
+        'Dispute submitted. Your payout or refund outcome is now on hold for review.',
+        tone: AppSnackbarTone.success,
+      );
+    } catch (error) {
+      _showToast(_friendlyDisputeError(error), tone: AppSnackbarTone.error);
+    } finally {
+      reasonController.dispose();
+      descriptionController.dispose();
       AppLoader.hide();
       if (mounted) setState(() => _activeLifecycleAction = null);
     }
@@ -402,8 +527,28 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     return 'Could not submit review. Please try again.';
   }
 
+  String _friendlyDisputeError(Object error) {
+    final text = error.toString();
+    if (text.contains('failed-precondition')) {
+      return 'This booking is no longer inside the dispute window.';
+    }
+    if (text.contains('permission-denied')) {
+      return 'Only booking participants can raise a dispute.';
+    }
+    if (text.contains('invalid-argument')) {
+      return 'Please add both a reason and a description.';
+    }
+    if (text.contains('not-found')) {
+      return 'Booking details could not be found.';
+    }
+    return 'Could not submit dispute right now.';
+  }
+
   Future<void> _submitReview(BookingModel booking) async {
     if (_isSubmittingReview || booking.hasReview || _reviewSubmittedLocally) {
+      return;
+    }
+    if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
       return;
     }
     if (_starRating < 1) {
@@ -586,6 +731,91 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     }
   }
 
+  List<Widget> _bookingPolicySections(BookingModel booking) {
+    final sections = <Widget>[];
+    final remainingGrace = booking.remainingGraceDuration;
+
+    if (booking.isNoShow) {
+      sections.add(
+        const _BannerCard(
+          backgroundColor: Color(0xFFFFF1EF),
+          text: 'This booking was marked as no-show. No refund applicable.',
+        ),
+      );
+    } else if (booking.isCancelled) {
+      sections.add(
+        _BannerCard(
+          backgroundColor: const Color(0xFFEFF6FF),
+          text:
+              'Cancellation recorded. Refund: ${_moneyFromPaise(booking.cancellationRefundAmountPaise)} · Provider share: ${_moneyFromPaise(booking.cancellationProviderAmountPaise)}.',
+        ),
+      );
+    } else if (remainingGrace != null && remainingGrace > Duration.zero) {
+      sections.add(
+        _BannerCard(
+          backgroundColor: const Color(0xFFDCFCE7),
+          text:
+              'Cancel within ${_formatCountdown(remainingGrace.inSeconds)} for a full refund.',
+        ),
+      );
+    } else if ((booking.isRequested || booking.isAccepted) &&
+        !booking.isCancelled &&
+        !booking.isCompleted &&
+        !booking.isInProgress) {
+      sections.add(
+        const _BannerCard(
+          backgroundColor: Color(0xFFFEF3C7),
+          text: 'Cancellation charges apply now.',
+        ),
+      );
+    }
+
+    if (booking.hasDispute) {
+      sections.add(
+        _BannerCard(
+          backgroundColor: const Color(0xFFEFF6FF),
+          text:
+              'Dispute status: ${_titleCase(_emptyFallback(booking.disputeStatus, fallback: 'open'))}',
+        ),
+      );
+    } else if (booking.canRaiseDispute) {
+      sections.add(
+        SectionBlock(
+          title: 'DISPUTE SUPPORT',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'If something went wrong, you can raise a dispute until 24 hours after the service is completed.',
+                style: TextStyle(color: AppColors.textGrey, height: 1.5),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  onPressed: _activeLifecycleAction == null
+                      ? () => _raiseDispute(booking)
+                      : null,
+                  icon: const Icon(Icons.report_gmailerrorred_rounded),
+                  label: Text(
+                    _activeLifecycleAction == 'raiseDispute'
+                        ? 'Submitting...'
+                        : 'Raise dispute',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (sections.isEmpty) return const [];
+    return [
+      ...sections.expand((widget) => [widget, const SizedBox(height: 12)]),
+    ];
+  }
+
   List<Widget> _buildReceivingConfirmed(
     BookingModel booking,
     BookingRecord record,
@@ -596,6 +826,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         text:
             'Booking confirmed for ${_dateLabel(booking.scheduledStartAt)} at ${_timeLabel(booking.scheduledStartAt)}.',
       ),
+      ..._bookingPolicySections(booking),
       SectionBlock(
         title: 'SERVICE',
         rows: [
@@ -641,7 +872,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               tone: record.statusTone,
             ),
           ),
-          DetailRowData(label: 'Paid', value: _money(booking.grossAmount)),
+          DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
         ],
       ),
       const SizedBox(height: 12),
@@ -691,6 +922,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         text:
             'Payment status: ${_titleCase(_emptyFallback(booking.paymentStatus, fallback: 'pending'))}',
       ),
+      ..._bookingPolicySections(booking),
       SectionBlock(
         title: 'SERVICE',
         rows: [
@@ -736,7 +968,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               tone: record.statusTone,
             ),
           ),
-          DetailRowData(label: 'Paid', value: _money(booking.grossAmount)),
+          DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
         ],
       ),
       const SizedBox(height: 12),
@@ -803,6 +1035,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         ),
       ),
       const SizedBox(height: 12),
+      ..._bookingPolicySections(booking),
       SectionBlock(
         title: 'REVIEW ${booking.providerName.toUpperCase()}',
         child: hasSubmittedReview
@@ -923,7 +1156,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             label: 'Animal',
             value: _emptyFallback(booking.animalType),
           ),
-          DetailRowData(label: 'Paid', value: _money(booking.grossAmount)),
+          DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
           DetailRowData(
             label: 'Status',
             value: '',
@@ -947,6 +1180,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         text:
             'Respond within ${_formatRemainingUntil(booking.requestExpiresAt)} · Auto-cancels when the timer ends',
       ),
+      ..._bookingPolicySections(booking),
       SectionBlock(
         title: 'PET PARENT',
         child: _IdentityRow(
@@ -989,7 +1223,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
           ),
           DetailRowData(
             label: 'You earn',
-            value: _money(booking.providerEarnings),
+            value: _moneyFromPaise(booking.providerEarningsPaise),
             valueColor: const Color(0xFF15803D),
             valueWeight: FontWeight.w700,
           ),
@@ -1030,6 +1264,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     BookingRecord record,
   ) {
     return [
+      ..._bookingPolicySections(booking),
       SectionBlock(
         title: 'PET PARENT',
         child: _IdentityRow(
@@ -1072,7 +1307,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
           ),
           DetailRowData(
             label: 'You earn',
-            value: _money(booking.providerEarnings),
+            value: _moneyFromPaise(booking.providerEarningsPaise),
             valueColor: const Color(0xFF15803D),
             valueWeight: FontWeight.w700,
           ),
@@ -1099,6 +1334,22 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         ),
       const SizedBox(height: 12),
       ..._postConfirmationActionSections(booking),
+      if (!booking.isInProgress && !booking.isCompleted) ...[
+        const SizedBox(height: 12),
+        _DualActionRow(
+          primaryLabel: _activeLifecycleAction == 'cancelBooking'
+              ? 'Cancelling...'
+              : 'Cancel booking',
+          primaryStyle: BookingActionStyle.danger,
+          secondaryLabel: 'Message',
+          secondaryStyle: BookingActionStyle.secondary,
+          onPrimaryTap:
+              booking.canCancelBeforeStart && _activeLifecycleAction == null
+              ? () => _cancelBooking(booking)
+              : null,
+          onSecondaryTap: () => _showToast('Messaging flow opened'),
+        ),
+      ],
     ];
   }
 
@@ -1106,6 +1357,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     final isDelivering = widget.contextMode == BookingContextMode.delivering;
     return Column(
       children: [
+        ..._bookingPolicySections(booking),
         SectionBlock(
           title: 'BOOKING',
           rows: [
@@ -1138,7 +1390,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                 tone: record.statusTone,
               ),
             ),
-            DetailRowData(label: 'Paid', value: _money(booking.grossAmount)),
+            DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
           ],
         ),
         if (booking.isPostConfirmation) ...[
@@ -1241,7 +1493,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     return '$hour:$minute $suffix';
   }
 
-  String _money(int amount) => '₹$amount';
+  String _moneyFromPaise(int paise) {
+    final rupees = paise / 100;
+    final text = paise % 100 == 0 ? rupees.toStringAsFixed(0) : rupees.toStringAsFixed(2);
+    return '₹$text';
+  }
 
   String _emptyFallback(String value, {String fallback = 'Not available'}) {
     final text = value.trim();

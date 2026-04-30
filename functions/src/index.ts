@@ -1,5 +1,6 @@
 import {createHash, randomInt, timingSafeEqual} from "crypto";
 import {initializeApp} from "firebase-admin/app";
+import {getAuth} from "firebase-admin/auth";
 import {FieldValue, getFirestore, Timestamp} from "firebase-admin/firestore";
 import type {DocumentData, Transaction, WriteBatch} from "firebase-admin/firestore";
 import {getMessaging} from "firebase-admin/messaging";
@@ -33,6 +34,132 @@ type BookingStatus =
   | "disputed"
   | "noShow";
 
+const restrictionTypes = ["social", "booking", "hard"] as const;
+const adminRoles = ["superAdmin", "customerSupportAdmin", "financeAdmin"] as const;
+const offerDisplayTypes = ["offerWall", "popup"] as const;
+const offerCampaignTypes = ["firstBooking", "festival", "general", "rebooking"] as const;
+const offerDiscountTypes = ["flat", "percent"] as const;
+const offerClaimValidityTypes = ["lifelong", "fixedDate", "daysAfterClaim"] as const;
+const offerCampaignMutableFields = [
+  "title",
+  "description",
+  "imageUrl",
+  "couponCode",
+  "displayType",
+  "campaignType",
+  "discountType",
+  "discountValue",
+  "maxDiscountAmount",
+  "minBookingAmount",
+  "isActive",
+  "startAt",
+  "endAt",
+  "claimValidityType",
+  "claimValidUntil",
+  "validDaysAfterClaim",
+  "usageLimitPerUser",
+  "targeting",
+  "priority",
+] as const;
+
+type RestrictionType = typeof restrictionTypes[number];
+type AdminRole = typeof adminRoles[number];
+type OfferDisplayType = typeof offerDisplayTypes[number];
+type OfferCampaignType = typeof offerCampaignTypes[number];
+type OfferDiscountType = typeof offerDiscountTypes[number];
+type OfferClaimValidityType = typeof offerClaimValidityTypes[number];
+type AccountStatus = "active" | "restricted" | "hardBanned";
+type RestrictionState = {
+  isBanned: boolean;
+  reason: string;
+  bannedAt: unknown | null;
+  bannedBy: string;
+};
+type RestrictionMap = Record<RestrictionType, RestrictionState>;
+type OfferTargeting = {
+  firstBookingOnly: boolean;
+  rebookingOnly: boolean;
+};
+type OfferPayload = {
+  title: string;
+  description: string;
+  imageUrl: string;
+  couponCode: string;
+  displayType: OfferDisplayType;
+  campaignType: OfferCampaignType;
+  discountType: OfferDiscountType;
+  discountValue: number;
+  maxDiscountAmount: number | null;
+  minBookingAmount: number | null;
+  isActive: boolean;
+  startAt: Date;
+  endAt: Date | null;
+  claimValidityType: OfferClaimValidityType;
+  claimValidUntil: Date | null;
+  validDaysAfterClaim: number | null;
+  usageLimitPerUser: number;
+  targeting: OfferTargeting;
+  priority: number;
+};
+type EligibleOfferResponse = {
+  id: string;
+  title: string;
+  description: string;
+  imageUrl: string;
+  couponCode: string;
+  displayType: OfferDisplayType;
+  campaignType: OfferCampaignType;
+  discountType: OfferDiscountType;
+  discountValue: number;
+  maxDiscountAmount: number | null;
+  minBookingAmount: number | null;
+  claimValidityType: OfferClaimValidityType;
+  usageLimitPerUser: number;
+  priority: number;
+  startAt: string | null;
+  endAt: string | null;
+};
+
+class OfferValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OfferValidationError";
+  }
+}
+
+type CancellationActor = "user" | "provider" | "system";
+type CancellationBreakdown = {
+  refundPercent: number;
+  refundAmount: number;
+  refundAmountPaise: number;
+  pettxoPercent: number;
+  pettxoAmount: number;
+  pettxoAmountPaise: number;
+  providerPercent: number;
+  providerAmount: number;
+  providerAmountPaise: number;
+  totalAmountPaise: number;
+  cancellationCase: string;
+  graceWindowMinutes: number;
+  graceWindowEndsAt: Timestamp;
+  isWithinGraceWindow: boolean;
+  timeGapMinutes: number;
+};
+type StandardRevenueBreakdown = {
+  pettxoPercent: number;
+  pettxoAmount: number;
+  pettxoAmountPaise: number;
+  providerPercent: number;
+  providerAmount: number;
+  providerAmountPaise: number;
+  totalAmountPaise: number;
+};
+
+const standardCompletedPettxoPercent = 15;
+const standardCompletedProviderPercent = 85;
+const disputeWindowMs = 24 * hourMs;
+const noShowFinalizationDelayMs = 24 * hourMs;
+
 function requireUid(auth: {uid?: string} | undefined): string {
   const uid = auth?.uid;
   if (!uid) {
@@ -44,6 +171,907 @@ function requireUid(auth: {uid?: string} | undefined): string {
 function requireAdmin(auth: {token?: {[key: string]: unknown}} | undefined): void {
   if (auth?.token?.admin !== true) {
     throw new HttpsError("permission-denied", "Admin access required.");
+  }
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isRestrictionType(value: string): value is RestrictionType {
+  return restrictionTypes.includes(value as RestrictionType);
+}
+
+function isAdminRole(value: string): value is AdminRole {
+  return adminRoles.includes(value as AdminRole);
+}
+
+function isOfferDisplayType(value: string): value is OfferDisplayType {
+  return offerDisplayTypes.includes(value as OfferDisplayType);
+}
+
+function isOfferCampaignType(value: string): value is OfferCampaignType {
+  return offerCampaignTypes.includes(value as OfferCampaignType);
+}
+
+function isOfferDiscountType(value: string): value is OfferDiscountType {
+  return offerDiscountTypes.includes(value as OfferDiscountType);
+}
+
+function isOfferClaimValidityType(value: string): value is OfferClaimValidityType {
+  return offerClaimValidityTypes.includes(value as OfferClaimValidityType);
+}
+
+function normalizeRestrictionState(value: unknown): RestrictionState {
+  const data = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    isBanned: data.isBanned === true,
+    reason: asTrimmedString(data.reason),
+    bannedAt: data.bannedAt ?? null,
+    bannedBy: asTrimmedString(data.bannedBy),
+  };
+}
+
+function normalizeRestrictions(value: unknown): RestrictionMap {
+  const data = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    social: normalizeRestrictionState(data.social),
+    booking: normalizeRestrictionState(data.booking),
+    hard: normalizeRestrictionState(data.hard),
+  };
+}
+
+function computeAccountStatus(restrictions: RestrictionMap): AccountStatus {
+  if (restrictions.hard.isBanned) return "hardBanned";
+  if (restrictions.social.isBanned || restrictions.booking.isBanned) return "restricted";
+  return "active";
+}
+
+function buildRestrictionPatch(
+  type: RestrictionType,
+  isBanned: boolean,
+  reason: string,
+  adminUid: string,
+): Record<string, unknown> {
+  return {
+    restrictions: {
+      [type]: isBanned ? {
+        isBanned: true,
+        reason,
+        bannedAt: FieldValue.serverTimestamp(),
+        bannedBy: adminUid,
+      } : {
+        isBanned: false,
+        reason: "",
+        bannedAt: null,
+        bannedBy: "",
+      },
+    },
+  };
+}
+
+function nextRestrictions(
+  restrictions: RestrictionMap,
+  type: RestrictionType,
+  isBanned: boolean,
+  reason: string,
+  adminUid: string,
+): RestrictionMap {
+  return {
+    ...restrictions,
+    [type]: isBanned ? {
+      isBanned: true,
+      reason,
+      bannedAt: restrictions[type].bannedAt,
+      bannedBy: adminUid,
+    } : {
+      isBanned: false,
+      reason: "",
+      bannedAt: null,
+      bannedBy: "",
+    },
+  };
+}
+
+async function requireAdminActor(uid: string): Promise<{uid: string; role: AdminRole}> {
+  const snapshot = await db.collection("users").doc(uid).get();
+  if (!snapshot.exists) {
+    throw new HttpsError("permission-denied", "Admin access required.");
+  }
+
+  const role = asTrimmedString(snapshot.data()?.adminRole);
+  if (!isAdminRole(role)) {
+    throw new HttpsError("permission-denied", "Admin access required.");
+  }
+
+  return {uid, role};
+}
+
+function assertRestrictionPermission(role: AdminRole, type: RestrictionType): void {
+  if (role === "superAdmin") return;
+  if (role === "customerSupportAdmin" && type !== "hard") return;
+  throw new HttpsError("permission-denied", "You do not have access to manage this restriction.");
+}
+
+function assertOfferMutationPermission(role: AdminRole): void {
+  if (role === "superAdmin" || role === "financeAdmin") return;
+  throw new HttpsError("permission-denied", "You do not have access to manage offer campaigns.");
+}
+
+function asOptionalFiniteNumber(value: unknown): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function asOptionalPositiveInt(value: unknown): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized > 0 ? normalized : null;
+}
+
+function asBoolean(value: unknown, fallback = false): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function asDate(value: unknown): Date | null {
+  if (value == null) return null;
+  if (value instanceof Timestamp) return value.toDate();
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "number") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function writeOfferAuditLog(
+  batch: WriteBatch,
+  admin: {uid: string; role: AdminRole},
+  action: string,
+  campaignId: string,
+  metadata: Record<string, unknown> = {},
+): void {
+  const auditRef = db.collection("adminAuditLogs").doc();
+  batch.set(auditRef, {
+    action,
+    targetType: "offerCampaign",
+    targetId: campaignId,
+    performedBy: admin.uid,
+    performedByRole: admin.role,
+    createdAt: FieldValue.serverTimestamp(),
+    metadata,
+  });
+}
+
+function toIsoStringOrNull(value: Date | null): string | null {
+  return value ? value.toISOString() : null;
+}
+
+function isOfferLive(offer: OfferPayload, now: Date): boolean {
+  if (!offer.isActive) return false;
+  if (offer.startAt.getTime() > now.getTime()) return false;
+  if (offer.endAt && offer.endAt.getTime() < now.getTime()) return false;
+  return true;
+}
+
+function toEligibleOfferResponse(id: string, offer: OfferPayload): EligibleOfferResponse {
+  return {
+    id,
+    title: offer.title,
+    description: offer.description,
+    imageUrl: offer.imageUrl,
+    couponCode: offer.couponCode,
+    displayType: offer.displayType,
+    campaignType: offer.campaignType,
+    discountType: offer.discountType,
+    discountValue: offer.discountValue,
+    maxDiscountAmount: offer.maxDiscountAmount,
+    minBookingAmount: offer.minBookingAmount,
+    claimValidityType: offer.claimValidityType,
+    usageLimitPerUser: offer.usageLimitPerUser,
+    priority: offer.priority,
+    startAt: toIsoStringOrNull(offer.startAt),
+    endAt: toIsoStringOrNull(offer.endAt),
+  };
+}
+
+async function getCompletedBookingCountForUser(
+  uid: string,
+  userData?: Record<string, unknown>,
+): Promise<number> {
+  const explicitCount =
+    asOptionalPositiveInt(userData?.completedBookingCount) ??
+    asOptionalPositiveInt(userData?.completedBookingsCount);
+  if (explicitCount != null) return explicitCount;
+
+  const aggregate = await db
+    .collection("bookings")
+    .where("customerId", "==", uid)
+    .where("status", "==", "completed")
+    .count()
+    .get();
+  return aggregate.data().count;
+}
+
+async function hasClaimedOfferCampaign(uid: string, campaignId: string): Promise<boolean> {
+  const snapshot = await db
+    .collection("users")
+    .doc(uid)
+    .collection("claimedOffers")
+    .where("offerId", "==", campaignId)
+    .limit(1)
+    .get();
+  return !snapshot.empty;
+}
+
+function isOfferEligibleForUser(
+  offer: OfferPayload,
+  completedBookingCount: number,
+): boolean {
+  if (offer.targeting.firstBookingOnly && completedBookingCount > 0) {
+    return false;
+  }
+  if (offer.targeting.rebookingOnly && completedBookingCount <= 0) {
+    return false;
+  }
+  return true;
+}
+
+function computeOfferValidUntil(offer: OfferPayload, now: Date): Timestamp | null {
+  if (offer.claimValidityType === "lifelong") return null;
+  if (offer.claimValidityType === "fixedDate") {
+    return offer.claimValidUntil ? Timestamp.fromDate(offer.claimValidUntil) : null;
+  }
+  if (offer.validDaysAfterClaim == null) return null;
+  return Timestamp.fromMillis(now.getTime() + (offer.validDaysAfterClaim * 24 * hourMs));
+}
+
+function computeOfferDiscount(
+  bookingAmount: number,
+  discountType: OfferDiscountType,
+  discountValue: number,
+  maxDiscountAmount: number | null,
+): {discountAmount: number; finalAmount: number} {
+  const safeBookingAmount = Math.max(0, bookingAmount);
+  let discountAmount = discountType === "flat" ?
+    Math.min(discountValue, safeBookingAmount) :
+    (safeBookingAmount * discountValue) / 100;
+  if (maxDiscountAmount != null) {
+    discountAmount = Math.min(discountAmount, maxDiscountAmount);
+  }
+  discountAmount = roundTo(Math.max(0, discountAmount), 2);
+  const finalAmount = roundTo(Math.max(safeBookingAmount - discountAmount, 0), 2);
+  return {discountAmount, finalAmount};
+}
+
+function normalizeOfferPayload(
+  data: Record<string, unknown>,
+  options: {requireAllFields: boolean},
+): OfferPayload {
+  const title = asTrimmedString(data.title);
+  const couponCode = asTrimmedString(data.couponCode);
+  const displayType = asTrimmedString(data.displayType);
+  const campaignType = asTrimmedString(data.campaignType);
+  const discountType = asTrimmedString(data.discountType);
+  const claimValidityType = asTrimmedString(data.claimValidityType);
+  const startAt = asDate(data.startAt);
+  const endAt = asDate(data.endAt);
+  const claimValidUntil = asDate(data.claimValidUntil);
+  const discountValue = asOptionalFiniteNumber(data.discountValue);
+  const maxDiscountAmount = asOptionalFiniteNumber(data.maxDiscountAmount);
+  const minBookingAmount = asOptionalFiniteNumber(data.minBookingAmount);
+  const validDaysAfterClaim = asOptionalPositiveInt(data.validDaysAfterClaim);
+  const usageLimitPerUser = asOptionalPositiveInt(data.usageLimitPerUser);
+  const targetingData = asRecord(data.targeting);
+  const targeting: OfferTargeting = {
+    firstBookingOnly: asBoolean(targetingData.firstBookingOnly),
+    rebookingOnly: asBoolean(targetingData.rebookingOnly),
+  };
+
+  if (!title) {
+    throw new HttpsError("invalid-argument", "title is required.");
+  }
+  if (!couponCode) {
+    throw new HttpsError("invalid-argument", "couponCode is required.");
+  }
+  if (!isOfferDisplayType(displayType)) {
+    throw new HttpsError("invalid-argument", "displayType must be offerWall or popup.");
+  }
+  if (!isOfferCampaignType(campaignType)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "campaignType must be firstBooking, festival, general, or rebooking.",
+    );
+  }
+  if (!isOfferDiscountType(discountType)) {
+    throw new HttpsError("invalid-argument", "discountType must be flat or percent.");
+  }
+  if (discountValue == null || discountValue <= 0) {
+    throw new HttpsError("invalid-argument", "discountValue must be greater than 0.");
+  }
+  if (discountType === "percent" && discountValue > 100) {
+    throw new HttpsError("invalid-argument", "Percent discountValue must be 100 or less.");
+  }
+  if (usageLimitPerUser == null || usageLimitPerUser < 1) {
+    throw new HttpsError("invalid-argument", "usageLimitPerUser must be at least 1.");
+  }
+  if (!startAt) {
+    throw new HttpsError("invalid-argument", "startAt is required.");
+  }
+  if (endAt && endAt.getTime() <= startAt.getTime()) {
+    throw new HttpsError("invalid-argument", "endAt must be after startAt.");
+  }
+  if (!isOfferClaimValidityType(claimValidityType)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "claimValidityType must be lifelong, fixedDate, or daysAfterClaim.",
+    );
+  }
+  if (claimValidityType === "fixedDate" && !claimValidUntil) {
+    throw new HttpsError("invalid-argument", "claimValidUntil is required for fixedDate.");
+  }
+  if (claimValidityType === "fixedDate" && claimValidUntil && claimValidUntil.getTime() <= startAt.getTime()) {
+    throw new HttpsError("invalid-argument", "claimValidUntil must be after startAt.");
+  }
+  if (claimValidityType === "daysAfterClaim" && validDaysAfterClaim == null) {
+    throw new HttpsError("invalid-argument", "validDaysAfterClaim must be greater than 0.");
+  }
+  if (targeting.firstBookingOnly && targeting.rebookingOnly) {
+    throw new HttpsError(
+      "invalid-argument",
+      "targeting.firstBookingOnly and targeting.rebookingOnly cannot both be true.",
+    );
+  }
+
+  return {
+    title,
+    description: asTrimmedString(data.description),
+    imageUrl: asTrimmedString(data.imageUrl),
+    couponCode,
+    displayType,
+    campaignType,
+    discountType,
+    discountValue,
+    maxDiscountAmount,
+    minBookingAmount,
+    isActive: asBoolean(data.isActive, options.requireAllFields ? false : false),
+    startAt,
+    endAt,
+    claimValidityType,
+    claimValidUntil: claimValidityType === "fixedDate" ? claimValidUntil : null,
+    validDaysAfterClaim: claimValidityType === "daysAfterClaim" ? validDaysAfterClaim : null,
+    usageLimitPerUser,
+    targeting,
+    priority: toInt(data.priority, 0),
+  };
+}
+
+function assertAllowedOfferKeys(
+  data: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): void {
+  const invalidKeys = Object.keys(data).filter((key) => !allowedKeys.includes(key));
+  if (invalidKeys.length > 0) {
+    throw new HttpsError(
+      "invalid-argument",
+      `Unsupported fields: ${invalidKeys.join(", ")}.`,
+    );
+  }
+}
+
+function toMoneyAmount(value: number): number {
+  return Math.max(Math.round(value), 0);
+}
+
+function toPaise(value: number): number {
+  return Math.max(Math.round(value * 100), 0);
+}
+
+function fromPaise(value: number): number {
+  return roundTo(value / 100, 2);
+}
+
+function computeStandardRevenueBreakdown(totalAmount: number): StandardRevenueBreakdown {
+  const safeTotalPaise = toPaise(Math.max(totalAmount, 0));
+  const pettxoAmountPaise = Math.round(
+    (safeTotalPaise * standardCompletedPettxoPercent) / 100,
+  );
+  const providerAmountPaise = Math.max(safeTotalPaise - pettxoAmountPaise, 0);
+  return {
+    pettxoPercent: standardCompletedPettxoPercent,
+    pettxoAmount: toMoneyAmount(fromPaise(pettxoAmountPaise)),
+    pettxoAmountPaise,
+    providerPercent: standardCompletedProviderPercent,
+    providerAmount: toMoneyAmount(fromPaise(providerAmountPaise)),
+    providerAmountPaise,
+    totalAmountPaise: safeTotalPaise,
+  };
+}
+
+function getBookingPaidAmountPaise(booking: DocumentData): number {
+  const pricing = asRecord(booking.pricing);
+  const finalAmountPaise = asOptionalPositiveInt(pricing.finalAmountPaise);
+  if (finalAmountPaise != null) return finalAmountPaise;
+  const financialTotalPaise = asOptionalPositiveInt(booking.totalAmountPaise);
+  if (financialTotalPaise != null) return financialTotalPaise;
+  return toPaise(getBookingPaidAmount(booking));
+}
+
+function getBookingPaidAmount(booking: DocumentData): number {
+  const pricing = asRecord(booking.pricing);
+  const finalAmount = asOptionalFiniteNumber(pricing.finalAmount);
+  if (finalAmount != null && finalAmount >= 0) return toMoneyAmount(finalAmount);
+  return Math.max(toInt(pricing.grossAmount, 0), 0);
+}
+
+function getBookingCurrency(booking: DocumentData): string {
+  const pricing = asRecord(booking.pricing);
+  const serviceSnapshot = asRecord(booking.serviceSnapshot);
+  return asTrimmedString(pricing.currency) || asTrimmedString(serviceSnapshot.currency) || "INR";
+}
+
+function bookingCreatedAtDate(booking: DocumentData): Date {
+  return asDate(booking.createdAt) ?? asDate(booking.acceptedAt) ?? new Date();
+}
+
+function bookingServiceTimeDate(booking: DocumentData): Date | null {
+  return asDate(booking.scheduledStartAt);
+}
+
+function getGraceWindowMinutes(bookingTime: Date, serviceTime: Date): number {
+  const diffMs = serviceTime.getTime() - bookingTime.getTime();
+  if (diffMs <= 6 * hourMs) return 10;
+  if (diffMs <= 12 * hourMs) return 15;
+  return 30;
+}
+
+function buildGraceWindow(bookingTime: Date, serviceTime: Date): {
+  graceWindowMinutes: number;
+  graceWindowEndsAt: Timestamp;
+} {
+  const graceWindowMinutes = getGraceWindowMinutes(bookingTime, serviceTime);
+  return {
+    graceWindowMinutes,
+    graceWindowEndsAt: Timestamp.fromMillis(
+      bookingTime.getTime() + (graceWindowMinutes * minuteMs),
+    ),
+  };
+}
+
+function hasOtpBeenUsed(booking: DocumentData): boolean {
+  const otp = asRecord(booking.otp);
+  return asTrimmedString(booking.status) === "inProgress" ||
+    asTrimmedString(booking.status) === "completed" ||
+    asTrimmedString(otp.status) === "verified" ||
+    asDate(otp.verifiedAt) != null;
+}
+
+function calculateCancellationBreakdown(params: {
+  bookingTime: Date;
+  serviceTime: Date;
+  cancellationTime: Date;
+  otpUsed: boolean;
+  totalAmountPaise: number;
+  cancelledBy: CancellationActor;
+}): CancellationBreakdown {
+  const {
+    bookingTime,
+    serviceTime,
+    cancellationTime,
+    otpUsed,
+    totalAmountPaise,
+    cancelledBy,
+  } = params;
+
+  if (otpUsed) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Bookings cannot be cancelled after the service OTP has been used.",
+    );
+  }
+
+  const safeTotalAmountPaise = Math.max(totalAmountPaise, 0);
+  const {graceWindowMinutes, graceWindowEndsAt} = buildGraceWindow(bookingTime, serviceTime);
+  const isWithinGraceWindow = cancellationTime.getTime() <= graceWindowEndsAt.toMillis();
+
+  let refundPercent = 0;
+  let pettxoPercent = 0;
+  let providerPercent = 0;
+  let cancellationCase = "outsidePolicy";
+
+  if (cancelledBy === "provider" || cancelledBy === "system") {
+    refundPercent = 100;
+    pettxoPercent = 0;
+    providerPercent = 0;
+    cancellationCase = cancelledBy === "provider" ?
+      "providerCancellation" :
+      "systemCancellation";
+  } else if (isWithinGraceWindow) {
+    refundPercent = 100;
+    pettxoPercent = 0;
+    providerPercent = 0;
+    cancellationCase = "graceWindow";
+  } else {
+    const hoursBeforeService = (serviceTime.getTime() - cancellationTime.getTime()) / hourMs;
+    if (hoursBeforeService > 24) {
+      refundPercent = 90;
+      pettxoPercent = 10;
+      providerPercent = 0;
+      cancellationCase = "userMoreThan24Hours";
+    } else if (hoursBeforeService > 12) {
+      refundPercent = 50;
+      pettxoPercent = 15;
+      providerPercent = 35;
+      cancellationCase = "user24To12Hours";
+    } else if (hoursBeforeService > 6) {
+      refundPercent = 35;
+      pettxoPercent = 15;
+      providerPercent = 50;
+      cancellationCase = "user12To6Hours";
+    } else if (hoursBeforeService > 2) {
+      refundPercent = 20;
+      pettxoPercent = 15;
+      providerPercent = 65;
+      cancellationCase = "user6To2Hours";
+    } else {
+      refundPercent = 0;
+      pettxoPercent = 15;
+      providerPercent = 85;
+      cancellationCase = "userLessThan2Hours";
+    }
+  }
+
+  if (refundPercent + pettxoPercent + providerPercent !== 100) {
+    throw new HttpsError(
+      "internal",
+      "Cancellation policy percentages are invalid.",
+    );
+  }
+
+  const refundAmountPaise = Math.round((safeTotalAmountPaise * refundPercent) / 100);
+  const pettxoAmountPaise = Math.round((safeTotalAmountPaise * pettxoPercent) / 100);
+  const providerAmountPaise = Math.max(
+    safeTotalAmountPaise - refundAmountPaise - pettxoAmountPaise,
+    0,
+  );
+  const timeGapMinutes = Math.max(
+    Math.floor((serviceTime.getTime() - cancellationTime.getTime()) / minuteMs),
+    0,
+  );
+
+  return {
+    refundPercent,
+    refundAmount: toMoneyAmount(fromPaise(refundAmountPaise)),
+    refundAmountPaise,
+    pettxoPercent,
+    pettxoAmount: toMoneyAmount(fromPaise(pettxoAmountPaise)),
+    pettxoAmountPaise,
+    providerPercent,
+    providerAmount: toMoneyAmount(fromPaise(providerAmountPaise)),
+    providerAmountPaise,
+    totalAmountPaise: safeTotalAmountPaise,
+    cancellationCase,
+    graceWindowMinutes,
+    graceWindowEndsAt,
+    isWithinGraceWindow,
+    timeGapMinutes,
+  };
+}
+
+function bookingFinancialStatusForCancellation(
+  breakdown: CancellationBreakdown,
+): string {
+  if (breakdown.refundAmountPaise >= 0 && breakdown.refundPercent === 100) {
+    return "refunded";
+  }
+  if (breakdown.refundAmountPaise > 0) {
+    return "partiallyRefunded";
+  }
+  return "cancelled";
+}
+
+function paymentStatusForCancellation(
+  breakdown: CancellationBreakdown,
+): string {
+  if (breakdown.refundPercent === 100) return "refunded";
+  if (breakdown.refundAmountPaise > 0) return "partiallyRefunded";
+  return "paid";
+}
+
+function canBookingBeCancelled(
+  booking: DocumentData,
+  actor: CancellationActor,
+  nowMs: number,
+): void {
+  const status = asTrimmedString(booking.status) as BookingStatus;
+  if (hasOtpBeenUsed(booking) || status === "inProgress") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Bookings cannot be cancelled after the service has started.",
+    );
+  }
+  if (status === "completed" || status === "cancelledByCustomer" ||
+    status === "cancelledByProvider" || status === "rejected" ||
+    status === "expired" || status === "noShow") {
+    throw new HttpsError(
+      "failed-precondition",
+      `Booking cannot be cancelled from status ${status}.`,
+    );
+  }
+  if (status === "requested" && actor === "provider") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Providers should reject requested bookings instead of cancelling them.",
+    );
+  }
+
+  const serviceTime = bookingServiceTimeDate(booking);
+  if (serviceTime && serviceTime.getTime() <= nowMs) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Bookings can only be cancelled before the scheduled service time.",
+    );
+  }
+}
+
+function disputeWindowEndsAtForBooking(booking: DocumentData): Date {
+  const completedAt = asDate(booking.completedAt);
+  if (completedAt) {
+    return new Date(completedAt.getTime() + disputeWindowMs);
+  }
+
+  const serviceTime = bookingServiceTimeDate(booking);
+  if (serviceTime) {
+    return new Date(serviceTime.getTime() + disputeWindowMs);
+  }
+
+  return new Date(bookingCreatedAtDate(booking).getTime() + disputeWindowMs);
+}
+
+function hasBlockingDispute(booking: DocumentData): boolean {
+  const dispute = asRecord(booking.dispute);
+  const status = asTrimmedString(dispute.status) || asTrimmedString(booking.disputeStatus);
+  return status === "open" || status === "underReview";
+}
+
+function buildCancellationSnapshot(params: {
+  breakdown: CancellationBreakdown;
+  cancelledBy: string;
+  cancellationType: string;
+  cancellationTime: Timestamp;
+  serviceTime: Timestamp;
+  bookingTime: Timestamp;
+  otpUsedAtCancellation: boolean;
+}): Record<string, unknown> {
+  const {
+    breakdown,
+    cancelledBy,
+    cancellationType,
+    cancellationTime,
+    serviceTime,
+    bookingTime,
+    otpUsedAtCancellation,
+  } = params;
+  return {
+    refundPercent: breakdown.refundPercent,
+    providerPercent: breakdown.providerPercent,
+    pettxoPercent: breakdown.pettxoPercent,
+    refundAmountPaise: breakdown.refundAmountPaise,
+    providerAmountPaise: breakdown.providerAmountPaise,
+    pettxoAmountPaise: breakdown.pettxoAmountPaise,
+    totalAmountPaise: breakdown.totalAmountPaise,
+    cancellationCase: breakdown.cancellationCase,
+    cancelledBy,
+    cancellationType,
+    cancellationTime,
+    serviceTime,
+    bookingTime,
+    timeGapMinutes: breakdown.timeGapMinutes,
+    wasWithinGraceWindow: breakdown.isWithinGraceWindow,
+    otpUsedAtCancellation,
+  };
+}
+
+function readExistingCancellationBreakdown(
+  booking: DocumentData,
+  financialData: DocumentData | undefined,
+): CancellationBreakdown | null {
+  const snapshot = asRecord(financialData?.cancellationSnapshot);
+  const fallback = asRecord(financialData);
+  const totalAmountPaise = toInt(
+    snapshot.totalAmountPaise,
+    toInt(fallback.totalAmountPaise, toPaise(getBookingPaidAmount(booking))),
+  );
+  const refundAmountPaise = toInt(snapshot.refundAmountPaise, toInt(fallback.refundAmountPaise, 0));
+  const pettxoAmountPaise = toInt(snapshot.pettxoAmountPaise, toInt(fallback.pettxoAmountPaise, 0));
+  const providerAmountPaise = toInt(snapshot.providerAmountPaise, toInt(fallback.providerAmountPaise, 0));
+  const cancellationCase = asTrimmedString(snapshot.cancellationCase) ||
+    asTrimmedString(fallback.cancellationCase) ||
+    asTrimmedString(asRecord(booking.cancellation).cancellationCase);
+  if (!cancellationCase && totalAmountPaise <= 0) return null;
+  return {
+    refundPercent: toInt(snapshot.refundPercent, toInt(fallback.refundPercent, 0)),
+    refundAmount: toMoneyAmount(fromPaise(refundAmountPaise)),
+    refundAmountPaise,
+    pettxoPercent: toInt(snapshot.pettxoPercent, toInt(fallback.pettxoPercent, 0)),
+    pettxoAmount: toMoneyAmount(fromPaise(pettxoAmountPaise)),
+    pettxoAmountPaise,
+    providerPercent: toInt(snapshot.providerPercent, toInt(fallback.providerPercent, 0)),
+    providerAmount: toMoneyAmount(fromPaise(providerAmountPaise)),
+    providerAmountPaise,
+    totalAmountPaise,
+    cancellationCase,
+    graceWindowMinutes: toInt(
+      snapshot.graceWindowMinutes,
+      toInt(financialData?.graceWindowMinutes, 0),
+    ),
+    graceWindowEndsAt: (snapshot.graceWindowEndsAt as Timestamp | undefined) ??
+      (financialData?.graceWindowEndsAt as Timestamp | undefined) ??
+      Timestamp.now(),
+    isWithinGraceWindow: snapshot.wasWithinGraceWindow === true,
+    timeGapMinutes: toInt(snapshot.timeGapMinutes, 0),
+  };
+}
+
+function buildBookingSnapshotForDispute(bookingId: string, booking: DocumentData): Record<string, unknown> {
+  return {
+    bookingId,
+    status: asTrimmedString(booking.status),
+    customerId: asTrimmedString(booking.customerId),
+    providerId: asTrimmedString(booking.serviceOwnerId ?? booking.providerId),
+    serviceId: asTrimmedString(booking.serviceId),
+    slotId: asTrimmedString(booking.slotId),
+    scheduledStartAt: booking.scheduledStartAt ?? null,
+    scheduledEndAt: booking.scheduledEndAt ?? null,
+    createdAt: booking.createdAt ?? null,
+    completedAt: booking.completedAt ?? null,
+    cancellation: booking.cancellation ?? {},
+    pricing: booking.pricing ?? {},
+    serviceSnapshot: booking.serviceSnapshot ?? {},
+    providerSnapshot: booking.providerSnapshot ?? {},
+    customerSnapshot: booking.customerSnapshot ?? {},
+  };
+}
+
+function buildFinancialSnapshotForDispute(
+  financialData: DocumentData | undefined,
+  booking: DocumentData,
+): Record<string, unknown> {
+  if (financialData) {
+    return {
+      status: asTrimmedString(financialData.status),
+      totalAmount: toInt(financialData.totalAmount, getBookingPaidAmount(booking)),
+      totalAmountPaise: toInt(
+        financialData.totalAmountPaise,
+        toPaise(toInt(financialData.totalAmount, getBookingPaidAmount(booking))),
+      ),
+      refundAmount: toInt(financialData.refundAmount, 0),
+      refundAmountPaise: toInt(
+        financialData.refundAmountPaise,
+        toPaise(toInt(financialData.refundAmount, 0)),
+      ),
+      pettxoCommissionAmount: toInt(financialData.pettxoCommissionAmount, 0),
+      pettxoAmountPaise: toInt(
+        financialData.pettxoAmountPaise,
+        toPaise(toInt(financialData.pettxoCommissionAmount, 0)),
+      ),
+      providerEarningAmount: toInt(financialData.providerEarningAmount, 0),
+      providerAmountPaise: toInt(
+        financialData.providerAmountPaise,
+        toPaise(toInt(financialData.providerEarningAmount, 0)),
+      ),
+      refundPercent: toInt(financialData.refundPercent, 0),
+      pettxoPercent: toInt(financialData.pettxoPercent, 0),
+      providerPercent: toInt(financialData.providerPercent, 0),
+      cancellationCase: asTrimmedString(financialData.cancellationCase),
+      disputeStatus: asTrimmedString(financialData.disputeStatus),
+    };
+  }
+
+  const totalAmount = getBookingPaidAmount(booking);
+  const standard = computeStandardRevenueBreakdown(totalAmount);
+  return {
+    status: asTrimmedString(asRecord(booking.pricing).paymentStatus) || "paid",
+    totalAmount,
+    totalAmountPaise: toPaise(totalAmount),
+    refundAmount: 0,
+    refundAmountPaise: 0,
+    pettxoCommissionAmount: standard.pettxoAmount,
+    pettxoAmountPaise: standard.pettxoAmountPaise,
+    providerEarningAmount: standard.providerAmount,
+    providerAmountPaise: standard.providerAmountPaise,
+    refundPercent: 0,
+    pettxoPercent: standard.pettxoPercent,
+    providerPercent: standard.providerPercent,
+    cancellationCase: "",
+    disputeStatus: asTrimmedString(asRecord(booking.dispute).status) || "none",
+  };
+}
+
+async function processRazorpayRefund(params: {
+  bookingId: string;
+  refundAmount: number;
+  razorpayPaymentId: string;
+  reason: string;
+}): Promise<{status: "pending" | "processed" | "failed"; razorpayRefundId: string; error: string; processedAt: Timestamp | null}> {
+  if (params.refundAmount <= 0) {
+    return {
+      status: "processed",
+      razorpayRefundId: "",
+      error: "",
+      processedAt: Timestamp.now(),
+    };
+  }
+
+  const paymentId = asTrimmedString(params.razorpayPaymentId);
+  const keyId = asTrimmedString(process.env.RAZORPAY_KEY_ID);
+  const keySecret = asTrimmedString(process.env.RAZORPAY_KEY_SECRET);
+
+  if (!paymentId || !keyId || !keySecret) {
+    return {
+      status: "pending",
+      razorpayRefundId: "",
+      error: !paymentId ?
+        "Razorpay payment ID is missing for this booking." :
+        "Razorpay credentials are not configured in Functions.",
+      processedAt: null,
+    };
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}/refund`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          amount: String(Math.max(params.refundAmount, 0) * 100),
+          speed: "optimum",
+          notes: JSON.stringify({
+            bookingId: params.bookingId,
+            reason: params.reason,
+          }),
+        }).toString(),
+      },
+    );
+
+    const json = await response.json() as Record<string, unknown>;
+    if (!response.ok) {
+      return {
+        status: "failed",
+        razorpayRefundId: "",
+        error: safeText(json.error ?? json.description, "Refund request failed."),
+        processedAt: null,
+      };
+    }
+
+    return {
+      status: "processed",
+      razorpayRefundId: asTrimmedString(json.id),
+      error: "",
+      processedAt: Timestamp.now(),
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      razorpayRefundId: "",
+      error: error instanceof Error ? error.message : "Refund request failed.",
+      processedAt: null,
+    };
   }
 }
 
@@ -503,6 +1531,7 @@ export const requestBooking = onCall(async (request) => {
   const slotId = String(request.data?.slotId ?? "");
   const requestedAmount = Number(request.data?.amount ?? 0);
   const userId = String(request.data?.userId ?? uid);
+  const claimedOfferId = asTrimmedString(request.data?.claimedOfferId);
 
   if (!serviceId || !slotId) {
     throw new HttpsError("invalid-argument", "serviceId and slotId are required.");
@@ -515,11 +1544,22 @@ export const requestBooking = onCall(async (request) => {
   const slotRef = serviceRef.collection("slots").doc(slotId);
   const customerRef = db.collection("users").doc(uid);
   const bookingRef = db.collection("bookings").doc();
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingRef.id);
+  const claimedOfferRef = claimedOfferId ?
+    customerRef.collection("claimedOffers").doc(claimedOfferId) :
+    null;
+  const customerSnapshot = await customerRef.get();
+  const customerData = customerSnapshot.exists ? customerSnapshot.data() ?? {} : {};
+  const completedBookingCount = claimedOfferId ?
+    await getCompletedBookingCountForUser(uid, customerData) :
+    0;
 
-  await db.runTransaction(async (transaction) => {
+  try {
+    await db.runTransaction(async (transaction) => {
     const serviceSnapshot = await transaction.get(serviceRef);
     const slotSnapshot = await transaction.get(slotRef);
-    const customerSnapshot = await transaction.get(customerRef);
+    const transactionCustomerSnapshot = await transaction.get(customerRef);
+    const claimedOfferSnapshot = claimedOfferRef ? await transaction.get(claimedOfferRef) : null;
 
     if (!serviceSnapshot.exists) {
       throw new HttpsError("not-found", "Service not found.");
@@ -582,21 +1622,104 @@ export const requestBooking = onCall(async (request) => {
     }
 
     const price = Number(service.pricePerSession ?? requestedAmount);
-    if (requestedAmount > 0 && price > 0 && requestedAmount !== price) {
-      throw new HttpsError("failed-precondition", "Booking amount does not match service price.");
-    }
+    const bookingCreatedAt = Timestamp.now();
+    const graceWindow = buildGraceWindow(
+      bookingCreatedAt.toDate(),
+      scheduledStartAt.toDate(),
+    );
 
     const durationMinutes = Math.round(
       (scheduledEndAt.toMillis() - scheduledStartAt.toMillis()) / 60000,
     );
     const ownerSnapshot = service.ownerSnapshot ?? {};
-    const customer = customerSnapshot.exists ? customerSnapshot.data()! : {};
+    const customer = transactionCustomerSnapshot.exists ? transactionCustomerSnapshot.data()! : {};
     const location = service.location ?? {};
+    let discountAmount = 0;
+    let finalAmount = price;
+    let appliedOfferData: Record<string, unknown> | null = null;
+
+    if (claimedOfferRef && claimedOfferSnapshot) {
+      if (!claimedOfferSnapshot.exists) {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+
+      const claimedOffer = claimedOfferSnapshot.data() ?? {};
+      const claimedStatus = asTrimmedString(claimedOffer.status);
+      const claimedValidUntil = asDate(claimedOffer.validUntil);
+      const usageLimit = toInt(claimedOffer.usageLimit, 0);
+      const usedCount = Math.max(toInt(claimedOffer.usedCount, 0), 0);
+      const minBookingAmount = asOptionalFiniteNumber(claimedOffer.minBookingAmount);
+      const campaignType = asTrimmedString((claimedOffer.campaignSnapshot as Record<string, unknown> | undefined)?.campaignType);
+      const discountType = asTrimmedString(claimedOffer.discountType);
+      const discountValue = asOptionalFiniteNumber(claimedOffer.discountValue) ?? 0;
+      const maxDiscountAmount = asOptionalFiniteNumber(claimedOffer.maxDiscountAmount);
+      const offerId = asTrimmedString(claimedOffer.offerId);
+      const couponCode = asTrimmedString(claimedOffer.couponCode);
+
+      if (claimedStatus !== "claimed") {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+      if (claimedValidUntil && claimedValidUntil.getTime() < nowMs) {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+      if (usedCount >= usageLimit) {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+      if (minBookingAmount != null && price < minBookingAmount) {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+      if (campaignType === "firstBooking" && completedBookingCount > 0) {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+      if (!isOfferDiscountType(discountType)) {
+        throw new OfferValidationError("Offer is no longer valid");
+      }
+
+      const computed = computeOfferDiscount(
+        price,
+        discountType,
+        discountValue,
+        maxDiscountAmount,
+      );
+      discountAmount = computed.discountAmount;
+      finalAmount = computed.finalAmount;
+      const nextUsedCount = usedCount + 1;
+      const nextStatus = nextUsedCount >= usageLimit ? "used" : "claimed";
+
+      appliedOfferData = {
+        claimedOfferId,
+        offerId,
+        couponCode,
+        discountType,
+        discountValue,
+        discountAmount,
+        finalAmount,
+        appliedAt: FieldValue.serverTimestamp(),
+      };
+
+      transaction.set(claimedOfferRef, {
+        usedCount: FieldValue.increment(1),
+        status: nextStatus,
+      }, {merge: true});
+      transaction.set(db.collection("adminAuditLogs").doc(), {
+        action: "offer.redeemed",
+        userId: uid,
+        claimedOfferId,
+        bookingId: bookingRef.id,
+        discountAmount,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    } else if (requestedAmount > 0 && price > 0 && requestedAmount !== price) {
+      throw new HttpsError("failed-precondition", "Booking amount does not match service price.");
+    }
+
+    const standardRevenue = computeStandardRevenueBreakdown(finalAmount);
 
     const bookingPayload = {
       serviceId,
       slotId,
       serviceOwnerId,
+      providerId: serviceOwnerId,
       customerId: uid,
       serviceSnapshot: {
         title: service.title ?? "",
@@ -630,6 +1753,9 @@ export const requestBooking = onCall(async (request) => {
       scheduledEndAt,
       timezone: "Asia/Kolkata",
       status: "requested",
+      paymentConfirmedAt: bookingCreatedAt,
+      graceWindowMinutes: graceWindow.graceWindowMinutes,
+      graceWindowEndsAt: graceWindow.graceWindowEndsAt,
       request: {
         message: "",
         // Provider must respond within 24h or 1h before service, whichever is earlier.
@@ -639,11 +1765,19 @@ export const requestBooking = onCall(async (request) => {
       },
       pricing: {
         grossAmount: price,
-        platformFee: 0,
-        providerEarnings: price,
+        grossAmountPaise: toPaise(price),
+        discountAmount,
+        discountAmountPaise: toPaise(discountAmount),
+        finalAmount,
+        finalAmountPaise: toPaise(finalAmount),
+        platformFee: standardRevenue.pettxoAmount,
+        platformFeePaise: standardRevenue.pettxoAmountPaise,
+        providerEarnings: standardRevenue.providerAmount,
+        providerEarningsPaise: standardRevenue.providerAmountPaise,
         currency: service.currency ?? "INR",
         paymentStatus: "paid",
       },
+      ...(appliedOfferData == null ? {} : {offer: appliedOfferData}),
       otp: {
         status: "notGenerated",
         attempts: 0,
@@ -660,6 +1794,7 @@ export const requestBooking = onCall(async (request) => {
         disputeId: "",
         status: "none",
       },
+      disputeStatus: "none",
       notificationState: {
         requestNotificationSent: true,
         acceptanceNotificationSent: false,
@@ -670,11 +1805,44 @@ export const requestBooking = onCall(async (request) => {
         reminderNotificationSent: false,
         completionNotificationSent: false,
       },
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
+      createdAt: bookingCreatedAt,
+      updatedAt: bookingCreatedAt,
     };
 
     transaction.set(bookingRef, bookingPayload);
+    transaction.set(bookingFinancialRef, {
+      bookingId: bookingRef.id,
+      userId: uid,
+      providerId: serviceOwnerId,
+      serviceId,
+      totalAmount: finalAmount,
+      totalAmountPaise: toPaise(finalAmount),
+      currency: service.currency ?? "INR",
+      razorpayPaymentId: "",
+      razorpayOrderId: "",
+      status: "paid",
+      graceWindowMinutes: graceWindow.graceWindowMinutes,
+      graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+      refundAmount: 0,
+      refundAmountPaise: 0,
+      pettxoCommissionAmount: standardRevenue.pettxoAmount,
+      pettxoAmountPaise: standardRevenue.pettxoAmountPaise,
+      providerEarningAmount: standardRevenue.providerAmount,
+      providerAmountPaise: standardRevenue.providerAmountPaise,
+      refundPercent: 0,
+      pettxoPercent: standardRevenue.pettxoPercent,
+      providerPercent: standardRevenue.providerPercent,
+      cancellationCase: "",
+      cancelledBy: null,
+      cancelledAt: null,
+      disputeStatus: "none",
+      otpUsed: false,
+      serviceTime: scheduledStartAt,
+      completedAt: null,
+      payoutEligibleAt: null,
+      createdAt: bookingCreatedAt,
+      updatedAt: bookingCreatedAt,
+    });
     queueBookingNotification({
       transaction,
       userId: serviceOwnerId,
@@ -691,7 +1859,13 @@ export const requestBooking = onCall(async (request) => {
       booking: bookingPayload,
       extraData: {event: "booking_requested"},
     });
-  });
+    });
+  } catch (error) {
+    if (error instanceof OfferValidationError) {
+      return {ok: false, message: error.message};
+    }
+    throw error;
+  }
 
   await writeBookingEvent({
     bookingId: bookingRef.id,
@@ -715,6 +1889,7 @@ export const acceptBookingRequest = onCall({invoker: "public"}, async (request) 
   }
 
   const bookingRef = db.collection("bookings").doc(bookingId);
+  const providerRef = db.collection("users").doc(uid);
   let slotId = "";
 
   await db.runTransaction(async (transaction) => {
@@ -772,6 +1947,10 @@ export const acceptBookingRequest = onCall({invoker: "public"}, async (request) 
       updatedAt: FieldValue.serverTimestamp(),
       "notificationState.acceptanceNotificationSent": true,
     });
+    transaction.set(providerRef, {
+      totalProviderBookings: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
 
     queueBookingNotification({
       transaction,
@@ -963,14 +2142,26 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
   }
 
   const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
   let fromStatus = "";
   let toStatus: BookingStatus = "cancelledByCustomer";
   let actorType: "customer" | "provider" = "customer";
   let releasedCapacity = false;
   let slotId = "";
+  let refundAmount = 0;
+  let razorpayPaymentId = "";
+  let providerId = "";
+  let finalPaymentStatus = "paid";
+  let breakdown: CancellationBreakdown | null = null;
+  let refundAmountPaise = 0;
+  let cancellationSnapshot: Record<string, unknown> | null = null;
+  let processedRefundStatus = "";
+  const refundRef = db.collection("refunds").doc(bookingId);
 
   await db.runTransaction(async (transaction) => {
     const bookingSnapshot = await transaction.get(bookingRef);
+    const bookingFinancialSnapshot = await transaction.get(bookingFinancialRef);
+    const refundSnapshot = await transaction.get(refundRef);
     if (!bookingSnapshot.exists) {
       throw new HttpsError("not-found", "Booking not found.");
     }
@@ -985,6 +2176,62 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
       throw new HttpsError("permission-denied", "Only booking participants can cancel.");
     }
 
+    actorType = isProvider && !isCustomer ? "provider" : "customer";
+    const cancellationActor: CancellationActor = actorType === "provider" ? "provider" : "user";
+    const now = Timestamp.now();
+    const nowMs = now.toMillis();
+
+    if (
+      status === "cancelledByCustomer" ||
+      status === "cancelledByProvider"
+    ) {
+      breakdown = readExistingCancellationBreakdown(
+        booking,
+        bookingFinancialSnapshot.exists ? bookingFinancialSnapshot.data() ?? {} : undefined,
+      );
+      refundAmount = breakdown?.refundAmount ?? 0;
+      refundAmountPaise = breakdown?.refundAmountPaise ?? 0;
+      finalPaymentStatus = asTrimmedString(asRecord(booking.pricing).paymentStatus) || "paid";
+      processedRefundStatus = refundSnapshot.exists ?
+        asTrimmedString(refundSnapshot.data()?.status) :
+        "";
+      return;
+    }
+
+    canBookingBeCancelled(booking, cancellationActor, nowMs);
+
+    const bookingTime = bookingCreatedAtDate(booking);
+    const serviceTime = bookingServiceTimeDate(booking);
+    if (!serviceTime) {
+      throw new HttpsError("failed-precondition", "Booking service time is missing.");
+    }
+
+    breakdown = calculateCancellationBreakdown({
+      bookingTime,
+      serviceTime,
+      cancellationTime: now.toDate(),
+      otpUsed: hasOtpBeenUsed(booking),
+      totalAmountPaise: getBookingPaidAmountPaise(booking),
+      cancelledBy: cancellationActor,
+    });
+    refundAmount = breakdown.refundAmount;
+    refundAmountPaise = breakdown.refundAmountPaise;
+    finalPaymentStatus = paymentStatusForCancellation(breakdown);
+    providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+    razorpayPaymentId = asTrimmedString(
+      (bookingFinancialSnapshot.data() ?? {}).razorpayPaymentId ??
+      asRecord(booking.pricing).razorpayPaymentId,
+    );
+    cancellationSnapshot = buildCancellationSnapshot({
+      breakdown,
+      cancelledBy: uid,
+      cancellationType: actorType,
+      cancellationTime: now,
+      serviceTime: booking.scheduledStartAt as Timestamp | undefined ?? Timestamp.now(),
+      bookingTime: booking.createdAt as Timestamp | undefined ?? now,
+      otpUsedAtCancellation: hasOtpBeenUsed(booking),
+    });
+
     if (status === "requested") {
       if (!isCustomer) {
         throw new HttpsError(
@@ -992,18 +2239,8 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
           "Providers should reject requested bookings instead of cancelling.",
         );
       }
-      actorType = "customer";
       toStatus = "cancelledByCustomer";
     } else if (status === "accepted") {
-      const scheduledStartAt = booking.scheduledStartAt as Timestamp | undefined;
-      if (scheduledStartAt && scheduledStartAt.toMillis() <= Date.now()) {
-        throw new HttpsError(
-          "failed-precondition",
-          "Accepted bookings can only be cancelled before service start.",
-        );
-      }
-
-      actorType = isProvider && !isCustomer ? "provider" : "customer";
       toStatus = actorType === "provider" ? "cancelledByProvider" : "cancelledByCustomer";
 
       const serviceId = String(booking.serviceId ?? "");
@@ -1045,7 +2282,16 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
       status: toStatus,
       cancelledAt: FieldValue.serverTimestamp(),
       cancelledBy: uid,
+      cancellationLocked: true,
+      cancellationProcessedAt: now,
+      cancellationType: actorType,
+      cancellationCase: breakdown.cancellationCase,
       updatedAt: FieldValue.serverTimestamp(),
+      "pricing.paymentStatus": finalPaymentStatus,
+      "payoutReadiness.status": "cancelled",
+      "payoutReadiness.reason": "Booking was cancelled before payout eligibility.",
+      "payoutReadiness.eligibleAt": null,
+      disputeStatus: hasBlockingDispute(booking) ? "underReview" : "none",
       "notificationState.cancellationNotificationSent": true,
       cancellation: {
         actorId: uid,
@@ -1053,8 +2299,115 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
         reason,
         releasedCapacity,
         cancelledAt: FieldValue.serverTimestamp(),
+        refundAmount: breakdown.refundAmount,
+        refundPercent: breakdown.refundPercent,
+        pettxoAmount: breakdown.pettxoAmount,
+        pettxoPercent: breakdown.pettxoPercent,
+        providerAmount: breakdown.providerAmount,
+        providerPercent: breakdown.providerPercent,
+        cancellationCase: breakdown.cancellationCase,
+        graceWindowMinutes: breakdown.graceWindowMinutes,
+        graceWindowEndsAt: breakdown.graceWindowEndsAt,
+        isWithinGraceWindow: breakdown.isWithinGraceWindow,
+        snapshot: cancellationSnapshot,
       },
     });
+    transaction.set(bookingFinancialRef, {
+      bookingId,
+      userId: asTrimmedString(booking.customerId),
+      providerId,
+      serviceId: asTrimmedString(booking.serviceId),
+      totalAmount: getBookingPaidAmount(booking),
+      totalAmountPaise: toPaise(getBookingPaidAmount(booking)),
+      currency: getBookingCurrency(booking),
+      razorpayPaymentId,
+      status: hasBlockingDispute(booking) ? "disputed" : bookingFinancialStatusForCancellation(breakdown),
+      refundAmount: breakdown.refundAmount,
+      refundAmountPaise: breakdown.refundAmountPaise,
+      pettxoCommissionAmount: breakdown.pettxoAmount,
+      pettxoAmountPaise: breakdown.pettxoAmountPaise,
+      providerEarningAmount: breakdown.providerAmount,
+      providerAmountPaise: breakdown.providerAmountPaise,
+      refundPercent: breakdown.refundPercent,
+      pettxoPercent: breakdown.pettxoPercent,
+      providerPercent: breakdown.providerPercent,
+      cancellationCase: breakdown.cancellationCase,
+      cancelledBy: actorType,
+      cancelledAt: FieldValue.serverTimestamp(),
+      cancellationLocked: true,
+      cancellationProcessedAt: now,
+      cancellationRequestId: bookingId,
+      cancellationSnapshot,
+      graceWindowMinutes: breakdown.graceWindowMinutes,
+      graceWindowEndsAt: breakdown.graceWindowEndsAt,
+      disputeStatus: hasBlockingDispute(booking) ? "underReview" : "none",
+      otpUsed: false,
+      serviceTime: booking.scheduledStartAt ?? null,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(db.collection("providerEarnings").doc(bookingId), {
+      bookingId,
+      providerId,
+      userId: asTrimmedString(booking.customerId),
+      serviceId: asTrimmedString(booking.serviceId),
+      amount: breakdown.providerAmount,
+      amountPaise: breakdown.providerAmountPaise,
+      pettxoCommissionAmount: breakdown.pettxoAmount,
+      pettxoCommissionAmountPaise: breakdown.pettxoAmountPaise,
+      totalAmount: getBookingPaidAmount(booking),
+      totalAmountPaise: toPaise(getBookingPaidAmount(booking)),
+      source: actorType === "provider" ? "providerCancellation" : "userCancellation",
+      status: breakdown.providerAmount > 0 ?
+        (hasBlockingDispute(booking) ? "disputed" : "payoutEligible") :
+        "cancelled",
+      eligibleAt: breakdown.providerAmount > 0 ? Timestamp.now() : null,
+      paidAt: null,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    if (refundAmountPaise > 0) {
+      transaction.set(refundRef, {
+        bookingId,
+        userId: asTrimmedString(booking.customerId),
+        providerId,
+        totalAmount: getBookingPaidAmount(booking),
+        totalAmountPaise: toPaise(getBookingPaidAmount(booking)),
+        refundAmount,
+        refundAmountPaise: refundAmountPaise,
+        refundPercent: breakdown.refundPercent,
+        razorpayPaymentId,
+        razorpayRefundId: "",
+        reason,
+        status: "pending",
+        createdAt: FieldValue.serverTimestamp(),
+        processedAt: null,
+        error: "",
+      });
+    }
+
+    if (actorType === "provider" && providerId) {
+      const providerRef = db.collection("users").doc(providerId);
+      const providerSnapshot = await transaction.get(providerRef);
+      const providerData = providerSnapshot.exists ? providerSnapshot.data() ?? {} : {};
+      const nextCancellationCount = Math.max(
+        toInt(providerData.providerCancellationCount, 0) + 1,
+        1,
+      );
+      const totalProviderBookings = Math.max(
+        toInt(providerData.totalProviderBookings, 0),
+        nextCancellationCount,
+      );
+      transaction.set(providerRef, {
+        providerCancellationCount: nextCancellationCount,
+        providerCancellationRate: roundTo(
+          (nextCancellationCount / Math.max(totalProviderBookings, 1)) * 100,
+          2,
+        ),
+        lastProviderCancellationAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
 
     const recipientId =
       actorType === "customer" ?
@@ -1081,6 +2434,28 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
     });
   });
 
+  if (refundAmountPaise > 0 && processedRefundStatus.length === 0) {
+    const refundResult = await processRazorpayRefund({
+      bookingId,
+      refundAmount: refundAmountPaise / 100,
+      razorpayPaymentId,
+      reason,
+    });
+    await refundRef.set({
+      status: refundResult.status,
+      razorpayRefundId: refundResult.razorpayRefundId,
+      processedAt: refundResult.processedAt,
+      error: refundResult.error,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await bookingRef.set({
+      "pricing.paymentStatus": refundResult.status === "processed" ?
+        finalPaymentStatus :
+        refundResult.status === "failed" ? "refundFailed" : "refundPending",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+  }
+
   await writeBookingEvent({
     bookingId,
     actorId: uid,
@@ -1092,7 +2467,224 @@ export const cancelBooking = onCall({invoker: "public"}, async (request) => {
     metadata: {releasedCapacity, slotId},
   });
 
-  return {ok: true, releasedCapacity};
+  const resultBreakdown = breakdown ?? {
+    refundAmount: 0,
+    refundAmountPaise: 0,
+    providerAmount: 0,
+    providerAmountPaise: 0,
+    pettxoAmount: 0,
+    pettxoAmountPaise: 0,
+    totalAmountPaise: 0,
+    cancellationCase: "",
+    refundPercent: 0,
+    providerPercent: 0,
+    pettxoPercent: 0,
+    graceWindowMinutes: 0,
+    isWithinGraceWindow: false,
+    timeGapMinutes: 0,
+  };
+
+  return {
+    ok: true,
+    releasedCapacity,
+    refundAmount: resultBreakdown.refundAmount,
+    refundAmountPaise: resultBreakdown.refundAmountPaise,
+    providerAmount: resultBreakdown.providerAmount,
+    providerAmountPaise: resultBreakdown.providerAmountPaise,
+    pettxoAmount: resultBreakdown.pettxoAmount,
+    pettxoAmountPaise: resultBreakdown.pettxoAmountPaise,
+    totalAmountPaise: resultBreakdown.totalAmountPaise,
+    cancellationCase: resultBreakdown.cancellationCase,
+    refundPercent: resultBreakdown.refundPercent,
+    providerPercent: resultBreakdown.providerPercent,
+    pettxoPercent: resultBreakdown.pettxoPercent,
+    graceWindowMinutes: resultBreakdown.graceWindowMinutes,
+    isWithinGraceWindow: resultBreakdown.isWithinGraceWindow,
+  };
+});
+
+export const previewCancellation = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = asTrimmedString(request.data?.bookingId);
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+
+  const snapshot = await db.collection("bookings").doc(bookingId).get();
+  if (!snapshot.exists) {
+    throw new HttpsError("not-found", "Booking not found.");
+  }
+
+  const booking = snapshot.data() ?? {};
+  const isCustomer = asTrimmedString(booking.customerId) === uid;
+  const isProvider =
+    asTrimmedString(booking.serviceOwnerId) === uid ||
+    asTrimmedString(booking.providerId) === uid;
+  if (!isCustomer && !isProvider) {
+    throw new HttpsError("permission-denied", "Only booking participants can preview cancellation.");
+  }
+
+  const cancellationActor: CancellationActor = isProvider && !isCustomer ? "provider" : "user";
+  const now = Timestamp.now();
+  canBookingBeCancelled(booking, cancellationActor, now.toMillis());
+  const serviceTime = bookingServiceTimeDate(booking);
+  if (!serviceTime) {
+    throw new HttpsError("failed-precondition", "Booking service time is missing.");
+  }
+
+  const breakdown = calculateCancellationBreakdown({
+    bookingTime: bookingCreatedAtDate(booking),
+    serviceTime,
+    cancellationTime: now.toDate(),
+    otpUsed: hasOtpBeenUsed(booking),
+    totalAmountPaise: getBookingPaidAmountPaise(booking),
+    cancelledBy: cancellationActor,
+  });
+
+  const message = cancellationActor === "provider" ?
+    "Cancelling now will issue a full refund to the customer." :
+    `Refund will be Rs. ${breakdown.refundAmount} based on the current cancellation timing.`;
+
+  return {
+    ok: true,
+    refundAmount: breakdown.refundAmount,
+    refundAmountPaise: breakdown.refundAmountPaise,
+    providerAmount: breakdown.providerAmount,
+    providerAmountPaise: breakdown.providerAmountPaise,
+    pettxoAmount: breakdown.pettxoAmount,
+    pettxoAmountPaise: breakdown.pettxoAmountPaise,
+    totalAmountPaise: breakdown.totalAmountPaise,
+    refundPercent: breakdown.refundPercent,
+    providerPercent: breakdown.providerPercent,
+    pettxoPercent: breakdown.pettxoPercent,
+    cancellationCase: breakdown.cancellationCase,
+    graceWindowMinutes: breakdown.graceWindowMinutes,
+    graceWindowEndsAt: breakdown.graceWindowEndsAt.toDate().toISOString(),
+    isWithinGraceWindow: breakdown.isWithinGraceWindow,
+    message,
+  };
+});
+
+export const raiseDispute = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = asTrimmedString(request.data?.bookingId);
+  const reason = asTrimmedString(request.data?.reason);
+  const description = asTrimmedString(request.data?.description);
+  if (!bookingId || !reason || !description) {
+    throw new HttpsError(
+      "invalid-argument",
+      "bookingId, reason, and description are required.",
+    );
+  }
+
+  const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
+  const disputeRef = db.collection("disputes").doc(`${bookingId}_${uid}`);
+  let raisedByRole = "user";
+
+  await db.runTransaction(async (transaction) => {
+    const [bookingSnapshot, financialSnapshot, existingDisputeSnapshot] = await Promise.all([
+      transaction.get(bookingRef),
+      transaction.get(bookingFinancialRef),
+      transaction.get(disputeRef),
+    ]);
+
+    if (!bookingSnapshot.exists) {
+      throw new HttpsError("not-found", "Booking not found.");
+    }
+
+    const booking = bookingSnapshot.data() ?? {};
+    const isCustomer = asTrimmedString(booking.customerId) === uid;
+    const isProvider =
+      asTrimmedString(booking.serviceOwnerId) === uid ||
+      asTrimmedString(booking.providerId) === uid;
+    if (!isCustomer && !isProvider) {
+      throw new HttpsError("permission-denied", "Only booking participants can raise disputes.");
+    }
+
+    if (disputeWindowEndsAtForBooking(booking).getTime() < Date.now()) {
+      throw new HttpsError("failed-precondition", "The dispute window has expired.");
+    }
+
+    if (hasBlockingDispute(booking)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "An active dispute already exists for this booking.",
+      );
+    }
+
+    if (existingDisputeSnapshot.exists) {
+      const existingStatus = asTrimmedString(existingDisputeSnapshot.data()?.status);
+      if (existingStatus === "open" || existingStatus === "underReview") {
+        throw new HttpsError(
+          "failed-precondition",
+          "An active dispute already exists for this booking.",
+        );
+      }
+    }
+
+    const financialData = financialSnapshot.exists ? financialSnapshot.data() ?? {} : undefined;
+    raisedByRole = isProvider && !isCustomer ? "provider" : "user";
+    transaction.set(disputeRef, {
+      bookingId,
+      raisedByUserId: uid,
+      raisedByRole,
+      customerId: asTrimmedString(booking.customerId),
+      providerId: asTrimmedString(booking.serviceOwnerId ?? booking.providerId),
+      reason,
+      description,
+      status: "open",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      bookingSnapshot: buildBookingSnapshotForDispute(bookingId, booking),
+      financialSnapshot: buildFinancialSnapshotForDispute(financialData, booking),
+    }, {merge: true});
+
+    transaction.set(bookingRef, {
+      dispute: {
+        hasDispute: true,
+        disputeId: disputeRef.id,
+        status: "open",
+      },
+      disputeStatus: "open",
+      payoutReadiness: {
+        ...asRecord(booking.payoutReadiness),
+        status: "hold",
+        reason: "Payout is on hold while the dispute is under review.",
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    transaction.set(bookingFinancialRef, {
+      status: "disputed",
+      disputeStatus: "open",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(db.collection("providerEarnings").doc(bookingId), {
+      status: "disputed",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(db.collection("adminAuditLogs").doc(), {
+      action: "booking.disputeRaised",
+      bookingId,
+      disputeId: disputeRef.id,
+      raisedBy: uid,
+      raisedByRole,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  await writeBookingEvent({
+    bookingId,
+    actorId: uid,
+    actorType: raisedByRole === "provider" ? "provider" : "customer",
+    type: "disputeRaised",
+    fromStatus: "",
+    toStatus: "",
+    message: reason,
+  });
+
+  return {ok: true};
 });
 
 export const generateBookingOtp = onCall({invoker: "public"}, async (request) => {
@@ -1180,6 +2772,7 @@ export const verifyBookingOtpAndStart = onCall({invoker: "public"}, async (reque
   }
 
   const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
 
   await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(bookingRef);
@@ -1229,6 +2822,11 @@ export const verifyBookingOtpAndStart = onCall({invoker: "public"}, async (reque
       "otp.verifiedBy": uid,
       "notificationState.startNotificationSent": true,
     });
+    transaction.set(bookingFinancialRef, {
+      bookingId,
+      otpUsed: true,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
 
     queueBookingNotification({
       transaction,
@@ -1270,7 +2868,10 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
 
   const bookingRef = db.collection("bookings").doc(bookingId);
   const payoutRef = db.collection("payoutReadiness").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
+  const providerEarningRef = db.collection("providerEarnings").doc(bookingId);
   const now = FieldValue.serverTimestamp();
+  const completedAt = Timestamp.now();
   let providerId = "";
 
   await db.runTransaction(async (transaction) => {
@@ -1286,8 +2887,12 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
     assertStatus(booking.status as BookingStatus, "inProgress");
 
     providerId = booking.serviceOwnerId;
-    const pricing = booking.pricing ?? {};
     const serviceId = String(booking.serviceId ?? "").trim();
+    const customerId = asTrimmedString(booking.customerId);
+    const totalAmount = getBookingPaidAmount(booking);
+    const currency = getBookingCurrency(booking);
+    const standardRevenue = computeStandardRevenueBreakdown(totalAmount);
+    const payoutEligibleAt = Timestamp.fromMillis(completedAt.toMillis() + disputeWindowMs);
     const serviceRef = serviceId ? db.collection("services").doc(serviceId) : null;
     const providerRef = providerId ? db.collection("users").doc(providerId) : null;
     const [serviceSnapshot, providerSnapshot] = await Promise.all([
@@ -1297,10 +2902,12 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
 
     transaction.update(bookingRef, {
       status: "completed",
-      completedAt: now,
+      completedAt,
+      disputeStatus: hasBlockingDispute(booking) ? "underReview" : "none",
       updatedAt: now,
-      "payoutReadiness.status": "eligible",
-      "payoutReadiness.eligibleAt": now,
+      "payoutReadiness.status": "hold",
+      "payoutReadiness.reason": "Payout is held for 24 hours after completion unless a dispute is raised.",
+      "payoutReadiness.eligibleAt": payoutEligibleAt,
       "notificationState.completionNotificationSent": true,
     });
 
@@ -1309,17 +2916,58 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
       serviceId: booking.serviceId,
       providerId,
       customerId: booking.customerId,
-      grossAmount: pricing.grossAmount ?? 0,
-      platformFee: pricing.platformFee ?? 0,
-      providerEarnings: pricing.providerEarnings ?? 0,
-      currency: pricing.currency ?? "INR",
-      status: "eligible",
-      eligibilityReason: "Booking completed after OTP verification.",
-      eligibleAt: now,
+      grossAmount: totalAmount,
+      platformFee: standardRevenue.pettxoAmount,
+      providerEarnings: standardRevenue.providerAmount,
+      currency,
+      status: "hold",
+      eligibilityReason: "Payout unlocks 24 hours after completion if no dispute is raised.",
+      eligibleAt: payoutEligibleAt,
       payoutId: "",
-      createdAt: now,
+      createdAt: completedAt,
       updatedAt: now,
     });
+    transaction.set(bookingFinancialRef, {
+      bookingId,
+      userId: customerId,
+      providerId,
+      serviceId,
+      totalAmount,
+      totalAmountPaise: toPaise(totalAmount),
+      currency,
+      status: hasBlockingDispute(booking) ? "disputed" : "completed",
+      refundAmount: 0,
+      refundAmountPaise: 0,
+      pettxoCommissionAmount: standardRevenue.pettxoAmount,
+      pettxoAmountPaise: standardRevenue.pettxoAmountPaise,
+      providerEarningAmount: standardRevenue.providerAmount,
+      providerAmountPaise: standardRevenue.providerAmountPaise,
+      refundPercent: 0,
+      pettxoPercent: standardRevenue.pettxoPercent,
+      providerPercent: standardRevenue.providerPercent,
+      disputeStatus: hasBlockingDispute(booking) ? "underReview" : "none",
+      completedAt,
+      payoutEligibleAt,
+      updatedAt: now,
+    }, {merge: true});
+    transaction.set(providerEarningRef, {
+      bookingId,
+      providerId,
+      userId: customerId,
+      serviceId,
+      amount: standardRevenue.providerAmount,
+      amountPaise: standardRevenue.providerAmountPaise,
+      pettxoCommissionAmount: standardRevenue.pettxoAmount,
+      pettxoCommissionAmountPaise: standardRevenue.pettxoAmountPaise,
+      totalAmount,
+      totalAmountPaise: toPaise(totalAmount),
+      source: "completedBooking",
+      status: hasBlockingDispute(booking) ? "disputed" : "hold",
+      eligibleAt: payoutEligibleAt,
+      paidAt: null,
+      createdAt: completedAt,
+      updatedAt: now,
+    }, {merge: true});
 
     if (serviceRef && serviceSnapshot?.exists == true) {
       const serviceData = serviceSnapshot.data() ?? {};
@@ -1367,6 +3015,10 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
       transaction.set(providerRef, {
         completedBookingCount: nextCompletedCount,
         completedBookingsCount: nextCompletedCount,
+        totalProviderBookings: Math.max(
+          toInt(providerData.totalProviderBookings, 0),
+          nextCompletedCount,
+        ),
         trustScore: computeTrustScore(ratingAverage, nextCompletedCount),
         updatedAt: now,
       }, {merge: true});
@@ -1416,12 +3068,257 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
     type: "completed",
     fromStatus: "inProgress",
     toStatus: "completed",
-    message: "Booking completed and payout marked eligible.",
+    message: "Booking completed and payout moved to the dispute hold window.",
     metadata: {providerId},
   });
 
   return {ok: true};
 });
+
+export const finalizeCompletedBookingPayoutEligibility = onSchedule(
+  {schedule: "every 15 minutes", timeZone: "Asia/Kolkata"},
+  async () => {
+    const completedBookings = await db
+      .collection("bookings")
+      .where("status", "==", "completed")
+      .limit(100)
+      .get();
+
+    let finalizedCount = 0;
+
+    for (const doc of completedBookings.docs) {
+      const booking = doc.data();
+      const completedAt = asDate(booking.completedAt);
+      if (!completedAt) continue;
+      if (completedAt.getTime() + disputeWindowMs > Date.now()) continue;
+      if (hasBlockingDispute(booking)) continue;
+      if (asTrimmedString(asRecord(booking.payoutReadiness).status) === "eligible") continue;
+
+      const bookingId = doc.id;
+      const totalAmount = getBookingPaidAmount(booking);
+      const currency = getBookingCurrency(booking);
+      const standardRevenue = computeStandardRevenueBreakdown(totalAmount);
+      const eligibleAt = Timestamp.now();
+
+      await db.runTransaction(async (transaction) => {
+        const freshBookingSnapshot = await transaction.get(doc.ref);
+        if (!freshBookingSnapshot.exists) return;
+        const freshBooking = freshBookingSnapshot.data() ?? {};
+        const freshCompletedAt = asDate(freshBooking.completedAt);
+        if (!freshCompletedAt) return;
+        if (freshCompletedAt.getTime() + disputeWindowMs > Date.now()) return;
+        if (hasBlockingDispute(freshBooking)) return;
+
+        transaction.set(doc.ref, {
+          payoutReadiness: {
+            ...asRecord(freshBooking.payoutReadiness),
+            status: "eligible",
+            reason: "Payout is now eligible because the 24-hour dispute hold has passed.",
+            eligibleAt,
+          },
+          disputeStatus: "none",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("payoutReadiness").doc(bookingId), {
+          bookingId,
+          providerId: asTrimmedString(freshBooking.serviceOwnerId ?? freshBooking.providerId),
+          customerId: asTrimmedString(freshBooking.customerId),
+          serviceId: asTrimmedString(freshBooking.serviceId),
+          grossAmount: totalAmount,
+          platformFee: standardRevenue.pettxoAmount,
+          providerEarnings: standardRevenue.providerAmount,
+          currency,
+          status: "eligible",
+          eligibilityReason: "24-hour dispute hold passed after completed booking.",
+          eligibleAt,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("providerEarnings").doc(bookingId), {
+          status: "payoutEligible",
+          eligibleAt,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("bookingFinancials").doc(bookingId), {
+          status: "payoutEligible",
+          payoutEligibleAt: eligibleAt,
+          disputeStatus: "none",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("adminAuditLogs").doc(), {
+          action: "booking.payoutEligible",
+          bookingId,
+          providerId: asTrimmedString(freshBooking.serviceOwnerId ?? freshBooking.providerId),
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      });
+
+      finalizedCount += 1;
+    }
+
+    console.log(`Marked ${finalizedCount} completed booking payout(s) as eligible.`);
+  },
+);
+
+export const finalizeNoShows = onSchedule(
+  {schedule: "every 30 minutes", timeZone: "Asia/Kolkata"},
+  async () => {
+    const acceptedBookings = await db
+      .collection("bookings")
+      .where("status", "==", "accepted")
+      .limit(100)
+      .get();
+
+    let finalizedCount = 0;
+
+    for (const doc of acceptedBookings.docs) {
+      const booking = doc.data();
+      const serviceTime = bookingServiceTimeDate(booking);
+      if (!serviceTime) continue;
+      if (serviceTime.getTime() + noShowFinalizationDelayMs > Date.now()) continue;
+      if (hasOtpBeenUsed(booking)) continue;
+      if (hasBlockingDispute(booking)) continue;
+
+      const bookingId = doc.id;
+      const totalAmount = getBookingPaidAmount(booking);
+      const totalAmountPaise = getBookingPaidAmountPaise(booking);
+      const currency = getBookingCurrency(booking);
+      const eligibleAt = Timestamp.now();
+      const providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+      const customerId = asTrimmedString(booking.customerId);
+
+      await db.runTransaction(async (transaction) => {
+        const freshBookingSnapshot = await transaction.get(doc.ref);
+        if (!freshBookingSnapshot.exists) return;
+        const freshBooking = freshBookingSnapshot.data() ?? {};
+        const freshServiceTime = bookingServiceTimeDate(freshBooking);
+        if (!freshServiceTime) return;
+        if (freshServiceTime.getTime() + noShowFinalizationDelayMs > Date.now()) return;
+        if (hasOtpBeenUsed(freshBooking) || hasBlockingDispute(freshBooking)) return;
+        if (asTrimmedString(freshBooking.status) !== "accepted") return;
+        const pettxoAmountPaise = Math.round((totalAmountPaise * 15) / 100);
+        const providerAmountPaise = Math.max(totalAmountPaise - pettxoAmountPaise, 0);
+        const noShowSnapshot = {
+          refundPercent: 0,
+          providerPercent: 85,
+          pettxoPercent: 15,
+          refundAmountPaise: 0,
+          providerAmountPaise,
+          pettxoAmountPaise,
+          totalAmountPaise,
+          cancellationCase: "noShow",
+          cancelledBy: "system",
+          cancellationType: "system",
+          cancellationTime: eligibleAt,
+          serviceTime: freshBooking.scheduledStartAt ?? null,
+          bookingTime: freshBooking.createdAt ?? null,
+          timeGapMinutes: 24 * 60,
+          wasWithinGraceWindow: false,
+          otpUsedAtCancellation: false,
+        };
+
+        transaction.set(doc.ref, {
+          status: "noShow",
+          noShowAt: eligibleAt,
+          cancellationLocked: true,
+          cancellationProcessedAt: eligibleAt,
+          cancellationType: "system",
+          cancelledBy: "system",
+          cancelledAt: eligibleAt,
+          cancellationCase: "noShow",
+          disputeStatus: "none",
+          updatedAt: FieldValue.serverTimestamp(),
+          payoutReadiness: {
+            ...asRecord(freshBooking.payoutReadiness),
+            status: "eligible",
+            reason: "Booking finalized as no-show after the service window passed without OTP verification.",
+            eligibleAt,
+          },
+        }, {merge: true});
+        transaction.set(db.collection("bookingFinancials").doc(bookingId), {
+          bookingId,
+          userId: customerId,
+          providerId,
+          serviceId: asTrimmedString(freshBooking.serviceId),
+          totalAmount,
+          totalAmountPaise,
+          currency,
+          status: "payoutEligible",
+          refundAmount: 0,
+          refundAmountPaise: 0,
+          pettxoCommissionAmount: toMoneyAmount(fromPaise(pettxoAmountPaise)),
+          pettxoAmountPaise,
+          providerEarningAmount: toMoneyAmount(fromPaise(providerAmountPaise)),
+          providerAmountPaise,
+          refundPercent: 0,
+          pettxoPercent: 15,
+          providerPercent: 85,
+          cancellationCase: "noShow",
+          disputeStatus: "none",
+          cancelledBy: "system",
+          cancelledAt: eligibleAt,
+          cancellationLocked: true,
+          cancellationProcessedAt: eligibleAt,
+          cancellationRequestId: bookingId,
+          cancellationSnapshot: noShowSnapshot,
+          serviceTime: freshBooking.scheduledStartAt ?? null,
+          payoutEligibleAt: eligibleAt,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("providerEarnings").doc(bookingId), {
+          bookingId,
+          providerId,
+          userId: customerId,
+          serviceId: asTrimmedString(freshBooking.serviceId),
+          amount: toMoneyAmount(fromPaise(providerAmountPaise)),
+          amountPaise: providerAmountPaise,
+          pettxoCommissionAmount: toMoneyAmount(fromPaise(pettxoAmountPaise)),
+          pettxoCommissionAmountPaise: pettxoAmountPaise,
+          totalAmount,
+          totalAmountPaise,
+          source: "noShow",
+          status: "payoutEligible",
+          eligibleAt,
+          paidAt: null,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("payoutReadiness").doc(bookingId), {
+          bookingId,
+          providerId,
+          customerId,
+          serviceId: asTrimmedString(freshBooking.serviceId),
+          grossAmount: totalAmount,
+          platformFee: toMoneyAmount((totalAmount * 15) / 100),
+          providerEarnings: Math.max(totalAmount - toMoneyAmount((totalAmount * 15) / 100), 0),
+          currency,
+          status: "eligible",
+          eligibilityReason: "Booking finalized as no-show.",
+          eligibleAt,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("adminAuditLogs").doc(), {
+          action: "booking.noShowFinalized",
+          bookingId,
+          providerId,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      });
+
+      await writeBookingEvent({
+        bookingId,
+        actorId: "system",
+        actorType: "system",
+        type: "noShowFinalized",
+        fromStatus: "accepted",
+        toStatus: "noShow",
+        message: "Booking marked as no-show because the service time passed without OTP verification or a dispute.",
+      });
+      finalizedCount += 1;
+    }
+
+    console.log(`Finalized ${finalizedCount} no-show booking(s).`);
+  },
+);
 
 export const submitBookingReview = onCall({invoker: "public"}, async (request) => {
   const uid = requireUid(request.auth);
@@ -1708,4 +3605,546 @@ export const moderateService = onCall(async (request) => {
   await batch.commit();
 
   return {ok: true};
+});
+
+export const applyUserRestriction = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  const userId = asTrimmedString(request.data?.userId);
+  const type = asTrimmedString(request.data?.type);
+  const reason = asTrimmedString(request.data?.reason);
+
+  if (!userId || !type || !reason) {
+    throw new HttpsError("invalid-argument", "userId, type, and reason are required.");
+  }
+  if (!isRestrictionType(type)) {
+    throw new HttpsError("invalid-argument", "Restriction type must be social, booking, or hard.");
+  }
+  assertRestrictionPermission(admin.role, type);
+  if (type === "hard" && userId === adminUid) {
+    throw new HttpsError("failed-precondition", "You cannot apply a hard restriction to yourself.");
+  }
+
+  const userRef = db.collection("users").doc(userId);
+  const userSnapshot = await userRef.get();
+  if (!userSnapshot.exists) {
+    throw new HttpsError("not-found", "User document not found.");
+  }
+
+  const auth = getAuth();
+  let previousAuthDisabled: boolean | null = null;
+  if (type === "hard") {
+    const authUser = await auth.getUser(userId);
+    previousAuthDisabled = authUser.disabled;
+    if (!previousAuthDisabled) {
+      await auth.updateUser(userId, {disabled: true});
+    }
+  }
+
+  try {
+    const result = await db.runTransaction(async (transaction) => {
+      const freshSnapshot = await transaction.get(userRef);
+      if (!freshSnapshot.exists) {
+        throw new HttpsError("not-found", "User document not found.");
+      }
+
+      const data = freshSnapshot.data() ?? {};
+      const restrictions = normalizeRestrictions(data.restrictions);
+      const previousAccountStatus = asTrimmedString(data.accountStatus) || computeAccountStatus(restrictions);
+      const updatedRestrictions = nextRestrictions(restrictions, type, true, reason, admin.uid);
+      const newAccountStatus = computeAccountStatus(updatedRestrictions);
+      const auditRef = db.collection("adminAuditLogs").doc();
+
+      transaction.set(userRef, {
+        ...buildRestrictionPatch(type, true, reason, admin.uid),
+        accountStatus: newAccountStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      transaction.set(auditRef, {
+        action: "applyUserRestriction",
+        targetUserId: userId,
+        restrictionType: type,
+        reason,
+        performedBy: admin.uid,
+        performedByRole: admin.role,
+        createdAt: FieldValue.serverTimestamp(),
+        metadata: {
+          previousAccountStatus,
+          newAccountStatus,
+        },
+      });
+
+      return {newAccountStatus};
+    });
+
+    return {ok: true, accountStatus: result.newAccountStatus};
+  } catch (error) {
+    if (type === "hard" && previousAuthDisabled === false) {
+      await auth.updateUser(userId, {disabled: false});
+    }
+    throw error;
+  }
+});
+
+export const removeUserRestriction = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  const userId = asTrimmedString(request.data?.userId);
+  const type = asTrimmedString(request.data?.type);
+  const reason = asTrimmedString(request.data?.reason);
+
+  if (!userId || !type) {
+    throw new HttpsError("invalid-argument", "userId and type are required.");
+  }
+  if (!isRestrictionType(type)) {
+    throw new HttpsError("invalid-argument", "Restriction type must be social, booking, or hard.");
+  }
+  assertRestrictionPermission(admin.role, type);
+
+  const userRef = db.collection("users").doc(userId);
+  const userSnapshot = await userRef.get();
+  if (!userSnapshot.exists) {
+    throw new HttpsError("not-found", "User document not found.");
+  }
+
+  const auth = getAuth();
+  let previousAuthDisabled: boolean | null = null;
+  if (type === "hard") {
+    const authUser = await auth.getUser(userId);
+    previousAuthDisabled = authUser.disabled;
+    if (previousAuthDisabled) {
+      await auth.updateUser(userId, {disabled: false});
+    }
+  }
+
+  try {
+    const result = await db.runTransaction(async (transaction) => {
+      const freshSnapshot = await transaction.get(userRef);
+      if (!freshSnapshot.exists) {
+        throw new HttpsError("not-found", "User document not found.");
+      }
+
+      const data = freshSnapshot.data() ?? {};
+      const restrictions = normalizeRestrictions(data.restrictions);
+      const previousAccountStatus = asTrimmedString(data.accountStatus) || computeAccountStatus(restrictions);
+      const updatedRestrictions = nextRestrictions(restrictions, type, false, "", admin.uid);
+      const newAccountStatus = computeAccountStatus(updatedRestrictions);
+      const auditRef = db.collection("adminAuditLogs").doc();
+
+      transaction.set(userRef, {
+        ...buildRestrictionPatch(type, false, "", admin.uid),
+        accountStatus: newAccountStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      transaction.set(auditRef, {
+        action: "removeUserRestriction",
+        targetUserId: userId,
+        restrictionType: type,
+        reason,
+        performedBy: admin.uid,
+        performedByRole: admin.role,
+        createdAt: FieldValue.serverTimestamp(),
+        metadata: {
+          previousAccountStatus,
+          newAccountStatus,
+        },
+      });
+
+      return {newAccountStatus};
+    });
+
+    return {ok: true, accountStatus: result.newAccountStatus};
+  } catch (error) {
+    if (type === "hard" && previousAuthDisabled === true) {
+      await auth.updateUser(userId, {disabled: true});
+    }
+    throw error;
+  }
+});
+
+export const createOfferCampaign = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  assertOfferMutationPermission(admin.role);
+
+  const data = asRecord(request.data);
+  assertAllowedOfferKeys(data, offerCampaignMutableFields);
+  const normalized = normalizeOfferPayload(data, {requireAllFields: true});
+
+  const campaignRef = db.collection("offerCampaigns").doc();
+  const batch = db.batch();
+  batch.set(campaignRef, {
+    ...normalized,
+    isActive: asBoolean(data.isActive, false),
+    createdAt: FieldValue.serverTimestamp(),
+    createdBy: admin.uid,
+    createdByRole: admin.role,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: admin.uid,
+    updatedByRole: admin.role,
+  });
+  writeOfferAuditLog(batch, admin, "offerCampaign.create", campaignRef.id, {
+    couponCode: normalized.couponCode,
+    displayType: normalized.displayType,
+    campaignType: normalized.campaignType,
+  });
+  await batch.commit();
+
+  return {ok: true, campaignId: campaignRef.id};
+});
+
+export const updateOfferCampaign = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  assertOfferMutationPermission(admin.role);
+
+  const data = asRecord(request.data);
+  const campaignId = asTrimmedString(data.campaignId);
+  if (!campaignId) {
+    throw new HttpsError("invalid-argument", "campaignId is required.");
+  }
+
+  const updateData: Record<string, unknown> = {...data};
+  delete updateData.campaignId;
+  assertAllowedOfferKeys(updateData, offerCampaignMutableFields);
+  if (Object.keys(updateData).length === 0) {
+    throw new HttpsError("invalid-argument", "At least one offer field must be provided.");
+  }
+
+  const campaignRef = db.collection("offerCampaigns").doc(campaignId);
+  const snapshot = await campaignRef.get();
+  if (!snapshot.exists) {
+    throw new HttpsError("not-found", "Offer campaign not found.");
+  }
+
+  const existingData = snapshot.data() ?? {};
+  const mergedData: Record<string, unknown> = {
+    ...existingData,
+    ...updateData,
+    targeting: updateData.targeting === undefined ?
+      existingData.targeting :
+      {...asRecord(existingData.targeting), ...asRecord(updateData.targeting)},
+  };
+  const normalized = normalizeOfferPayload(mergedData, {requireAllFields: true});
+
+  const batch = db.batch();
+  batch.set(campaignRef, {
+    ...normalized,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: admin.uid,
+    updatedByRole: admin.role,
+  }, {merge: true});
+  writeOfferAuditLog(batch, admin, "offerCampaign.update", campaignId, {
+    updatedFields: Object.keys(updateData),
+  });
+  await batch.commit();
+
+  return {ok: true, campaignId};
+});
+
+export const setOfferCampaignStatus = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  assertOfferMutationPermission(admin.role);
+
+  const data = asRecord(request.data);
+  const campaignId = asTrimmedString(data.campaignId);
+  if (!campaignId) {
+    throw new HttpsError("invalid-argument", "campaignId is required.");
+  }
+  assertAllowedOfferKeys(data, ["campaignId", "isActive"]);
+  if (typeof data.isActive !== "boolean") {
+    throw new HttpsError("invalid-argument", "isActive must be true or false.");
+  }
+
+  const campaignRef = db.collection("offerCampaigns").doc(campaignId);
+  const snapshot = await campaignRef.get();
+  if (!snapshot.exists) {
+    throw new HttpsError("not-found", "Offer campaign not found.");
+  }
+
+  const isActive = data.isActive;
+  const batch = db.batch();
+  batch.set(campaignRef, {
+    isActive,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: admin.uid,
+    updatedByRole: admin.role,
+  }, {merge: true});
+  writeOfferAuditLog(
+    batch,
+    admin,
+    isActive ? "offerCampaign.activate" : "offerCampaign.pause",
+    campaignId,
+    {isActive},
+  );
+  await batch.commit();
+
+  return {ok: true, campaignId, isActive};
+});
+
+export const getEligibleOffers = onCall(async (request) => {
+  const uid = requireUid(request.auth);
+  const userRef = db.collection("users").doc(uid);
+  const userSnapshot = await userRef.get();
+  if (!userSnapshot.exists) {
+    throw new HttpsError("not-found", "User document not found.");
+  }
+
+  const userData = userSnapshot.data() ?? {};
+  const completedBookingCount = await getCompletedBookingCountForUser(uid, userData);
+  const now = new Date();
+  const campaignsSnapshot = await db
+    .collection("offerCampaigns")
+    .where("isActive", "==", true)
+    .get();
+
+  const offersWithMeta = await Promise.all(campaignsSnapshot.docs.map(async (doc) => {
+    const normalized = normalizeOfferPayload(doc.data() ?? {}, {requireAllFields: true});
+    if (!isOfferLive(normalized, now)) return null;
+    if (!isOfferEligibleForUser(normalized, completedBookingCount)) return null;
+    if (await hasClaimedOfferCampaign(uid, doc.id)) return null;
+    return {
+      id: doc.id,
+      createdAt: asDate(doc.data().createdAt),
+      offer: toEligibleOfferResponse(doc.id, normalized),
+    };
+  }));
+
+  const offers = offersWithMeta
+    .filter((entry): entry is NonNullable<typeof entry> => entry != null)
+    .sort((left, right) => {
+      if (right.offer.priority !== left.offer.priority) {
+        return right.offer.priority - left.offer.priority;
+      }
+      const rightCreatedAt = right.createdAt?.getTime() ?? 0;
+      const leftCreatedAt = left.createdAt?.getTime() ?? 0;
+      return rightCreatedAt - leftCreatedAt;
+    })
+    .map((entry) => entry.offer);
+
+  return {
+    ok: true,
+    offerWall: offers.find((offer) => offer.displayType === "offerWall") ?? null,
+    popup: offers.find((offer) => offer.displayType === "popup") ?? null,
+    offers,
+  };
+});
+
+export const claimOffer = onCall(async (request) => {
+  const uid = requireUid(request.auth);
+  const data = asRecord(request.data);
+  const campaignId = asTrimmedString(data.campaignId);
+  const sourceDisplayType = asTrimmedString(data.sourceDisplayType);
+
+  if (!campaignId) {
+    throw new HttpsError("invalid-argument", "campaignId is required.");
+  }
+  if (!isOfferDisplayType(sourceDisplayType)) {
+    throw new HttpsError("invalid-argument", "sourceDisplayType must be offerWall or popup.");
+  }
+
+  const userRef = db.collection("users").doc(uid);
+  const campaignRef = db.collection("offerCampaigns").doc(campaignId);
+  const claimedOfferRef = userRef.collection("claimedOffers").doc(campaignId);
+  const now = new Date();
+
+  const [userSnapshot, campaignSnapshot] = await Promise.all([
+    userRef.get(),
+    campaignRef.get(),
+  ]);
+  if (!userSnapshot.exists) {
+    throw new HttpsError("not-found", "User document not found.");
+  }
+  if (!campaignSnapshot.exists) {
+    throw new HttpsError("not-found", "Offer campaign not found.");
+  }
+
+  const userData = userSnapshot.data() ?? {};
+  const completedBookingCount = await getCompletedBookingCountForUser(uid, userData);
+
+  await db.runTransaction(async (transaction) => {
+    const [freshCampaignSnapshot, freshClaimedSnapshot] = await Promise.all([
+      transaction.get(campaignRef),
+      transaction.get(claimedOfferRef),
+    ]);
+
+    if (!freshCampaignSnapshot.exists) {
+      throw new HttpsError("not-found", "Offer campaign not found.");
+    }
+    if (freshClaimedSnapshot.exists) {
+      throw new HttpsError("already-exists", "Offer already claimed.");
+    }
+
+    const normalized = normalizeOfferPayload(freshCampaignSnapshot.data() ?? {}, {requireAllFields: true});
+    if (!isOfferLive(normalized, now)) {
+      throw new HttpsError("failed-precondition", "Offer is no longer available.");
+    }
+    if (!isOfferEligibleForUser(normalized, completedBookingCount)) {
+      throw new HttpsError("failed-precondition", "You are not eligible for this offer.");
+    }
+
+    const validUntil = computeOfferValidUntil(normalized, now);
+    transaction.set(claimedOfferRef, {
+      offerId: campaignId,
+      couponCode: normalized.couponCode,
+      discountType: normalized.discountType,
+      discountValue: normalized.discountValue,
+      maxDiscountAmount: normalized.maxDiscountAmount,
+      minBookingAmount: normalized.minBookingAmount,
+      claimedAt: FieldValue.serverTimestamp(),
+      validUntil,
+      usageLimit: normalized.usageLimitPerUser,
+      usedCount: 0,
+      status: "claimed",
+      sourceDisplayType,
+      campaignSnapshot: {
+        title: normalized.title,
+        description: normalized.description,
+        imageUrl: normalized.imageUrl,
+        couponCode: normalized.couponCode,
+        displayType: normalized.displayType,
+        campaignType: normalized.campaignType,
+        discountType: normalized.discountType,
+        discountValue: normalized.discountValue,
+        maxDiscountAmount: normalized.maxDiscountAmount,
+        minBookingAmount: normalized.minBookingAmount,
+        claimValidityType: normalized.claimValidityType,
+        usageLimitPerUser: normalized.usageLimitPerUser,
+        startAt: Timestamp.fromDate(normalized.startAt),
+        endAt: normalized.endAt ? Timestamp.fromDate(normalized.endAt) : null,
+        version: 1,
+      },
+    });
+    transaction.set(campaignRef, {
+      claimCount: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(db.collection("adminAuditLogs").doc(), {
+      action: "offer.claim",
+      targetType: "offerCampaign",
+      targetId: campaignId,
+      performedBy: uid,
+      performedByRole: "user",
+      createdAt: FieldValue.serverTimestamp(),
+      metadata: {
+        claimedOfferId: claimedOfferRef.id,
+        sourceDisplayType,
+      },
+    });
+  });
+
+  return {
+    ok: true,
+    claimedOfferId: claimedOfferRef.id,
+  };
+});
+
+export const previewOfferForBooking = onCall(async (request) => {
+  const uid = requireUid(request.auth);
+  const data = asRecord(request.data);
+  const claimedOfferId = asTrimmedString(data.claimedOfferId);
+  const bookingAmount = asOptionalFiniteNumber(data.bookingAmount);
+
+  if (!claimedOfferId) {
+    throw new HttpsError("invalid-argument", "claimedOfferId is required.");
+  }
+  if (bookingAmount == null || bookingAmount < 0) {
+    throw new HttpsError("invalid-argument", "bookingAmount must be 0 or greater.");
+  }
+
+  const claimedOfferSnapshot = await db
+    .collection("users")
+    .doc(uid)
+    .collection("claimedOffers")
+    .doc(claimedOfferId)
+    .get();
+
+  if (!claimedOfferSnapshot.exists) {
+    return {
+      ok: true,
+      isValid: false,
+      message: "Claimed offer not found.",
+      claimedOfferId,
+      campaignId: "",
+    };
+  }
+
+  const claimedData = claimedOfferSnapshot.data() ?? {};
+  const status = asTrimmedString(claimedData.status);
+  const validUntil = asDate(claimedData.validUntil);
+  const usageLimit = toInt(claimedData.usageLimit, 0);
+  const usedCount = toInt(claimedData.usedCount, 0);
+  const minBookingAmount = asOptionalFiniteNumber(claimedData.minBookingAmount);
+  const campaignId = asTrimmedString(claimedData.offerId);
+  const now = new Date();
+
+  if (status !== "claimed") {
+    return {
+      ok: true,
+      isValid: false,
+      message: "This offer is no longer available to apply.",
+      claimedOfferId,
+      campaignId,
+    };
+  }
+  if (validUntil && validUntil.getTime() < now.getTime()) {
+    return {
+      ok: true,
+      isValid: false,
+      message: "This offer has expired.",
+      claimedOfferId,
+      campaignId,
+    };
+  }
+  if (usedCount >= usageLimit) {
+    return {
+      ok: true,
+      isValid: false,
+      message: "This offer has already been fully used.",
+      claimedOfferId,
+      campaignId,
+    };
+  }
+  if (minBookingAmount != null && bookingAmount < minBookingAmount) {
+    return {
+      ok: true,
+      isValid: false,
+      message: `Minimum booking amount is ${minBookingAmount}.`,
+      claimedOfferId,
+      campaignId,
+    };
+  }
+
+  const discountType = asTrimmedString(claimedData.discountType);
+  if (!isOfferDiscountType(discountType)) {
+    return {
+      ok: true,
+      isValid: false,
+      message: "This offer is misconfigured.",
+      claimedOfferId,
+      campaignId,
+    };
+  }
+
+  const discountValue = asOptionalFiniteNumber(claimedData.discountValue) ?? 0;
+  const maxDiscountAmount = asOptionalFiniteNumber(claimedData.maxDiscountAmount);
+  const {discountAmount, finalAmount} = computeOfferDiscount(
+    bookingAmount,
+    discountType,
+    discountValue,
+    maxDiscountAmount,
+  );
+
+  return {
+    ok: true,
+    isValid: true,
+    discountAmount,
+    finalAmount,
+    message: "Offer applied successfully.",
+    claimedOfferId,
+    campaignId,
+  };
 });

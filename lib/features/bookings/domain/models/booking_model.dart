@@ -36,8 +36,11 @@ class BookingModel {
   final double latitude;
   final double longitude;
   final int grossAmount;
+  final int grossAmountPaise;
   final int platformFee;
+  final int platformFeePaise;
   final int providerEarnings;
+  final int providerEarningsPaise;
   final String currency;
   final String paymentStatus;
   final String otpStatus;
@@ -50,6 +53,23 @@ class BookingModel {
   final DateTime? payoutEligibleAt;
   final String reviewStatus;
   final String reviewId;
+  final int graceWindowMinutes;
+  final DateTime? graceWindowEndsAt;
+  final DateTime? completedAt;
+  final DateTime? cancelledAt;
+  final DateTime? noShowAt;
+  final String disputeStatus;
+  final bool hasDispute;
+  final String disputeId;
+  final String cancellationActorType;
+  final String cancellationReason;
+  final int cancellationRefundAmount;
+  final int cancellationRefundAmountPaise;
+  final int cancellationPettxoAmount;
+  final int cancellationPettxoAmountPaise;
+  final int cancellationProviderAmount;
+  final int cancellationProviderAmountPaise;
+  final String cancellationCase;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -87,8 +107,11 @@ class BookingModel {
     required this.latitude,
     required this.longitude,
     required this.grossAmount,
+    required this.grossAmountPaise,
     required this.platformFee,
+    required this.platformFeePaise,
     required this.providerEarnings,
+    required this.providerEarningsPaise,
     required this.currency,
     required this.paymentStatus,
     required this.otpStatus,
@@ -101,6 +124,23 @@ class BookingModel {
     this.payoutEligibleAt,
     required this.reviewStatus,
     required this.reviewId,
+    required this.graceWindowMinutes,
+    this.graceWindowEndsAt,
+    this.completedAt,
+    this.cancelledAt,
+    this.noShowAt,
+    required this.disputeStatus,
+    required this.hasDispute,
+    required this.disputeId,
+    required this.cancellationActorType,
+    required this.cancellationReason,
+    required this.cancellationRefundAmount,
+    required this.cancellationRefundAmountPaise,
+    required this.cancellationPettxoAmount,
+    required this.cancellationPettxoAmountPaise,
+    required this.cancellationProviderAmount,
+    required this.cancellationProviderAmountPaise,
+    required this.cancellationCase,
     this.createdAt,
     this.updatedAt,
   });
@@ -118,6 +158,8 @@ class BookingModel {
     final otp = _map(data['otp']);
     final payoutReadiness = _map(data['payoutReadiness']);
     final review = _map(data['review']);
+    final dispute = _map(data['dispute']);
+    final cancellation = _map(data['cancellation']);
 
     return BookingModel(
       id: snapshot.id,
@@ -164,8 +206,20 @@ class BookingModel {
       latitude: _double(locationSnapshot['latitude']),
       longitude: _double(locationSnapshot['longitude']),
       grossAmount: _int(pricing['grossAmount']),
+      grossAmountPaise: _int(
+        pricing['grossAmountPaise'],
+        fallback: _int(pricing['grossAmount']) * 100,
+      ),
       platformFee: _int(pricing['platformFee']),
+      platformFeePaise: _int(
+        pricing['platformFeePaise'],
+        fallback: _int(pricing['platformFee']) * 100,
+      ),
       providerEarnings: _int(pricing['providerEarnings']),
+      providerEarningsPaise: _int(
+        pricing['providerEarningsPaise'],
+        fallback: _int(pricing['providerEarnings']) * 100,
+      ),
       currency: _string(
         pricing['currency'],
         fallback: _string(serviceSnapshot['currency'], fallback: 'INR'),
@@ -187,6 +241,41 @@ class BookingModel {
         review['reviewId'],
         fallback: _string(data['reviewId']),
       ),
+      graceWindowMinutes: _int(data['graceWindowMinutes']),
+      graceWindowEndsAt: _dateTime(data['graceWindowEndsAt']),
+      completedAt: _dateTime(data['completedAt']),
+      cancelledAt: _dateTime(data['cancelledAt']),
+      noShowAt: _dateTime(data['noShowAt']),
+      disputeStatus: _string(
+        dispute['status'],
+        fallback: _string(data['disputeStatus']),
+      ),
+      hasDispute: dispute['hasDispute'] == true,
+      disputeId: _string(dispute['disputeId']),
+      cancellationActorType: _string(
+        cancellation['actorType'],
+        fallback: _string(data['cancellationType']),
+      ),
+      cancellationReason: _string(cancellation['reason']),
+      cancellationRefundAmount: _int(cancellation['refundAmount']),
+      cancellationRefundAmountPaise: _int(
+        cancellation['refundAmountPaise'],
+        fallback: _int(cancellation['refundAmount']) * 100,
+      ),
+      cancellationPettxoAmount: _int(cancellation['pettxoAmount']),
+      cancellationPettxoAmountPaise: _int(
+        cancellation['pettxoAmountPaise'],
+        fallback: _int(cancellation['pettxoAmount']) * 100,
+      ),
+      cancellationProviderAmount: _int(cancellation['providerAmount']),
+      cancellationProviderAmountPaise: _int(
+        cancellation['providerAmountPaise'],
+        fallback: _int(cancellation['providerAmount']) * 100,
+      ),
+      cancellationCase: _string(
+        cancellation['cancellationCase'],
+        fallback: _string(data['cancellationCase']),
+      ),
       createdAt: _dateTime(data['createdAt']),
       updatedAt: _dateTime(data['updatedAt']),
     );
@@ -205,6 +294,7 @@ class BookingModel {
 
     return switch (value) {
       'inprogress' => 'in_progress',
+      'cancelledbyuser' => 'cancelled_by_user',
       'cancelledbycustomer' => 'cancelled_by_customer',
       'cancelledbyprovider' => 'cancelled_by_provider',
       _ => value,
@@ -227,6 +317,17 @@ class BookingModel {
   bool get isInProgress => normalizedStatus == 'in_progress';
 
   bool get isCompleted => normalizedStatus == 'completed';
+
+  bool get isNoShow => normalizedStatus == 'no_show';
+
+  bool get isCancelled =>
+      const {
+        'cancelled_by_customer',
+        'cancelled_by_provider',
+        'cancelled_by_user',
+        'cancelled_by_system',
+        'cancelled',
+      }.contains(normalizedStatus);
 
   bool get isPostConfirmation => isAccepted || isInProgress || isCompleted;
 
@@ -254,6 +355,36 @@ class BookingModel {
     if (!isAccepted) return false;
     final start = scheduledStartAt;
     return start == null || start.isAfter(DateTime.now());
+  }
+
+  bool get canRaiseDispute {
+    if (disputeWindowEndsAt == null) return false;
+    return DateTime.now().isBefore(disputeWindowEndsAt!);
+  }
+
+  DateTime? get disputeWindowEndsAt {
+    if (completedAt != null) {
+      return completedAt!.add(const Duration(hours: 24));
+    }
+    if (scheduledStartAt != null) {
+      return scheduledStartAt!.add(const Duration(hours: 24));
+    }
+    if (createdAt != null) {
+      return createdAt!.add(const Duration(hours: 24));
+    }
+    return null;
+  }
+
+  Duration? get remainingGraceDuration {
+    final endsAt = graceWindowEndsAt;
+    if (endsAt == null) return null;
+    final remaining = endsAt.difference(DateTime.now());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  bool get isWithinGraceWindow {
+    final remaining = remainingGraceDuration;
+    return remaining != null && remaining > Duration.zero;
   }
 
   bool get isWithinServiceStartWindow {

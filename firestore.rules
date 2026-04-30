@@ -11,7 +11,13 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && request.auth.token.admin == true;
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.adminRole in [
+          "superAdmin",
+          "customerSupportAdmin",
+          "financeAdmin"
+        ];
     }
 
     function existingOwnerId() {
@@ -136,8 +142,13 @@ service cloud.firestore {
       allow create: if isOwner(userId) &&
         request.resource.data.uid == userId &&
         safeUserOwnerCreate();
-      allow update: if isAdmin() || (isOwner(userId) && safeUserOwnerUpdate());
-      allow delete: if isAdmin();
+      allow update: if isOwner(userId) && safeUserOwnerUpdate();
+      allow delete: if false;
+
+      match /claimedOffers/{claimedOfferId} {
+        allow read: if isOwner(userId);
+        allow create, update, delete: if false;
+      }
 
       match /notificationTokens/{tokenId} {
         allow read, write: if isOwner(userId) || isAdmin();
@@ -152,14 +163,20 @@ service cloud.firestore {
       allow read, write: if isOwner(userId) || isAdmin();
     }
 
+    match /offerCampaigns/{offerId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.isActive == true);
+      allow create, update, delete: if false;
+    }
+
     match /services/{serviceId} {
-      allow read: if signedIn() &&
+      allow read: if isAdmin() || (
+        signedIn() &&
         (resource.data.isDeleted != true) &&
         (
           resource.data.isVisibleToMarketplace == true ||
-          resource.data.ownerUserId == request.auth.uid ||
-          isAdmin()
-        );
+          resource.data.ownerUserId == request.auth.uid
+        )
+      );
 
       allow create: if signedIn() &&
         request.resource.data.ownerUserId == request.auth.uid &&
@@ -250,9 +267,39 @@ service cloud.firestore {
       allow read: if signedIn() &&
         (
           resource.data.providerId == request.auth.uid ||
+          resource.data.customerId == request.auth.uid ||
           isAdmin()
         );
-      allow write: if isAdmin();
+      allow write: if false;
+    }
+
+    match /bookingFinancials/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.userId == request.auth.uid ||
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /refunds/{refundId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.userId == request.auth.uid ||
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /providerEarnings/{earningId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if false;
     }
 
     match /payouts/{payoutId} {
@@ -261,15 +308,23 @@ service cloud.firestore {
           resource.data.providerId == request.auth.uid ||
           isAdmin()
         );
-      allow write: if isAdmin();
+      allow write: if false;
     }
 
     match /reports/{reportId} {
       allow read: if isAdmin() ||
-        (signedIn() && resource.data.reporterId == request.auth.uid);
+        (signedIn() &&
+          (
+            resource.data.reporterId == request.auth.uid ||
+            resource.data.reportedBy == request.auth.uid
+          )
+        );
       allow create: if signedIn() &&
-        request.resource.data.reporterId == request.auth.uid &&
-        request.resource.data.status == 'open';
+        request.resource.data.status == 'pending' &&
+        (
+          request.resource.data.reportedBy == request.auth.uid ||
+          request.resource.data.reporterId == request.auth.uid
+        );
       allow update, delete: if isAdmin();
     }
 
@@ -280,32 +335,26 @@ service cloud.firestore {
           resource.data.providerId == request.auth.uid ||
           isAdmin()
         );
-      allow create: if signedIn() &&
-        (
-          request.resource.data.customerId == request.auth.uid ||
-          request.resource.data.providerId == request.auth.uid
-        ) &&
-        request.resource.data.status == 'open';
-      allow update, delete: if isAdmin();
+      allow create, update, delete: if false;
 
       match /messages/{messageId} {
-        allow read, create: if signedIn() &&
+        allow read: if signedIn() &&
           (
             get(/databases/$(database)/documents/disputes/$(disputeId)).data.customerId == request.auth.uid ||
             get(/databases/$(database)/documents/disputes/$(disputeId)).data.providerId == request.auth.uid ||
             isAdmin()
           );
-        allow update, delete: if isAdmin();
+        allow create, update, delete: if false;
       }
 
       match /evidence/{evidenceId} {
-        allow read, create: if signedIn() &&
+        allow read: if signedIn() &&
           (
             get(/databases/$(database)/documents/disputes/$(disputeId)).data.customerId == request.auth.uid ||
             get(/databases/$(database)/documents/disputes/$(disputeId)).data.providerId == request.auth.uid ||
             isAdmin()
           );
-        allow update, delete: if isAdmin();
+        allow create, update, delete: if false;
       }
     }
 
@@ -314,7 +363,8 @@ service cloud.firestore {
     }
 
     match /adminAuditLogs/{logId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     match /notifications/{notificationId} {
