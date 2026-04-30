@@ -284,6 +284,88 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
+                  if (profile.isServiceProvider) ...[
+                    _SettingsSection(
+                      title: 'Provider',
+                      child: Column(
+                        children: [
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const CircleAvatar(
+                              backgroundColor: Color(0xFFFFF2EA),
+                              child: Icon(
+                                Icons.account_balance_wallet_outlined,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            title: const Text(
+                              'Provider Earnings',
+                              style: TextStyle(
+                                color: AppColors.textDark,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            subtitle: const Text(
+                              'Track pending, payout-eligible, paid, and disputed earnings',
+                              style: TextStyle(
+                                color: AppColors.textGrey,
+                                height: 1.4,
+                              ),
+                            ),
+                            trailing: const Icon(
+                              Icons.chevron_right_rounded,
+                              color: AppColors.primary,
+                            ),
+                            onTap: () => Navigator.pushNamed(
+                              context,
+                              '/settings/provider-earnings',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  _SettingsSection(
+                    title: 'Offers',
+                    child: Column(
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFFF2EA),
+                            child: Icon(
+                              Icons.local_offer_outlined,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          title: const Text(
+                            'My Offers',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: const Text(
+                            'View available, used, and expired claimed offers',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                            color: AppColors.primary,
+                          ),
+                          onTap: () => Navigator.pushNamed(
+                            context,
+                            '/settings/offers',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.96),

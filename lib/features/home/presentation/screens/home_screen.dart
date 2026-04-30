@@ -7,13 +7,85 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../feed/data/repositories/feed_mock_repository.dart';
+import '../../../offers/data/services/offer_service.dart';
+import '../../../offers/presentation/screens/offer_wall_screen.dart';
+import '../../../offers/presentation/widgets/offer_popup_dialog.dart';
 import '../../../feed/presentation/widgets/feed_post_card.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final OfferService _offerService = OfferService();
+  bool _checkedOffers = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showEligibleOffers();
+    });
+  }
+
+  Future<void> _showEligibleOffers() async {
+    if (_checkedOffers || !mounted) return;
+    _checkedOffers = true;
+
+    try {
+      final result = await _offerService.getEligibleOffers(screen: 'home');
+      if (!mounted) return;
+
+      final offerWall = result.offerWall;
+      if (offerWall != null &&
+          await _offerService.shouldShowOffer(offerWall.id)) {
+        await _offerService.markOfferShown(offerWall.id);
+        if (!mounted) return;
+        final claimed = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(builder: (_) => OfferWallScreen(offer: offerWall)),
+        );
+        if (!mounted) return;
+        if (claimed == true) {
+          AppFeedback.show(
+            context,
+            message: 'Offer claimed successfully.',
+            tone: AppFeedbackTone.success,
+          );
+        } else {
+          await _offerService.recordOfferDismissed(offerWall.id);
+        }
+        return;
+      }
+
+      final popup = result.popup;
+      if (popup != null && await _offerService.shouldShowOffer(popup.id)) {
+        await _offerService.markOfferShown(popup.id);
+        if (!mounted) return;
+        final claimed = await OfferPopupDialog.show(context, offer: popup);
+        if (!mounted) return;
+        if (claimed == true) {
+          AppFeedback.show(
+            context,
+            message: 'Offer claimed successfully.',
+            tone: AppFeedbackTone.success,
+          );
+        } else {
+          await _offerService.recordOfferDismissed(popup.id);
+        }
+      }
+    } catch (_) {
+      // Offer fetch failures should not interrupt the home experience.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -83,6 +155,10 @@ class HomeScreen extends StatelessWidget {
                     ),
                     child: IconButton(
                       onPressed: () {
+                        if (!UserRestrictionService.instance
+                            .ensureCanUseSocialFeatures(context)) {
+                          return;
+                        }
                         Navigator.pushNamed(context, "/create");
                       },
                       icon: const Icon(

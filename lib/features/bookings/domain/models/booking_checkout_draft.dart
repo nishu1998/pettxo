@@ -7,6 +7,7 @@ class BookingCheckoutDraft {
   final String slotId;
   final DateTime selectedSlot;
   final DateTime selectedSlotEnd;
+  final String? claimedOfferId;
 
   const BookingCheckoutDraft({
     required this.serviceId,
@@ -17,6 +18,7 @@ class BookingCheckoutDraft {
     required this.slotId,
     required this.selectedSlot,
     required this.selectedSlotEnd,
+    this.claimedOfferId,
   });
 
   int get totalAmount => price;

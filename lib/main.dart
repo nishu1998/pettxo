@@ -6,6 +6,7 @@ import 'core/services/app_loader.dart';
 import 'core/services/push_notification_service.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
 import 'features/bookings/presentation/screens/bookings_screen.dart';
+import 'features/bookings/presentation/screens/provider_earnings_screen.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
 import 'features/auth/presentation/screens/signin_with_phone_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
@@ -15,8 +16,10 @@ import 'features/explore/presentation/screens/explore_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
 import 'features/messages/presentation/screens/messages_screen.dart';
 import 'features/notifications/presentation/screens/notifications_screen.dart';
+import 'features/offers/presentation/screens/my_offers_screen.dart';
 import 'features/profile/presentation/screens/add_service_screen.dart';
 import 'features/profile/presentation/screens/profile_screen.dart';
+import 'features/restrictions/data/services/user_restriction_service.dart';
 import 'features/services/presentation/screens/services_screen.dart';
 import 'features/settings/presentation/screens/edit_profile_screen.dart';
 import 'features/settings/presentation/screens/settings_screen.dart';
@@ -29,6 +32,7 @@ void main() async {
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await PushNotificationService.instance.initialize();
+  await UserRestrictionService.instance.initialize();
 
   runApp(const PettexoApp());
 }
@@ -57,7 +61,9 @@ class PettexoApp extends StatelessWidget {
         "/home": (context) => const HomeScreen(),
         "/services": (context) => const ServicesScreen(),
         "/bookings": (context) => const BookingsScreen(),
+        "/settings/provider-earnings": (context) => ProviderEarningsScreen(),
         "/settings": (context) => const SettingsScreen(),
+        "/settings/offers": (context) => MyOffersScreen(),
         "/settings/profile": (context) => const EditProfileScreen(),
         "/explore": (context) => const ExploreScreen(),
         "/create": (context) => const CreatePostScreen(),

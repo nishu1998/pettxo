@@ -6,8 +6,13 @@ import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../offers/data/services/offer_service.dart';
+import '../../../offers/domain/models/claimed_offer.dart';
+import '../../../offers/presentation/widgets/claimed_offer_card.dart';
+import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_checkout_draft.dart';
+import 'booking_confirmation_screen.dart';
 
 class PaymentReviewScreen extends StatefulWidget {
   final BookingCheckoutDraft draft;
@@ -20,11 +25,95 @@ class PaymentReviewScreen extends StatefulWidget {
 
 class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
   final BookingRepository _bookingRepository = BookingRepository();
+  final OfferService _offerService = OfferService();
   bool _acceptedPolicy = false;
   bool _isSubmitting = false;
+  bool _isPreviewingOffer = false;
+  ClaimedOffer? _selectedOffer;
+  double _discountAmount = 0;
+  double? _previewedFinalAmount;
+
+  double get _subtotal => widget.draft.totalAmount.toDouble();
+
+  double get _finalAmount => _previewedFinalAmount ?? _subtotal;
+
+  Future<void> _selectOffer() async {
+    final picked = await showModalBottomSheet<ClaimedOffer>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return _OfferPickerSheet(offerService: _offerService);
+      },
+    );
+
+    if (!mounted || picked == null) return;
+
+    setState(() => _isPreviewingOffer = true);
+    try {
+      final preview = await _offerService.previewOfferForBooking(
+        claimedOfferId: picked.id,
+        bookingAmount: _subtotal,
+        serviceId: widget.draft.serviceId,
+        category: null,
+      );
+
+      if (!mounted) return;
+      if (!preview.ok || !preview.isValid) {
+        AppFeedback.show(
+          context,
+          message: preview.message.isEmpty
+              ? 'This offer cannot be applied right now.'
+              : preview.message,
+          tone: AppFeedbackTone.warning,
+        );
+        return;
+      }
+
+      setState(() {
+        _selectedOffer = picked;
+        _discountAmount = preview.discountAmount;
+        _previewedFinalAmount = preview.finalAmount;
+      });
+      AppFeedback.show(
+        context,
+        message: preview.message.isEmpty
+            ? 'Offer applied successfully.'
+            : preview.message,
+        tone: AppFeedbackTone.success,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: 'We could not preview this offer right now.',
+        tone: AppFeedbackTone.error,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isPreviewingOffer = false);
+      }
+    }
+  }
+
+  void _removeOffer() {
+    setState(() {
+      _selectedOffer = null;
+      _discountAmount = 0;
+      _previewedFinalAmount = null;
+    });
+    AppFeedback.show(
+      context,
+      message: 'Offer removed.',
+      tone: AppFeedbackTone.info,
+    );
+  }
 
   Future<void> _proceedToPay() async {
     if (!_acceptedPolicy || _isSubmitting) return;
+    if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+      return;
+    }
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
@@ -47,32 +136,26 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
         serviceId: widget.draft.serviceId,
         slotId: widget.draft.slotId,
         userId: uid,
-        amount: widget.draft.totalAmount,
+        amount: _finalAmount.round(),
+        claimedOfferId: _selectedOffer?.id,
       );
 
       AppLoader.hide();
       if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: const Text('Booking requested'),
-            content: Text(
-              bookingId.isEmpty
-                  ? 'Your request was submitted. The provider will accept or reject it soon.'
-                  : 'Your request was submitted. Booking ID: $bookingId',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK'),
-              ),
-            ],
-          );
-        },
+      if (bookingId.isEmpty) {
+        AppFeedback.show(
+          context,
+          message: 'Your booking was submitted, but we could not open the confirmation screen yet.',
+          tone: AppFeedbackTone.warning,
+        );
+        Navigator.popUntil(context, (route) => route.isFirst);
+        return;
+      }
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => BookingConfirmationScreen(bookingId: bookingId),
+        ),
       );
-      if (!mounted) return;
-      Navigator.popUntil(context, (route) => route.isFirst);
     } catch (error) {
       AppLoader.hide();
       if (!mounted) return;
@@ -108,6 +191,13 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
             children: [
               _ReviewCard(
                 draft: widget.draft,
+                selectedOffer: _selectedOffer,
+                subtotal: _subtotal,
+                discountAmount: _discountAmount,
+                finalAmount: _finalAmount,
+                isPreviewingOffer: _isPreviewingOffer,
+                onSelectOffer: _selectOffer,
+                onRemoveOffer: _removeOffer,
                 acceptedPolicy: _acceptedPolicy,
                 onPolicyChanged: (value) {
                   setState(() => _acceptedPolicy = value ?? false);
@@ -169,17 +259,33 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
 
 class _ReviewCard extends StatelessWidget {
   final BookingCheckoutDraft draft;
+  final ClaimedOffer? selectedOffer;
+  final double subtotal;
+  final double discountAmount;
+  final double finalAmount;
+  final bool isPreviewingOffer;
+  final VoidCallback onSelectOffer;
+  final VoidCallback onRemoveOffer;
   final bool acceptedPolicy;
   final ValueChanged<bool?> onPolicyChanged;
 
   const _ReviewCard({
     required this.draft,
+    required this.selectedOffer,
+    required this.subtotal,
+    required this.discountAmount,
+    required this.finalAmount,
+    required this.isPreviewingOffer,
+    required this.onSelectOffer,
+    required this.onRemoveOffer,
     required this.acceptedPolicy,
     required this.onPolicyChanged,
   });
 
   @override
   Widget build(BuildContext context) {
+    final graceWindowMinutes = _graceWindowMinutesForSlot(draft.selectedSlot);
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -205,11 +311,23 @@ class _ReviewCard extends StatelessWidget {
             value:
                 '${_formatDateTime(draft.selectedSlot)} - ${_formatTime(draft.selectedSlotEnd)}',
           ),
-          _PaymentRow(label: 'Price', value: '₹${draft.price}'),
+          const SizedBox(height: 18),
+          _OfferSelectorCard(
+            selectedOffer: selectedOffer,
+            isPreviewingOffer: isPreviewingOffer,
+            onSelectOffer: onSelectOffer,
+            onRemoveOffer: onRemoveOffer,
+          ),
           const Divider(height: 28),
+          _PaymentRow(label: 'Subtotal', value: _formatCurrency(subtotal)),
+          if (selectedOffer != null)
+            _PaymentRow(
+              label: 'Discount',
+              value: '-${_formatCurrency(discountAmount)}',
+            ),
           _PaymentRow(
             label: 'Total amount',
-            value: '₹${draft.totalAmount}',
+            value: _formatCurrency(finalAmount),
             isStrong: true,
           ),
           const SizedBox(height: 16),
@@ -219,13 +337,45 @@ class _ReviewCard extends StatelessWidget {
               color: const Color(0xFFFFF4EC),
               borderRadius: BorderRadius.circular(18),
             ),
-            child: const Text(
-              'The provider has up to 24 hours to respond, or until 1 hour before service start, whichever comes first. If they do not respond in time, the request expires automatically.',
-              style: TextStyle(
-                color: AppColors.textDark,
-                height: 1.45,
-                fontWeight: FontWeight.w700,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'You can cancel within $graceWindowMinutes minutes for a full refund.',
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    height: 1.45,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'After that, refunds decrease based on timing.',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    height: 1.45,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'More than 24h: 90% refund\n24h to 12h: 50% refund\n12h to 6h: 35% refund\n6h to 2h: 20% refund\nLess than 2h: no refund',
+                  style: TextStyle(
+                    color: AppColors.textGrey,
+                    height: 1.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'The provider has up to 24 hours to respond, or until 1 hour before service start, whichever comes first. If they do not respond in time, the request expires automatically.',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    height: 1.45,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 12),
@@ -274,6 +424,220 @@ class _ReviewCard extends StatelessWidget {
     final suffix = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
     return '$displayHour:${date.minute.toString().padLeft(2, '0')} $suffix';
+  }
+
+  String _formatCurrency(double amount) {
+    final normalized = amount % 1 == 0
+        ? amount.toInt().toString()
+        : amount.toStringAsFixed(2);
+    return '₹$normalized';
+  }
+
+  static int _graceWindowMinutesForSlot(DateTime slotStart) {
+    final now = DateTime.now();
+    final hoursUntilService = slotStart.difference(now).inHours;
+    if (hoursUntilService < 6) return 10;
+    if (hoursUntilService < 12) return 15;
+    return 30;
+  }
+}
+
+class _OfferSelectorCard extends StatelessWidget {
+  final ClaimedOffer? selectedOffer;
+  final bool isPreviewingOffer;
+  final VoidCallback onSelectOffer;
+  final VoidCallback onRemoveOffer;
+
+  const _OfferSelectorCard({
+    required this.selectedOffer,
+    required this.isPreviewingOffer,
+    required this.onSelectOffer,
+    required this.onRemoveOffer,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8F3),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Apply Offer',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              SecondaryButton(
+                label: isPreviewingOffer ? 'Checking...' : 'My Offers',
+                size: AppButtonSize.compact,
+                expand: false,
+                onPressed: isPreviewingOffer ? null : onSelectOffer,
+              ),
+            ],
+          ),
+          if (selectedOffer != null) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          selectedOffer!.couponCode,
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          selectedOffer!.discountSummary,
+                          style: const TextStyle(
+                            color: AppColors.textDark,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: onRemoveOffer,
+                    child: const Text('Remove'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _OfferPickerSheet extends StatelessWidget {
+  final OfferService offerService;
+
+  const _OfferPickerSheet({required this.offerService});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        margin: const EdgeInsets.all(14),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFCF8F5),
+          borderRadius: BorderRadius.circular(30),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.14),
+              blurRadius: 28,
+              offset: const Offset(0, 16),
+            ),
+          ],
+        ),
+        child: StreamBuilder<List<ClaimedOffer>>(
+          stream: offerService.watchClaimedOffers(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const SizedBox(
+                height: 240,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+
+            final offers = (snapshot.data ?? const <ClaimedOffer>[])
+                .where((offer) => offer.isAvailable)
+                .toList();
+
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Choose an offer',
+                        style: TextStyle(
+                          color: AppColors.textDark,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Available claimed offers that can still be used will appear here.',
+                  style: TextStyle(
+                    color: AppColors.textGrey,
+                    height: 1.45,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (offers.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(4, 16, 4, 20),
+                    child: Center(
+                      child: Text(
+                        'No available offers right now.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: offers.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        final offer = offers[index];
+                        return InkWell(
+                          borderRadius: BorderRadius.circular(24),
+                          onTap: () => Navigator.pop(context, offer),
+                          child: ClaimedOfferCard(offer: offer),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
   }
 }
 

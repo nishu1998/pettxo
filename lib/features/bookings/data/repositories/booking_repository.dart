@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import '../../domain/models/booking_cancellation_preview.dart';
 import '../../domain/models/booking_model.dart';
+import '../../domain/models/provider_earning_record.dart';
 import '../../domain/models/service_slot_model.dart';
 
 class BookingRepository {
@@ -114,6 +116,7 @@ class BookingRepository {
     required String slotId,
     required String userId,
     required int amount,
+    String? claimedOfferId,
   }) async {
     final callable = _functions.httpsCallable('requestBooking');
     final result = await callable.call<Map<String, dynamic>>({
@@ -121,6 +124,7 @@ class BookingRepository {
       'slotId': slotId,
       'userId': userId,
       'amount': amount,
+      'claimedOfferId': claimedOfferId,
     });
 
     final data = result.data;
@@ -179,6 +183,88 @@ class BookingRepository {
       'bookingId': id,
       'reason': reason,
     });
+  }
+
+  Future<BookingCancellationPreview> previewCancellation({
+    required String bookingId,
+  }) async {
+    final id = bookingId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError.value(
+        bookingId,
+        'bookingId',
+        'bookingId is required',
+      );
+    }
+
+    final callable = _functions.httpsCallable('previewCancellation');
+    final result = await callable.call<Map<String, dynamic>>({'bookingId': id});
+    return BookingCancellationPreview.fromMap(
+      Map<String, dynamic>.from(result.data),
+    );
+  }
+
+  Future<BookingCancellationPreview> cancelBookingWithBreakdown({
+    required String bookingId,
+    String reason = 'Cancelled by user',
+  }) async {
+    final id = bookingId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError.value(
+        bookingId,
+        'bookingId',
+        'bookingId is required',
+      );
+    }
+
+    final callable = _functions.httpsCallable('cancelBooking');
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': id,
+      'reason': reason,
+    });
+    return BookingCancellationPreview.fromMap(
+      Map<String, dynamic>.from(result.data),
+    );
+  }
+
+  Future<void> raiseDispute({
+    required String bookingId,
+    required String reason,
+    required String description,
+  }) async {
+    final id = bookingId.trim();
+    final trimmedReason = reason.trim();
+    final trimmedDescription = description.trim();
+    if (id.isEmpty || trimmedReason.isEmpty || trimmedDescription.isEmpty) {
+      throw ArgumentError('bookingId, reason, and description are required');
+    }
+
+    final callable = _functions.httpsCallable('raiseDispute');
+    await callable.call<Map<String, dynamic>>({
+      'bookingId': id,
+      'reason': trimmedReason,
+      'description': trimmedDescription,
+    });
+  }
+
+  Stream<List<ProviderEarningRecord>> watchProviderEarnings(
+    String currentUserId, {
+    int limit = 120,
+  }) {
+    final userId = currentUserId.trim();
+    if (userId.isEmpty) return Stream.value(const []);
+
+    return _firestore
+        .collection('providerEarnings')
+        .where('providerId', isEqualTo: userId)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map(ProviderEarningRecord.fromDocument)
+              .toList(growable: false),
+        );
   }
 
   Future<String> generateBookingOtp({required String bookingId}) async {
