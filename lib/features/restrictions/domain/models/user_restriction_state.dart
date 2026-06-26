@@ -19,10 +19,11 @@ class RestrictionFlag {
 }
 
 class UserRestrictionState {
-  static const String socialBanMessage = 'Your social features are restricted.';
+  static const String socialBanMessage =
+      'Your social features are temporarily restricted.';
   static const String bookingBanMessage =
       'Your booking features are restricted. Contact support.';
-  static const String hardBanMessage = 'Your account has been disabled.';
+  static const String hardBanMessage = 'Your account is restricted.';
 
   final String accountStatus;
   final RestrictionFlag social;

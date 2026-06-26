@@ -15,6 +15,8 @@ class UserProfile {
   final String profileImageUrl;
   final double ratingAverage;
   final int ratingCount;
+  final int followingCount;
+  final int followerCount;
   final String accountStatus;
   final UserRestrictionState restrictionState;
 
@@ -33,6 +35,8 @@ class UserProfile {
     required this.profileImageUrl,
     required this.ratingAverage,
     required this.ratingCount,
+    required this.followingCount,
+    required this.followerCount,
     required this.accountStatus,
     required this.restrictionState,
   });
@@ -60,6 +64,8 @@ class UserProfile {
       profileImageUrl: (data['profileImage'] as String? ?? '').trim(),
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
+      followingCount: (data['followingCount'] as num?)?.toInt() ?? 0,
+      followerCount: (data['followerCount'] as num?)?.toInt() ?? 0,
       accountStatus: (data['accountStatus'] as String? ?? 'active').trim(),
       restrictionState: UserRestrictionState.fromMap(data),
     );
@@ -68,12 +74,10 @@ class UserProfile {
   Map<String, dynamic> toMap() {
     return {
       'uid': uid,
-      'email': email,
       'role': role,
       'name': name,
       'username': username,
       'usernameLowercase': usernameLowercase,
-      'phone': phone,
       'state': state,
       'city': city,
       'location': location,
@@ -81,6 +85,8 @@ class UserProfile {
       'profileImage': profileImageUrl,
       'ratingAverage': ratingAverage,
       'ratingCount': ratingCount,
+      'followingCount': followingCount,
+      'followerCount': followerCount,
       'accountStatus': accountStatus,
     };
   }

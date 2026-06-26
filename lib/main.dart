@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'core/services/analytics_service.dart';
 import 'core/services/app_loader.dart';
+import 'core/services/policy_link_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
 import 'features/bookings/presentation/screens/bookings_screen.dart';
@@ -11,7 +12,6 @@ import 'features/auth/presentation/screens/signin_screen.dart';
 import 'features/auth/presentation/screens/signin_with_phone_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
 import 'features/auth/presentation/screens/signup_with_phone_screen.dart';
-import 'features/create_post/presentation/screens/create_post_screen.dart';
 import 'features/explore/presentation/screens/explore_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
 import 'features/messages/presentation/screens/messages_screen.dart';
@@ -22,7 +22,9 @@ import 'features/profile/presentation/screens/profile_screen.dart';
 import 'features/restrictions/data/services/user_restriction_service.dart';
 import 'features/services/presentation/screens/services_screen.dart';
 import 'features/settings/presentation/screens/edit_profile_screen.dart';
+import 'features/settings/presentation/screens/legal_policies_screen.dart';
 import 'features/settings/presentation/screens/settings_screen.dart';
+import 'features/social/presentation/screens/create_post_screen.dart';
 import 'features/splash/presentation/screens/splash_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
@@ -31,6 +33,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await PolicyLinkService.initialize();
   await PushNotificationService.instance.initialize();
   await UserRestrictionService.instance.initialize();
 
@@ -46,6 +49,16 @@ class PettexoApp extends StatelessWidget {
       title: 'Pettexo',
       debugShowCheckedModeBanner: false,
       navigatorKey: AppLoader.navigatorKey,
+      builder: (context, child) {
+        return SafeArea(
+          top: false,
+          left: false,
+          right: false,
+          bottom: true,
+          maintainBottomViewPadding: true,
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
 
       // ✅ Apply global theme (Poppins + colors)
       theme: AppTheme.lightTheme,
@@ -65,6 +78,27 @@ class PettexoApp extends StatelessWidget {
         "/settings": (context) => const SettingsScreen(),
         "/settings/offers": (context) => MyOffersScreen(),
         "/settings/profile": (context) => const EditProfileScreen(),
+        "/settings/legal": (context) => const LegalPoliciesScreen(),
+        LegalPoliciesCatalog.cancellationPolicy.routeName: (context) =>
+            const LegalPolicyDetailScreen(
+              document: LegalPoliciesCatalog.cancellationPolicy,
+            ),
+        LegalPoliciesCatalog.refundPolicy.routeName: (context) =>
+            const LegalPolicyDetailScreen(
+              document: LegalPoliciesCatalog.refundPolicy,
+            ),
+        LegalPoliciesCatalog.termsAndConditions.routeName: (context) =>
+            const LegalPolicyDetailScreen(
+              document: LegalPoliciesCatalog.termsAndConditions,
+            ),
+        LegalPoliciesCatalog.privacyPolicy.routeName: (context) =>
+            const LegalPolicyDetailScreen(
+              document: LegalPoliciesCatalog.privacyPolicy,
+            ),
+        LegalPoliciesCatalog.providerPolicy.routeName: (context) =>
+            const LegalPolicyDetailScreen(
+              document: LegalPoliciesCatalog.providerPolicy,
+            ),
         "/explore": (context) => const ExploreScreen(),
         "/create": (context) => const CreatePostScreen(),
         "/alerts": (context) => const NotificationsScreen(),

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/data/services/auth_service.dart';
+import '../../../auth/data/services/user_service.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../domain/models/user_restriction_state.dart';
 
@@ -17,6 +18,7 @@ class UserRestrictionService {
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final AuthService _authService = AuthService();
+  final UserService _userService = UserService();
   final ProfileRepository _profileRepository = ProfileRepository();
   final ValueNotifier<UserRestrictionState> _stateNotifier = ValueNotifier(
     UserRestrictionState.unrestricted,
@@ -45,6 +47,8 @@ class UserRestrictionService {
       _isHandlingHardBan = false;
       return;
     }
+
+    await _userService.syncCurrentUserPrivateFields();
 
     _restrictionSubscription = _profileRepository
         .watchCurrentUserRestrictionState()
@@ -88,7 +92,10 @@ class UserRestrictionService {
     }
   }
 
-  bool ensureCanUseSocialFeatures(BuildContext context) {
+  bool canPerformSocialAction(
+    BuildContext context, {
+    bool allowWhenSocialRestricted = false,
+  }) {
     final state = currentState;
     if (state.isHardBanned) {
       AppFeedback.show(
@@ -99,7 +106,7 @@ class UserRestrictionService {
       unawaited(_handleHardBan());
       return false;
     }
-    if (!state.canUseSocialFeatures) {
+    if (!allowWhenSocialRestricted && !state.canUseSocialFeatures) {
       AppFeedback.show(
         context,
         message: UserRestrictionState.socialBanMessage,
@@ -108,6 +115,10 @@ class UserRestrictionService {
       return false;
     }
     return true;
+  }
+
+  bool ensureCanUseSocialFeatures(BuildContext context) {
+    return canPerformSocialAction(context);
   }
 
   bool ensureCanUseBookingFeatures(BuildContext context) {

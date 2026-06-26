@@ -1,9 +1,14 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
+import '../../../../core/services/push_notification_service.dart';
 import '../../domain/models/auth_result.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(
+    region: 'asia-south1',
+  );
 
   Future<AuthResult> signUp({
     required String email,
@@ -97,7 +102,20 @@ class AuthService {
   }
 
   Future<void> logout() async {
+    try {
+      await PushNotificationService.instance
+          .unregisterCurrentDeviceTokenForLogout();
+    } catch (_) {
+      // Token cleanup should not block sign-out.
+    }
     await _auth.signOut();
+  }
+
+  Future<String> requestAccountDeletion() async {
+    final callable = _functions.httpsCallable('requestAccountDeletion');
+    final result = await callable.call<Map<String, dynamic>>();
+    final data = Map<String, dynamic>.from(result.data);
+    return (data['message'] as String? ?? 'Account deletion requested.').trim();
   }
 
   User? get currentUser => _auth.currentUser;

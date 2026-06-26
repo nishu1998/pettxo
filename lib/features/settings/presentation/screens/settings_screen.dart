@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/data/services/auth_service.dart';
+import '../../../provider/data/repositories/provider_onboarding_repository.dart';
+import '../../../provider/domain/models/provider_onboarding_models.dart';
+import '../../../provider/presentation/screens/provider_bank_details_screen.dart';
+import '../../../provider/presentation/screens/provider_verification_hub_screen.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../data/services/settings_service.dart';
@@ -18,11 +22,15 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final AuthService _authService = AuthService();
   final ProfileRepository _profileRepository = ProfileRepository();
+  final ProviderOnboardingRepository _providerOnboardingRepository =
+      ProviderOnboardingRepository();
   final SettingsService _settingsService = SettingsService();
   AppSettings _settings = const AppSettings.defaults();
   UserProfile? _profile;
+  ProviderOnboardingSnapshot? _providerOnboarding;
   bool _isLoading = true;
   bool _isSigningOut = false;
+  bool _isDeletingAccount = false;
   String? _loadError;
 
   @override
@@ -33,15 +41,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettings() async {
     try {
-      final results = await Future.wait([
-        _settingsService.loadSettings(),
-        _profileRepository.getCurrentUserProfile(),
-      ]);
+      final settings = await _settingsService.loadSettings();
+      final profile = await _profileRepository.getCurrentUserProfile();
+      ProviderOnboardingSnapshot? providerOnboarding;
+      try {
+        providerOnboarding = await _providerOnboardingRepository
+            .fetchCurrentOnboarding();
+      } catch (_) {
+        providerOnboarding = null;
+      }
       if (!mounted) return;
 
       setState(() {
-        _settings = results[0] as AppSettings;
-        _profile = results[1] as UserProfile;
+        _settings = settings;
+        _profile = profile;
+        _providerOnboarding = providerOnboarding;
         _loadError = null;
         _isLoading = false;
       });
@@ -53,6 +67,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _openProviderVerificationHub() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ProviderVerificationHubScreen()),
+    );
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+    await _loadSettings();
+  }
+
+  Future<void> _openProviderBankDetails() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ProviderBankDetailsScreen()),
+    );
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+    await _loadSettings();
   }
 
   Future<void> _updateSettings(AppSettings settings) async {
@@ -77,6 +111,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
       AppFeedback.show(
         context,
         message: 'Unable to sign out right now. Please try again.',
+        tone: AppFeedbackTone.error,
+      );
+    }
+  }
+
+  Future<void> _requestAccountDeletion() async {
+    if (_isDeletingAccount || _isSigningOut) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete account?'),
+          content: const Text(
+            'This submits an account deletion request. Pettxo will restrict your profile, services, bookings, and chats while payment, booking, KYC, and dispute records required for legal retention are preserved.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text(
+                'Delete account',
+                style: TextStyle(color: Color(0xFFE15656)),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingAccount = true);
+    try {
+      final message = await _authService.requestAccountDeletion();
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: message,
+        tone: AppFeedbackTone.success,
+      );
+      await _authService.logout();
+      if (!mounted) return;
+      Navigator.pushNamedAndRemoveUntil(context, "/signin", (route) => false);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isDeletingAccount = false);
+      AppFeedback.show(
+        context,
+        message: 'Unable to request account deletion right now. Please try again.',
         tone: AppFeedbackTone.error,
       );
     }
@@ -284,48 +371,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  if (profile.isServiceProvider) ...[
-                    _SettingsSection(
-                      title: 'Provider',
-                      child: Column(
-                        children: [
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: const CircleAvatar(
-                              backgroundColor: Color(0xFFFFF2EA),
-                              child: Icon(
-                                Icons.account_balance_wallet_outlined,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                            title: const Text(
-                              'Provider Earnings',
-                              style: TextStyle(
-                                color: AppColors.textDark,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: const Text(
-                              'Track pending, payout-eligible, paid, and disputed earnings',
-                              style: TextStyle(
-                                color: AppColors.textGrey,
-                                height: 1.4,
-                              ),
-                            ),
-                            trailing: const Icon(
-                              Icons.chevron_right_rounded,
+                  _SettingsSection(
+                    title: 'Provider',
+                    child: Column(
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFFF2EA),
+                            child: Icon(
+                              Icons.account_balance_wallet_outlined,
                               color: AppColors.primary,
                             ),
-                            onTap: () => Navigator.pushNamed(
-                              context,
-                              '/settings/provider-earnings',
+                          ),
+                          title: const Text(
+                            'Provider Earnings',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                        ],
-                      ),
+                          subtitle: const Text(
+                            'Track pending, payout-eligible, paid, and disputed earnings',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                            color: AppColors.primary,
+                          ),
+                          onTap: () => Navigator.pushNamed(
+                            context,
+                            '/settings/provider-earnings',
+                          ),
+                        ),
+                        const Divider(height: 1),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFFF2EA),
+                            child: Icon(
+                              Icons.verified_user_outlined,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          title: const Text(
+                            'Provider Verification Status',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: Text(
+                            _verificationSubtitle(_providerOnboarding),
+                            style: const TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                            color: AppColors.primary,
+                          ),
+                          onTap: _openProviderVerificationHub,
+                        ),
+                        const Divider(height: 1),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFFF2EA),
+                            child: Icon(
+                              Icons.account_balance_outlined,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          title: const Text(
+                            'Bank Details',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: Text(
+                            _bankDetailsSubtitle(_providerOnboarding),
+                            style: const TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                            color: AppColors.primary,
+                          ),
+                          onTap: _openProviderBankDetails,
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                  ],
+                  ),
+                  const SizedBox(height: 16),
                   _SettingsSection(
                     title: 'Offers',
                     child: Column(
@@ -357,10 +502,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             Icons.chevron_right_rounded,
                             color: AppColors.primary,
                           ),
-                          onTap: () => Navigator.pushNamed(
-                            context,
-                            '/settings/offers',
+                          onTap: () =>
+                              Navigator.pushNamed(context, '/settings/offers'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _SettingsSection(
+                    title: 'Legal & Policies',
+                    child: Column(
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFFF2EA),
+                            child: Icon(
+                              Icons.gavel_rounded,
+                              color: AppColors.primary,
+                            ),
                           ),
+                          title: const Text(
+                            'Legal & Policies',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: const Text(
+                            'Cancellation, refund, privacy, provider, and terms documents',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                            color: AppColors.primary,
+                          ),
+                          onTap: () =>
+                              Navigator.pushNamed(context, '/settings/legal'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _SettingsSection(
+                    title: 'Account',
+                    child: Column(
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFFF1EF),
+                            child: Icon(
+                              Icons.delete_outline_rounded,
+                              color: Color(0xFFE15656),
+                            ),
+                          ),
+                          title: const Text(
+                            'Delete account',
+                            style: TextStyle(
+                              color: Color(0xFFE15656),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: const Text(
+                            'Request account deletion while retained legal and payment records stay protected.',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          trailing: _isDeletingAccount
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.chevron_right_rounded,
+                                  color: Color(0xFFE15656),
+                                ),
+                          onTap: _isDeletingAccount ? null : _requestAccountDeletion,
                         ),
                       ],
                     ),
@@ -424,6 +650,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
       ),
     );
+  }
+
+  String _verificationSubtitle(ProviderOnboardingSnapshot? onboarding) {
+    final verification = onboarding?.verification;
+    if (verification == null) {
+      return 'Check your verification progress and resubmit documents if needed';
+    }
+    if (verification.isApproved) {
+      return 'Approved. Your provider verification is complete.';
+    }
+    if (verification.isRejected) {
+      return 'Rejected. Open to review the reason and resubmit documents.';
+    }
+    if (verification.isPending) {
+      return verification.graceExpired
+          ? 'Pending. Your services are paused until verification is approved.'
+          : 'Pending review. Open to check your current verification status.';
+    }
+    return 'Not submitted yet. Open to start provider verification.';
+  }
+
+  String _bankDetailsSubtitle(ProviderOnboardingSnapshot? onboarding) {
+    final bankDetails = onboarding?.bankDetails;
+    if (bankDetails == null) {
+      return 'View and update the payout account used for provider earnings';
+    }
+    if (bankDetails.isSubmitted) {
+      final bankName = bankDetails.bankName.isEmpty
+          ? 'Bank account on file'
+          : bankDetails.bankName;
+      final maskedAccount = bankDetails.accountNumberMasked;
+      final suffix = maskedAccount.isEmpty ? '' : ' • $maskedAccount';
+      return '$bankName$suffix';
+    }
+    return 'No bank details saved yet. Open to add or update payout details.';
   }
 }
 
