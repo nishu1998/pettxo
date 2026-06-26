@@ -42,6 +42,10 @@ class ServiceModel {
   final bool isPaused;
   final String moderationStatus;
   final bool isVisibleToMarketplace;
+  final String providerVerificationStatus;
+  final DateTime? providerVerificationGraceEndsAt;
+  final bool isPausedByVerification;
+  final String pauseReason;
   final double ratingAverage;
   final int ratingCount;
   final int completedBookingCount;
@@ -97,6 +101,10 @@ class ServiceModel {
     required this.isPaused,
     required this.moderationStatus,
     required this.isVisibleToMarketplace,
+    this.providerVerificationStatus = '',
+    this.providerVerificationGraceEndsAt,
+    this.isPausedByVerification = false,
+    this.pauseReason = '',
     required this.ratingAverage,
     required this.ratingCount,
     this.completedBookingCount = 0,
@@ -186,6 +194,13 @@ class ServiceModel {
       moderationStatus: (data['moderationStatus'] as String? ?? 'pending')
           .trim(),
       isVisibleToMarketplace: data['isVisibleToMarketplace'] as bool? ?? false,
+      providerVerificationStatus:
+          (data['providerVerificationStatus'] as String? ?? '').trim(),
+      providerVerificationGraceEndsAt: _readDate(
+        data['providerVerificationGraceEndsAt'],
+      ),
+      isPausedByVerification: data['isPausedByVerification'] as bool? ?? false,
+      pauseReason: (data['pauseReason'] as String? ?? '').trim(),
       ratingAverage:
           (stats['ratingAverage'] as num?)?.toDouble() ??
           (data['ratingAverage'] as num?)?.toDouble() ??
@@ -273,6 +288,12 @@ class ServiceModel {
       // New services remain visible until admin tooling introduces review gates.
       'moderationStatus': moderationStatus,
       'isVisibleToMarketplace': isVisibleToMarketplace,
+      'providerVerificationStatus': providerVerificationStatus,
+      'providerVerificationGraceEndsAt': providerVerificationGraceEndsAt == null
+          ? null
+          : Timestamp.fromDate(providerVerificationGraceEndsAt!),
+      'isPausedByVerification': isPausedByVerification,
+      'pauseReason': pauseReason,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'publishedAt': FieldValue.serverTimestamp(),
@@ -304,14 +325,15 @@ class ServiceModel {
           ? 'Whole day'
           : '$sessionDurationMinutes min',
       petSize: animalType,
-      rating: ratingCount > 0
-          ? ratingLabel
-          : 'No reviews yet',
+      rating: ratingCount > 0 ? ratingLabel : 'No reviews yet',
       distance: '',
       imageUrl: primaryPhotoUrl,
       notes: privateNotes,
       photoPaths: photoUrls,
-      isPaused: isPaused || status == 'paused',
+      isPaused:
+          isPaused || status == 'paused' || isEffectivelyPausedByVerification,
+      isPausedByVerification: isEffectivelyPausedByVerification,
+      pauseReason: pauseReason,
       ratingAverage: ratingAverage,
       ratingCount: ratingCount,
       completedBookingCount: completedBookingCount,
@@ -331,6 +353,13 @@ class ServiceModel {
   }
 
   bool get hasReviews => ratingCount > 0;
+
+  bool get isEffectivelyPausedByVerification {
+    if (providerVerificationStatus == 'approved') return false;
+    final graceEnd = providerVerificationGraceEndsAt;
+    if (graceEnd == null) return isPausedByVerification;
+    return DateTime.now().isAfter(graceEnd);
+  }
 
   String get ratingLabel {
     if (!hasReviews) return 'No reviews yet';

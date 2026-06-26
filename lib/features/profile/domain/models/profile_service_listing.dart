@@ -44,6 +44,8 @@ class ProfileServiceListing {
   final String notes;
   final List<String> photoPaths;
   final bool isPaused;
+  final bool isPausedByVerification;
+  final String pauseReason;
 
   const ProfileServiceListing({
     required this.id,
@@ -87,9 +89,15 @@ class ProfileServiceListing {
     this.notes = '',
     this.photoPaths = const [],
     this.isPaused = false,
+    this.isPausedByVerification = false,
+    this.pauseReason = '',
   });
 
-  ProfileServiceListing copyWith({bool? isPaused}) {
+  ProfileServiceListing copyWith({
+    bool? isPaused,
+    bool? isPausedByVerification,
+    String? pauseReason,
+  }) {
     return ProfileServiceListing(
       id: id,
       ownerUserId: ownerUserId,
@@ -132,6 +140,9 @@ class ProfileServiceListing {
       notes: notes,
       photoPaths: photoPaths,
       isPaused: isPaused ?? this.isPaused,
+      isPausedByVerification:
+          isPausedByVerification ?? this.isPausedByVerification,
+      pauseReason: pauseReason ?? this.pauseReason,
     );
   }
 
@@ -188,7 +199,9 @@ class ProfileServiceListing {
       id: (data['id'] as String? ?? '').trim(),
       ownerUserId: (data['ownerUserId'] as String? ?? '').trim(),
       ownerName:
-          (data['ownerName'] as String? ?? data['providerName'] as String? ?? '')
+          (data['ownerName'] as String? ??
+                  data['providerName'] as String? ??
+                  '')
               .trim(),
       ownerUsername:
           (data['ownerUsername'] as String? ??
@@ -240,6 +253,8 @@ class ProfileServiceListing {
           .whereType<String>()
           .toList(),
       isPaused: data['isPaused'] as bool? ?? false,
+      isPausedByVerification: data['isPausedByVerification'] as bool? ?? false,
+      pauseReason: (data['pauseReason'] as String? ?? '').trim(),
     );
   }
 
@@ -284,6 +299,8 @@ class ProfileServiceListing {
       'notes': notes,
       'photoPaths': photoPaths,
       'isPaused': isPaused,
+      'isPausedByVerification': isPausedByVerification,
+      'pauseReason': pauseReason,
     };
   }
 

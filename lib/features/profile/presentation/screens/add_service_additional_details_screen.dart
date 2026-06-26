@@ -9,6 +9,10 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
+import '../../../provider/data/repositories/provider_onboarding_repository.dart';
+import '../../../provider/domain/models/provider_onboarding_models.dart';
+import '../../../provider/presentation/screens/provider_bank_details_screen.dart';
+import '../../../provider/presentation/screens/provider_verification_screen.dart';
 import '../../data/repositories/profile_repository.dart';
 import '../../domain/models/add_service_flow_draft.dart';
 import '../../domain/models/user_profile.dart';
@@ -38,6 +42,8 @@ class _AddServiceAdditionalDetailsScreenState
   final GlobalKey _notesFieldKey = GlobalKey();
   final ProfileRepository _profileRepository = ProfileRepository();
   final ServicesRepository _servicesRepository = ServicesRepository();
+  final ProviderOnboardingRepository _providerOnboardingRepository =
+      ProviderOnboardingRepository();
 
   final List<_SelectedPhoto> _selectedPhotos = [];
   String? _notesError;
@@ -188,21 +194,44 @@ class _AddServiceAdditionalDetailsScreenState
     if (!_validateForm() || _isPublishing) return;
 
     setState(() => _isPublishing = true);
-    AppLoader.showWithMessage(
-      _selectedPhotos.isEmpty
-          ? 'Setting up your service...'
-          : 'Uploading images...',
-    );
 
     try {
+      final onboardingReady = await _ensureProviderOnboardingReady();
+      if (!onboardingReady) return;
+
+      final onboarding = await _providerOnboardingRepository
+          .fetchCurrentOnboarding();
+      final firstServiceDraftGraceEndsAt =
+          onboarding.verification.firstServiceListedAt == null &&
+              !onboarding.hasListedService
+          ? DateTime.now().add(const Duration(hours: 72))
+          : onboarding.verification.gracePeriodEndsAt;
+
+      AppLoader.showWithMessage(
+        _selectedPhotos.isEmpty
+            ? 'Setting up your service...'
+            : 'Uploading images...',
+      );
+
       final profile = await _profileRepository.getCurrentUserProfile();
-      final service = _buildServiceModel(profile);
+      final service = _buildServiceModel(
+        profile,
+        verification: onboarding.verification,
+        gracePeriodEndsAt: firstServiceDraftGraceEndsAt,
+      );
       final photos = _selectedPhotos.map((photo) => File(photo.path)).toList();
 
       // Publish now writes to Firestore and uploads selected photos to Storage.
       // Moderation fields are included so admin review can be added without
       // reshaping service documents later.
       await _servicesRepository.createService(service: service, photos: photos);
+      if (firstServiceDraftGraceEndsAt != null) {
+        await _providerOnboardingRepository.markFirstServiceListedIfNeeded(
+          gracePeriodEndsAt: firstServiceDraftGraceEndsAt,
+        );
+      }
+      await _providerOnboardingRepository
+          .syncServicesForCurrentVerificationStatus();
 
       AppLoader.hide();
       if (!mounted) return;
@@ -229,7 +258,74 @@ class _AddServiceAdditionalDetailsScreenState
     }
   }
 
-  ServiceModel _buildServiceModel(UserProfile profile) {
+  Future<bool> _ensureProviderOnboardingReady() async {
+    await _providerOnboardingRepository
+        .syncServicesForCurrentVerificationStatus();
+    var onboarding = await _providerOnboardingRepository
+        .fetchCurrentOnboarding();
+
+    if (!onboarding.verification.isSubmitted ||
+        onboarding.verification.isRejected) {
+      if (!mounted) return false;
+      final submitted = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(builder: (_) => const ProviderVerificationScreen()),
+      );
+      if (!mounted || submitted != true) {
+        return false;
+      }
+      onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding();
+      if (!mounted) return false;
+    }
+
+    if (!onboarding.bankDetails.isSubmitted) {
+      if (!mounted) return false;
+      final saved = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(builder: (_) => const ProviderBankDetailsScreen()),
+      );
+      if (!mounted || saved != true) {
+        return false;
+      }
+      onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding();
+      if (!mounted) return false;
+    }
+
+    await _providerOnboardingRepository
+        .syncServicesForCurrentVerificationStatus();
+    onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding();
+    if (!mounted) return false;
+
+    if (onboarding.verification.graceExpired &&
+        !onboarding.verification.isApproved) {
+      AppFeedback.show(
+        context,
+        message:
+            'Your services are paused until provider verification is approved.',
+        tone: AppFeedbackTone.info,
+      );
+      return false;
+    }
+
+    if (!onboarding.verification.isApproved &&
+        onboarding.verification.isPending) {
+      AppFeedback.show(
+        context,
+        message: onboarding.hasListedService
+            ? 'Your services are active while verification is under review.'
+            : 'Your verification is under review. Your first service will stay active during the 72-hour grace period.',
+        tone: AppFeedbackTone.info,
+      );
+    }
+
+    return true;
+  }
+
+  ServiceModel _buildServiceModel(
+    UserProfile profile, {
+    required ProviderVerificationRecord verification,
+    required DateTime? gracePeriodEndsAt,
+  }) {
     final details = widget.draft.details;
     final setup = widget.draft.bookingSetup;
 
@@ -268,6 +364,10 @@ class _AddServiceAdditionalDetailsScreenState
       isPaused: false,
       moderationStatus: 'pending',
       isVisibleToMarketplace: true,
+      providerVerificationStatus: verification.status,
+      providerVerificationGraceEndsAt: gracePeriodEndsAt,
+      isPausedByVerification: false,
+      pauseReason: '',
       ratingAverage: 0,
       ratingCount: 0,
       createdAt: null,
@@ -404,56 +504,63 @@ class _AddServiceAdditionalDetailsScreenState
               ],
             ),
             Positioned(
-              left: 16,
-              right: 16,
+              left: 0,
+              right: 0,
               top: topInset + 10,
-              child: GlassSurface(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 14,
-                ),
-                borderRadius: BorderRadius.circular(24),
-                backgroundColor: Colors.white.withValues(alpha: 0.72),
-                blurSigma: 20,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.06),
-                    blurRadius: 22,
-                    offset: const Offset(0, 10),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 18,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-                child: Row(
-                  children: [
-                    Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.56),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back_rounded),
-                      ),
+              child: Align(
+                child: FractionallySizedBox(
+                  widthFactor: 0.85,
+                  child: GlassSurface(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 11,
                     ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Additional Details',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
+                    borderRadius: BorderRadius.circular(24),
+                    backgroundColor: Colors.white.withValues(alpha: 0.72),
+                    blurSigma: 20,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.62),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withValues(alpha: 0.06),
+                        blurRadius: 22,
+                        offset: const Offset(0, 10),
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.05),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.56),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Additional Details',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),

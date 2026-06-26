@@ -61,7 +61,32 @@ class ServicesRepository {
         .where('isDeleted', isEqualTo: false)
         .orderBy('updatedAt', descending: true)
         .snapshots()
-        .map(_mapSnapshot);
+        .map(
+          (snapshot) => snapshot.docs.map(ServiceModel.fromDocument).toList(),
+        );
+  }
+
+  Stream<List<ServiceModel>> watchPublicOwnerServices(String ownerUserId) {
+    return _services
+        .where('ownerUserId', isEqualTo: ownerUserId)
+        .where('isDeleted', isEqualTo: false)
+        .where('isVisibleToMarketplace', isEqualTo: true)
+        .snapshots()
+        .map((snapshot) {
+          final services = _mapSnapshot(snapshot);
+          services.sort((a, b) {
+            final aTime =
+                a.updatedAt?.millisecondsSinceEpoch ??
+                a.createdAt?.millisecondsSinceEpoch ??
+                0;
+            final bTime =
+                b.updatedAt?.millisecondsSinceEpoch ??
+                b.createdAt?.millisecondsSinceEpoch ??
+                0;
+            return bTime.compareTo(aTime);
+          });
+          return services;
+        });
   }
 
   Future<ServiceModel?> fetchServiceById(String serviceId) async {
@@ -98,9 +123,13 @@ class ServicesRepository {
 
     final snapshot = await query.get();
     final docs = snapshot.docs;
+    final services = docs
+        .map(ServiceModel.fromDocument)
+        .where((service) => !service.isEffectivelyPausedByVerification)
+        .toList();
 
     return ServicesPage(
-      services: docs.map(ServiceModel.fromDocument).toList(),
+      services: services,
       lastDocument: docs.isEmpty ? null : docs.last,
       hasMore: docs.length == limit,
     );
@@ -157,6 +186,10 @@ class ServicesRepository {
       isPaused: service.isPaused,
       moderationStatus: service.moderationStatus,
       isVisibleToMarketplace: service.isVisibleToMarketplace,
+      providerVerificationStatus: service.providerVerificationStatus,
+      providerVerificationGraceEndsAt: service.providerVerificationGraceEndsAt,
+      isPausedByVerification: service.isPausedByVerification,
+      pauseReason: service.pauseReason,
       ratingAverage: service.ratingAverage,
       ratingCount: service.ratingCount,
       createdAt: service.createdAt,
@@ -220,7 +253,10 @@ class ServicesRepository {
   List<ServiceModel> _mapSnapshot(
     QuerySnapshot<Map<String, dynamic>> snapshot,
   ) {
-    return snapshot.docs.map(ServiceModel.fromDocument).toList();
+    return snapshot.docs
+        .map(ServiceModel.fromDocument)
+        .where((service) => !service.isEffectivelyPausedByVerification)
+        .toList();
   }
 
   Future<List<String>> _uploadServicePhotos({
