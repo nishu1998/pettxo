@@ -655,53 +655,63 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             },
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                  blurRadius: 22,
-                  offset: const Offset(0, 10),
-                ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                      blurRadius: 22,
+                      offset: const Offset(0, 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -872,7 +882,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               tone: record.statusTone,
             ),
           ),
-          DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
+          DetailRowData(
+            label: 'Paid',
+            value: _moneyFromPaise(booking.grossAmountPaise),
+          ),
         ],
       ),
       const SizedBox(height: 12),
@@ -968,7 +981,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               tone: record.statusTone,
             ),
           ),
-          DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
+          DetailRowData(
+            label: 'Paid',
+            value: _moneyFromPaise(booking.grossAmountPaise),
+          ),
         ],
       ),
       const SizedBox(height: 12),
@@ -1104,8 +1120,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(999),
                         ),
-                        materialTapTargetSize:
-                            MaterialTapTargetSize.shrinkWrap,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         visualDensity: VisualDensity.compact,
                       );
                     }).toList(),
@@ -1156,7 +1171,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             label: 'Animal',
             value: _emptyFallback(booking.animalType),
           ),
-          DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
+          DetailRowData(
+            label: 'Paid',
+            value: _moneyFromPaise(booking.grossAmountPaise),
+          ),
           DetailRowData(
             label: 'Status',
             value: '',
@@ -1390,7 +1408,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                 tone: record.statusTone,
               ),
             ),
-            DetailRowData(label: 'Paid', value: _moneyFromPaise(booking.grossAmountPaise)),
+            DetailRowData(
+              label: 'Paid',
+              value: _moneyFromPaise(booking.grossAmountPaise),
+            ),
           ],
         ),
         if (booking.isPostConfirmation) ...[
@@ -1495,7 +1516,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
 
   String _moneyFromPaise(int paise) {
     final rupees = paise / 100;
-    final text = paise % 100 == 0 ? rupees.toStringAsFixed(0) : rupees.toStringAsFixed(2);
+    final text = paise % 100 == 0
+        ? rupees.toStringAsFixed(0)
+        : rupees.toStringAsFixed(2);
     return '₹$text';
   }
 

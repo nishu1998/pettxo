@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/repositories/booking_repository.dart';
@@ -51,70 +52,87 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
             builder: (context, snapshot) {
               final booking = snapshot.data;
               return ListView(
-                padding: EdgeInsets.fromLTRB(18, topInset + 108, 18, bottomInset + 24),
+                padding: EdgeInsets.fromLTRB(
+                  18,
+                  topInset + 108,
+                  18,
+                  bottomInset + 24,
+                ),
                 children: [
                   _StatusHero(booking: booking),
                   const SizedBox(height: 16),
                   _SummaryCard(booking: booking),
                   const SizedBox(height: 20),
-                  FilledButton(
+                  GradientButton(
+                    label: 'View Booking',
                     onPressed: () => Navigator.pushNamedAndRemoveUntil(
                       context,
                       '/bookings',
                       (route) => route.isFirst,
                     ),
-                    child: const Text('View Booking'),
                   ),
                 ],
               );
             },
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                        context,
-                        '/bookings',
-                        (route) => route.isFirst,
-                      ),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Booking Confirmed',
-                      style: TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
                   ),
-                ],
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                            context,
+                            '/bookings',
+                            (route) => route.isFirst,
+                          ),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Booking Confirmed',
+                          style: TextStyle(
+                            color: AppColors.textDark,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
         ],
       ),
-      bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.profile),
+      bottomNavigationBar: const SocialBottomNav(
+        activeTab: SocialAppTab.profile,
+      ),
     );
   }
 }
@@ -244,7 +262,9 @@ class _SummaryCard extends StatelessWidget {
 
   static String _moneyFromPaise(int paise) {
     final rupees = paise / 100;
-    return paise % 100 == 0 ? '₹${rupees.toStringAsFixed(0)}' : '₹${rupees.toStringAsFixed(2)}';
+    return paise % 100 == 0
+        ? '₹${rupees.toStringAsFixed(0)}'
+        : '₹${rupees.toStringAsFixed(2)}';
   }
 }
 

@@ -3,6 +3,8 @@ import 'package:cloud_functions/cloud_functions.dart';
 
 import '../../domain/models/booking_cancellation_preview.dart';
 import '../../domain/models/booking_model.dart';
+import '../../domain/models/booking_payment_order.dart';
+import '../../domain/models/pending_payment_booking.dart';
 import '../../domain/models/provider_earning_record.dart';
 import '../../domain/models/service_slot_model.dart';
 
@@ -14,7 +16,8 @@ class BookingRepository {
     FirebaseFirestore? firestore,
     FirebaseFunctions? functions,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
-       _functions = functions ?? FirebaseFunctions.instance;
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   Stream<List<BookingModel>> watchReceivingBookings(
     String currentUserId, {
@@ -39,8 +42,8 @@ class BookingRepository {
     final userId = currentUserId.trim();
     if (userId.isEmpty) return Stream.value(const []);
 
-    // Current requestBooking callable writes serviceOwnerId. BookingModel still
-    // accepts providerId as a fallback so a future schema rename is low-friction.
+    // Current booking functions write serviceOwnerId. BookingModel still accepts
+    // providerId as a fallback so a future schema rename is low-friction.
     return _firestore
         .collection('bookings')
         .where('serviceOwnerId', isEqualTo: userId)
@@ -111,24 +114,70 @@ class BookingRepository {
       ..sort(_sortLatestFirst);
   }
 
-  Future<String> requestBooking({
+  Future<BookingPaymentOrder> createRazorpayBookingOrder({
     required String serviceId,
     required String slotId,
     required String userId,
-    required int amount,
     String? claimedOfferId,
   }) async {
-    final callable = _functions.httpsCallable('requestBooking');
+    final callable = _functions.httpsCallable('createRazorpayBookingOrder');
     final result = await callable.call<Map<String, dynamic>>({
       'serviceId': serviceId,
       'slotId': slotId,
       'userId': userId,
-      'amount': amount,
       'claimedOfferId': claimedOfferId,
     });
 
+    return BookingPaymentOrder.fromMap(Map<String, dynamic>.from(result.data));
+  }
+
+  Future<PendingPaymentBooking?> getPendingPaymentBooking({
+    String? bookingId,
+    String? serviceId,
+    String? slotId,
+  }) async {
+    final callable = _functions.httpsCallable('getPendingPaymentBooking');
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': bookingId,
+      'serviceId': serviceId,
+      'slotId': slotId,
+    });
+
+    final data = Map<String, dynamic>.from(result.data);
+    final pending = data['pendingBooking'];
+    if (pending is! Map) return null;
+    return PendingPaymentBooking.fromMap(Map<String, dynamic>.from(pending));
+  }
+
+  Future<String> verifyRazorpayPayment({
+    required String bookingId,
+    required String razorpayOrderId,
+    required String razorpayPaymentId,
+    required String razorpaySignature,
+  }) async {
+    final callable = _functions.httpsCallable('verifyRazorpayPayment');
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': bookingId,
+      'razorpay_order_id': razorpayOrderId,
+      'razorpay_payment_id': razorpayPaymentId,
+      'razorpay_signature': razorpaySignature,
+    });
+
     final data = result.data;
-    return (data['bookingId'] as String? ?? '').trim();
+    return (data['bookingId'] as String? ?? bookingId).trim();
+  }
+
+  Future<void> markRazorpayPaymentFailed({
+    required String bookingId,
+    String? code,
+    String? message,
+  }) async {
+    final callable = _functions.httpsCallable('markRazorpayPaymentFailed');
+    await callable.call<Map<String, dynamic>>({
+      'bookingId': bookingId,
+      'code': code,
+      'message': message,
+    });
   }
 
   Future<void> acceptBookingRequest({required String bookingId}) async {

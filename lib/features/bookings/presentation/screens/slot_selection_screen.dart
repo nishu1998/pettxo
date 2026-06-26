@@ -57,7 +57,9 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(
+        context,
+      )) {
         Navigator.maybePop(context);
       }
     });
@@ -90,7 +92,10 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   void _moveMonth(int delta) {
     final next = DateTime(_focusedMonth.year, _focusedMonth.month + delta);
     final earliest = DateTime(_today.year, _today.month);
-    final latest = DateTime(_lastSelectableDate.year, _lastSelectableDate.month);
+    final latest = DateTime(
+      _lastSelectableDate.year,
+      _lastSelectableDate.month,
+    );
     if (next.isBefore(earliest) || next.isAfter(latest)) return;
     setState(() => _focusedMonth = next);
   }
@@ -143,8 +148,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
             children: [
               _IntroCard(
                 title: widget.serviceName,
-                subtitle:
-                    'Choose a date and time. The provider has up to 24 hours to respond, or until 1 hour before the service starts, whichever comes first.',
+                subtitle: 'Choose a date and time.',
               ),
               const SizedBox(height: 18),
               _SectionCard(
@@ -202,21 +206,35 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                             (slot) =>
                                 slot.canRequest &&
                                 slot.startAt.toLocal().year ==
-                                    widget.suggestedSlotStartAt!.toLocal().year &&
+                                    widget.suggestedSlotStartAt!
+                                        .toLocal()
+                                        .year &&
                                 slot.startAt.toLocal().month ==
-                                    widget.suggestedSlotStartAt!.toLocal().month &&
+                                    widget.suggestedSlotStartAt!
+                                        .toLocal()
+                                        .month &&
                                 slot.startAt.toLocal().day ==
-                                    widget.suggestedSlotStartAt!.toLocal().day &&
+                                    widget.suggestedSlotStartAt!
+                                        .toLocal()
+                                        .day &&
                                 slot.startAt.toLocal().hour ==
-                                    widget.suggestedSlotStartAt!.toLocal().hour &&
+                                    widget.suggestedSlotStartAt!
+                                        .toLocal()
+                                        .hour &&
                                 slot.startAt.toLocal().minute ==
-                                    widget.suggestedSlotStartAt!.toLocal().minute,
+                                    widget.suggestedSlotStartAt!
+                                        .toLocal()
+                                        .minute,
                           )
                           .cast<ServiceSlotModel?>()
-                          .firstWhere((slot) => slot != null, orElse: () => null);
+                          .firstWhere(
+                            (slot) => slot != null,
+                            orElse: () => null,
+                          );
                       if (suggestedSlot != null) {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (!mounted || _selectedSlot?.id == suggestedSlot.id) {
+                          if (!mounted ||
+                              _selectedSlot?.id == suggestedSlot.id) {
                             return;
                           }
                           setState(() {
@@ -237,41 +255,94 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
 
                     return LayoutBuilder(
                       builder: (context, constraints) {
-                        final crossAxisSpacing = 10.0;
-                        final availableWidth = constraints.maxWidth;
-                        final tileWidth =
-                            (availableWidth - crossAxisSpacing) / 2;
-                        final tileHeight = tileWidth < 150 ? 88.0 : 82.0;
+                        final tileWidth = (constraints.maxWidth * 0.46).clamp(
+                          136.0,
+                          180.0,
+                        );
 
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            GridView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: slots.length,
-                              gridDelegate:
-                                  SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 2,
-                                    crossAxisSpacing: crossAxisSpacing,
-                                    mainAxisSpacing: 10,
-                                    mainAxisExtent: tileHeight,
+                            const Row(
+                              children: [
+                                Icon(
+                                  Icons.swipe_left_rounded,
+                                  size: 16,
+                                  color: AppColors.textGrey,
+                                ),
+                                SizedBox(width: 6),
+                                Text(
+                                  'Swipe to see more slots',
+                                  style: TextStyle(
+                                    color: AppColors.textGrey,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
                                   ),
-                              itemBuilder: (context, index) {
-                                final slot = slots[index];
-                                return _SlotTile(
-                                  slot: slot,
-                                  isSelected: _selectedSlot?.id == slot.id,
-                                  onTap: slot.canRequest
-                                      ? () {
-                                          setState(() {
-                                            _selectedSlot = slot;
-                                            _slotError = null;
-                                          });
-                                        }
-                                      : null,
-                                );
-                              },
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              height: 88,
+                              child: Stack(
+                                children: [
+                                  ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemCount: slots.length,
+                                    separatorBuilder: (_, _) =>
+                                        const SizedBox(width: 10),
+                                    itemBuilder: (context, index) {
+                                      final slot = slots[index];
+                                      return SizedBox(
+                                        width: tileWidth,
+                                        child: _SlotTile(
+                                          slot: slot,
+                                          isSelected:
+                                              _selectedSlot?.id == slot.id,
+                                          onTap: slot.canRequest
+                                              ? () {
+                                                  setState(() {
+                                                    _selectedSlot = slot;
+                                                    _slotError = null;
+                                                  });
+                                                }
+                                              : null,
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                  Positioned(
+                                    right: 0,
+                                    top: 0,
+                                    bottom: 0,
+                                    child: IgnorePointer(
+                                      child: Container(
+                                        width: 34,
+                                        decoration: BoxDecoration(
+                                          gradient: LinearGradient(
+                                            begin: Alignment.centerLeft,
+                                            end: Alignment.centerRight,
+                                            colors: [
+                                              Colors.white.withValues(
+                                                alpha: 0,
+                                              ),
+                                              _screenBackground.withValues(
+                                                alpha: 0.96,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        alignment: Alignment.centerRight,
+                                        child: const Icon(
+                                          Icons.chevron_right_rounded,
+                                          color: AppColors.textGrey,
+                                          size: 20,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                             if (_slotError != null) ...[
                               const SizedBox(height: 10),
@@ -298,41 +369,51 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
             ],
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Select Slot',
-                      style: TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Select Slot',
+                          style: TextStyle(
+                            color: AppColors.textDark,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -511,9 +592,9 @@ class _CalendarMonthSection extends StatelessWidget {
           itemCount: totalCells,
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 7,
-            mainAxisSpacing: 10,
+            mainAxisSpacing: 8,
             crossAxisSpacing: 8,
-            mainAxisExtent: 72,
+            mainAxisExtent: 54,
           ),
           itemBuilder: (context, index) {
             if (index < leadingEmptySlots) {
@@ -614,7 +695,7 @@ class _DateChip extends StatelessWidget {
     return GestureDetector(
       onTap: isEnabled ? onTap : null,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
         decoration: BoxDecoration(
           gradient: isSelected && isEnabled ? AppColors.brandGradient : null,
           color: isSelected && isEnabled
@@ -622,10 +703,14 @@ class _DateChip extends StatelessWidget {
               : isEnabled
               ? const Color(0xFFFFF8F2)
               : const Color(0xFFF5F0EC),
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: AppColors.primary.withValues(
-              alpha: isSelected && isEnabled ? 0 : isEnabled ? 0.10 : 0.05,
+              alpha: isSelected && isEnabled
+                  ? 0
+                  : isEnabled
+                  ? 0.10
+                  : 0.05,
             ),
           ),
         ),
@@ -641,7 +726,7 @@ class _DateChip extends StatelessWidget {
                     ? AppColors.textDark
                     : AppColors.textGrey.withValues(alpha: 0.65),
                 fontWeight: FontWeight.w900,
-                fontSize: 20,
+                fontSize: 17,
               ),
             ),
           ],

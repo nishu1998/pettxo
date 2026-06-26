@@ -1,8 +1,11 @@
+import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/app_loader.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
@@ -10,14 +13,23 @@ import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/domain/models/claimed_offer.dart';
 import '../../../offers/presentation/widgets/claimed_offer_card.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
+import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../data/repositories/booking_repository.dart';
+import '../../data/services/razorpay_checkout_service.dart';
 import '../../domain/models/booking_checkout_draft.dart';
+import '../../domain/models/booking_payment_order.dart';
+import '../../domain/models/pending_payment_booking.dart';
 import 'booking_confirmation_screen.dart';
 
 class PaymentReviewScreen extends StatefulWidget {
   final BookingCheckoutDraft draft;
+  final String? pendingBookingId;
 
-  const PaymentReviewScreen({super.key, required this.draft});
+  const PaymentReviewScreen({
+    super.key,
+    required this.draft,
+    this.pendingBookingId,
+  });
 
   @override
   State<PaymentReviewScreen> createState() => _PaymentReviewScreenState();
@@ -26,16 +38,63 @@ class PaymentReviewScreen extends StatefulWidget {
 class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
   final BookingRepository _bookingRepository = BookingRepository();
   final OfferService _offerService = OfferService();
+  final RazorpayCheckoutService _razorpayCheckoutService =
+      RazorpayCheckoutService();
   bool _acceptedPolicy = false;
   bool _isSubmitting = false;
   bool _isPreviewingOffer = false;
   ClaimedOffer? _selectedOffer;
+  BookingPaymentOrder? _pendingOrder;
   double _discountAmount = 0;
-  double? _previewedFinalAmount;
+  double get _serviceAmount => widget.draft.totalAmount.toDouble();
+  double get _platformFee => _serviceAmount * 0.15;
+  double get _finalAmount => (_serviceAmount + _platformFee - _discountAmount)
+      .clamp(0, double.infinity)
+      .toDouble();
 
-  double get _subtotal => widget.draft.totalAmount.toDouble();
+  @override
+  void initState() {
+    super.initState();
+    _loadPendingPaymentBooking();
+  }
 
-  double get _finalAmount => _previewedFinalAmount ?? _subtotal;
+  Future<void> _loadPendingPaymentBooking() async {
+    try {
+      final pending = await _bookingRepository.getPendingPaymentBooking(
+        bookingId: widget.pendingBookingId,
+        serviceId: widget.pendingBookingId == null ? widget.draft.serviceId : null,
+        slotId: widget.pendingBookingId == null ? widget.draft.slotId : null,
+      );
+      if (!mounted || pending == null) return;
+      if (pending.paymentExpiresAt != null &&
+          !pending.paymentExpiresAt!.isAfter(DateTime.now())) {
+        return;
+      }
+      setState(() {
+        _pendingOrder = _bookingPaymentOrderFromPending(pending);
+      });
+    } catch (_) {
+      // Best-effort preload only. Checkout creation still reuses pending orders server-side.
+    }
+  }
+
+  BookingPaymentOrder _bookingPaymentOrderFromPending(
+    PendingPaymentBooking pending,
+  ) {
+    return BookingPaymentOrder(
+      bookingId: pending.bookingId,
+      razorpayOrderId: pending.razorpayOrderId,
+      keyId: '',
+      amountPaise: pending.amountPaise,
+      currency: pending.currency,
+      serviceAmountPaise: pending.serviceAmountPaise,
+      platformFeePaise: pending.platformFeePaise,
+      discountPaise: pending.discountPaise,
+      totalPayablePaise: pending.totalPayablePaise,
+      paymentExpiresAt: pending.paymentExpiresAt,
+      alreadyVerified: false,
+    );
+  }
 
   Future<void> _selectOffer() async {
     final picked = await showModalBottomSheet<ClaimedOffer>(
@@ -53,7 +112,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
     try {
       final preview = await _offerService.previewOfferForBooking(
         claimedOfferId: picked.id,
-        bookingAmount: _subtotal,
+        bookingAmount: _serviceAmount,
         serviceId: widget.draft.serviceId,
         category: null,
       );
@@ -73,7 +132,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
       setState(() {
         _selectedOffer = picked;
         _discountAmount = preview.discountAmount;
-        _previewedFinalAmount = preview.finalAmount;
+        _pendingOrder = null;
       });
       AppFeedback.show(
         context,
@@ -100,7 +159,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
     setState(() {
       _selectedOffer = null;
       _discountAmount = 0;
-      _previewedFinalAmount = null;
+      _pendingOrder = null;
     });
     AppFeedback.show(
       context,
@@ -126,35 +185,126 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
     }
 
     setState(() => _isSubmitting = true);
-    AppLoader.showWithMessage('Sending booking request...');
+    AppLoader.showWithMessage('Preparing secure payment...');
 
     try {
-      // Payment gateway is intentionally mocked for now. Booking creation still
-      // goes through Cloud Functions so the app does not bypass backend rules.
-      await Future<void>.delayed(const Duration(milliseconds: 650));
-      final bookingId = await _bookingRepository.requestBooking(
-        serviceId: widget.draft.serviceId,
-        slotId: widget.draft.slotId,
-        userId: uid,
-        amount: _finalAmount.round(),
-        claimedOfferId: _selectedOffer?.id,
+      final now = DateTime.now();
+      final pendingOrder = _pendingOrder;
+      final order =
+          pendingOrder != null &&
+              pendingOrder.paymentExpiresAt != null &&
+              pendingOrder.paymentExpiresAt!.isAfter(now)
+          ? pendingOrder
+          : await _bookingRepository.createRazorpayBookingOrder(
+              serviceId: widget.draft.serviceId,
+              slotId: widget.draft.slotId,
+              userId: uid,
+              claimedOfferId: _selectedOffer?.id,
+            );
+      var resolvedOrder = order;
+      _pendingOrder = resolvedOrder;
+
+      if (!resolvedOrder.alreadyVerified && resolvedOrder.keyId.isEmpty) {
+        resolvedOrder = await _bookingRepository.createRazorpayBookingOrder(
+          serviceId: widget.draft.serviceId,
+          slotId: widget.draft.slotId,
+          userId: uid,
+          claimedOfferId: _selectedOffer?.id,
+        );
+        _pendingOrder = resolvedOrder;
+      }
+
+      if (resolvedOrder.alreadyVerified) {
+        AppLoader.hide();
+        if (!mounted) return;
+        _pendingOrder = null;
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) =>
+                BookingConfirmationScreen(bookingId: resolvedOrder.bookingId),
+          ),
+        );
+        return;
+      }
+
+      if (resolvedOrder.keyId.isEmpty) {
+        throw StateError(
+          'Razorpay checkout could not be prepared for this booking.',
+        );
+      }
+
+      AppLoader.hide();
+      if (!mounted) return;
+
+      final checkoutOrder = resolvedOrder;
+      final checkoutResult = await _razorpayCheckoutService.openCheckout(
+        order: checkoutOrder,
+        customerName:
+            FirebaseAuth.instance.currentUser?.displayName?.trim() ??
+            'Pettxo Customer',
+        customerEmail: FirebaseAuth.instance.currentUser?.email?.trim() ?? '',
+        customerPhone:
+            FirebaseAuth.instance.currentUser?.phoneNumber?.trim() ?? '',
+        description: widget.draft.serviceName,
+      );
+
+      if (!mounted) return;
+      AppLoader.showWithMessage('Verifying payment...');
+      final bookingId = await _bookingRepository.verifyRazorpayPayment(
+        bookingId: checkoutOrder.bookingId,
+        razorpayOrderId: checkoutResult.orderId,
+        razorpayPaymentId: checkoutResult.paymentId,
+        razorpaySignature: checkoutResult.signature,
       );
 
       AppLoader.hide();
       if (!mounted) return;
-      if (bookingId.isEmpty) {
-        AppFeedback.show(
-          context,
-          message: 'Your booking was submitted, but we could not open the confirmation screen yet.',
-          tone: AppFeedbackTone.warning,
-        );
-        Navigator.popUntil(context, (route) => route.isFirst);
-        return;
-      }
+      _pendingOrder = null;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => BookingConfirmationScreen(bookingId: bookingId),
         ),
+      );
+    } on RazorpayCheckoutDismissed {
+      AppLoader.hide();
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message:
+            'Payment was closed. You can retry while the booking is pending.',
+        tone: AppFeedbackTone.info,
+      );
+    } on RazorpayCheckoutFailure catch (error) {
+      AppLoader.hide();
+      final failedBookingId = _pendingOrder?.bookingId ?? '';
+      if (mounted && failedBookingId.isNotEmpty) {
+        await _bookingRepository
+            .markRazorpayPaymentFailed(
+              bookingId: failedBookingId,
+              code: error.code,
+              message: error.message,
+            )
+            .catchError((_) {});
+      }
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: error.message.isEmpty
+            ? 'Unable to complete payment right now.'
+            : error.message,
+        tone: AppFeedbackTone.error,
+      );
+    } on FirebaseFunctionsException catch (error) {
+      final message = (error.message ?? '').trim();
+      final friendlyMessage = message.isNotEmpty
+          ? message
+          : 'We could not request this booking. Please try again.';
+      AppLoader.hide();
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: friendlyMessage,
+        tone: AppFeedbackTone.error,
       );
     } catch (error) {
       AppLoader.hide();
@@ -173,9 +323,17 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
   }
 
   @override
+  void dispose() {
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final buttonLabel = _isSubmitting
+        ? 'Processing...'
+        : 'Proceed to Pay ${_formatCurrency(_finalAmount)}';
 
     return Scaffold(
       backgroundColor: const Color(0xFFFCF8F5),
@@ -186,13 +344,14 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
               18,
               topInset + 108,
               18,
-              bottomInset + 24,
+              bottomInset + 120,
             ),
             children: [
-              _ReviewCard(
+              _ReviewContent(
                 draft: widget.draft,
+                serviceAmount: _serviceAmount,
+                platformFee: _platformFee,
                 selectedOffer: _selectedOffer,
-                subtotal: _subtotal,
                 discountAmount: _discountAmount,
                 finalAmount: _finalAmount,
                 isPreviewingOffer: _isPreviewingOffer,
@@ -202,65 +361,99 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
                 onPolicyChanged: (value) {
                   setState(() => _acceptedPolicy = value ?? false);
                 },
-              ),
-              const SizedBox(height: 22),
-              GradientButton(
-                label: _isSubmitting ? 'Processing...' : 'Proceed to Pay',
-                onPressed: _acceptedPolicy && !_isSubmitting
-                    ? _proceedToPay
-                    : null,
+                onOpenCancellationPolicy: () => PolicyLinkService.openPolicy(
+                  context,
+                  webUrl: PolicyLinkService.urlForKey(
+                    LegalPoliciesCatalog.cancellationPolicy.remoteConfigKey,
+                  ),
+                  fallbackRoute:
+                      LegalPoliciesCatalog.cancellationPolicy.routeName,
+                ),
               ),
             ],
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Payment Review',
-                      style: TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Payment Review',
+                          style: TextStyle(
+                            color: AppColors.textDark,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ],
       ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+          child: SizedBox(
+            height: AppButtonTokens.height(AppButtonSize.regular),
+            child: GradientButton(
+              label: buttonLabel,
+              onPressed: _acceptedPolicy && !_isSubmitting
+                  ? _proceedToPay
+                  : null,
+            ),
+          ),
+        ),
+      ),
     );
+  }
+
+  String _formatCurrency(double amount) {
+    final normalized = amount % 1 == 0
+        ? amount.toInt().toString()
+        : amount.toStringAsFixed(2);
+    return '₹$normalized';
   }
 }
 
-class _ReviewCard extends StatelessWidget {
+class _ReviewContent extends StatelessWidget {
   final BookingCheckoutDraft draft;
+  final double serviceAmount;
+  final double platformFee;
   final ClaimedOffer? selectedOffer;
-  final double subtotal;
   final double discountAmount;
   final double finalAmount;
   final bool isPreviewingOffer;
@@ -268,11 +461,13 @@ class _ReviewCard extends StatelessWidget {
   final VoidCallback onRemoveOffer;
   final bool acceptedPolicy;
   final ValueChanged<bool?> onPolicyChanged;
+  final VoidCallback onOpenCancellationPolicy;
 
-  const _ReviewCard({
+  const _ReviewContent({
     required this.draft,
+    required this.serviceAmount,
+    required this.platformFee,
     required this.selectedOffer,
-    required this.subtotal,
     required this.discountAmount,
     required this.finalAmount,
     required this.isPreviewingOffer,
@@ -280,125 +475,108 @@ class _ReviewCard extends StatelessWidget {
     required this.onRemoveOffer,
     required this.acceptedPolicy,
     required this.onPolicyChanged,
+    required this.onOpenCancellationPolicy,
   });
 
   @override
   Widget build(BuildContext context) {
-    final graceWindowMinutes = _graceWindowMinutesForSlot(draft.selectedSlot);
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Review your booking',
-            style: TextStyle(
-              color: AppColors.textDark,
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-          const SizedBox(height: 18),
-          _PaymentRow(label: 'Service', value: draft.serviceName),
-          _PaymentRow(
-            label: 'Date & time',
-            value:
-                '${_formatDateTime(draft.selectedSlot)} - ${_formatTime(draft.selectedSlotEnd)}',
-          ),
-          const SizedBox(height: 18),
-          _OfferSelectorCard(
-            selectedOffer: selectedOffer,
-            isPreviewingOffer: isPreviewingOffer,
-            onSelectOffer: onSelectOffer,
-            onRemoveOffer: onRemoveOffer,
-          ),
-          const Divider(height: 28),
-          _PaymentRow(label: 'Subtotal', value: _formatCurrency(subtotal)),
-          if (selectedOffer != null)
-            _PaymentRow(
-              label: 'Discount',
-              value: '-${_formatCurrency(discountAmount)}',
-            ),
-          _PaymentRow(
-            label: 'Total amount',
-            value: _formatCurrency(finalAmount),
-            isStrong: true,
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF4EC),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'You can cancel within $graceWindowMinutes minutes for a full refund.',
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    height: 1.45,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'After that, refunds decrease based on timing.',
-                  style: TextStyle(
-                    color: AppColors.textDark,
-                    height: 1.45,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  'More than 24h: 90% refund\n24h to 12h: 50% refund\n12h to 6h: 35% refund\n6h to 2h: 20% refund\nLess than 2h: no refund',
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                    height: 1.5,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  'The provider has up to 24 hours to respond, or until 1 hour before service start, whichever comes first. If they do not respond in time, the request expires automatically.',
-                  style: TextStyle(
-                    color: AppColors.textDark,
-                    height: 1.45,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          CheckboxListTile(
-            value: acceptedPolicy,
-            onChanged: onPolicyChanged,
-            activeColor: AppColors.primary,
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: const Text(
-              'I understand the cancellation policy',
-              style: TextStyle(
-                color: AppColors.textDark,
-                fontWeight: FontWeight.w700,
+    return Column(
+      children: [
+        _CheckoutCard(
+          title: 'Booking Summary',
+          subtitle: 'Review your service and slot before payment.',
+          child: Column(
+            children: [
+              _InfoRow(
+                label: 'Service',
+                value: draft.serviceName,
+                isPrimaryValue: true,
               ),
-            ),
+              _InfoRow(label: 'Date', value: _formatDate(draft.selectedSlot)),
+              _InfoRow(
+                label: 'Time',
+                value:
+                    '${_formatTime(draft.selectedSlot)} - ${_formatTime(draft.selectedSlotEnd)}',
+              ),
+              _InfoRow(
+                label: 'Duration',
+                value: '${draft.durationMinutes} mins',
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 16),
+        _CheckoutCard(
+          title: 'Price Details',
+          child: Column(
+            children: [
+              _OfferSelectorCard(
+                selectedOffer: selectedOffer,
+                isPreviewingOffer: isPreviewingOffer,
+                onSelectOffer: onSelectOffer,
+                onRemoveOffer: onRemoveOffer,
+              ),
+              const SizedBox(height: 18),
+              _PaymentRow(
+                label: 'Service Amount',
+                value: _formatCurrency(serviceAmount),
+              ),
+              _PaymentRow(
+                label: 'Platform & Service Fee (15%)',
+                value: _formatCurrency(platformFee),
+              ),
+              _PaymentRow(
+                label: 'Offer Discount',
+                value: discountAmount > 0
+                    ? '-${_formatCurrency(discountAmount)}'
+                    : _formatCurrency(0),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: 4, bottom: 14),
+                child: Divider(height: 1),
+              ),
+              _PaymentRow(
+                label: 'Total Payable',
+                value: _formatCurrency(finalAmount),
+                isStrong: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _CheckoutCard(
+          title: 'Cancellation Policy Summary',
+          compact: true,
+          child: const Column(
+            children: [
+              _PolicySummaryLine(text: 'Free cancellation within 30 minutes.'),
+              SizedBox(height: 10),
+              _PolicySummaryLine(
+                text: 'Refund amount depends on cancellation timing.',
+              ),
+              SizedBox(height: 10),
+              _PolicySummaryLine(
+                text:
+                    'Provider must respond within 24 hours or before 1 hour of service start, whichever comes first.',
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _CheckoutCard(
+          title: 'Terms Confirmation',
+          compact: true,
+          child: _TermsConfirmationSection(
+            acceptedPolicy: acceptedPolicy,
+            onPolicyChanged: onPolicyChanged,
+            onOpenCancellationPolicy: onOpenCancellationPolicy,
+          ),
+        ),
+      ],
     );
   }
 
-  String _formatDateTime(DateTime date) {
+  String _formatDate(DateTime date) {
     const months = [
       'Jan',
       'Feb',
@@ -413,10 +591,7 @@ class _ReviewCard extends StatelessWidget {
       'Nov',
       'Dec',
     ];
-    final hour = date.hour;
-    final suffix = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '${date.day} ${months[date.month - 1]}, $displayHour:${date.minute.toString().padLeft(2, '0')} $suffix';
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 
   String _formatTime(DateTime date) {
@@ -431,14 +606,6 @@ class _ReviewCard extends StatelessWidget {
         ? amount.toInt().toString()
         : amount.toStringAsFixed(2);
     return '₹$normalized';
-  }
-
-  static int _graceWindowMinutesForSlot(DateTime slotStart) {
-    final now = DateTime.now();
-    final hoursUntilService = slotStart.difference(now).inHours;
-    if (hoursUntilService < 6) return 10;
-    if (hoursUntilService < 12) return 15;
-    return 30;
   }
 }
 
@@ -682,6 +849,200 @@ class _PaymentRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _CheckoutCard extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final Widget child;
+  final bool compact;
+
+  const _CheckoutCard({
+    required this.title,
+    required this.child,
+    this.subtitle,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.all(compact ? 18 : 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.035),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              subtitle!,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                height: 1.45,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool isPrimaryValue;
+
+  const _InfoRow({
+    required this.label,
+    required this.value,
+    this.isPrimaryValue = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                color: AppColors.textDark,
+                fontWeight: isPrimaryValue ? FontWeight.w800 : FontWeight.w700,
+                fontSize: isPrimaryValue ? 16 : 15,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PolicySummaryLine extends StatelessWidget {
+  final String text;
+
+  const _PolicySummaryLine({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          margin: const EdgeInsets.only(top: 6),
+          decoration: const BoxDecoration(
+            color: AppColors.primary,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              height: 1.45,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TermsConfirmationSection extends StatelessWidget {
+  final bool acceptedPolicy;
+  final ValueChanged<bool?> onPolicyChanged;
+  final VoidCallback onOpenCancellationPolicy;
+
+  const _TermsConfirmationSection({
+    required this.acceptedPolicy,
+    required this.onPolicyChanged,
+    required this.onOpenCancellationPolicy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const linkColor = Color(0xFF2563EB);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Checkbox(
+          value: acceptedPolicy,
+          onChanged: onPolicyChanged,
+          activeColor: AppColors.primary,
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: RichText(
+              text: TextSpan(
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 15,
+                  height: 1.45,
+                  fontWeight: FontWeight.w700,
+                ),
+                children: [
+                  const TextSpan(text: 'I understand and agree to the '),
+                  TextSpan(
+                    text: 'Cancellation Policy',
+                    style: const TextStyle(
+                      color: linkColor,
+                      fontWeight: FontWeight.w800,
+                    ),
+                    recognizer: TapGestureRecognizer()
+                      ..onTap = onOpenCancellationPolicy,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

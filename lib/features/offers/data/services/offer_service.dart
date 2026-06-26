@@ -18,7 +18,8 @@ class OfferService {
     FirebaseFunctions? functions,
   }) : _auth = auth ?? FirebaseAuth.instance,
        _firestore = firestore ?? FirebaseFirestore.instance,
-       _functions = functions ?? FirebaseFunctions.instance;
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   Future<EligibleOffersResult> getEligibleOffers({
     String? screen,

@@ -294,6 +294,8 @@ class BookingModel {
 
     return switch (value) {
       'inprogress' => 'in_progress',
+      'paymentpending' => 'payment_pending',
+      'paymentexpired' => 'payment_expired',
       'cancelledbyuser' => 'cancelled_by_user',
       'cancelledbycustomer' => 'cancelled_by_customer',
       'cancelledbyprovider' => 'cancelled_by_provider',
@@ -320,14 +322,13 @@ class BookingModel {
 
   bool get isNoShow => normalizedStatus == 'no_show';
 
-  bool get isCancelled =>
-      const {
-        'cancelled_by_customer',
-        'cancelled_by_provider',
-        'cancelled_by_user',
-        'cancelled_by_system',
-        'cancelled',
-      }.contains(normalizedStatus);
+  bool get isCancelled => const {
+    'cancelled_by_customer',
+    'cancelled_by_provider',
+    'cancelled_by_user',
+    'cancelled_by_system',
+    'cancelled',
+  }.contains(normalizedStatus);
 
   bool get isPostConfirmation => isAccepted || isInProgress || isCompleted;
 
@@ -403,6 +404,7 @@ class BookingModel {
       'cancelled_by_customer',
       'cancelled_by_provider',
       'expired',
+      'payment_expired',
       'refunded',
       'no_show',
       'disputed',
@@ -418,6 +420,12 @@ class BookingModel {
   }
 
   bool get belongsInReceivingUpcoming {
+    if (normalizedStatus == 'payment_pending') {
+      return true;
+    }
+    if (normalizedStatus == 'payment_expired') {
+      return false;
+    }
     if (isRequested || isConfirmedLike) return true;
     final start = scheduledStartAt;
     return start != null && start.isAfter(DateTime.now()) && !isFinished;
@@ -441,14 +449,20 @@ class BookingModel {
     return BookingRecord(
       id: id,
       serviceId: serviceId,
+      slotId: slotId,
       context: contextMode,
       tab: tab,
       title: title,
       subtitle: subtitleParts.join(' · '),
       meta: _scheduleMeta,
-      reviewSummary: normalizedStatus == 'completed' ? providerReviewSummary : '',
+      reviewSummary: normalizedStatus == 'completed'
+          ? providerReviewSummary
+          : '',
       providerUserId: providerId,
       scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
+      pricePaise: grossAmountPaise,
+      durationMinutes: durationMinutes,
       statusLabel: _statusLabel(contextMode),
       statusTone: _statusTone(contextMode),
       countdownSeconds: countdownSeconds,
@@ -483,6 +497,14 @@ class BookingModel {
 
   List<BookingActionData> _actionsFor(BookingContextMode contextMode) {
     if (contextMode == BookingContextMode.receiving) {
+      if (normalizedStatus == 'payment_pending') {
+        return const [
+          BookingActionData(
+            label: 'Resume Payment',
+            style: BookingActionStyle.primary,
+          ),
+        ];
+      }
       if (normalizedStatus == 'completed') {
         return const [
           BookingActionData(
@@ -553,6 +575,10 @@ class BookingModel {
         return 'Rejected';
       case 'expired':
         return 'Expired';
+      case 'payment_pending':
+        return 'Payment pending';
+      case 'payment_expired':
+        return 'Payment expired';
       case 'refunded':
         return 'Refunded';
       case 'no_show':
@@ -583,6 +609,7 @@ class BookingModel {
         return BookingStatusTone.noShow;
       case 'rejected':
       case 'expired':
+      case 'payment_expired':
       case 'refunded':
       case 'cancelled':
       case 'canceled':

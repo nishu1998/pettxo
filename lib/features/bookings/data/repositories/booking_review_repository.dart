@@ -11,7 +11,8 @@ class BookingReviewRepository {
     FirebaseFirestore? firestore,
     FirebaseFunctions? functions,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
-       _functions = functions ?? FirebaseFunctions.instance;
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   Future<String> submitBookingReview({
     required String bookingId,

@@ -12,10 +12,12 @@ import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/presentation/screens/service_detail_screen.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_model.dart';
+import '../../domain/models/booking_checkout_draft.dart';
 import '../../domain/models/booking_flow_models.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../widgets/booking_card.dart';
 import 'booking_detail_screen.dart';
+import 'payment_review_screen.dart';
 
 class BookingsScreen extends StatefulWidget {
   const BookingsScreen({super.key});
@@ -147,6 +149,10 @@ class _BookingsScreenState extends State<BookingsScreen> {
     BookingActionData action,
   ) async {
     final normalizedLabel = action.label.toLowerCase().trim();
+    if (normalizedLabel == 'resume payment') {
+      await _resumePendingPayment(booking);
+      return;
+    }
     if (normalizedLabel == 'book again') {
       await _openRebookService(booking);
       return;
@@ -172,12 +178,48 @@ class _BookingsScreenState extends State<BookingsScreen> {
     }
   }
 
+  Future<void> _resumePendingPayment(BookingRecord booking) async {
+    final slotStart = booking.scheduledStartAt;
+    final slotEnd = booking.scheduledEndAt;
+    if (booking.serviceId.trim().isEmpty ||
+        booking.slotId.trim().isEmpty ||
+        booking.providerUserId.trim().isEmpty ||
+        slotStart == null ||
+        slotEnd == null) {
+      _showToast(
+        'This pending payment is missing booking details.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaymentReviewScreen(
+          pendingBookingId: booking.id,
+          draft: BookingCheckoutDraft(
+            serviceId: booking.serviceId,
+            serviceName: booking.title,
+            price: (booking.pricePaise / 100).round(),
+            durationMinutes: booking.durationMinutes,
+            providerId: booking.providerUserId,
+            slotId: booking.slotId,
+            selectedSlot: slotStart,
+            selectedSlotEnd: slotEnd,
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _openRebookService(BookingRecord booking) async {
     // In Pettxo's booking context naming, "receiving" is the customer-side
     // view (bookings where currentUser == customerId) and "delivering" is the
     // provider-side received-work view (bookings where currentUser ==
     // serviceOwnerId). Rebooking must stay customer-only.
-    final isCustomerSideBooking = booking.context == BookingContextMode.receiving;
+    final isCustomerSideBooking =
+        booking.context == BookingContextMode.receiving;
     if (!isCustomerSideBooking) {
       _showToast(
         'Book Again is only available for your completed bookings.',
@@ -297,30 +339,6 @@ class _BookingsScreenState extends State<BookingsScreen> {
       extendBody: true,
       body: Stack(
         children: [
-          Positioned(
-            top: -70,
-            right: -50,
-            child: Container(
-              width: 220,
-              height: 220,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.primary.withValues(alpha: 0.06),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 140,
-            left: -70,
-            child: Container(
-              width: 180,
-              height: 180,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.secondary.withValues(alpha: 0.06),
-              ),
-            ),
-          ),
           // The list is drawn first so the booking content can travel beneath
           // the floating glass header and shared bottom navigation.
           ListView(
@@ -451,53 +469,63 @@ class _BookingsScreenState extends State<BookingsScreen> {
             ],
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                  blurRadius: 22,
-                  offset: const Offset(0, 10),
-                ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Bookings',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                      blurRadius: 22,
+                      offset: const Offset(0, 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Bookings',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
