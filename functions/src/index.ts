@@ -1,17 +1,33 @@
-import {createHash, randomInt, timingSafeEqual} from "crypto";
+import {createHash, createHmac, randomInt, timingSafeEqual} from "crypto";
 import {initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
 import {FieldValue, getFirestore, Timestamp} from "firebase-admin/firestore";
-import type {DocumentData, Transaction, WriteBatch} from "firebase-admin/firestore";
+import type {
+  DocumentData,
+  DocumentReference,
+  DocumentSnapshot,
+  Transaction,
+  WriteBatch,
+} from "firebase-admin/firestore";
 import {getMessaging} from "firebase-admin/messaging";
-import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {setGlobalOptions} from "firebase-functions/v2";
+import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {onDocumentCreated, onDocumentWritten} from "firebase-functions/v2/firestore";
+import {defineSecret} from "firebase-functions/params";
 import {onSchedule} from "firebase-functions/v2/scheduler";
+
+setGlobalOptions({
+  region: "asia-south1",
+  maxInstances: 20,
+});
 
 initializeApp();
 
 const db = getFirestore();
 const messaging = getMessaging();
+const RAZORPAY_KEY_ID = defineSecret("RAZORPAY_KEY_ID");
+const RAZORPAY_KEY_SECRET = defineSecret("RAZORPAY_KEY_SECRET");
+const RAZORPAY_WEBHOOK_SECRET = defineSecret("RAZORPAY_WEBHOOK_SECRET");
 const istOffsetMinutes = 330;
 const slotGenerationDays = 30;
 const minuteMs = 60 * 1000;
@@ -23,6 +39,8 @@ const otpAvailabilityWindowMs = hourMs;
 const otpValidityMs = hourMs;
 
 type BookingStatus =
+  | "paymentPending"
+  | "paymentExpired"
   | "requested"
   | "accepted"
   | "rejected"
@@ -40,6 +58,7 @@ const offerDisplayTypes = ["offerWall", "popup"] as const;
 const offerCampaignTypes = ["firstBooking", "festival", "general", "rebooking"] as const;
 const offerDiscountTypes = ["flat", "percent"] as const;
 const offerClaimValidityTypes = ["lifelong", "fixedDate", "daysAfterClaim"] as const;
+const socialNotificationTypes = ["socialFollow", "socialLike", "socialComment"] as const;
 const offerCampaignMutableFields = [
   "title",
   "description",
@@ -68,6 +87,7 @@ type OfferDisplayType = typeof offerDisplayTypes[number];
 type OfferCampaignType = typeof offerCampaignTypes[number];
 type OfferDiscountType = typeof offerDiscountTypes[number];
 type OfferClaimValidityType = typeof offerClaimValidityTypes[number];
+type SocialNotificationType = typeof socialNotificationTypes[number];
 type AccountStatus = "active" | "restricted" | "hardBanned";
 type RestrictionState = {
   isBanned: boolean;
@@ -154,6 +174,19 @@ type StandardRevenueBreakdown = {
   providerAmountPaise: number;
   totalAmountPaise: number;
 };
+type CheckoutPricing = {
+  serviceAmount: number;
+  serviceAmountPaise: number;
+  platformFee: number;
+  platformFeePaise: number;
+  discountAmount: number;
+  discountAmountPaise: number;
+  totalPayable: number;
+  totalPayablePaise: number;
+  providerAmount: number;
+  providerAmountPaise: number;
+  currency: string;
+};
 
 const standardCompletedPettxoPercent = 15;
 const standardCompletedProviderPercent = 85;
@@ -176,6 +209,13 @@ function requireAdmin(auth: {token?: {[key: string]: unknown}} | undefined): voi
 
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function maskIdentifier(value: string, visible = 4): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= visible) return trimmed;
+  return `${"*".repeat(Math.max(trimmed.length - visible, 0))}${trimmed.slice(-visible)}`;
 }
 
 function isRestrictionType(value: string): value is RestrictionType {
@@ -599,6 +639,412 @@ function computeStandardRevenueBreakdown(totalAmount: number): StandardRevenueBr
   };
 }
 
+function computeCheckoutPricing(params: {
+  serviceAmount: number;
+  discountAmount: number;
+  currency: string;
+}): CheckoutPricing {
+  const serviceAmountPaise = toPaise(Math.max(params.serviceAmount, 0));
+  const platformFeePaise = Math.round(serviceAmountPaise * 0.15);
+  const discountAmountPaise = toPaise(Math.max(params.discountAmount, 0));
+  const totalPayablePaise = Math.max(
+    serviceAmountPaise + platformFeePaise - discountAmountPaise,
+    0,
+  );
+
+  return {
+    serviceAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+    serviceAmountPaise,
+    platformFee: toMoneyAmount(fromPaise(platformFeePaise)),
+    platformFeePaise,
+    discountAmount: toMoneyAmount(fromPaise(discountAmountPaise)),
+    discountAmountPaise,
+    totalPayable: toMoneyAmount(fromPaise(totalPayablePaise)),
+    totalPayablePaise,
+    providerAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+    providerAmountPaise: serviceAmountPaise,
+    currency: params.currency || "INR",
+  };
+}
+
+function readStoredRevenueBreakdown(
+  pricingLike: Record<string, unknown>,
+  fallbackTotalAmount?: number,
+): StandardRevenueBreakdown {
+  const providerAmountPaise = asOptionalPositiveInt(
+    pricingLike.providerEarningsPaise ?? pricingLike.providerAmountPaise,
+  );
+  const pettxoAmountPaise = asOptionalPositiveInt(
+    pricingLike.platformFeePaise ?? pricingLike.pettxoAmountPaise,
+  );
+  const totalAmountPaise = asOptionalPositiveInt(
+    pricingLike.finalAmountPaise ?? pricingLike.totalAmountPaise,
+  );
+
+  if (
+    providerAmountPaise != null &&
+    pettxoAmountPaise != null &&
+    totalAmountPaise != null
+  ) {
+    const safeTotalPaise = Math.max(totalAmountPaise, 0);
+    const safeProviderPaise = Math.max(providerAmountPaise, 0);
+    const safePettxoPaise = Math.max(pettxoAmountPaise, 0);
+    return {
+      pettxoPercent: safeTotalPaise > 0 ?
+        Math.round((safePettxoPaise / safeTotalPaise) * 100) :
+        0,
+      pettxoAmount: toMoneyAmount(fromPaise(safePettxoPaise)),
+      pettxoAmountPaise: safePettxoPaise,
+      providerPercent: safeTotalPaise > 0 ?
+        Math.round((safeProviderPaise / safeTotalPaise) * 100) :
+        0,
+      providerAmount: toMoneyAmount(fromPaise(safeProviderPaise)),
+      providerAmountPaise: safeProviderPaise,
+      totalAmountPaise: safeTotalPaise,
+    };
+  }
+
+  return computeStandardRevenueBreakdown(fallbackTotalAmount ?? 0);
+}
+
+function paymentExpiryTimestamp(nowMs = Date.now()): Timestamp {
+  return Timestamp.fromMillis(nowMs + (15 * minuteMs));
+}
+
+function isRetryablePaymentState(params: {
+  booking: DocumentData;
+  payment: DocumentData | undefined;
+  nowMs: number;
+}): boolean {
+  const bookingStatus = asTrimmedString(params.booking.status);
+  const pricing = asRecord(params.booking.pricing);
+  const paymentStatus = asTrimmedString(
+    pricing.paymentStatus || params.payment?.paymentStatus,
+  );
+  const paymentExpiresAt = (params.booking.paymentExpiresAt as Timestamp | undefined) ??
+    (params.payment?.paymentExpiresAt as Timestamp | undefined);
+
+  if (bookingStatus !== "paymentPending") return false;
+  if (paymentExpiresAt && paymentExpiresAt.toMillis() <= params.nowMs) return false;
+  return paymentStatus === "pending" || paymentStatus === "failed";
+}
+
+function pendingPaymentSnapshotFromDocs(params: {
+  bookingId: string;
+  booking: DocumentData;
+  payment: DocumentData | undefined;
+  bookingFinancial: DocumentData | undefined;
+}): {
+  bookingId: string;
+  orderId: string;
+  amount: number;
+  currency: string;
+  serviceAmountPaise: number;
+  platformFeePaise: number;
+  discountPaise: number;
+  totalPayablePaise: number;
+  paymentExpiresAt: Timestamp | null;
+  paymentStatus: string;
+  providerId: string;
+  serviceId: string;
+  slotId: string;
+  scheduledStartAt: Timestamp | null;
+  scheduledEndAt: Timestamp | null;
+} {
+  const pricing = asRecord(params.booking.pricing);
+  const paymentStatus = asTrimmedString(
+    pricing.paymentStatus || params.payment?.paymentStatus,
+  ) || "pending";
+  const totalPayablePaise = toInt(
+    pricing.finalAmountPaise,
+    toInt(params.payment?.amountPaise, 0),
+  );
+  const serviceAmountPaise = toInt(
+    pricing.serviceAmountPaise,
+    toInt(pricing.grossAmountPaise, 0),
+  );
+  const platformFeePaise = toInt(
+    pricing.platformFeePaise,
+    toInt(params.bookingFinancial?.pettxoAmountPaise, 0),
+  );
+  const discountPaise = toInt(
+    pricing.discountAmountPaise,
+    toInt(params.bookingFinancial?.discountAmountPaise, 0),
+  );
+  return {
+    bookingId: params.bookingId,
+    orderId: asTrimmedString(
+      pricing.razorpayOrderId ??
+      params.payment?.razorpayOrderId ??
+      params.bookingFinancial?.razorpayOrderId,
+    ),
+    amount: totalPayablePaise,
+    currency: asTrimmedString(pricing.currency) || "INR",
+    serviceAmountPaise,
+    platformFeePaise,
+    discountPaise,
+    totalPayablePaise,
+    paymentExpiresAt: (params.booking.paymentExpiresAt as Timestamp | undefined) ??
+      (params.payment?.paymentExpiresAt as Timestamp | undefined) ??
+      null,
+    paymentStatus,
+    providerId: asTrimmedString(params.booking.serviceOwnerId ?? params.booking.providerId),
+    serviceId: asTrimmedString(params.booking.serviceId),
+    slotId: asTrimmedString(params.booking.slotId),
+    scheduledStartAt: (params.booking.scheduledStartAt as Timestamp | undefined) ?? null,
+    scheduledEndAt: (params.booking.scheduledEndAt as Timestamp | undefined) ?? null,
+  };
+}
+
+async function createRazorpayOrder(params: {
+  bookingId: string;
+  amountPaise: number;
+  currency: string;
+  customerId: string;
+  serviceId: string;
+  slotId: string;
+}): Promise<{orderId: string; amount: number; currency: string; keyId: string}> {
+  const keyId = asTrimmedString(RAZORPAY_KEY_ID.value());
+  const keySecret = asTrimmedString(RAZORPAY_KEY_SECRET.value());
+  if (!keyId || !keySecret) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Razorpay credentials are not configured in Functions.",
+    );
+  }
+
+  const response = await fetch("https://api.razorpay.com/v1/orders", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      amount: Math.max(params.amountPaise, 0),
+      currency: params.currency || "INR",
+      receipt: params.bookingId,
+      notes: {
+        bookingId: params.bookingId,
+        customerId: params.customerId,
+        serviceId: params.serviceId,
+        slotId: params.slotId,
+      },
+    }),
+  });
+
+  const raw = await response.text();
+  let data: Record<string, unknown> = {};
+  try {
+    data = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+  } catch (_) {
+    data = {};
+  }
+
+  if (!response.ok) {
+    throw new HttpsError(
+      "internal",
+      asTrimmedString(data.error) || "Unable to create Razorpay order right now.",
+    );
+  }
+
+  const orderId = asTrimmedString(data.id);
+  if (!orderId) {
+    throw new HttpsError("internal", "Razorpay order ID was missing.");
+  }
+
+  return {
+    orderId,
+    amount: toInt(data.amount, params.amountPaise),
+    currency: asTrimmedString(data.currency) || params.currency || "INR",
+    keyId,
+  };
+}
+
+function verifyRazorpaySignature(params: {
+  orderId: string;
+  paymentId: string;
+  signature: string;
+}): boolean {
+  const keySecret = asTrimmedString(RAZORPAY_KEY_SECRET.value());
+  if (!keySecret) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Razorpay credentials are not configured in Functions.",
+    );
+  }
+
+  const expected = createHmac("sha256", keySecret)
+    .update(`${params.orderId}|${params.paymentId}`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const signatureBuffer = Buffer.from(params.signature, "utf8");
+  return expectedBuffer.length === signatureBuffer.length &&
+    timingSafeEqual(expectedBuffer, signatureBuffer);
+}
+
+function verifyRazorpayWebhookSignature(params: {
+  rawBody: Buffer;
+  signature: string;
+}): boolean {
+  const secret = asTrimmedString(RAZORPAY_WEBHOOK_SECRET.value());
+  if (!secret) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Razorpay webhook secret is not configured in Functions.",
+    );
+  }
+
+  const expected = createHmac("sha256", secret)
+    .update(params.rawBody)
+    .digest("hex");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const signatureBuffer = Buffer.from(params.signature, "utf8");
+  return expectedBuffer.length === signatureBuffer.length &&
+    timingSafeEqual(expectedBuffer, signatureBuffer);
+}
+
+async function fetchRazorpayPayment(params: {
+  paymentId: string;
+}): Promise<{id: string; orderId: string; status: string; amountPaise: number; currency: string}> {
+  const keyId = asTrimmedString(RAZORPAY_KEY_ID.value());
+  const keySecret = asTrimmedString(RAZORPAY_KEY_SECRET.value());
+  if (!keyId || !keySecret) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Razorpay credentials are not configured in Functions.",
+    );
+  }
+
+  const response = await fetch(
+    `https://api.razorpay.com/v1/payments/${encodeURIComponent(params.paymentId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
+        "Content-Type": "application/json",
+      },
+    },
+  );
+
+  const raw = await response.text();
+  let data: Record<string, unknown> = {};
+  try {
+    data = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+  } catch (_) {
+    data = {};
+  }
+
+  if (!response.ok) {
+    throw new HttpsError(
+      "internal",
+      safeText(data.error ?? data.description, "Unable to verify Razorpay payment."),
+    );
+  }
+
+  return {
+    id: asTrimmedString(data.id),
+    orderId: asTrimmedString(data.order_id),
+    status: asTrimmedString(data.status),
+    amountPaise: toInt(data.amount, 0),
+    currency: asTrimmedString(data.currency) || "INR",
+  };
+}
+
+async function fetchRazorpayOrderPayments(params: {
+  orderId: string;
+}): Promise<Array<{id: string; orderId: string; status: string; amountPaise: number; currency: string}>> {
+  const keyId = asTrimmedString(RAZORPAY_KEY_ID.value());
+  const keySecret = asTrimmedString(RAZORPAY_KEY_SECRET.value());
+  if (!keyId || !keySecret) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Razorpay credentials are not configured in Functions.",
+    );
+  }
+
+  const response = await fetch(
+    `https://api.razorpay.com/v1/orders/${encodeURIComponent(params.orderId)}/payments`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
+        "Content-Type": "application/json",
+      },
+    },
+  );
+
+  const raw = await response.text();
+  let data: Record<string, unknown> = {};
+  try {
+    data = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+  } catch (_) {
+    data = {};
+  }
+
+  if (!response.ok) {
+    throw new HttpsError(
+      "internal",
+      safeText(data.error ?? data.description, "Unable to verify Razorpay order payment."),
+    );
+  }
+
+  const payments = Array.isArray(data.items) ? data.items : [];
+  return payments.map((item) => {
+    const payment = asRecord(item);
+    return {
+      id: asTrimmedString(payment.id),
+      orderId: asTrimmedString(payment.order_id) || params.orderId,
+      status: asTrimmedString(payment.status),
+      amountPaise: toInt(payment.amount, 0),
+      currency: asTrimmedString(payment.currency) || "INR",
+    };
+  });
+}
+
+function sleepMs(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
+async function resolveCapturedRazorpayPayment(params: {
+  paymentId: string;
+  orderId: string;
+  attempts?: number;
+  delayMs?: number;
+}): Promise<{id: string; orderId: string; status: string; amountPaise: number; currency: string}> {
+  const maxAttempts = Math.max(params.attempts ?? 5, 1);
+  const delayMs = Math.max(params.delayMs ?? 1500, 250);
+  let lastPayment = await fetchRazorpayPayment({paymentId: params.paymentId});
+
+  if (lastPayment.orderId !== params.orderId) {
+    throw new HttpsError("failed-precondition", "Razorpay payment order mismatch.");
+  }
+  if (lastPayment.status === "captured") {
+    return lastPayment;
+  }
+
+  for (let attempt = 1; attempt < maxAttempts; attempt += 1) {
+    const orderPayments = await fetchRazorpayOrderPayments({orderId: params.orderId});
+    const capturedMatch = orderPayments.find((payment) =>
+      payment.id === params.paymentId && payment.status === "captured",
+    );
+    if (capturedMatch) {
+      return capturedMatch;
+    }
+
+    await sleepMs(delayMs);
+    lastPayment = await fetchRazorpayPayment({paymentId: params.paymentId});
+    if (lastPayment.orderId !== params.orderId) {
+      throw new HttpsError("failed-precondition", "Razorpay payment order mismatch.");
+    }
+    if (lastPayment.status === "captured") {
+      return lastPayment;
+    }
+  }
+
+  throw new HttpsError("failed-precondition", "Razorpay payment is not captured yet.");
+}
+
 function getBookingPaidAmountPaise(booking: DocumentData): number {
   const pricing = asRecord(booking.pricing);
   const finalAmountPaise = asOptionalPositiveInt(pricing.finalAmountPaise);
@@ -619,6 +1065,289 @@ function getBookingCurrency(booking: DocumentData): string {
   const pricing = asRecord(booking.pricing);
   const serviceSnapshot = asRecord(booking.serviceSnapshot);
   return asTrimmedString(pricing.currency) || asTrimmedString(serviceSnapshot.currency) || "INR";
+}
+
+async function finalizeCapturedBookingPayment(params: {
+  bookingId: string;
+  uid: string;
+  razorpayOrderId: string;
+  razorpayPayment: {id: string; orderId: string; status: string; amountPaise: number; currency: string};
+}): Promise<{bookingId: string; providerId: string}> {
+  const bookingId = params.bookingId;
+  const uid = params.uid;
+  const razorpayOrderId = params.razorpayOrderId;
+  const razorpayPaymentId = params.razorpayPayment.id;
+  const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
+  const paymentRef = db.collection("payments").doc(bookingId);
+  const invoiceRef = db.collection("invoices").doc(bookingId);
+  const providerEarningRef = db.collection("providerEarnings").doc(bookingId);
+  let providerId = "";
+
+  await db.runTransaction(async (transaction) => {
+    const bookingSnapshot = await transaction.get(bookingRef);
+    const bookingFinancialSnapshot = await transaction.get(bookingFinancialRef);
+    const paymentSnapshot = await transaction.get(paymentRef);
+
+    if (!bookingSnapshot.exists) {
+      throw new HttpsError("not-found", "Booking not found.");
+    }
+
+    const booking = bookingSnapshot.data()!;
+    if (asTrimmedString(booking.customerId) !== uid) {
+      throw new HttpsError("permission-denied", "Only the booking owner can verify payment.");
+    }
+
+    const status = asTrimmedString(booking.status);
+    const paymentStatus = asTrimmedString(asRecord(booking.pricing).paymentStatus);
+    if (status === "requested" && paymentStatus === "paid") {
+      providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+      return;
+    }
+    if (status !== "paymentPending") {
+      throw new HttpsError("failed-precondition", "This booking is not awaiting payment.");
+    }
+
+    const paymentExpiresAt = booking.paymentExpiresAt as Timestamp | undefined;
+    if (paymentExpiresAt && paymentExpiresAt.toMillis() <= Date.now()) {
+      throw new HttpsError("deadline-exceeded", "This payment window has expired.");
+    }
+
+    const storedOrderId = asTrimmedString(
+      asRecord(booking.pricing).razorpayOrderId ??
+      bookingFinancialSnapshot.data()?.razorpayOrderId ??
+      paymentSnapshot.data()?.razorpayOrderId,
+    );
+    if (!storedOrderId || storedOrderId !== razorpayOrderId) {
+      throw new HttpsError("failed-precondition", "Razorpay order does not match this booking.");
+    }
+    const scheduledStartAt = booking.scheduledStartAt as Timestamp | undefined;
+    if (!scheduledStartAt) {
+      throw new HttpsError("failed-precondition", "Booking service time is missing.");
+    }
+    const requestExpiresAt = computeBookingRequestExpiresAt(
+      Date.now(),
+      scheduledStartAt.toMillis(),
+    );
+    if (requestExpiresAt.toMillis() <= Date.now()) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This slot is too soon for the provider response window.",
+      );
+    }
+
+    providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+    const pricing = asRecord(booking.pricing);
+    const serviceAmountPaise = toInt(
+      pricing.serviceAmountPaise,
+      toInt(pricing.grossAmountPaise, 0),
+    );
+    const platformFeePaise = toInt(pricing.platformFeePaise, 0);
+    const discountAmountPaise = toInt(pricing.discountAmountPaise, 0);
+    const finalAmountPaise = toInt(
+      pricing.finalAmountPaise,
+      serviceAmountPaise + platformFeePaise - discountAmountPaise,
+    );
+    const currency = asTrimmedString(pricing.currency) || "INR";
+    const paymentConfirmedAt = Timestamp.now();
+    const graceWindow = buildGraceWindow(
+      paymentConfirmedAt.toDate(),
+      scheduledStartAt.toDate(),
+    );
+    const offer = asRecord(booking.offer);
+    const claimedOfferId = asTrimmedString(offer.claimedOfferId);
+    const claimedOfferRef = claimedOfferId ?
+      db.collection("users").doc(uid).collection("claimedOffers").doc(claimedOfferId) :
+      null;
+    const claimedOfferSnapshot = claimedOfferRef ? await transaction.get(claimedOfferRef) : null;
+    if (claimedOfferRef) {
+      if (!claimedOfferSnapshot?.exists) {
+        throw new HttpsError("failed-precondition", "Offer is no longer valid.");
+      }
+      const claimedOffer = claimedOfferSnapshot.data() ?? {};
+      const claimedStatus = asTrimmedString(claimedOffer.status);
+      const usageLimit = toInt(claimedOffer.usageLimit, 0);
+      const usedCount = Math.max(toInt(claimedOffer.usedCount, 0), 0);
+      const claimedValidUntil = asDate(claimedOffer.validUntil);
+      if (claimedStatus !== "claimed" || usedCount >= usageLimit) {
+        throw new HttpsError("failed-precondition", "Offer is no longer valid.");
+      }
+      if (claimedValidUntil && claimedValidUntil.getTime() < Date.now()) {
+        throw new HttpsError("failed-precondition", "Offer is no longer valid.");
+      }
+    }
+    if (params.razorpayPayment.amountPaise !== finalAmountPaise) {
+      throw new HttpsError("failed-precondition", "Razorpay amount does not match this booking.");
+    }
+    if (params.razorpayPayment.currency !== currency) {
+      throw new HttpsError("failed-precondition", "Razorpay currency does not match this booking.");
+    }
+
+    transaction.update(bookingRef, {
+      status: "requested",
+      paymentConfirmedAt,
+      paymentExpiresAt: null,
+      graceWindowMinutes: graceWindow.graceWindowMinutes,
+      graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+      updatedAt: FieldValue.serverTimestamp(),
+      "request.expiresAt": requestExpiresAt,
+      "pricing.paymentStatus": "paid",
+      "pricing.razorpayOrderId": razorpayOrderId,
+      "pricing.razorpayPaymentId": razorpayPaymentId,
+      "notificationState.requestNotificationSent": true,
+      ...(claimedOfferId ? {"offer.status": "applied"} : {}),
+    });
+    transaction.set(bookingFinancialRef, {
+      bookingId,
+      userId: uid,
+      providerId,
+      serviceId: asTrimmedString(booking.serviceId),
+      totalAmount: toMoneyAmount(fromPaise(finalAmountPaise)),
+      totalAmountPaise: finalAmountPaise,
+      serviceAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+      serviceAmountPaise,
+      currency,
+      razorpayPaymentId,
+      razorpayOrderId,
+      status: "paid",
+      paymentStatus: "paid",
+      graceWindowMinutes: graceWindow.graceWindowMinutes,
+      graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+      paymentConfirmedAt,
+      refundAmount: 0,
+      refundAmountPaise: 0,
+      pettxoCommissionAmount: toMoneyAmount(fromPaise(platformFeePaise)),
+      pettxoAmountPaise: platformFeePaise,
+      providerEarningAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+      providerAmountPaise: serviceAmountPaise,
+      discountAmount: toMoneyAmount(fromPaise(discountAmountPaise)),
+      discountAmountPaise,
+      refundPercent: 0,
+      pettxoPercent: 15,
+      providerPercent: finalAmountPaise > 0 ?
+        Math.round((serviceAmountPaise / finalAmountPaise) * 100) :
+        0,
+      cancellationCase: "",
+      cancelledBy: null,
+      cancelledAt: null,
+      disputeStatus: "none",
+      otpUsed: false,
+      serviceTime: scheduledStartAt,
+      completedAt: null,
+      payoutEligibleAt: null,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(paymentRef, {
+      bookingId,
+      userId: uid,
+      providerId,
+      serviceId: asTrimmedString(booking.serviceId),
+      status: "paid",
+      paymentStatus: "paid",
+      currency,
+      amount: toMoneyAmount(fromPaise(finalAmountPaise)),
+      amountPaise: finalAmountPaise,
+      serviceAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+      serviceAmountPaise,
+      platformFee: toMoneyAmount(fromPaise(platformFeePaise)),
+      platformFeePaise,
+      discountAmount: toMoneyAmount(fromPaise(discountAmountPaise)),
+      discountAmountPaise,
+      razorpayOrderId,
+      razorpayPaymentId,
+      paymentConfirmedAt,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(invoiceRef, {
+      invoiceId: bookingId,
+      bookingId,
+      userId: uid,
+      providerId,
+      serviceId: asTrimmedString(booking.serviceId),
+      status: "issued",
+      currency,
+      serviceAmountPaise,
+      platformFeePaise,
+      discountAmountPaise,
+      totalPayablePaise: finalAmountPaise,
+      taxLabel: "GST",
+      taxAmountPaise: 0,
+      taxStatus: "Not applicable",
+      issuedAt: paymentConfirmedAt,
+      createdAt: paymentConfirmedAt,
+      updatedAt: paymentConfirmedAt,
+    }, {merge: true});
+    transaction.set(providerEarningRef, {
+      bookingId,
+      providerId,
+      userId: uid,
+      serviceId: asTrimmedString(booking.serviceId),
+      amount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+      amountPaise: serviceAmountPaise,
+      pettxoCommissionAmount: toMoneyAmount(fromPaise(platformFeePaise)),
+      pettxoCommissionAmountPaise: platformFeePaise,
+      totalAmount: toMoneyAmount(fromPaise(finalAmountPaise)),
+      totalAmountPaise: finalAmountPaise,
+      source: "paidBooking",
+      status: "notEligible",
+      eligibleAt: null,
+      paidAt: null,
+      createdAt: paymentConfirmedAt,
+      updatedAt: paymentConfirmedAt,
+    }, {merge: true});
+
+    if (claimedOfferRef) {
+      transaction.set(claimedOfferRef, {
+        usedCount: FieldValue.increment(1),
+        status: "used",
+      }, {merge: true});
+      transaction.set(db.collection("adminAuditLogs").doc(), {
+        action: "offer.redeemed",
+        userId: uid,
+        claimedOfferId,
+        bookingId,
+        discountAmount: toMoneyAmount(fromPaise(discountAmountPaise)),
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    queueBookingNotification({
+      transaction,
+      userId: providerId,
+      bookingId,
+      type: "bookingRequested",
+      title: "New booking request",
+      body: `${snapshotName(
+        booking.customerSnapshot,
+        "A pet parent",
+      )} requested ${serviceTitleFromBooking(booking)}.`,
+      recipientRole: "provider",
+      actorId: uid,
+      status: "requested",
+      booking: {
+        ...booking,
+        status: "requested",
+      },
+      extraData: {event: "booking_requested"},
+    });
+  });
+
+  await writeBookingEvent({
+    bookingId,
+    actorId: uid,
+    actorType: "customer",
+    type: "paymentVerified",
+    fromStatus: "paymentPending",
+    toStatus: "requested",
+    message: "Razorpay payment verified and booking request created.",
+    metadata: {
+      razorpayOrderId,
+      razorpayPaymentId,
+      providerId,
+    },
+  });
+
+  return {bookingId, providerId};
 }
 
 function bookingCreatedAtDate(booking: DocumentData): Date {
@@ -980,7 +1709,7 @@ function buildFinancialSnapshotForDispute(
   }
 
   const totalAmount = getBookingPaidAmount(booking);
-  const standard = computeStandardRevenueBreakdown(totalAmount);
+  const standard = readStoredRevenueBreakdown(asRecord(booking.pricing), totalAmount);
   return {
     status: asTrimmedString(asRecord(booking.pricing).paymentStatus) || "paid",
     totalAmount,
@@ -1005,6 +1734,16 @@ async function processRazorpayRefund(params: {
   razorpayPaymentId: string;
   reason: string;
 }): Promise<{status: "pending" | "processed" | "failed"; razorpayRefundId: string; error: string; processedAt: Timestamp | null}> {
+  console.log(JSON.stringify({
+    event: "createBookingRefund.start",
+    bookingId: params.bookingId,
+    userId: "",
+    providerId: "",
+    razorpayOrderId: "",
+    razorpayPaymentId: params.razorpayPaymentId,
+    refundId: params.bookingId,
+    amountPaise: Math.max(Math.round(params.refundAmount * 100), 0),
+  }));
   if (params.refundAmount <= 0) {
     return {
       status: "processed",
@@ -1015,8 +1754,8 @@ async function processRazorpayRefund(params: {
   }
 
   const paymentId = asTrimmedString(params.razorpayPaymentId);
-  const keyId = asTrimmedString(process.env.RAZORPAY_KEY_ID);
-  const keySecret = asTrimmedString(process.env.RAZORPAY_KEY_SECRET);
+  const keyId = asTrimmedString(RAZORPAY_KEY_ID.value());
+  const keySecret = asTrimmedString(RAZORPAY_KEY_SECRET.value());
 
   if (!paymentId || !keyId || !keySecret) {
     return {
@@ -1039,7 +1778,7 @@ async function processRazorpayRefund(params: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-          amount: String(Math.max(params.refundAmount, 0) * 100),
+          amount: String(Math.max(Math.round(params.refundAmount * 100), 0)),
           speed: "optimum",
           notes: JSON.stringify({
             bookingId: params.bookingId,
@@ -1072,6 +1811,17 @@ async function processRazorpayRefund(params: {
       error: error instanceof Error ? error.message : "Refund request failed.",
       processedAt: null,
     };
+  } finally {
+    console.log(JSON.stringify({
+      event: "createBookingRefund.finish",
+      bookingId: params.bookingId,
+      userId: "",
+      providerId: "",
+      razorpayOrderId: "",
+      razorpayPaymentId: params.razorpayPaymentId,
+      refundId: params.bookingId,
+      amountPaise: Math.max(Math.round(params.refundAmount * 100), 0),
+    }));
   }
 }
 
@@ -1315,6 +2065,212 @@ function safeText(value: unknown, fallback: string): string {
   return text || fallback;
 }
 
+function chatIdForPair(leftUid: string, rightUid: string): string {
+  return [leftUid.trim(), rightUid.trim()].sort().join("_");
+}
+
+function canonicalChatIdForPair(leftUid: string, rightUid: string): string {
+  return `chat_${chatIdForPair(leftUid, rightUid)}`;
+}
+
+function legacyChatIdsForPair(leftUid: string, rightUid: string): string[] {
+  const pairId = chatIdForPair(leftUid, rightUid);
+  return [pairId, `direct_${pairId}`];
+}
+
+function timestampMillis(value: unknown): number {
+  if (value instanceof Timestamp) {
+    return value.toMillis();
+  }
+  return 0;
+}
+
+function choosePreferredLegacyChat(
+  snapshots: Array<DocumentSnapshot<DocumentData>>,
+): DocumentSnapshot<DocumentData> | null {
+  let preferred: DocumentSnapshot<DocumentData> | null = null;
+  let preferredMillis = -1;
+
+  for (const snapshot of snapshots) {
+    if (!snapshot.exists) continue;
+    const data = snapshot.data() ?? {};
+    const millis = Math.max(
+      timestampMillis(data.lastMessageAt),
+      timestampMillis(data.updatedAt),
+      timestampMillis(data.createdAt),
+    );
+    if (preferred == null || millis > preferredMillis) {
+      preferred = snapshot;
+      preferredMillis = millis;
+    }
+  }
+
+  return preferred;
+}
+
+async function migrateLegacyChatsToCanonical(params: {
+  canonicalChatRef: DocumentReference<DocumentData>;
+  legacySnapshots: Array<DocumentSnapshot<DocumentData>>;
+  extraServiceId?: string;
+  extraServiceTitle?: string;
+  extraServiceImageUrl?: string;
+}): Promise<void> {
+  const existingLegacySnapshots = params.legacySnapshots.filter((snapshot) => snapshot.exists);
+  if (existingLegacySnapshots.length === 0) return;
+
+  const preferredLegacySnapshot = choosePreferredLegacyChat(existingLegacySnapshots);
+  let batch = db.batch();
+  let writes = 0;
+  const commitBatchIfNeeded = async () => {
+    if (writes < 400) return;
+    await batch.commit();
+    batch = db.batch();
+    writes = 0;
+  };
+
+  const preferredLegacy = preferredLegacySnapshot?.data() ?? {};
+  const mergedServiceIds = new Set<string>();
+  for (const snapshot of existingLegacySnapshots) {
+    const data = snapshot.data() ?? {};
+    const serviceIds = Array.isArray(data.sourceServiceIds) ? data.sourceServiceIds : [];
+    for (const value of serviceIds) {
+      const serviceId = asTrimmedString(value);
+      if (serviceId) mergedServiceIds.add(serviceId);
+    }
+    const lastServiceId = asTrimmedString(data.lastServiceId);
+    if (lastServiceId) mergedServiceIds.add(lastServiceId);
+  }
+  if (params.extraServiceId) {
+    mergedServiceIds.add(params.extraServiceId);
+  }
+
+  batch.set(params.canonicalChatRef, {
+    lastMessage: safeText(preferredLegacy.lastMessage, ""),
+    lastMessageAt: preferredLegacy.lastMessageAt ?? FieldValue.serverTimestamp(),
+    lastSenderId: asTrimmedString(preferredLegacy.lastSenderId),
+    unreadCountCustomer: toInt(preferredLegacy.unreadCountCustomer, 0),
+    unreadCountProvider: toInt(preferredLegacy.unreadCountProvider, 0),
+    customerLastReadAt: preferredLegacy.customerLastReadAt ?? null,
+    providerLastReadAt: preferredLegacy.providerLastReadAt ?? null,
+    status: asTrimmedString(preferredLegacy.status) || "active",
+    createdAt: preferredLegacy.createdAt ?? FieldValue.serverTimestamp(),
+    updatedAt: preferredLegacy.updatedAt ?? preferredLegacy.lastMessageAt ?? FieldValue.serverTimestamp(),
+    sourceServiceIds: Array.from(mergedServiceIds),
+    lastServiceId: params.extraServiceId || asTrimmedString(preferredLegacy.lastServiceId),
+    lastServiceTitle: params.extraServiceTitle || safeText(preferredLegacy.lastServiceTitle, ""),
+    lastServiceImageUrl: params.extraServiceImageUrl || safeText(preferredLegacy.lastServiceImageUrl, ""),
+  }, {merge: true});
+  writes += 1;
+
+  for (const legacySnapshot of existingLegacySnapshots) {
+    const messagesSnapshot = await legacySnapshot.ref.collection("messages").get();
+    for (const messageDoc of messagesSnapshot.docs) {
+      batch.set(
+        params.canonicalChatRef.collection("messages").doc(messageDoc.id),
+        messageDoc.data(),
+        {merge: true},
+      );
+      writes += 1;
+      await commitBatchIfNeeded();
+    }
+  }
+
+  if (writes > 0) {
+    await batch.commit();
+  }
+}
+
+function displayNameFromUser(user: Record<string, unknown>, fallback: string): string {
+  return safeText(user.name ?? user.username, fallback);
+}
+
+function photoUrlFromUser(user: Record<string, unknown>): string {
+  return safeText(user.profileImage, "");
+}
+
+function usernameFromUser(user: Record<string, unknown>): string {
+  const username = safeText(user.username, "");
+  if (!username) return "";
+  return username.startsWith("@") ? username : `@${username}`;
+}
+
+function participantSnapshotForChat(userId: string, user: Record<string, unknown>) {
+  return {
+    userId,
+    name: displayNameFromUser(user, "User"),
+    username: usernameFromUser(user),
+    photoUrl: photoUrlFromUser(user),
+  };
+}
+
+function assertChatRestrictions(
+  restrictions: RestrictionMap,
+  message = "Chat is unavailable for this account.",
+): void {
+  if (restrictions.hard.isBanned || restrictions.social.isBanned) {
+    throw new HttpsError("failed-precondition", message);
+  }
+}
+
+function assertBookingRestrictions(
+  restrictions: RestrictionMap,
+  message = "Bookings are unavailable for this account.",
+): void {
+  if (restrictions.hard.isBanned || restrictions.booking.isBanned) {
+    throw new HttpsError("failed-precondition", message);
+  }
+}
+
+async function deleteNotificationTokensForUser(userId: string): Promise<number> {
+  const snapshot = await db
+    .collection("users")
+    .doc(userId)
+    .collection("notificationTokens")
+    .get();
+  if (snapshot.empty) return 0;
+
+  let deletedCount = 0;
+  let batch = db.batch();
+  let ops = 0;
+  for (const doc of snapshot.docs) {
+    batch.delete(doc.ref);
+    deletedCount += 1;
+    ops += 1;
+    if (ops === 450) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  }
+  if (ops > 0) {
+    await batch.commit();
+  }
+  return deletedCount;
+}
+
+function assertChatMonitorPermission(role: AdminRole): void {
+  if (role === "superAdmin" || role === "customerSupportAdmin") return;
+  throw new HttpsError("permission-denied", "You do not have access to monitor chats.");
+}
+
+function chatServiceImage(service: Record<string, unknown>): string {
+  const primary = asTrimmedString(service.primaryPhotoUrl);
+  if (primary) return primary;
+  const urls = Array.isArray(service.photoUrls) ? service.photoUrls : [];
+  const first = urls.find((value) => typeof value === "string" && value.trim());
+  return typeof first === "string" ? first.trim() : "";
+}
+
+function isChatEligibleService(service: Record<string, unknown>, nowMs = Date.now()): boolean {
+  return asTrimmedString(service.ownerUserId) !== "" &&
+    asTrimmedString(service.status) === "active" &&
+    service.isActive === true &&
+    service.isDeleted === false &&
+    service.isVisibleToMarketplace === true &&
+    service.isPaused !== true &&
+    service.isPausedByVerification !== true;
+}
+
 function snapshotName(snapshot: unknown, fallback: string): string {
   if (!snapshot || typeof snapshot !== "object") return fallback;
   const data = snapshot as Record<string, unknown>;
@@ -1367,6 +2323,46 @@ function queueBookingNotification(params: {
   });
 }
 
+async function createSocialNotificationDoc(params: {
+  recipientId: string;
+  senderId: string;
+  senderDisplayName: string;
+  senderPhotoUrl: string;
+  type: SocialNotificationType;
+  title: string;
+  body: string;
+  postId?: string;
+  commentId?: string;
+}): Promise<void> {
+  if (!params.recipientId || params.recipientId === params.senderId) return;
+
+  await db.collection("notifications").add({
+    userId: params.recipientId,
+    category: "social",
+    type: params.type,
+    title: params.title,
+    body: params.body,
+    read: false,
+    isRead: false,
+    senderId: params.senderId,
+    senderDisplayName: params.senderDisplayName,
+    senderPhotoUrl: params.senderPhotoUrl,
+    postId: params.postId ?? "",
+    commentId: params.commentId ?? "",
+    data: {
+      senderId: params.senderId,
+      senderDisplayName: params.senderDisplayName,
+      senderPhotoUrl: params.senderPhotoUrl,
+      postId: params.postId ?? "",
+      commentId: params.commentId ?? "",
+      type: params.type,
+      category: "social",
+    },
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+}
+
 function notificationData(data: Record<string, unknown>): Record<string, string> {
   const payload: Record<string, string> = {};
   for (const [key, value] of Object.entries(data)) {
@@ -1382,15 +2378,425 @@ function isInvalidMessagingToken(code: string | undefined): boolean {
     code === "messaging/invalid-argument";
 }
 
-export const sendPushForNotification = onDocumentCreated(
-  "notifications/{notificationId}",
+function notificationTokenDocId(token: string): string {
+  return Buffer.from(token, "utf8").toString("base64url");
+}
+
+function notificationPreferenceValue(
+  data: Record<string, unknown>,
+  key: string,
+): boolean | null {
+  if (typeof data[key] === "boolean") {
+    return data[key] as boolean;
+  }
+
+  const preferences = data.notificationPreferences;
+  if (preferences && typeof preferences === "object" && !Array.isArray(preferences)) {
+    const nested = preferences as Record<string, unknown>;
+    if (typeof nested[key] === "boolean") {
+      return nested[key] as boolean;
+    }
+  }
+
+  return null;
+}
+
+function userAllowsNotification(
+  userData: Record<string, unknown>,
+  category: string,
+): boolean {
+  const notificationsBlocked = notificationPreferenceValue(userData, "notificationsBlocked");
+  if (notificationsBlocked === true) return false;
+
+  const pushNotificationsBlocked = notificationPreferenceValue(userData, "pushNotificationsBlocked");
+  if (pushNotificationsBlocked === true) return false;
+
+  const notificationsEnabled = notificationPreferenceValue(userData, "notificationsEnabled");
+  if (notificationsEnabled === false) return false;
+
+  const pushNotificationsEnabled = notificationPreferenceValue(userData, "pushNotificationsEnabled");
+  if (pushNotificationsEnabled === false) return false;
+
+  if (category === "chat") {
+    const chatNotificationsBlocked = notificationPreferenceValue(userData, "chatNotificationsBlocked");
+    if (chatNotificationsBlocked === true) return false;
+
+    const chatNotificationsEnabled = notificationPreferenceValue(userData, "chatNotificationsEnabled");
+    if (chatNotificationsEnabled === false) return false;
+
+    const messageNotificationsEnabled = notificationPreferenceValue(userData, "messageNotificationsEnabled");
+    if (messageNotificationsEnabled === false) return false;
+  }
+
+  return true;
+}
+
+type ProviderVerificationSnapshot = {
+  status: string;
+  gracePeriodEndsAt: Timestamp | null;
+  reviewedAt: Timestamp | null;
+  reviewedBy: string;
+  rejectionReason: string;
+};
+
+function normalizeProviderVerification(data: DocumentData | undefined): ProviderVerificationSnapshot {
+  return {
+    status: asTrimmedString(data?.status) || "notSubmitted",
+    gracePeriodEndsAt: data?.gracePeriodEndsAt instanceof Timestamp ? data.gracePeriodEndsAt as Timestamp : null,
+    reviewedAt: data?.reviewedAt instanceof Timestamp ? data.reviewedAt as Timestamp : null,
+    reviewedBy: asTrimmedString(data?.reviewedBy),
+    rejectionReason: asTrimmedString(data?.rejectionReason),
+  };
+}
+
+function shouldPauseServicesForVerification(verification: ProviderVerificationSnapshot, now = Timestamp.now()): boolean {
+  if (verification.status === "approved") return false;
+  if (!verification.gracePeriodEndsAt) return false;
+  return verification.gracePeriodEndsAt.toMillis() <= now.toMillis();
+}
+
+function isServiceVerificationPaused(
+  service: Record<string, unknown>,
+  nowMs = Date.now(),
+): boolean {
+  if (service.isPausedByVerification === true) return true;
+  const status = asTrimmedString(service.providerVerificationStatus);
+  if (status === "approved") return false;
+  const grace = service.providerVerificationGraceEndsAt instanceof Timestamp ?
+    service.providerVerificationGraceEndsAt as Timestamp :
+    null;
+  if (!grace) return false;
+  return grace.toMillis() <= nowMs;
+}
+
+async function updateProviderServicesForVerification(
+  userId: string,
+  verification: ProviderVerificationSnapshot,
+): Promise<number> {
+  const snapshot = await db
+    .collection("services")
+    .where("ownerUserId", "==", userId)
+    .where("isDeleted", "==", false)
+    .get();
+
+  if (snapshot.empty) return 0;
+
+  const shouldPause = shouldPauseServicesForVerification(verification);
+  const verificationPauseReason = "Provider verification pending";
+  let updatedCount = 0;
+  let batch = db.batch();
+  let ops = 0;
+
+  for (const doc of snapshot.docs) {
+    const current = doc.data();
+    const currentPauseReason = asTrimmedString(current.pauseReason);
+    const nextPauseReason = shouldPause ?
+      verificationPauseReason :
+      (currentPauseReason === verificationPauseReason ? "" : currentPauseReason);
+    const alreadyMatches =
+      asTrimmedString(current.providerVerificationStatus) === verification.status &&
+      Boolean(current.isPausedByVerification) === shouldPause &&
+      currentPauseReason === nextPauseReason;
+
+    if (alreadyMatches) continue;
+
+    batch.set(doc.ref, {
+      providerVerificationStatus: verification.status,
+      providerVerificationGraceEndsAt: verification.gracePeriodEndsAt,
+      isPausedByVerification: shouldPause,
+      pauseReason: nextPauseReason,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    updatedCount += 1;
+    ops += 1;
+
+    if (ops === 450) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  }
+
+  if (ops > 0) {
+    await batch.commit();
+  }
+
+  return updatedCount;
+}
+
+export const syncNotificationToken = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const token = asTrimmedString(request.data?.token);
+  const platform = asTrimmedString(request.data?.platform) || "unknown";
+  if (!token) {
+    throw new HttpsError("invalid-argument", "token is required.");
+  }
+
+  const tokenId = notificationTokenDocId(token);
+  const existingTokenSnapshots = await db
+    .collectionGroup("notificationTokens")
+    .where("token", "==", token)
+    .get();
+
+  const removedFromUserIds = new Set<string>();
+  const batch = db.batch();
+  for (const doc of existingTokenSnapshots.docs) {
+    const ownerUserId = doc.ref.parent.parent?.id ?? "";
+    if (!ownerUserId || ownerUserId === uid) continue;
+    removedFromUserIds.add(ownerUserId);
+    batch.delete(doc.ref);
+  }
+
+  const tokenRef = db
+    .collection("users")
+    .doc(uid)
+    .collection("notificationTokens")
+    .doc(tokenId);
+  const currentTokenSnapshot = await tokenRef.get();
+  const tokenPayload: Record<string, unknown> = {
+    token,
+    platform,
+    updatedAt: FieldValue.serverTimestamp(),
+    lastSeenAt: FieldValue.serverTimestamp(),
+  };
+  if (!currentTokenSnapshot.exists) {
+    tokenPayload.createdAt = FieldValue.serverTimestamp();
+  }
+  batch.set(tokenRef, tokenPayload, {merge: true});
+  await batch.commit();
+
+  const removedList = Array.from(removedFromUserIds);
+  console.info("Notification token synced", {
+    currentUserId: uid,
+    tokenMasked: maskIdentifier(token),
+    removedFromUserIds: removedList,
+    savedToUserId: uid,
+  });
+
+  return {
+    currentUserId: uid,
+    removedFromUserIds: removedList,
+    savedToUserId: uid,
+  };
+});
+
+export const removeNotificationToken = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const token = asTrimmedString(request.data?.token);
+  if (!token) {
+    throw new HttpsError("invalid-argument", "token is required.");
+  }
+
+  const existingTokenSnapshots = await db
+    .collectionGroup("notificationTokens")
+    .where("token", "==", token)
+    .get();
+
+  const removedFromUserIds = new Set<string>();
+  const batch = db.batch();
+  for (const doc of existingTokenSnapshots.docs) {
+    const ownerUserId = doc.ref.parent.parent?.id ?? "";
+    if (!ownerUserId) continue;
+    removedFromUserIds.add(ownerUserId);
+    batch.delete(doc.ref);
+  }
+  await batch.commit();
+
+  const removedList = Array.from(removedFromUserIds);
+  console.info("Notification token removed", {
+    currentUserId: uid,
+    tokenMasked: maskIdentifier(token),
+    removedFromUserIds: removedList,
+  });
+
+  return {
+    currentUserId: uid,
+    removedFromUserIds: removedList,
+  };
+});
+
+export const requestAccountDeletion = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const userRef = db.collection("users").doc(uid);
+  const privateUserRef = db.collection("userPrivate").doc(uid);
+  const servicesQuery = db
+    .collection("services")
+    .where("ownerUserId", "==", uid)
+    .where("isDeleted", "==", false);
+
+  const [userSnapshot, privateUserSnapshot, servicesSnapshot] = await Promise.all([
+    userRef.get(),
+    privateUserRef.get(),
+    servicesQuery.get(),
+  ]);
+
+  if (!userSnapshot.exists) {
+    throw new HttpsError("not-found", "Profile not found.");
+  }
+
+  const user = userSnapshot.data() ?? {};
+  if (user.deletionRequested === true) {
+    return {
+      ok: true,
+      message: "Your account deletion request is already in progress.",
+    };
+  }
+
+  const restrictions = normalizeRestrictions(user.restrictions);
+  const updatedRestrictions = nextRestrictions(
+    nextRestrictions(restrictions, "social", true, "Account deletion requested", uid),
+    "booking",
+    true,
+    "Account deletion requested",
+    uid,
+  );
+  const nextAccountStatus = computeAccountStatus(updatedRestrictions);
+  const anonymizedName = "Deleted user";
+  const anonymizedUsername = `deleted_${uid.slice(-8).toLowerCase()}`;
+  const now = FieldValue.serverTimestamp();
+
+  const batch = db.batch();
+  batch.set(userRef, {
+    name: anonymizedName,
+    username: anonymizedUsername,
+    usernameLowercase: anonymizedUsername,
+    bio: "",
+    profileImage: "",
+    city: "",
+    state: "",
+    location: "",
+    accountStatus: nextAccountStatus,
+    restrictions: updatedRestrictions,
+    deletionRequested: true,
+    deletionRequestedAt: now,
+    profileVisibility: "hidden",
+    updatedAt: now,
+  }, {merge: true});
+  batch.set(privateUserRef, {
+    uid,
+    deletionRequestedAt: now,
+    deletionRequestStatus: "requested",
+    updatedAt: now,
+  }, {merge: true});
+
+  for (const serviceDoc of servicesSnapshot.docs) {
+    batch.set(serviceDoc.ref, {
+      isActive: false,
+      isPaused: true,
+      isVisibleToMarketplace: false,
+      pauseReason: "Account deletion requested",
+      updatedAt: now,
+    }, {merge: true});
+  }
+
+  batch.set(db.collection("adminAuditLogs").doc(), {
+    eventType: "accountDeletionRequested",
+    userId: uid,
+    emailPresent: asTrimmedString(privateUserSnapshot.data()?.email) !== "",
+    hadServices: servicesSnapshot.docs.length > 0,
+    serviceCount: servicesSnapshot.docs.length,
+    createdAt: now,
+    actorUserId: uid,
+    source: "mobileApp",
+  });
+
+  await batch.commit();
+  const removedTokenCount = await deleteNotificationTokensForUser(uid);
+
+  console.info("Account deletion requested", {
+    userId: uid,
+    removedTokenCount,
+    serviceCount: servicesSnapshot.docs.length,
+  });
+
+  return {
+    ok: true,
+    message:
+      "Your account deletion request has been submitted. Pettxo has restricted the account while records required for legal and payment retention are preserved.",
+  };
+});
+
+export const sendPushForNotification = onDocumentWritten(
+  {
+    document: "notifications/{notificationId}",
+    region: "us-central1",
+  },
   async (event) => {
-    const notification = event.data?.data();
+    const notification = event.data?.after.data();
     if (!notification) return;
-    if (notification.category !== "booking") return;
+    const previousNotification = event.data?.before.data();
 
     const userId = String(notification.userId ?? "");
-    if (!userId) return;
+    const recipientId = String(notification.recipientId ?? notification.userId ?? "");
+    const senderId = String(notification.senderId ?? notification.actorId ?? "");
+    const bookingId = String(notification.bookingId ?? "");
+    const postId = String(notification.postId ?? "");
+    const chatId = String(notification.chatId ?? "");
+    const category = String(notification.category ?? "");
+    const notificationType = category === "chat" || String(notification.type ?? "") === "chatMessage" ?
+      "chat" :
+      String(notification.type ?? "");
+    const currentLastMessageId = String(notification.lastMessageId ?? "");
+    const previousLastMessageId = String(previousNotification?.lastMessageId ?? "");
+
+    if (previousNotification) {
+      const isChatNotification = category === "chat" || notificationType === "chat";
+      const shouldSendChatUpdate = isChatNotification &&
+        currentLastMessageId.length > 0 &&
+        currentLastMessageId !== previousLastMessageId;
+      if (!shouldSendChatUpdate) {
+        console.info("Notification skipped", {
+          notificationId: event.params.notificationId,
+          reason: "non-push-notification-update",
+          recipientUserId: recipientId,
+          senderUserId: senderId,
+          chatId,
+          notificationType,
+          tokenCount: 0,
+        });
+        return;
+      }
+    }
+
+    if (!userId || !recipientId) {
+      console.info("Notification skipped", {
+        notificationId: event.params.notificationId,
+        reason: "missing-recipient",
+        recipientUserId: recipientId,
+        senderUserId: senderId,
+        chatId,
+        notificationType,
+        tokenCount: 0,
+      });
+      return;
+    }
+    if (senderId && senderId === recipientId) {
+      console.info("Notification skipped", {
+        notificationId: event.params.notificationId,
+        reason: "self-notification",
+        recipientUserId: recipientId,
+        senderUserId: senderId,
+        chatId,
+        notificationType,
+        tokenCount: 0,
+      });
+      return;
+    }
+
+    const recipientSnapshot = await db.collection("users").doc(userId).get();
+    const recipientData = recipientSnapshot.data() ?? {};
+    if (!userAllowsNotification(recipientData, category)) {
+      console.info("Notification skipped", {
+        notificationId: event.params.notificationId,
+        reason: "recipient-notifications-disabled",
+        recipientUserId: recipientId,
+        senderUserId: senderId,
+        chatId,
+        notificationType,
+        tokenCount: 0,
+      });
+      return;
+    }
 
     const tokenSnapshot = await db
       .collection("users")
@@ -1399,12 +2805,55 @@ export const sendPushForNotification = onDocumentCreated(
       .where("disabled", "!=", true)
       .get();
 
+    const senderTokenSnapshot = senderId ?
+      await db
+        .collection("users")
+        .doc(senderId)
+        .collection("notificationTokens")
+        .where("disabled", "!=", true)
+        .get() :
+      null;
+    const senderTokens = new Set(
+      (senderTokenSnapshot?.docs ?? [])
+        .map((doc) => String(doc.data().token ?? ""))
+        .filter((token) => token.length > 0),
+    );
+
+    const skippedSenderTokens: string[] = [];
+    const skippedStaleTokens: string[] = [];
+    const seenRecipientTokens = new Set<string>();
     const tokenDocs = tokenSnapshot.docs.filter((doc) => {
       const token = String(doc.data().token ?? "");
-      return token.length > 0;
+      if (!token.length) {
+        skippedStaleTokens.push(doc.id);
+        return false;
+      }
+      if (seenRecipientTokens.has(token)) {
+        skippedStaleTokens.push(token);
+        return false;
+      }
+      if (senderTokens.has(token)) {
+        skippedSenderTokens.push(token);
+        return false;
+      }
+      seenRecipientTokens.add(token);
+      return true;
     });
     const tokens = tokenDocs.map((doc) => String(doc.data().token));
-    if (tokens.length === 0) return;
+    if (tokens.length === 0) {
+      console.info("Notification skipped", {
+        notificationId: event.params.notificationId,
+        reason: "no-active-tokens",
+        recipientUserId: recipientId,
+        senderUserId: senderId,
+        chatId,
+        notificationType,
+        tokenCount: 0,
+        skippedSenderTokenCount: skippedSenderTokens.length,
+        skippedStaleTokenCount: skippedStaleTokens.length,
+      });
+      return;
+    }
 
     const rawData = notification.data;
     const notificationPayload =
@@ -1414,11 +2863,28 @@ export const sendPushForNotification = onDocumentCreated(
     const data = notificationData({
       ...notificationPayload,
       notificationId: event.params.notificationId,
-      bookingId: notification.bookingId ?? "",
+      recipientId,
+      senderId,
+      bookingId,
+      postId,
+      chatId,
       serviceId: notification.serviceId ?? "",
-      type: notification.type ?? "",
-      category: notification.category ?? "booking",
+      senderName: notification.senderName ?? notification.title ?? "",
+      type: notificationType,
+      category: category || "booking",
+      recipientRole: notification.recipientRole ?? "",
       click_action: "FLUTTER_NOTIFICATION_CLICK",
+    });
+
+    console.info("Notification created", {
+      notificationId: event.params.notificationId,
+      recipientUserId: recipientId,
+      senderUserId: senderId,
+      chatId,
+      notificationType,
+      targetTokenCount: tokens.length,
+      skippedSenderTokenCount: skippedSenderTokens.length,
+      skippedStaleTokenCount: skippedStaleTokens.length,
     });
 
     const response = await messaging.sendEachForMulticast({
@@ -1432,7 +2898,11 @@ export const sendPushForNotification = onDocumentCreated(
         priority: "high",
         notification: {
           sound: "default",
-          tag: String(notification.bookingId ?? event.params.notificationId),
+          tag: String(
+            notification.bookingId ??
+              notification.postId ??
+              event.params.notificationId,
+          ),
         },
       },
       apns: {
@@ -1449,6 +2919,21 @@ export const sendPushForNotification = onDocumentCreated(
     let cleanupCount = 0;
     response.responses.forEach((result, index) => {
       const code = result.error?.code;
+      if (!result.success) {
+        console.warn("Push delivery failed", {
+          notificationId: event.params.notificationId,
+          recipientUserId: recipientId,
+          senderUserId: senderId,
+          chatId,
+          notificationType,
+          targetTokenCount: tokens.length,
+          skippedSenderTokenCount: skippedSenderTokens.length,
+          skippedStaleTokenCount: skippedStaleTokens.length,
+          tokenDocIdMasked: maskIdentifier(tokenDocs[index]?.id ?? ""),
+          code: code ?? "unknown",
+          message: result.error?.message ?? "",
+        });
+      }
       if (!isInvalidMessagingToken(code)) return;
       cleanupBatch.set(tokenDocs[index].ref, {
         disabled: true,
@@ -1460,13 +2945,20 @@ export const sendPushForNotification = onDocumentCreated(
     });
 
     if (cleanupCount > 0) {
+      console.info("Disabled invalid notification tokens", {
+        notificationId: event.params.notificationId,
+        cleanupCount,
+      });
       await cleanupBatch.commit();
     }
   },
 );
 
 export const enqueueServiceModeration = onDocumentCreated(
-  "services/{serviceId}",
+  {
+    document: "services/{serviceId}",
+    region: "us-central1",
+  },
   async (event) => {
     const serviceId = event.params.serviceId;
     const service = event.data?.data();
@@ -1489,7 +2981,12 @@ export const enqueueServiceModeration = onDocumentCreated(
 );
 
 export const syncServiceSlots = onDocumentWritten(
-  {document: "services/{serviceId}", timeoutSeconds: 120, memory: "512MiB"},
+  {
+    document: "services/{serviceId}",
+    region: "us-central1",
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
   async (event) => {
     const serviceId = event.params.serviceId;
     const after = event.data?.after.data();
@@ -1502,8 +2999,63 @@ export const syncServiceSlots = onDocumentWritten(
   },
 );
 
+export const pauseServicesForExpiredProviderVerification = onSchedule(
+  {
+    schedule: "every 60 minutes",
+    timeZone: "Asia/Kolkata",
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    const now = Timestamp.now();
+    const snapshot = await db
+      .collectionGroup("providerVerification")
+      .where("gracePeriodEndsAt", "<=", now)
+      .get();
+
+    for (const doc of snapshot.docs) {
+      const userId = doc.ref.parent.parent?.id;
+      if (!userId) continue;
+      const verification = normalizeProviderVerification(doc.data());
+      if (!shouldPauseServicesForVerification(verification, now)) continue;
+      await updateProviderServicesForVerification(userId, verification);
+    }
+  },
+);
+
+export const syncProviderServicesOnVerificationUpdate = onDocumentWritten(
+  {
+    document: "users/{userId}/providerVerification/main",
+    timeoutSeconds: 180,
+    memory: "512MiB",
+  },
+  async (event) => {
+    const after = event.data?.after.data();
+    if (!after) return;
+
+    const before = event.data?.before.data();
+    const beforeVerification = normalizeProviderVerification(before);
+    const afterVerification = normalizeProviderVerification(after);
+
+    const relevantChange =
+      beforeVerification.status !== afterVerification.status ||
+      beforeVerification.gracePeriodEndsAt?.toMillis() !==
+        afterVerification.gracePeriodEndsAt?.toMillis();
+
+    if (!relevantChange) return;
+
+    await updateProviderServicesForVerification(
+      event.params.userId,
+      afterVerification,
+    );
+  },
+);
+
 export const enqueueReportModeration = onDocumentCreated(
-  "reports/{reportId}",
+  {
+    document: "reports/{reportId}",
+    region: "us-central1",
+  },
   async (event) => {
     const reportId = event.params.reportId;
     const report = event.data?.data();
@@ -1525,12 +3077,13 @@ export const enqueueReportModeration = onDocumentCreated(
   },
 );
 
-export const requestBooking = onCall(async (request) => {
+export const createRazorpayBookingOrder = onCall({
+  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+}, async (request) => {
   const uid = requireUid(request.auth);
-  const serviceId = String(request.data?.serviceId ?? "");
-  const slotId = String(request.data?.slotId ?? "");
-  const requestedAmount = Number(request.data?.amount ?? 0);
-  const userId = String(request.data?.userId ?? uid);
+  const serviceId = asTrimmedString(request.data?.serviceId);
+  const slotId = asTrimmedString(request.data?.slotId);
+  const userId = asTrimmedString(request.data?.userId) || uid;
   const claimedOfferId = asTrimmedString(request.data?.claimedOfferId);
 
   if (!serviceId || !slotId) {
@@ -1545,21 +3098,34 @@ export const requestBooking = onCall(async (request) => {
   const customerRef = db.collection("users").doc(uid);
   const bookingRef = db.collection("bookings").doc();
   const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingRef.id);
+  const paymentRef = db.collection("payments").doc(bookingRef.id);
   const claimedOfferRef = claimedOfferId ?
     customerRef.collection("claimedOffers").doc(claimedOfferId) :
     null;
+  const existingPendingQuery = db
+    .collection("bookings")
+    .where("customerId", "==", uid)
+    .where("serviceId", "==", serviceId)
+    .where("slotId", "==", slotId)
+    .where("status", "==", "paymentPending")
+    .limit(5);
+
   const customerSnapshot = await customerRef.get();
   const customerData = customerSnapshot.exists ? customerSnapshot.data() ?? {} : {};
+  assertBookingRestrictions(
+    normalizeRestrictions(customerData.restrictions),
+    "Your account cannot create new bookings right now.",
+  );
   const completedBookingCount = claimedOfferId ?
     await getCompletedBookingCountForUser(uid, customerData) :
     0;
 
-  try {
-    await db.runTransaction(async (transaction) => {
+  const checkoutPayload = await db.runTransaction(async (transaction) => {
     const serviceSnapshot = await transaction.get(serviceRef);
     const slotSnapshot = await transaction.get(slotRef);
     const transactionCustomerSnapshot = await transaction.get(customerRef);
     const claimedOfferSnapshot = claimedOfferRef ? await transaction.get(claimedOfferRef) : null;
+    const existingPendingSnapshots = await transaction.get(existingPendingQuery);
 
     if (!serviceSnapshot.exists) {
       throw new HttpsError("not-found", "Service not found.");
@@ -1570,6 +3136,15 @@ export const requestBooking = onCall(async (request) => {
 
     const service = serviceSnapshot.data()!;
     const slot = slotSnapshot.data()!;
+    const nowMs = Date.now();
+    const transactionCustomer = transactionCustomerSnapshot.exists ?
+      transactionCustomerSnapshot.data() ?? {} :
+      {};
+    assertBookingRestrictions(
+      normalizeRestrictions(transactionCustomer.restrictions),
+      "Your account cannot create new bookings right now.",
+    );
+
     if (
       service.status !== "active" ||
       service.isActive !== true ||
@@ -1579,10 +3154,19 @@ export const requestBooking = onCall(async (request) => {
     ) {
       throw new HttpsError("failed-precondition", "This service is not bookable.");
     }
+    if (isServiceVerificationPaused(service, nowMs)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Provider verification is pending. This service is temporarily unavailable.",
+      );
+    }
 
-    const serviceOwnerId = String(service.ownerUserId ?? "");
+    const serviceOwnerId = asTrimmedString(service.ownerUserId);
     if (!serviceOwnerId) {
       throw new HttpsError("failed-precondition", "Service owner is missing.");
+    }
+    if (serviceOwnerId === uid) {
+      throw new HttpsError("failed-precondition", "You cannot book your own service.");
     }
     if (slot.serviceId !== serviceId || slot.serviceOwnerId !== serviceOwnerId) {
       throw new HttpsError("failed-precondition", "Slot does not belong to this service.");
@@ -1602,7 +3186,6 @@ export const requestBooking = onCall(async (request) => {
     if (!scheduledStartAt || !scheduledEndAt) {
       throw new HttpsError("failed-precondition", "Slot timing is missing.");
     }
-    const nowMs = Date.now();
     if (scheduledStartAt.toMillis() - nowMs < minimumBookingLeadMs) {
       throw new HttpsError("failed-precondition", "This slot is too soon to book.");
     }
@@ -1610,32 +3193,72 @@ export const requestBooking = onCall(async (request) => {
       throw new HttpsError("failed-precondition", "Slot timing is invalid.");
     }
 
-    const requestExpiresAt = computeBookingRequestExpiresAt(
-      nowMs,
-      scheduledStartAt.toMillis(),
-    );
-    if (requestExpiresAt.toMillis() <= nowMs) {
-      throw new HttpsError(
-        "failed-precondition",
-        "This slot is too soon for the provider response window.",
-      );
+    for (const existingDoc of existingPendingSnapshots.docs) {
+      const existingBooking = existingDoc.data();
+      const existingPaymentRef = db.collection("payments").doc(existingDoc.id);
+      const existingFinancialRef = db.collection("bookingFinancials").doc(existingDoc.id);
+      const [existingPaymentSnapshot, existingFinancialSnapshot] = await Promise.all([
+        transaction.get(existingPaymentRef),
+        transaction.get(existingFinancialRef),
+      ]);
+
+      if (!isRetryablePaymentState({
+        booking: existingBooking,
+        payment: existingPaymentSnapshot.exists ? existingPaymentSnapshot.data() ?? {} : undefined,
+        nowMs,
+      })) {
+        continue;
+      }
+
+      const existingPending = pendingPaymentSnapshotFromDocs({
+        bookingId: existingDoc.id,
+        booking: existingBooking,
+        payment: existingPaymentSnapshot.exists ? existingPaymentSnapshot.data() ?? {} : undefined,
+        bookingFinancial: existingFinancialSnapshot.exists ? existingFinancialSnapshot.data() ?? {} : undefined,
+      });
+      if (existingPending.orderId !== "" && existingPending.paymentStatus === "pending") {
+        return existingPending;
+      }
+
+      const refreshedExpiry = paymentExpiryTimestamp(nowMs);
+      transaction.set(existingDoc.ref, {
+        paymentExpiresAt: refreshedExpiry,
+        updatedAt: FieldValue.serverTimestamp(),
+        "pricing.paymentStatus": "pending",
+      }, {merge: true});
+      transaction.set(existingFinancialRef, {
+        paymentStatus: "pending",
+        status: "pending",
+        paymentExpiresAt: refreshedExpiry,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+      transaction.set(existingPaymentRef, {
+        paymentStatus: "pending",
+        status: "pending",
+        paymentExpiresAt: refreshedExpiry,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      return {
+        ...existingPending,
+        orderId: "",
+        paymentStatus: "pending",
+        paymentExpiresAt: refreshedExpiry,
+      };
     }
 
-    const price = Number(service.pricePerSession ?? requestedAmount);
+    const price = Number(service.pricePerSession ?? 0);
+    const currency = asTrimmedString(service.currency) || "INR";
     const bookingCreatedAt = Timestamp.now();
-    const graceWindow = buildGraceWindow(
-      bookingCreatedAt.toDate(),
-      scheduledStartAt.toDate(),
-    );
-
+    const paymentExpiresAt = paymentExpiryTimestamp(nowMs);
     const durationMinutes = Math.round(
       (scheduledEndAt.toMillis() - scheduledStartAt.toMillis()) / 60000,
     );
     const ownerSnapshot = service.ownerSnapshot ?? {};
     const customer = transactionCustomerSnapshot.exists ? transactionCustomerSnapshot.data()! : {};
     const location = service.location ?? {};
+
     let discountAmount = 0;
-    let finalAmount = price;
     let appliedOfferData: Record<string, unknown> | null = null;
 
     if (claimedOfferRef && claimedOfferSnapshot) {
@@ -1682,10 +3305,6 @@ export const requestBooking = onCall(async (request) => {
         maxDiscountAmount,
       );
       discountAmount = computed.discountAmount;
-      finalAmount = computed.finalAmount;
-      const nextUsedCount = usedCount + 1;
-      const nextStatus = nextUsedCount >= usageLimit ? "used" : "claimed";
-
       appliedOfferData = {
         claimedOfferId,
         offerId,
@@ -1693,27 +3312,15 @@ export const requestBooking = onCall(async (request) => {
         discountType,
         discountValue,
         discountAmount,
-        finalAmount,
-        appliedAt: FieldValue.serverTimestamp(),
+        status: "reserved",
       };
-
-      transaction.set(claimedOfferRef, {
-        usedCount: FieldValue.increment(1),
-        status: nextStatus,
-      }, {merge: true});
-      transaction.set(db.collection("adminAuditLogs").doc(), {
-        action: "offer.redeemed",
-        userId: uid,
-        claimedOfferId,
-        bookingId: bookingRef.id,
-        discountAmount,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    } else if (requestedAmount > 0 && price > 0 && requestedAmount !== price) {
-      throw new HttpsError("failed-precondition", "Booking amount does not match service price.");
     }
 
-    const standardRevenue = computeStandardRevenueBreakdown(finalAmount);
+    const pricing = computeCheckoutPricing({
+      serviceAmount: price,
+      discountAmount,
+      currency,
+    });
 
     const bookingPayload = {
       serviceId,
@@ -1726,7 +3333,7 @@ export const requestBooking = onCall(async (request) => {
         animalType: service.animalType ?? "",
         category: service.category ?? "",
         pricePerSession: price,
-        currency: service.currency ?? "INR",
+        currency,
         durationMinutes,
         serviceType: service.serviceType ?? "",
         primaryPhotoUrl: service.primaryPhotoUrl ?? "",
@@ -1752,30 +3359,31 @@ export const requestBooking = onCall(async (request) => {
       scheduledStartAt,
       scheduledEndAt,
       timezone: "Asia/Kolkata",
-      status: "requested",
-      paymentConfirmedAt: bookingCreatedAt,
-      graceWindowMinutes: graceWindow.graceWindowMinutes,
-      graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+      status: "paymentPending",
+      paymentCreatedAt: bookingCreatedAt,
+      paymentExpiresAt,
       request: {
         message: "",
-        // Provider must respond within 24h or 1h before service, whichever is earlier.
-        expiresAt: requestExpiresAt,
+        expiresAt: null,
         respondedAt: null,
         responseReason: "",
       },
       pricing: {
-        grossAmount: price,
-        grossAmountPaise: toPaise(price),
-        discountAmount,
-        discountAmountPaise: toPaise(discountAmount),
-        finalAmount,
-        finalAmountPaise: toPaise(finalAmount),
-        platformFee: standardRevenue.pettxoAmount,
-        platformFeePaise: standardRevenue.pettxoAmountPaise,
-        providerEarnings: standardRevenue.providerAmount,
-        providerEarningsPaise: standardRevenue.providerAmountPaise,
-        currency: service.currency ?? "INR",
-        paymentStatus: "paid",
+        serviceAmount: pricing.serviceAmount,
+        serviceAmountPaise: pricing.serviceAmountPaise,
+        grossAmount: pricing.serviceAmount,
+        grossAmountPaise: pricing.serviceAmountPaise,
+        discountAmount: pricing.discountAmount,
+        discountAmountPaise: pricing.discountAmountPaise,
+        finalAmount: pricing.totalPayable,
+        finalAmountPaise: pricing.totalPayablePaise,
+        platformFee: pricing.platformFee,
+        platformFeePaise: pricing.platformFeePaise,
+        providerEarnings: pricing.providerAmount,
+        providerEarningsPaise: pricing.providerAmountPaise,
+        currency,
+        paymentStatus: "pending",
+        payoutStatus: "notEligible",
       },
       ...(appliedOfferData == null ? {} : {offer: appliedOfferData}),
       otp: {
@@ -1785,7 +3393,7 @@ export const requestBooking = onCall(async (request) => {
       },
       payoutReadiness: {
         status: "notEligible",
-        reason: "Booking has not completed.",
+        reason: "Payment is pending.",
         eligibleAt: null,
         payoutId: "",
       },
@@ -1796,7 +3404,7 @@ export const requestBooking = onCall(async (request) => {
       },
       disputeStatus: "none",
       notificationState: {
-        requestNotificationSent: true,
+        requestNotificationSent: false,
         acceptanceNotificationSent: false,
         rejectionNotificationSent: false,
         cancellationNotificationSent: false,
@@ -1815,23 +3423,29 @@ export const requestBooking = onCall(async (request) => {
       userId: uid,
       providerId: serviceOwnerId,
       serviceId,
-      totalAmount: finalAmount,
-      totalAmountPaise: toPaise(finalAmount),
-      currency: service.currency ?? "INR",
+      totalAmount: pricing.totalPayable,
+      totalAmountPaise: pricing.totalPayablePaise,
+      serviceAmount: pricing.serviceAmount,
+      serviceAmountPaise: pricing.serviceAmountPaise,
+      currency,
       razorpayPaymentId: "",
       razorpayOrderId: "",
-      status: "paid",
-      graceWindowMinutes: graceWindow.graceWindowMinutes,
-      graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+      status: "pending",
+      paymentStatus: "pending",
+      paymentExpiresAt,
       refundAmount: 0,
       refundAmountPaise: 0,
-      pettxoCommissionAmount: standardRevenue.pettxoAmount,
-      pettxoAmountPaise: standardRevenue.pettxoAmountPaise,
-      providerEarningAmount: standardRevenue.providerAmount,
-      providerAmountPaise: standardRevenue.providerAmountPaise,
+      pettxoCommissionAmount: pricing.platformFee,
+      pettxoAmountPaise: pricing.platformFeePaise,
+      providerEarningAmount: pricing.providerAmount,
+      providerAmountPaise: pricing.providerAmountPaise,
+      discountAmount: pricing.discountAmount,
+      discountAmountPaise: pricing.discountAmountPaise,
       refundPercent: 0,
-      pettxoPercent: standardRevenue.pettxoPercent,
-      providerPercent: standardRevenue.providerPercent,
+      pettxoPercent: 15,
+      providerPercent: pricing.totalPayablePaise > 0 ?
+        Math.round((pricing.providerAmountPaise / pricing.totalPayablePaise) * 100) :
+        0,
       cancellationCase: "",
       cancelledBy: null,
       cancelledAt: null,
@@ -1843,42 +3457,668 @@ export const requestBooking = onCall(async (request) => {
       createdAt: bookingCreatedAt,
       updatedAt: bookingCreatedAt,
     });
-    queueBookingNotification({
-      transaction,
-      userId: serviceOwnerId,
+    transaction.set(paymentRef, {
       bookingId: bookingRef.id,
-      type: "bookingRequested",
-      title: "New booking request",
-      body: `${snapshotName(
-        bookingPayload.customerSnapshot,
-        "A pet parent",
-      )} requested ${serviceTitleFromBooking(bookingPayload)}.`,
-      recipientRole: "provider",
-      actorId: uid,
-      status: "requested",
-      booking: bookingPayload,
-      extraData: {event: "booking_requested"},
+      userId: uid,
+      providerId: serviceOwnerId,
+      serviceId,
+      status: "pending",
+      paymentStatus: "pending",
+      currency,
+      amount: pricing.totalPayable,
+      amountPaise: pricing.totalPayablePaise,
+      serviceAmount: pricing.serviceAmount,
+      serviceAmountPaise: pricing.serviceAmountPaise,
+      platformFee: pricing.platformFee,
+      platformFeePaise: pricing.platformFeePaise,
+      discountAmount: pricing.discountAmount,
+      discountAmountPaise: pricing.discountAmountPaise,
+      razorpayOrderId: "",
+      razorpayPaymentId: "",
+      razorpaySignature: "",
+      paymentExpiresAt,
+      createdAt: bookingCreatedAt,
+      updatedAt: bookingCreatedAt,
     });
-    });
-  } catch (error) {
+
+    return {
+      bookingId: bookingRef.id,
+      orderId: "",
+      amount: pricing.totalPayablePaise,
+      amountPaise: pricing.totalPayablePaise,
+      currency,
+      serviceAmountPaise: pricing.serviceAmountPaise,
+      platformFeePaise: pricing.platformFeePaise,
+      discountPaise: pricing.discountAmountPaise,
+      totalPayablePaise: pricing.totalPayablePaise,
+      paymentExpiresAt,
+      paymentStatus: "pending",
+      providerId: serviceOwnerId,
+      serviceId,
+      slotId,
+      scheduledStartAt,
+      scheduledEndAt,
+    };
+  }).catch((error) => {
     if (error instanceof OfferValidationError) {
-      return {ok: false, message: error.message};
+      throw new HttpsError("failed-precondition", error.message);
     }
     throw error;
+  });
+  const preparedCheckout = checkoutPayload;
+  console.log(JSON.stringify({
+    event: "createRazorpayBookingOrder.prepared",
+    bookingId: preparedCheckout.bookingId,
+    userId: uid,
+    providerId: preparedCheckout.providerId,
+    razorpayOrderIdMasked: maskIdentifier(preparedCheckout.orderId),
+    razorpayPaymentIdMasked: "",
+    refundId: "",
+    amountPaise: preparedCheckout.totalPayablePaise,
+    serviceId,
+    slotId,
+  }));
+
+  if (preparedCheckout.orderId !== "") {
+    const capturedPayment = (await fetchRazorpayOrderPayments({
+      orderId: preparedCheckout.orderId,
+    })).find((payment) => payment.status === "captured");
+
+    if (capturedPayment) {
+      await finalizeCapturedBookingPayment({
+        bookingId: preparedCheckout.bookingId,
+        uid,
+        razorpayOrderId: preparedCheckout.orderId,
+        razorpayPayment: capturedPayment,
+      });
+      return {
+        ok: true,
+        bookingId: preparedCheckout.bookingId,
+        orderId: "",
+        amount: 0,
+        currency: capturedPayment.currency,
+        keyId: "",
+        serviceAmountPaise: preparedCheckout.serviceAmountPaise,
+        platformFeePaise: preparedCheckout.platformFeePaise,
+        discountPaise: preparedCheckout.discountPaise,
+        totalPayablePaise: preparedCheckout.totalPayablePaise,
+        paymentExpiresAt: "",
+        alreadyVerified: true,
+      };
+    }
   }
 
-  await writeBookingEvent({
-    bookingId: bookingRef.id,
-    actorId: uid,
-    actorType: "customer",
-    type: "created",
-    fromStatus: "none",
-    toStatus: "requested",
-    message: "Booking request created after payment simulation.",
-    metadata: {serviceId, slotId},
+  const paymentExpiresAt = preparedCheckout.paymentExpiresAt ?? paymentExpiryTimestamp(Date.now());
+
+  const order = preparedCheckout.orderId !== "" ? {
+    orderId: preparedCheckout.orderId,
+    amount: preparedCheckout.amount,
+    currency: preparedCheckout.currency,
+    keyId: asTrimmedString(RAZORPAY_KEY_ID.value()),
+  } : await createRazorpayOrder({
+    bookingId: preparedCheckout.bookingId,
+    amountPaise: preparedCheckout.amount,
+    currency: preparedCheckout.currency,
+    customerId: uid,
+    serviceId,
+    slotId,
   });
 
-  return {ok: true, bookingId: bookingRef.id};
+  await Promise.all([
+    db.collection("bookings").doc(preparedCheckout.bookingId).set({
+      paymentExpiresAt,
+      "pricing.razorpayOrderId": order.orderId,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true}),
+    db.collection("bookingFinancials").doc(preparedCheckout.bookingId).set({
+      razorpayOrderId: order.orderId,
+      paymentExpiresAt,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true}),
+    db.collection("payments").doc(preparedCheckout.bookingId).set({
+      razorpayOrderId: order.orderId,
+      paymentExpiresAt,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true}),
+  ]);
+  console.log(JSON.stringify({
+    event: "createRazorpayBookingOrder.success",
+    bookingId: preparedCheckout.bookingId,
+    userId: uid,
+    providerId: preparedCheckout.providerId,
+    razorpayOrderIdMasked: maskIdentifier(order.orderId),
+    razorpayPaymentIdMasked: "",
+    refundId: "",
+    amountPaise: preparedCheckout.totalPayablePaise,
+    serviceId,
+    slotId,
+  }));
+
+  return {
+    ok: true,
+    bookingId: preparedCheckout.bookingId,
+    orderId: order.orderId,
+    amount: order.amount,
+    currency: order.currency,
+    keyId: order.keyId,
+    serviceAmountPaise: preparedCheckout.serviceAmountPaise,
+    platformFeePaise: preparedCheckout.platformFeePaise,
+    discountPaise: preparedCheckout.discountPaise,
+    totalPayablePaise: preparedCheckout.totalPayablePaise,
+    paymentExpiresAt: paymentExpiresAt.toDate().toISOString(),
+  };
+});
+
+export const getPendingPaymentBooking = onCall(async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = asTrimmedString(request.data?.bookingId);
+  const serviceId = asTrimmedString(request.data?.serviceId);
+  const slotId = asTrimmedString(request.data?.slotId);
+
+  let bookingSnapshot: DocumentSnapshot<DocumentData> | null = null;
+
+  if (bookingId) {
+    const snapshot = await db.collection("bookings").doc(bookingId).get();
+    if (!snapshot.exists) {
+      throw new HttpsError("not-found", "Booking not found.");
+    }
+    bookingSnapshot = snapshot;
+  } else {
+    if (!serviceId || !slotId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Provide bookingId or both serviceId and slotId.",
+      );
+    }
+    const snapshots = await db
+      .collection("bookings")
+      .where("customerId", "==", uid)
+      .where("serviceId", "==", serviceId)
+      .where("slotId", "==", slotId)
+      .where("status", "==", "paymentPending")
+      .limit(5)
+      .get();
+    bookingSnapshot = snapshots.docs.find(
+      (doc) => isRetryablePaymentState({
+        booking: doc.data(),
+        payment: undefined,
+        nowMs: Date.now(),
+      }),
+    ) ?? null;
+  }
+
+  if (bookingSnapshot == null || !bookingSnapshot.exists) {
+    return {"ok": true, "pendingBooking": null};
+  }
+
+  const booking = bookingSnapshot.data()!;
+  if (asTrimmedString(booking.customerId) != uid) {
+    throw new HttpsError("permission-denied", "Only the booking owner can access pending payment.");
+  }
+
+  const paymentSnapshot = await db.collection("payments").doc(bookingSnapshot.id).get();
+  const bookingFinancialSnapshot = await db
+    .collection("bookingFinancials")
+    .doc(bookingSnapshot.id)
+    .get();
+
+  if (!isRetryablePaymentState({
+    booking: booking,
+    payment: paymentSnapshot.exists ? paymentSnapshot.data() ?? {} : undefined,
+    nowMs: Date.now(),
+  })) {
+    return {"ok": true, "pendingBooking": null};
+  }
+
+  const pending = pendingPaymentSnapshotFromDocs({
+    bookingId: bookingSnapshot.id,
+    booking: booking,
+    payment: paymentSnapshot.exists ? paymentSnapshot.data() ?? {} : undefined,
+    bookingFinancial: bookingFinancialSnapshot.exists ? bookingFinancialSnapshot.data() ?? {} : undefined,
+  });
+
+  return {
+    ok: true,
+    pendingBooking: {
+      bookingId: pending.bookingId,
+      paymentStatus: pending.paymentStatus,
+      razorpayOrderId: pending.orderId,
+      paymentExpiresAt: pending.paymentExpiresAt?.toDate().toISOString(),
+      serviceId: pending.serviceId,
+      slotId: pending.slotId,
+      providerId: pending.providerId,
+      amountPaise: pending.totalPayablePaise,
+      currency: pending.currency,
+      serviceAmountPaise: pending.serviceAmountPaise,
+      platformFeePaise: pending.platformFeePaise,
+      discountPaise: pending.discountPaise,
+      totalPayablePaise: pending.totalPayablePaise,
+      scheduledStartAt: pending.scheduledStartAt?.toDate().toISOString(),
+      scheduledEndAt: pending.scheduledEndAt?.toDate().toISOString(),
+    },
+  };
+});
+
+export const verifyRazorpayPayment = onCall({
+  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+}, async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = asTrimmedString(request.data?.bookingId);
+  const razorpayOrderId = asTrimmedString(request.data?.razorpay_order_id);
+  const razorpayPaymentId = asTrimmedString(request.data?.razorpay_payment_id);
+  const razorpaySignature = asTrimmedString(request.data?.razorpay_signature);
+
+  if (!bookingId || !razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+    throw new HttpsError("invalid-argument", "Booking and Razorpay payment fields are required.");
+  }
+
+  const initialBookingSnapshot = await db.collection("bookings").doc(bookingId).get();
+  if (!initialBookingSnapshot.exists) {
+    throw new HttpsError("not-found", "Booking not found.");
+  }
+  const initialBooking = initialBookingSnapshot.data()!;
+  if (asTrimmedString(initialBooking.customerId) !== uid) {
+    throw new HttpsError("permission-denied", "Only the booking owner can verify payment.");
+  }
+  const initialStatus = asTrimmedString(initialBooking.status);
+  const initialPaymentStatus = asTrimmedString(asRecord(initialBooking.pricing).paymentStatus);
+  if (!(initialStatus === "paymentPending" || (initialStatus === "requested" && initialPaymentStatus === "paid"))) {
+    throw new HttpsError("failed-precondition", "This booking is not awaiting payment.");
+  }
+  const initialStoredOrderId = asTrimmedString(asRecord(initialBooking.pricing).razorpayOrderId);
+  if (!initialStoredOrderId || initialStoredOrderId !== razorpayOrderId) {
+    throw new HttpsError("failed-precondition", "Razorpay order does not match this booking.");
+  }
+  if (!verifyRazorpaySignature({
+    orderId: razorpayOrderId,
+    paymentId: razorpayPaymentId,
+    signature: razorpaySignature,
+  })) {
+    throw new HttpsError("permission-denied", "Payment signature verification failed.");
+  }
+  const razorpayPayment = await resolveCapturedRazorpayPayment({
+    paymentId: razorpayPaymentId,
+    orderId: razorpayOrderId,
+  });
+  if (razorpayPayment.id !== razorpayPaymentId) {
+    throw new HttpsError("failed-precondition", "Razorpay payment ID is invalid.");
+  }
+  let providerId = "";
+  console.log(JSON.stringify({
+    event: "verifyRazorpayPayment.start",
+    bookingId,
+    userId: uid,
+    providerId: asTrimmedString(initialBooking.serviceOwnerId ?? initialBooking.providerId),
+    razorpayOrderIdMasked: maskIdentifier(razorpayOrderId),
+    razorpayPaymentIdMasked: maskIdentifier(razorpayPaymentId),
+    refundId: "",
+    amountPaise: razorpayPayment.amountPaise,
+  }));
+
+  ({providerId} = await finalizeCapturedBookingPayment({
+    bookingId,
+    uid,
+    razorpayOrderId,
+    razorpayPayment,
+  }));
+  console.log(JSON.stringify({
+    event: "verifyRazorpayPayment.success",
+    bookingId,
+    userId: uid,
+    providerId,
+    razorpayOrderIdMasked: maskIdentifier(razorpayOrderId),
+    razorpayPaymentIdMasked: maskIdentifier(razorpayPaymentId),
+    refundId: "",
+    amountPaise: razorpayPayment.amountPaise,
+  }));
+
+  return {ok: true, bookingId};
+});
+
+export const markRazorpayPaymentFailed = onCall({
+  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+}, async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = asTrimmedString(request.data?.bookingId);
+  const code = asTrimmedString(request.data?.code);
+  const message = asTrimmedString(request.data?.message);
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+
+  const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
+  const paymentRef = db.collection("payments").doc(bookingId);
+  const initialBookingSnapshot = await bookingRef.get();
+  if (!initialBookingSnapshot.exists) {
+    throw new HttpsError("not-found", "Booking not found.");
+  }
+  const initialBooking = initialBookingSnapshot.data()!;
+  if (asTrimmedString(initialBooking.customerId) !== uid) {
+    throw new HttpsError("permission-denied", "Only the booking owner can update payment status.");
+  }
+  const storedPaymentId = asTrimmedString(
+    asRecord(initialBooking.pricing).razorpayPaymentId,
+  );
+  let remotePaymentStatus = "";
+  if (storedPaymentId !== "") {
+    try {
+      remotePaymentStatus = (
+        await fetchRazorpayPayment({paymentId: storedPaymentId})
+      ).status;
+    } catch (_) {
+      remotePaymentStatus = "";
+    }
+  }
+
+  await db.runTransaction(async (transaction) => {
+    const bookingSnapshot = await transaction.get(bookingRef);
+    if (!bookingSnapshot.exists) {
+      throw new HttpsError("not-found", "Booking not found.");
+    }
+    const booking = bookingSnapshot.data()!;
+    if (asTrimmedString(booking.customerId) !== uid) {
+      throw new HttpsError("permission-denied", "Only the booking owner can update payment status.");
+    }
+    if (asTrimmedString(asRecord(booking.pricing).paymentStatus) === "paid") {
+      return;
+    }
+    if (asTrimmedString(booking.status) !== "paymentPending") {
+      return;
+    }
+    if (remotePaymentStatus == "captured" || remotePaymentStatus == "refunded") {
+      return;
+    }
+
+    const nextPaymentStatus = remotePaymentStatus === "failed" ? "failed" : "pending";
+    const nextFinancialStatus = remotePaymentStatus === "failed" ? "failed" : "pending";
+
+    transaction.set(bookingRef, {
+      updatedAt: FieldValue.serverTimestamp(),
+      "pricing.paymentStatus": nextPaymentStatus,
+      lastPaymentError: {
+        code,
+        message,
+        recordedAt: FieldValue.serverTimestamp(),
+      },
+    }, {merge: true});
+    transaction.set(bookingFinancialRef, {
+      paymentStatus: nextPaymentStatus,
+      status: nextFinancialStatus,
+      lastPaymentError: {
+        code,
+        message,
+        recordedAt: FieldValue.serverTimestamp(),
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(paymentRef, {
+      paymentStatus: nextPaymentStatus,
+      status: nextFinancialStatus,
+      lastPaymentError: {
+        code,
+        message,
+        recordedAt: FieldValue.serverTimestamp(),
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+
+  return {ok: true};
+});
+
+export const razorpayWebhook = onRequest({
+  secrets: [RAZORPAY_WEBHOOK_SECRET],
+}, async (request, response) => {
+  if (request.method !== "POST") {
+    response.status(405).send("Method not allowed");
+    return;
+  }
+
+  const signature = asTrimmedString(request.header("x-razorpay-signature"));
+  if (!signature) {
+    response.status(400).send("Missing signature");
+    return;
+  }
+
+  try {
+    const rawBody = request.rawBody as Buffer | undefined;
+    if (!rawBody || !verifyRazorpayWebhookSignature({rawBody, signature})) {
+      response.status(401).send("Invalid signature");
+      return;
+    }
+
+    const payload = typeof request.body === "object" && request.body ?
+      request.body as Record<string, unknown> :
+      {};
+    const eventName = asTrimmedString(payload.event);
+    const paymentEntity = asRecord(asRecord(asRecord(payload.payload).payment).entity);
+    const refundEntity = asRecord(asRecord(asRecord(payload.payload).refund).entity);
+    const paymentId = asTrimmedString(paymentEntity.id);
+    const orderId = asTrimmedString(paymentEntity.order_id);
+    const refundId = asTrimmedString(refundEntity.id);
+    const eventKey = refundId !== "" ?
+      `${eventName}:${refundId}` :
+      `${eventName}:${paymentId || orderId}`;
+    const eventRef = db.collection("paymentWebhookEvents").doc(eventKey);
+
+    const existingEvent = await eventRef.get();
+    if (existingEvent.exists) {
+      response.status(200).send("ok");
+      return;
+    }
+
+    if (eventName === "payment.captured") {
+      const paymentQuery = paymentId ?
+        await db.collection("payments").where("razorpayPaymentId", "==", paymentId).limit(1).get() :
+        await db.collection("payments").where("razorpayOrderId", "==", orderId).limit(1).get();
+      if (!paymentQuery.empty) {
+        const paymentDoc = paymentQuery.docs[0];
+        const bookingId = paymentDoc.id;
+        const bookingRef = db.collection("bookings").doc(bookingId);
+        const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
+        const invoiceRef = db.collection("invoices").doc(bookingId);
+        const providerEarningRef = db.collection("providerEarnings").doc(bookingId);
+        await db.runTransaction(async (transaction) => {
+          const bookingSnapshot = await transaction.get(bookingRef);
+          if (!bookingSnapshot.exists) return;
+          const booking = bookingSnapshot.data() ?? {};
+          if (asTrimmedString(booking.status) !== "paymentPending") return;
+          const pricing = asRecord(booking.pricing);
+          const scheduledStartAt = booking.scheduledStartAt as Timestamp | undefined;
+          if (!scheduledStartAt) return;
+          const requestExpiresAt = computeBookingRequestExpiresAt(
+            Date.now(),
+            scheduledStartAt.toMillis(),
+          );
+          if (requestExpiresAt.toMillis() <= Date.now()) return;
+
+          const serviceAmountPaise = toInt(
+            pricing.serviceAmountPaise,
+            toInt(pricing.grossAmountPaise, 0),
+          );
+          const platformFeePaise = toInt(pricing.platformFeePaise, 0);
+          const discountAmountPaise = toInt(pricing.discountAmountPaise, 0);
+          const finalAmountPaise = toInt(
+            pricing.finalAmountPaise,
+            serviceAmountPaise + platformFeePaise - discountAmountPaise,
+          );
+          if (toInt(paymentEntity.amount, 0) != finalAmountPaise) return;
+          const currency = asTrimmedString(pricing.currency) || "INR";
+          if (asTrimmedString(paymentEntity.currency) && asTrimmedString(paymentEntity.currency) != currency) {
+            return;
+          }
+
+          const paymentConfirmedAt = Timestamp.now();
+          const graceWindow = buildGraceWindow(
+            paymentConfirmedAt.toDate(),
+            scheduledStartAt.toDate(),
+          );
+          const providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+
+          transaction.set(bookingRef, {
+            status: "requested",
+            paymentConfirmedAt,
+            paymentExpiresAt: null,
+            graceWindowMinutes: graceWindow.graceWindowMinutes,
+            graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+            updatedAt: FieldValue.serverTimestamp(),
+            "request.expiresAt": requestExpiresAt,
+            "pricing.paymentStatus": "paid",
+            "pricing.razorpayOrderId": orderId,
+            "pricing.razorpayPaymentId": paymentId,
+            "notificationState.requestNotificationSent": true,
+          }, {merge: true});
+          transaction.set(bookingFinancialRef, {
+            bookingId,
+            userId: asTrimmedString(booking.customerId),
+            providerId,
+            serviceId: asTrimmedString(booking.serviceId),
+            totalAmount: toMoneyAmount(fromPaise(finalAmountPaise)),
+            totalAmountPaise: finalAmountPaise,
+            serviceAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+            serviceAmountPaise,
+            currency,
+            razorpayPaymentId: paymentId,
+            razorpayOrderId: orderId,
+            status: "paid",
+            paymentStatus: "paid",
+            graceWindowMinutes: graceWindow.graceWindowMinutes,
+            graceWindowEndsAt: graceWindow.graceWindowEndsAt,
+            paymentConfirmedAt,
+            refundAmount: 0,
+            refundAmountPaise: 0,
+            pettxoCommissionAmount: toMoneyAmount(fromPaise(platformFeePaise)),
+            pettxoAmountPaise: platformFeePaise,
+            providerEarningAmount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+            providerAmountPaise: serviceAmountPaise,
+            discountAmount: toMoneyAmount(fromPaise(discountAmountPaise)),
+            discountAmountPaise,
+            refundPercent: 0,
+            pettxoPercent: 15,
+            providerPercent: finalAmountPaise > 0 ?
+              Math.round((serviceAmountPaise / finalAmountPaise) * 100) :
+              0,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true});
+          transaction.set(paymentDoc.ref, {
+            status: "paid",
+            paymentStatus: "paid",
+            razorpayOrderId: orderId,
+            razorpayPaymentId: paymentId,
+            paymentConfirmedAt,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true});
+          transaction.set(invoiceRef, {
+            invoiceId: bookingId,
+            bookingId,
+            userId: asTrimmedString(booking.customerId),
+            providerId,
+            serviceId: asTrimmedString(booking.serviceId),
+            status: "issued",
+            currency,
+            serviceAmountPaise,
+            platformFeePaise,
+            discountAmountPaise,
+            totalPayablePaise: finalAmountPaise,
+            taxLabel: "GST",
+            taxAmountPaise: 0,
+            taxStatus: "Not applicable",
+            issuedAt: paymentConfirmedAt,
+            createdAt: paymentConfirmedAt,
+            updatedAt: paymentConfirmedAt,
+          }, {merge: true});
+          transaction.set(providerEarningRef, {
+            bookingId,
+            providerId,
+            userId: asTrimmedString(booking.customerId),
+            serviceId: asTrimmedString(booking.serviceId),
+            amount: toMoneyAmount(fromPaise(serviceAmountPaise)),
+            amountPaise: serviceAmountPaise,
+            pettxoCommissionAmount: toMoneyAmount(fromPaise(platformFeePaise)),
+            pettxoCommissionAmountPaise: platformFeePaise,
+            totalAmount: toMoneyAmount(fromPaise(finalAmountPaise)),
+            totalAmountPaise: finalAmountPaise,
+            source: "paidBooking",
+            status: "notEligible",
+            eligibleAt: null,
+            paidAt: null,
+            createdAt: paymentConfirmedAt,
+            updatedAt: paymentConfirmedAt,
+          }, {merge: true});
+
+          queueBookingNotification({
+            transaction,
+            userId: providerId,
+            bookingId,
+            type: "bookingRequested",
+            title: "New booking request",
+            body: `${snapshotName(
+              booking.customerSnapshot,
+              "A pet parent",
+            )} requested ${serviceTitleFromBooking(booking)}.`,
+            recipientRole: "provider",
+            actorId: asTrimmedString(booking.customerId),
+            status: "requested",
+            booking: {
+              ...booking,
+              status: "requested",
+            },
+            extraData: {event: "booking_requested_webhook"},
+          });
+        });
+      }
+    } else if (eventName === "payment.failed") {
+      const paymentQuery = paymentId ?
+        await db.collection("payments").where("razorpayPaymentId", "==", paymentId).limit(1).get() :
+        await db.collection("payments").where("razorpayOrderId", "==", orderId).limit(1).get();
+      if (!paymentQuery.empty) {
+        const paymentDoc = paymentQuery.docs[0];
+        await Promise.all([
+          db.collection("bookings").doc(paymentDoc.id).set({
+            "pricing.paymentStatus": "failed",
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true}),
+          db.collection("bookingFinancials").doc(paymentDoc.id).set({
+            paymentStatus: "failed",
+            status: "failed",
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true}),
+          paymentDoc.ref.set({
+            paymentStatus: "failed",
+            status: "failed",
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true}),
+        ]);
+      }
+    } else if (eventName === "refund.processed" && refundId !== "") {
+      const refundQuery = await db
+        .collection("refunds")
+        .where("razorpayPaymentId", "==", asTrimmedString(refundEntity.payment_id))
+        .limit(5)
+        .get();
+      for (const refundDoc of refundQuery.docs) {
+        await refundDoc.ref.set({
+          status: "processed",
+          razorpayRefundId: refundId,
+          processedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
+    }
+
+    await eventRef.set({
+      event: eventName,
+      paymentId,
+      orderId,
+      refundId,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    response.status(200).send("ok");
+  } catch (error) {
+    console.error("razorpayWebhook.error", error);
+    response.status(500).send("error");
+  }
 });
 
 export const acceptBookingRequest = onCall({invoker: "public"}, async (request) => {
@@ -1984,7 +4224,10 @@ export const acceptBookingRequest = onCall({invoker: "public"}, async (request) 
   return {ok: true};
 });
 
-export const rejectBookingRequest = onCall({invoker: "public"}, async (request) => {
+export const rejectBookingRequest = onCall({
+  invoker: "public",
+  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+}, async (request) => {
   const uid = requireUid(request.auth);
   const bookingId = String(request.data?.bookingId ?? "");
   const reason = String(request.data?.reason ?? "Rejected by provider");
@@ -1993,9 +4236,16 @@ export const rejectBookingRequest = onCall({invoker: "public"}, async (request) 
   }
 
   const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingFinancialRef = db.collection("bookingFinancials").doc(bookingId);
+  const paymentRef = db.collection("payments").doc(bookingId);
+  const refundRef = db.collection("refunds").doc(bookingId);
+  let refundAmountPaise = 0;
+  let razorpayPaymentId = "";
+  let providerId = "";
 
   await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(bookingRef);
+    const bookingFinancialSnapshot = await transaction.get(bookingFinancialRef);
     if (!snapshot.exists) {
       throw new HttpsError("not-found", "Booking not found.");
     }
@@ -2013,6 +4263,13 @@ export const rejectBookingRequest = onCall({invoker: "public"}, async (request) 
       );
     }
 
+    providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+    refundAmountPaise = getBookingPaidAmountPaise(booking);
+    razorpayPaymentId = asTrimmedString(
+      bookingFinancialSnapshot.data()?.razorpayPaymentId ??
+      asRecord(booking.pricing).razorpayPaymentId,
+    );
+
     transaction.update(bookingRef, {
       status: "rejected",
       rejectedAt: FieldValue.serverTimestamp(),
@@ -2020,7 +4277,55 @@ export const rejectBookingRequest = onCall({invoker: "public"}, async (request) 
       "request.respondedAt": FieldValue.serverTimestamp(),
       "request.responseReason": reason,
       "notificationState.rejectionNotificationSent": true,
+      "pricing.paymentStatus": refundAmountPaise > 0 ? "refundPending" : "failed",
+      "payoutReadiness.status": "cancelled",
+      "payoutReadiness.reason": "Booking was rejected by the provider.",
+      "payoutReadiness.eligibleAt": null,
     });
+    transaction.set(bookingFinancialRef, {
+      paymentStatus: refundAmountPaise > 0 ? "refundPending" : "failed",
+      status: refundAmountPaise > 0 ? "refundPending" : "rejected",
+      refundAmount: toMoneyAmount(fromPaise(refundAmountPaise)),
+      refundAmountPaise,
+      providerEarningAmount: 0,
+      providerAmountPaise: 0,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(paymentRef, {
+      paymentStatus: refundAmountPaise > 0 ? "refundPending" : "failed",
+      status: refundAmountPaise > 0 ? "refundPending" : "failed",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    transaction.set(db.collection("providerEarnings").doc(bookingId), {
+      bookingId,
+      providerId,
+      userId: asTrimmedString(booking.customerId),
+      serviceId: asTrimmedString(booking.serviceId),
+      amount: 0,
+      amountPaise: 0,
+      source: "providerRejected",
+      status: "notEligible",
+      eligibleAt: null,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    if (refundAmountPaise > 0) {
+      transaction.set(refundRef, {
+        bookingId,
+        userId: asTrimmedString(booking.customerId),
+        providerId,
+        totalAmount: getBookingPaidAmount(booking),
+        totalAmountPaise: refundAmountPaise,
+        refundAmount: toMoneyAmount(fromPaise(refundAmountPaise)),
+        refundAmountPaise,
+        refundPercent: 100,
+        razorpayPaymentId,
+        reason,
+        status: "pending",
+        createdAt: FieldValue.serverTimestamp(),
+        processedAt: null,
+        error: "",
+      }, {merge: true});
+    }
 
     queueBookingNotification({
       transaction,
@@ -2050,11 +4355,49 @@ export const rejectBookingRequest = onCall({invoker: "public"}, async (request) 
     message: reason,
   });
 
+  if (refundAmountPaise > 0) {
+    const refundResult = await processRazorpayRefund({
+      bookingId,
+      refundAmount: refundAmountPaise / 100,
+      razorpayPaymentId,
+      reason,
+    });
+    await Promise.all([
+      refundRef.set({
+        status: refundResult.status,
+        razorpayRefundId: refundResult.razorpayRefundId,
+        processedAt: refundResult.processedAt,
+        error: refundResult.error,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true}),
+      bookingRef.set({
+        "pricing.paymentStatus": refundResult.status === "processed" ?
+          "refunded" :
+          refundResult.status === "failed" ? "refundFailed" : "refundPending",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true}),
+      bookingFinancialRef.set({
+        paymentStatus: refundResult.status === "processed" ? "refunded" : "refundPending",
+        status: refundResult.status === "processed" ? "refunded" : "refundPending",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true}),
+      paymentRef.set({
+        paymentStatus: refundResult.status === "processed" ? "refunded" : "refundPending",
+        status: refundResult.status === "processed" ? "refunded" : "refundPending",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true}),
+    ]);
+  }
+
   return {ok: true};
 });
 
 export const expireStaleBookingRequests = onSchedule(
-  {schedule: "every 5 minutes", timeZone: "Asia/Kolkata"},
+  {
+    schedule: "every 5 minutes",
+    timeZone: "Asia/Kolkata",
+    secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+  },
   async () => {
     const now = Timestamp.now();
     const expiredRequests = await db
@@ -2068,12 +4411,25 @@ export const expireStaleBookingRequests = onSchedule(
 
     for (const doc of expiredRequests.docs) {
       let didExpire = false;
+      let refundAmountPaise = 0;
+      let razorpayPaymentId = "";
+      let providerId = "";
       await db.runTransaction(async (transaction) => {
         const freshSnapshot = await transaction.get(doc.ref);
+        const bookingFinancialRef = db.collection("bookingFinancials").doc(doc.id);
+        const paymentRef = db.collection("payments").doc(doc.id);
+        const refundRef = db.collection("refunds").doc(doc.id);
+        const bookingFinancialSnapshot = await transaction.get(bookingFinancialRef);
         if (!freshSnapshot.exists) return;
 
         const booking = freshSnapshot.data()!;
         if (booking.status !== "requested" || !requestHasExpired(booking)) return;
+        refundAmountPaise = getBookingPaidAmountPaise(booking);
+        razorpayPaymentId = asTrimmedString(
+          bookingFinancialSnapshot.data()?.razorpayPaymentId ??
+          asRecord(booking.pricing).razorpayPaymentId,
+        );
+        providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
 
         transaction.update(doc.ref, {
           status: "expired",
@@ -2081,7 +4437,52 @@ export const expireStaleBookingRequests = onSchedule(
           updatedAt: FieldValue.serverTimestamp(),
           "request.respondedAt": FieldValue.serverTimestamp(),
           "request.responseReason": "Auto-cancelled because provider did not respond in time.",
+          "pricing.paymentStatus": refundAmountPaise > 0 ? "refundPending" : "expired",
         });
+        transaction.set(bookingFinancialRef, {
+          paymentStatus: refundAmountPaise > 0 ? "refundPending" : "expired",
+          status: refundAmountPaise > 0 ? "refundPending" : "expired",
+          refundAmount: toMoneyAmount(fromPaise(refundAmountPaise)),
+          refundAmountPaise,
+          providerEarningAmount: 0,
+          providerAmountPaise: 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(paymentRef, {
+          paymentStatus: refundAmountPaise > 0 ? "refundPending" : "expired",
+          status: refundAmountPaise > 0 ? "refundPending" : "expired",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(db.collection("providerEarnings").doc(doc.id), {
+          bookingId: doc.id,
+          providerId,
+          userId: asTrimmedString(booking.customerId),
+          serviceId: asTrimmedString(booking.serviceId),
+          amount: 0,
+          amountPaise: 0,
+          source: "providerTimeout",
+          status: "notEligible",
+          eligibleAt: null,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        if (refundAmountPaise > 0) {
+          transaction.set(refundRef, {
+            bookingId: doc.id,
+            userId: asTrimmedString(booking.customerId),
+            providerId,
+            totalAmount: getBookingPaidAmount(booking),
+            totalAmountPaise: refundAmountPaise,
+            refundAmount: toMoneyAmount(fromPaise(refundAmountPaise)),
+            refundAmountPaise,
+            refundPercent: 100,
+            razorpayPaymentId,
+            reason: "Auto-cancelled because provider did not respond in time.",
+            status: "pending",
+            createdAt: FieldValue.serverTimestamp(),
+            processedAt: null,
+            error: "",
+          }, {merge: true});
+        }
 
         queueBookingNotification({
           transaction,
@@ -2117,6 +4518,42 @@ export const expireStaleBookingRequests = onSchedule(
 
       if (didExpire) {
         expiredCount += 1;
+        if (refundAmountPaise > 0) {
+          const refundRef = db.collection("refunds").doc(doc.id);
+          const bookingFinancialRef = db.collection("bookingFinancials").doc(doc.id);
+          const paymentRef = db.collection("payments").doc(doc.id);
+          const refundResult = await processRazorpayRefund({
+            bookingId: doc.id,
+            refundAmount: refundAmountPaise / 100,
+            razorpayPaymentId,
+            reason: "Auto-cancelled because provider did not respond in time.",
+          });
+          await Promise.all([
+            refundRef.set({
+              status: refundResult.status,
+              razorpayRefundId: refundResult.razorpayRefundId,
+              processedAt: refundResult.processedAt,
+              error: refundResult.error,
+              updatedAt: FieldValue.serverTimestamp(),
+            }, {merge: true}),
+            doc.ref.set({
+              "pricing.paymentStatus": refundResult.status === "processed" ?
+                "refunded" :
+                refundResult.status === "failed" ? "refundFailed" : "refundPending",
+              updatedAt: FieldValue.serverTimestamp(),
+            }, {merge: true}),
+            bookingFinancialRef.set({
+              paymentStatus: refundResult.status === "processed" ? "refunded" : "refundPending",
+              status: refundResult.status === "processed" ? "refunded" : "refundPending",
+              updatedAt: FieldValue.serverTimestamp(),
+            }, {merge: true}),
+            paymentRef.set({
+              paymentStatus: refundResult.status === "processed" ? "refunded" : "refundPending",
+              status: refundResult.status === "processed" ? "refunded" : "refundPending",
+              updatedAt: FieldValue.serverTimestamp(),
+            }, {merge: true}),
+          ]);
+        }
         await writeBookingEvent({
           bookingId: doc.id,
           actorId: "system",
@@ -2133,7 +4570,91 @@ export const expireStaleBookingRequests = onSchedule(
   },
 );
 
-export const cancelBooking = onCall({invoker: "public"}, async (request) => {
+export const expirePendingPayments = onSchedule(
+  {schedule: "every 5 minutes", timeZone: "Asia/Kolkata"},
+  async () => {
+    const now = Timestamp.now();
+    const pendingBookings = await db
+      .collection("bookings")
+      .where("status", "==", "paymentPending")
+      .where("paymentExpiresAt", "<=", now)
+      .limit(100)
+      .get();
+
+    let expiredCount = 0;
+
+    for (const doc of pendingBookings.docs) {
+      let didExpire = false;
+      let customerId = "";
+      let providerId = "";
+      await db.runTransaction(async (transaction) => {
+        const bookingFinancialRef = db.collection("bookingFinancials").doc(doc.id);
+        const paymentRef = db.collection("payments").doc(doc.id);
+        const freshSnapshot = await transaction.get(doc.ref);
+        if (!freshSnapshot.exists) return;
+
+        const booking = freshSnapshot.data()!;
+        customerId = asTrimmedString(booking.customerId);
+        providerId = asTrimmedString(booking.serviceOwnerId ?? booking.providerId);
+        if (asTrimmedString(booking.status) !== "paymentPending") return;
+        const paymentExpiresAt = booking.paymentExpiresAt as Timestamp | undefined;
+        if (!paymentExpiresAt || paymentExpiresAt.toMillis() > Date.now()) return;
+
+        transaction.set(doc.ref, {
+          status: "paymentExpired",
+          expiredAt: FieldValue.serverTimestamp(),
+          paymentExpiresAt: null,
+          updatedAt: FieldValue.serverTimestamp(),
+          "pricing.paymentStatus": "expired",
+        }, {merge: true});
+        transaction.set(bookingFinancialRef, {
+          paymentStatus: "expired",
+          status: "expired",
+          paymentExpiresAt: null,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(paymentRef, {
+          paymentStatus: "expired",
+          status: "expired",
+          paymentExpiresAt: null,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+
+        didExpire = true;
+      });
+
+      if (didExpire) {
+        expiredCount += 1;
+        console.log(JSON.stringify({
+          event: "expirePendingPayments.expired",
+          bookingId: doc.id,
+          userId: customerId,
+          providerId,
+          razorpayOrderId: "",
+          razorpayPaymentId: "",
+          refundId: "",
+          amountPaise: 0,
+        }));
+        await writeBookingEvent({
+          bookingId: doc.id,
+          actorId: "system",
+          actorType: "system",
+          type: "paymentExpired",
+          fromStatus: "paymentPending",
+          toStatus: "paymentExpired",
+          message: "Pending payment expired after 15 minutes.",
+        });
+      }
+    }
+
+    console.log(`Expired ${expiredCount} pending booking payment(s).`);
+  },
+);
+
+export const cancelBooking = onCall({
+  invoker: "public",
+  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+}, async (request) => {
   const uid = requireUid(request.auth);
   const bookingId = String(request.data?.bookingId ?? "");
   const reason = String(request.data?.reason ?? "Cancelled by user");
@@ -2891,7 +5412,10 @@ export const completeBooking = onCall({invoker: "public"}, async (request) => {
     const customerId = asTrimmedString(booking.customerId);
     const totalAmount = getBookingPaidAmount(booking);
     const currency = getBookingCurrency(booking);
-    const standardRevenue = computeStandardRevenueBreakdown(totalAmount);
+    const standardRevenue = readStoredRevenueBreakdown(
+      asRecord(booking.pricing),
+      totalAmount,
+    );
     const payoutEligibleAt = Timestamp.fromMillis(completedAt.toMillis() + disputeWindowMs);
     const serviceRef = serviceId ? db.collection("services").doc(serviceId) : null;
     const providerRef = providerId ? db.collection("users").doc(providerId) : null;
@@ -3097,7 +5621,10 @@ export const finalizeCompletedBookingPayoutEligibility = onSchedule(
       const bookingId = doc.id;
       const totalAmount = getBookingPaidAmount(booking);
       const currency = getBookingCurrency(booking);
-      const standardRevenue = computeStandardRevenueBreakdown(totalAmount);
+      const standardRevenue = readStoredRevenueBreakdown(
+        asRecord(booking.pricing),
+        totalAmount,
+      );
       const eligibleAt = Timestamp.now();
 
       await db.runTransaction(async (transaction) => {
@@ -3195,12 +5722,16 @@ export const finalizeNoShows = onSchedule(
         if (freshServiceTime.getTime() + noShowFinalizationDelayMs > Date.now()) return;
         if (hasOtpBeenUsed(freshBooking) || hasBlockingDispute(freshBooking)) return;
         if (asTrimmedString(freshBooking.status) !== "accepted") return;
-        const pettxoAmountPaise = Math.round((totalAmountPaise * 15) / 100);
-        const providerAmountPaise = Math.max(totalAmountPaise - pettxoAmountPaise, 0);
+        const storedRevenue = readStoredRevenueBreakdown(
+          asRecord(freshBooking.pricing),
+          totalAmount,
+        );
+        const pettxoAmountPaise = storedRevenue.pettxoAmountPaise;
+        const providerAmountPaise = storedRevenue.providerAmountPaise;
         const noShowSnapshot = {
           refundPercent: 0,
-          providerPercent: 85,
-          pettxoPercent: 15,
+          providerPercent: storedRevenue.providerPercent,
+          pettxoPercent: storedRevenue.pettxoPercent,
           refundAmountPaise: 0,
           providerAmountPaise,
           pettxoAmountPaise,
@@ -3250,8 +5781,8 @@ export const finalizeNoShows = onSchedule(
           providerEarningAmount: toMoneyAmount(fromPaise(providerAmountPaise)),
           providerAmountPaise,
           refundPercent: 0,
-          pettxoPercent: 15,
-          providerPercent: 85,
+          pettxoPercent: storedRevenue.pettxoPercent,
+          providerPercent: storedRevenue.providerPercent,
           cancellationCase: "noShow",
           disputeStatus: "none",
           cancelledBy: "system",
@@ -3288,8 +5819,8 @@ export const finalizeNoShows = onSchedule(
           customerId,
           serviceId: asTrimmedString(freshBooking.serviceId),
           grossAmount: totalAmount,
-          platformFee: toMoneyAmount((totalAmount * 15) / 100),
-          providerEarnings: Math.max(totalAmount - toMoneyAmount((totalAmount * 15) / 100), 0),
+          platformFee: storedRevenue.pettxoAmount,
+          providerEarnings: storedRevenue.providerAmount,
           currency,
           status: "eligible",
           eligibilityReason: "Booking finalized as no-show.",
@@ -4147,4 +6678,716 @@ export const previewOfferForBooking = onCall(async (request) => {
     claimedOfferId,
     campaignId,
   };
+});
+
+export const createSocialNotification = onCall({invoker: "public"}, async (request) => {
+  const senderId = request.auth?.uid ?? "";
+  if (!senderId) {
+    throw new HttpsError("unauthenticated", "Sign in to continue.");
+  }
+
+  const payload = (request.data ?? {}) as Record<string, unknown>;
+  const type = String(payload.type ?? "").trim() as SocialNotificationType;
+  const recipientId = String(payload.recipientId ?? "").trim();
+  const postId = String(payload.postId ?? "").trim();
+  const commentId = String(payload.commentId ?? "").trim();
+
+  if (!socialNotificationTypes.includes(type)) {
+    throw new HttpsError("invalid-argument", "Notification type is invalid.");
+  }
+  if (!recipientId || recipientId === senderId) {
+    return {ok: true, created: false};
+  }
+
+  const senderSnapshot = await db.collection("users").doc(senderId).get();
+  if (!senderSnapshot.exists) {
+    throw new HttpsError("failed-precondition", "Sender profile not found.");
+  }
+  const senderData = senderSnapshot.data() ?? {};
+  const senderDisplayName = safeText(
+    senderData.name ?? senderData.username,
+    "Someone",
+  );
+  const senderPhotoUrl = safeText(senderData.profileImage, "");
+
+  if (type === "socialFollow") {
+    const followId = `${senderId}_${recipientId}`;
+    const followSnapshot = await db.collection("follows").doc(followId).get();
+    if (!followSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "Follow relationship not found.");
+    }
+
+    await createSocialNotificationDoc({
+      recipientId,
+      senderId,
+      senderDisplayName,
+      senderPhotoUrl,
+      type,
+      title: `${senderDisplayName} followed you`,
+      body: "See what they are sharing on Pettxo.",
+    });
+    return {ok: true, created: true};
+  }
+
+  if (!postId) {
+    throw new HttpsError("invalid-argument", "Post id is required.");
+  }
+
+  const postSnapshot = await db.collection("socialPosts").doc(postId).get();
+  if (!postSnapshot.exists) {
+    throw new HttpsError("failed-precondition", "Post not found.");
+  }
+  const postData = postSnapshot.data() ?? {};
+  const postAuthorId = String(postData.authorId ?? "").trim();
+  if (!postAuthorId || postAuthorId !== recipientId) {
+    throw new HttpsError("failed-precondition", "Recipient does not match post author.");
+  }
+
+  if (type === "socialLike") {
+    const likeSnapshot = await db
+      .collection("socialPosts")
+      .doc(postId)
+      .collection("likes")
+      .doc(senderId)
+      .get();
+    if (!likeSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "Like not found.");
+    }
+
+    await createSocialNotificationDoc({
+      recipientId,
+      senderId,
+      senderDisplayName,
+      senderPhotoUrl,
+      type,
+      title: `${senderDisplayName} liked your post`,
+      body: "Tap to see the post in your feed.",
+      postId,
+    });
+    return {ok: true, created: true};
+  }
+
+  if (!commentId) {
+    throw new HttpsError("invalid-argument", "Comment id is required.");
+  }
+
+  const commentSnapshot = await db
+    .collection("socialPosts")
+    .doc(postId)
+    .collection("comments")
+    .doc(commentId)
+    .get();
+  if (!commentSnapshot.exists) {
+    throw new HttpsError("failed-precondition", "Comment not found.");
+  }
+  const commentData = commentSnapshot.data() ?? {};
+  if (String(commentData.authorId ?? "").trim() !== senderId) {
+    throw new HttpsError("failed-precondition", "Comment author does not match sender.");
+  }
+
+  await createSocialNotificationDoc({
+    recipientId,
+    senderId,
+    senderDisplayName,
+    senderPhotoUrl,
+    type,
+    title: `${senderDisplayName} commented on your post`,
+    body: safeText(commentData.text, "Tap to see the conversation."),
+    postId,
+    commentId,
+  });
+  return {ok: true, created: true};
+});
+
+export const startProviderChat = onCall({invoker: "public"}, async (request) => {
+  const customerId = requireUid(request.auth);
+  const serviceId = asTrimmedString(request.data?.serviceId);
+
+  if (!serviceId) {
+    throw new HttpsError("invalid-argument", "serviceId is required.");
+  }
+
+  const serviceRef = db.collection("services").doc(serviceId);
+  const serviceSnapshot = await serviceRef.get();
+  if (!serviceSnapshot.exists) {
+    throw new HttpsError("not-found", "Service not found.");
+  }
+
+  const service = serviceSnapshot.data() ?? {};
+  const providerId = asTrimmedString(service.ownerUserId);
+  if (!providerId) {
+    throw new HttpsError("failed-precondition", "Service owner is missing.");
+  }
+  if (providerId === customerId) {
+    throw new HttpsError("failed-precondition", "You cannot message yourself.");
+  }
+  if (!isChatEligibleService(service)) {
+    throw new HttpsError("failed-precondition", "This service is not available for chat.");
+  }
+
+  const canonicalChatId = canonicalChatIdForPair(customerId, providerId);
+  const legacyChatRefs = legacyChatIdsForPair(customerId, providerId)
+    .filter((chatId) => chatId !== canonicalChatId)
+    .map((chatId) => db.collection("chats").doc(chatId));
+  const canonicalChatRef = db.collection("chats").doc(canonicalChatId);
+  const [canonicalBefore, ...legacySnapshots] = await Promise.all([
+    canonicalChatRef.get(),
+    ...legacyChatRefs.map((ref) => ref.get()),
+  ]);
+
+  const result = await db.runTransaction(async (transaction) => {
+    const serviceSnapshot = await transaction.get(serviceRef);
+    if (!serviceSnapshot.exists) {
+      throw new HttpsError("not-found", "Service not found.");
+    }
+
+    const service = serviceSnapshot.data() ?? {};
+    const providerId = asTrimmedString(service.ownerUserId);
+    if (!providerId) {
+      throw new HttpsError("failed-precondition", "Service owner is missing.");
+    }
+    if (providerId === customerId) {
+      throw new HttpsError("failed-precondition", "You cannot message yourself.");
+    }
+    if (!isChatEligibleService(service)) {
+      throw new HttpsError("failed-precondition", "This service is not available for chat.");
+    }
+
+    const customerRef = db.collection("users").doc(customerId);
+    const providerRef = db.collection("users").doc(providerId);
+    const customerSnapshot = await transaction.get(customerRef);
+    const providerSnapshot = await transaction.get(providerRef);
+
+    if (!customerSnapshot.exists || !providerSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "User profile not found.");
+    }
+
+    const customer = customerSnapshot.data() ?? {};
+    const provider = providerSnapshot.data() ?? {};
+    assertChatRestrictions(
+      normalizeRestrictions(customer.restrictions),
+      "Your account cannot start chats right now.",
+    );
+    assertChatRestrictions(
+      normalizeRestrictions(provider.restrictions),
+      "This provider is unavailable for chat right now.",
+    );
+
+    const chatSnapshot = await transaction.get(canonicalChatRef);
+    const now = FieldValue.serverTimestamp();
+    const serviceTitle = safeText(service.title, "Service");
+    const serviceImageUrl = chatServiceImage(service);
+    const orderedParticipantIds = [customerId, providerId].sort();
+    const leftUserId = orderedParticipantIds[0];
+    const rightUserId = orderedParticipantIds[1];
+    const leftUser = leftUserId === customerId ? customer : provider;
+    const rightUser = rightUserId === customerId ? customer : provider;
+    const basePayload = {
+      chatType: "directUser",
+      customerId: leftUserId,
+      providerId: rightUserId,
+      participantIds: orderedParticipantIds,
+      participantSnapshots: [
+        participantSnapshotForChat(leftUserId, leftUser),
+        participantSnapshotForChat(rightUserId, rightUser),
+      ],
+      customerName: displayNameFromUser(leftUser, "User"),
+      customerPhotoUrl: photoUrlFromUser(leftUser),
+      providerName: displayNameFromUser(rightUser, "User"),
+      providerPhotoUrl: photoUrlFromUser(rightUser),
+      lastServiceId: serviceId,
+      lastServiceTitle: serviceTitle,
+      lastServiceImageUrl: serviceImageUrl,
+      chatSource: "serviceDetail",
+      updatedAt: now,
+    };
+
+    if (!chatSnapshot.exists) {
+      transaction.set(canonicalChatRef, {
+        ...basePayload,
+        sourceServiceIds: [serviceId],
+        lastMessage: "",
+        lastMessageAt: now,
+        lastSenderId: "",
+        unreadCountCustomer: 0,
+        unreadCountProvider: 0,
+        customerLastReadAt: null,
+        providerLastReadAt: null,
+        status: "active",
+        createdAt: now,
+      });
+    } else {
+      transaction.set(canonicalChatRef, {
+        ...basePayload,
+        sourceServiceIds: FieldValue.arrayUnion(serviceId),
+      }, {merge: true});
+    }
+
+    return {
+      chatId: canonicalChatId,
+      createdCanonical: !chatSnapshot.exists,
+      serviceTitle,
+      serviceImageUrl,
+    };
+  });
+
+  if (!canonicalBefore.exists && legacySnapshots.some((snapshot) => snapshot.exists)) {
+    await migrateLegacyChatsToCanonical({
+      canonicalChatRef,
+      legacySnapshots,
+      extraServiceId: serviceId,
+      extraServiceTitle: result.serviceTitle,
+      extraServiceImageUrl: result.serviceImageUrl,
+    });
+  }
+
+  return {chatId: result.chatId};
+});
+
+export const startDirectUserChat = onCall({invoker: "public"}, async (request) => {
+  const currentUserId = requireUid(request.auth);
+  const otherUserId = asTrimmedString(request.data?.otherUserId);
+
+  if (!otherUserId) {
+    throw new HttpsError("invalid-argument", "otherUserId is required.");
+  }
+  if (otherUserId === currentUserId) {
+    throw new HttpsError("failed-precondition", "You cannot message yourself.");
+  }
+
+  const chatId = canonicalChatIdForPair(currentUserId, otherUserId);
+  const chatRef = db.collection("chats").doc(chatId);
+  const legacyChatRefs = legacyChatIdsForPair(currentUserId, otherUserId)
+    .filter((legacyChatId) => legacyChatId !== chatId)
+    .map((legacyChatId) => db.collection("chats").doc(legacyChatId));
+  const currentUserRef = db.collection("users").doc(currentUserId);
+  const otherUserRef = db.collection("users").doc(otherUserId);
+  const [canonicalBefore, ...legacySnapshots] = await Promise.all([
+    chatRef.get(),
+    ...legacyChatRefs.map((ref) => ref.get()),
+  ]);
+
+  const result = await db.runTransaction(async (transaction) => {
+    const [currentUserSnapshot, otherUserSnapshot, chatSnapshot] =
+      await Promise.all([
+        transaction.get(currentUserRef),
+        transaction.get(otherUserRef),
+        transaction.get(chatRef),
+      ]);
+
+    if (!currentUserSnapshot.exists || !otherUserSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "User profile not found.");
+    }
+
+    const currentUser = currentUserSnapshot.data() ?? {};
+    const otherUser = otherUserSnapshot.data() ?? {};
+    assertChatRestrictions(
+      normalizeRestrictions(currentUser.restrictions),
+      "Your account cannot start chats right now.",
+    );
+    assertChatRestrictions(
+      normalizeRestrictions(otherUser.restrictions),
+      "This user is unavailable for chat right now.",
+    );
+
+    const orderedParticipantIds = [currentUserId, otherUserId].sort();
+    const leftUserId = orderedParticipantIds[0];
+    const rightUserId = orderedParticipantIds[1];
+    const leftUser = leftUserId == currentUserId ? currentUser : otherUser;
+    const rightUser = rightUserId == currentUserId ? currentUser : otherUser;
+    const now = FieldValue.serverTimestamp();
+    const basePayload = {
+      chatType: "directUser",
+      customerId: leftUserId,
+      providerId: rightUserId,
+      participantIds: orderedParticipantIds,
+      participantSnapshots: [
+        participantSnapshotForChat(leftUserId, leftUser),
+        participantSnapshotForChat(rightUserId, rightUser),
+      ],
+      customerName: displayNameFromUser(leftUser, "User"),
+      customerPhotoUrl: photoUrlFromUser(leftUser),
+      providerName: displayNameFromUser(rightUser, "User"),
+      providerPhotoUrl: photoUrlFromUser(rightUser),
+      lastServiceId: "",
+      lastServiceTitle: "",
+      lastServiceImageUrl: "",
+      updatedAt: now,
+    };
+
+    if (!chatSnapshot.exists) {
+      transaction.set(chatRef, {
+        ...basePayload,
+        sourceServiceIds: [],
+        lastMessage: "",
+        lastMessageAt: now,
+        lastSenderId: "",
+        unreadCountCustomer: 0,
+        unreadCountProvider: 0,
+        customerLastReadAt: null,
+        providerLastReadAt: null,
+        status: "active",
+        createdAt: now,
+      });
+    } else {
+      transaction.set(chatRef, basePayload, {merge: true});
+    }
+
+    return {chatId, createdCanonical: !chatSnapshot.exists};
+  });
+
+  if (!canonicalBefore.exists && legacySnapshots.some((snapshot) => snapshot.exists)) {
+    await migrateLegacyChatsToCanonical({
+      canonicalChatRef: chatRef,
+      legacySnapshots,
+    });
+  }
+
+  return {chatId: result.chatId};
+});
+
+export const sendChatMessage = onCall({invoker: "public"}, async (request) => {
+  const senderId = requireUid(request.auth);
+  const chatId = asTrimmedString(request.data?.chatId);
+  const text = asTrimmedString(request.data?.text);
+  const requestedSourceServiceId = asTrimmedString(request.data?.sourceServiceId);
+
+  if (!chatId) {
+    throw new HttpsError("invalid-argument", "chatId is required.");
+  }
+  if (!text) {
+    throw new HttpsError("invalid-argument", "Message text is required.");
+  }
+  if (text.length > 1000) {
+    throw new HttpsError("invalid-argument", "Message text is too long.");
+  }
+
+  const chatRef = db.collection("chats").doc(chatId);
+  const senderRef = db.collection("users").doc(senderId);
+  const chatSnapshot = await chatRef.get();
+  if (!chatSnapshot.exists) {
+    throw new HttpsError("not-found", "Chat not found.");
+  }
+  const chat = chatSnapshot.data() ?? {};
+  const participantIds = Array.isArray(chat.participantIds) ?
+    chat.participantIds.map((value) => String(value)) :
+    [];
+  if (!participantIds.includes(senderId)) {
+    throw new HttpsError("permission-denied", "You are not a participant in this chat.");
+  }
+  if (asTrimmedString(chat.status) !== "active") {
+    throw new HttpsError("failed-precondition", "This chat is closed.");
+  }
+
+  const senderSnapshot = await senderRef.get();
+  if (!senderSnapshot.exists) {
+    throw new HttpsError("failed-precondition", "Sender profile not found.");
+  }
+  const sender = senderSnapshot.data() ?? {};
+  assertChatRestrictions(
+    normalizeRestrictions(sender.restrictions),
+    "Your account cannot send chat messages right now.",
+  );
+
+  const customerId = asTrimmedString(chat.customerId);
+  const providerId = asTrimmedString(chat.providerId);
+  const receiverId = senderId === customerId ? providerId : customerId;
+  if (!receiverId) {
+    throw new HttpsError("failed-precondition", "Chat receiver is missing.");
+  }
+
+  let sourceServiceId = requestedSourceServiceId || asTrimmedString(chat.lastServiceId);
+  let sourceServiceTitle = requestedSourceServiceId ? "" : asTrimmedString(chat.lastServiceTitle);
+  let lastServiceImageUrl = requestedSourceServiceId ? "" : asTrimmedString(chat.lastServiceImageUrl);
+
+  if (requestedSourceServiceId) {
+    const serviceSnapshot = await db.collection("services").doc(requestedSourceServiceId).get();
+    if (!serviceSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "Source service not found.");
+    }
+    const service = serviceSnapshot.data() ?? {};
+    const serviceOwnerId = asTrimmedString(service.ownerUserId);
+    if (!participantIds.includes(serviceOwnerId)) {
+      throw new HttpsError("failed-precondition", "Source service does not belong to this provider.");
+    }
+    sourceServiceId = requestedSourceServiceId;
+    sourceServiceTitle = safeText(service.title, "Service");
+    lastServiceImageUrl = chatServiceImage(service);
+  }
+
+  const now = FieldValue.serverTimestamp();
+  const messageRef = chatRef.collection("messages").doc();
+  const notificationRef = db
+    .collection("notifications")
+    .doc(`chat_${receiverId}_${chatId}`);
+  const senderName = senderId === customerId ?
+    safeText(chat.customerName, "Customer") :
+    safeText(chat.providerName, "Service Provider");
+
+  if (receiverId === senderId) {
+    console.info("Notification skipped", {
+      notificationId: notificationRef.id,
+      reason: "self-chat-message",
+      recipientUserId: receiverId,
+      senderUserId: senderId,
+      chatId,
+      notificationType: "chat",
+      tokenCount: 0,
+    });
+  } else {
+    console.info("Notification created", {
+      notificationId: notificationRef.id,
+      recipientUserId: receiverId,
+      senderUserId: senderId,
+      chatId,
+      notificationType: "chat",
+      tokenCount: -1,
+    });
+  }
+
+  await db.runTransaction(async (transaction) => {
+    const latestChatSnapshot = await transaction.get(chatRef);
+    if (!latestChatSnapshot.exists) {
+      throw new HttpsError("not-found", "Chat not found.");
+    }
+
+    const latestChat = latestChatSnapshot.data() ?? {};
+    if (asTrimmedString(latestChat.status) !== "active") {
+      throw new HttpsError("failed-precondition", "This chat is closed.");
+    }
+
+    const existingNotification = receiverId !== senderId ?
+      await transaction.get(notificationRef) :
+      null;
+
+    transaction.set(messageRef, {
+      senderId,
+      receiverId,
+      text,
+      type: "text",
+      createdAt: now,
+      deliveredTo: [],
+      readBy: [],
+      sourceServiceId,
+      sourceServiceTitle,
+    });
+
+    const chatUpdate: Record<string, unknown> = {
+      lastMessage: text,
+      lastMessageAt: now,
+      lastSenderId: senderId,
+      updatedAt: now,
+      lastServiceId: sourceServiceId,
+      lastServiceTitle: sourceServiceTitle,
+      lastServiceImageUrl,
+    };
+    if (sourceServiceId) {
+      chatUpdate.sourceServiceIds = FieldValue.arrayUnion(sourceServiceId);
+    }
+    if (receiverId === customerId) {
+      chatUpdate.unreadCountCustomer = FieldValue.increment(1);
+    }
+    if (receiverId === providerId) {
+      chatUpdate.unreadCountProvider = FieldValue.increment(1);
+    }
+    transaction.set(chatRef, chatUpdate, {merge: true});
+
+    if (receiverId !== senderId) {
+      if (!existingNotification) {
+        throw new HttpsError("internal", "Chat notification state missing.");
+      }
+      const notificationPayload: Record<string, unknown> = {
+        userId: receiverId,
+        recipientId: receiverId,
+        senderId,
+        senderName,
+        category: "chat",
+        type: "chat",
+        title: senderName,
+        body: text,
+        read: false,
+        isRead: false,
+        unreadCount: existingNotification.exists ?
+          FieldValue.increment(1) :
+          1,
+        serviceId: sourceServiceId,
+        chatId,
+        lastMessageId: messageRef.id,
+        data: {
+          chatId,
+          senderId,
+          senderName,
+          recipientId: receiverId,
+          receiverId,
+          serviceId: sourceServiceId,
+          type: "chat",
+          category: "chat",
+        },
+        updatedAt: now,
+      };
+      if (!existingNotification.exists) {
+        notificationPayload.createdAt = now;
+      }
+      transaction.set(notificationRef, notificationPayload, {merge: true});
+    }
+  });
+
+  return {chatId, messageId: messageRef.id};
+});
+
+export const markChatDelivered = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const chatId = asTrimmedString(request.data?.chatId);
+  if (!chatId) {
+    throw new HttpsError("invalid-argument", "chatId is required.");
+  }
+
+  const chatRef = db.collection("chats").doc(chatId);
+  const chatSnapshot = await chatRef.get();
+  if (!chatSnapshot.exists) {
+    throw new HttpsError("not-found", "Chat not found.");
+  }
+  const chat = chatSnapshot.data() ?? {};
+  const participantIds = Array.isArray(chat.participantIds) ?
+    chat.participantIds.map((value) => String(value)) :
+    [];
+  if (!participantIds.includes(uid)) {
+    throw new HttpsError("permission-denied", "You are not a participant in this chat.");
+  }
+
+  const otherUid = uid === asTrimmedString(chat.customerId) ?
+    asTrimmedString(chat.providerId) :
+    asTrimmedString(chat.customerId);
+  if (!otherUid) return {updated: 0};
+
+  const recentMessages = await chatRef
+    .collection("messages")
+    .where("senderId", "==", otherUid)
+    .orderBy("createdAt", "desc")
+    .limit(30)
+    .get();
+
+  const batch = db.batch();
+  let updated = 0;
+  for (const doc of recentMessages.docs) {
+    const deliveredTo = Array.isArray(doc.data().deliveredTo) ?
+      doc.data().deliveredTo.map((value: unknown) => String(value)) :
+      [];
+    if (deliveredTo.includes(uid)) continue;
+    batch.set(doc.ref, {
+      deliveredTo: FieldValue.arrayUnion(uid),
+    }, {merge: true});
+    updated += 1;
+  }
+
+  if (updated > 0) {
+    await batch.commit();
+  }
+  return {updated};
+});
+
+export const markChatRead = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const chatId = asTrimmedString(request.data?.chatId);
+  if (!chatId) {
+    throw new HttpsError("invalid-argument", "chatId is required.");
+  }
+
+  const chatRef = db.collection("chats").doc(chatId);
+  const chatSnapshot = await chatRef.get();
+  if (!chatSnapshot.exists) {
+    throw new HttpsError("not-found", "Chat not found.");
+  }
+  const chat = chatSnapshot.data() ?? {};
+  const customerId = asTrimmedString(chat.customerId);
+  const providerId = asTrimmedString(chat.providerId);
+  if (uid !== customerId && uid !== providerId) {
+    throw new HttpsError("permission-denied", "You are not a participant in this chat.");
+  }
+
+  const otherUid = uid === customerId ? providerId : customerId;
+  if (!otherUid) {
+    throw new HttpsError("failed-precondition", "Chat participant is missing.");
+  }
+
+  const recentMessages = await chatRef
+    .collection("messages")
+    .where("senderId", "==", otherUid)
+    .orderBy("createdAt", "desc")
+    .limit(30)
+    .get();
+
+  const batch = db.batch();
+  let updated = 0;
+  for (const doc of recentMessages.docs) {
+    const readBy = Array.isArray(doc.data().readBy) ?
+      doc.data().readBy.map((value: unknown) => String(value)) :
+      [];
+    if (readBy.includes(uid)) continue;
+    batch.set(doc.ref, {
+      readBy: FieldValue.arrayUnion(uid),
+      deliveredTo: FieldValue.arrayUnion(uid),
+    }, {merge: true});
+    updated += 1;
+  }
+
+  batch.set(chatRef, uid === customerId ? {
+    customerLastReadAt: FieldValue.serverTimestamp(),
+    unreadCountCustomer: 0,
+  } : {
+    providerLastReadAt: FieldValue.serverTimestamp(),
+    unreadCountProvider: 0,
+  }, {merge: true});
+
+  await batch.commit();
+  return {updated};
+});
+
+export const closeChat = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  assertChatMonitorPermission(admin.role);
+
+  const chatId = asTrimmedString(request.data?.chatId);
+  const reason = asTrimmedString(request.data?.reason);
+  if (!chatId) {
+    throw new HttpsError("invalid-argument", "chatId is required.");
+  }
+
+  const chatRef = db.collection("chats").doc(chatId);
+  const result = await db.runTransaction(async (transaction) => {
+    const chatSnapshot = await transaction.get(chatRef);
+    if (!chatSnapshot.exists) {
+      throw new HttpsError("not-found", "Chat not found.");
+    }
+
+    const chat = chatSnapshot.data() ?? {};
+    const previousStatus = asTrimmedString(chat.status) || "active";
+    if (previousStatus === "closed") {
+      return {status: "closed", alreadyClosed: true};
+    }
+
+    transaction.set(chatRef, {
+      status: "closed",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    transaction.set(db.collection("adminAuditLogs").doc(), {
+      action: "chat.close",
+      targetType: "chat",
+      targetId: chatId,
+      performedBy: admin.uid,
+      performedByRole: admin.role,
+      createdAt: FieldValue.serverTimestamp(),
+      metadata: {
+        previousStatus,
+        newStatus: "closed",
+        reason,
+      },
+    });
+
+    return {status: "closed", alreadyClosed: false};
+  });
+
+  return {ok: true, ...result};
 });
