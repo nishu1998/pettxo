@@ -11,10 +11,7 @@ import '../../domain/models/service_location.dart';
 class ServiceLocationPickerScreen extends StatefulWidget {
   final ServiceLocation initialLocation;
 
-  const ServiceLocationPickerScreen({
-    super.key,
-    required this.initialLocation,
-  });
+  const ServiceLocationPickerScreen({super.key, required this.initialLocation});
 
   @override
   State<ServiceLocationPickerScreen> createState() =>
@@ -143,7 +140,12 @@ class _ServiceLocationPickerScreenState
       body: Stack(
         children: [
           Padding(
-            padding: EdgeInsets.fromLTRB(16, topInset + 108, 16, bottomInset + 24),
+            padding: EdgeInsets.fromLTRB(
+              16,
+              topInset + 108,
+              16,
+              bottomInset + 24,
+            ),
             child: Column(
               children: [
                 _SearchBar(
@@ -234,59 +236,71 @@ class _ServiceLocationPickerScreenState
                 const SizedBox(height: 16),
                 GradientButton(
                   label: 'Confirm Location',
-                  onPressed: _displayAddress.trim().isEmpty ? null : _confirmLocation,
+                  onPressed: _displayAddress.trim().isEmpty
+                      ? null
+                      : _confirmLocation,
                 ),
               ],
             ),
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                  blurRadius: 22,
-                  offset: const Offset(0, 10),
-                ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Pick Location',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                      blurRadius: 22,
+                      offset: const Offset(0, 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Pick Location',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),

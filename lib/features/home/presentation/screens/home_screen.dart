@@ -7,15 +7,22 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
-import '../../../feed/data/repositories/feed_mock_repository.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/presentation/screens/offer_wall_screen.dart';
 import '../../../offers/presentation/widgets/offer_popup_dialog.dart';
-import '../../../feed/presentation/widgets/feed_post_card.dart';
+import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../profile/domain/models/user_profile.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
+import '../../../social/data/follow_repository.dart';
+import '../../../social/data/social_post_repository.dart';
+import '../../../social/domain/social_feed_ranker.dart';
+import '../../../social/domain/models/social_post_model.dart';
+import '../../../social/presentation/widgets/social_post_card.dart';
+import '../../../social/presentation/widgets/suggested_users_section.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,14 +33,46 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final OfferService _offerService = OfferService();
+  final SocialPostRepository _socialPostRepository = SocialPostRepository();
+  final FollowRepository _followRepository = FollowRepository();
+  final ProfileRepository _profileRepository = ProfileRepository();
+  final ScrollController _scrollController = ScrollController();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  late int _suggestionSeed;
+
   bool _checkedOffers = false;
+  bool _isLoadingFeed = true;
+  bool _isLoadingMore = false;
+  bool _hasMorePosts = true;
+  String? _feedError;
+  DocumentSnapshot<Map<String, dynamic>>? _lastPostDocument;
+  final List<SocialPostModel> _posts = <SocialPostModel>[];
+  List<UserProfile> _suggestedUsers = const <UserProfile>[];
+  List<RankedPost> _rankedPosts = const <RankedPost>[];
+  final Set<String> _likedPostIds = <String>{};
+  String? _userCity;
+  String? _userState;
+  final Set<String> _followingIds = <String>{};
+  final Set<String> _shownSuggestionIds = <String>{};
+  final Set<String> _userInterestTags = <String>{};
+  int _suggestionFollowRefreshCounter = 0;
 
   @override
   void initState() {
     super.initState();
+    _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
+    _scrollController.addListener(_handleScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showEligibleOffers();
     });
+    _primeRankingContext();
+    _loadInitialPosts();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _showEligibleOffers() async {
@@ -87,9 +126,319 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _primeRankingContext() async {
+    try {
+      final currentUserId = _auth.currentUser?.uid ?? '';
+      final results = await Future.wait<dynamic>([
+        _profileRepository.getCurrentUserProfile(),
+        _followRepository.fetchFollowingIds(currentUserId),
+      ]);
+      final profile = results[0] as UserProfile;
+      final followingIds = results[1] as Set<String>;
+      if (!mounted) return;
+      setState(() {
+        _userCity = profile.city;
+        _userState = profile.state;
+        _followingIds
+          ..clear()
+          ..addAll(followingIds);
+        _rankedPosts = _buildRankedPosts(_posts);
+      });
+      await _loadSuggestedUsers();
+    } catch (_) {
+      // Safe fallback: ranking works without profile context.
+    }
+  }
+
+  Future<void> _loadSuggestedUsers() async {
+    final currentUserId = _auth.currentUser?.uid ?? '';
+    if (currentUserId.isEmpty) return;
+
+    try {
+      final excludedIds = Set<String>.from(_followingIds)
+        ..addAll(_shownSuggestionIds);
+      final suggestions = await _profileRepository.fetchSuggestedUsers(
+        currentUserId: currentUserId,
+        followingIds: excludedIds,
+        city: _userCity,
+        state: _userState,
+        limit: 10,
+        seed: _suggestionSeed,
+      );
+      if (!mounted) return;
+      setState(() {
+        _suggestedUsers = suggestions;
+        _shownSuggestionIds.addAll(
+          suggestions
+              .map((profile) => profile.uid)
+              .where((id) => id.isNotEmpty),
+        );
+      });
+    } catch (_) {
+      // Suggestions are non-blocking for the home feed.
+    }
+  }
+
+  Future<void> _refreshSuggestions({bool resetSession = false}) async {
+    if (resetSession) {
+      _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
+      _shownSuggestionIds.clear();
+      _suggestionFollowRefreshCounter = 0;
+    }
+    await _loadSuggestedUsers();
+  }
+
+  Future<void> _refreshHome() async {
+    _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
+    _shownSuggestionIds.clear();
+    _suggestionFollowRefreshCounter = 0;
+    await _primeRankingContext();
+    await _loadInitialPosts();
+  }
+
+  Future<void> _loadInitialPosts() async {
+    setState(() {
+      _isLoadingFeed = true;
+      _feedError = null;
+      _hasMorePosts = true;
+      _lastPostDocument = null;
+      _likedPostIds.clear();
+    });
+
+    try {
+      final page = await _socialPostRepository.fetchVisiblePosts(limit: 10);
+      final likedPostIds = await _socialPostRepository
+          .fetchCurrentUserLikedPostIds(
+            page.posts.map((post) => post.id).toList(growable: false),
+          );
+      if (!mounted) return;
+      setState(() {
+        _posts
+          ..clear()
+          ..addAll(_dedupePosts(page.posts));
+        _likedPostIds
+          ..clear()
+          ..addAll(likedPostIds);
+        _rankedPosts = _rankInitialPosts(_posts);
+        _lastPostDocument = page.lastDocument;
+        _hasMorePosts = page.hasMore;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(
+        () => _feedError = error.toString().replaceFirst('Exception: ', ''),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingFeed = false);
+      }
+    }
+  }
+
+  Future<void> _loadMorePosts() async {
+    if (_isLoadingFeed || _isLoadingMore || !_hasMorePosts) return;
+
+    setState(() => _isLoadingMore = true);
+    try {
+      final page = await _socialPostRepository.fetchVisiblePosts(
+        startAfter: _lastPostDocument,
+        limit: 10,
+      );
+      final likedPostIds = await _socialPostRepository
+          .fetchCurrentUserLikedPostIds(
+            page.posts.map((post) => post.id).toList(growable: false),
+          );
+      final uniqueNewPosts = _dedupePosts(page.posts);
+      if (!mounted) return;
+      setState(() {
+        _posts.addAll(uniqueNewPosts);
+        _likedPostIds.addAll(likedPostIds);
+        _mergeRankedPosts(uniqueNewPosts);
+        _lastPostDocument = page.lastDocument;
+        _hasMorePosts = page.hasMore && page.posts.isNotEmpty;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: 'We could not load more posts right now.',
+        tone: AppFeedbackTone.warning,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingMore = false);
+      }
+    }
+  }
+
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    if (position.pixels >= position.maxScrollExtent - 320) {
+      _loadMorePosts();
+    }
+  }
+
+  List<SocialPostModel> _dedupePosts(List<SocialPostModel> incoming) {
+    final existingIds = _posts.map((post) => post.id).toSet();
+    final uniqueIncoming = <SocialPostModel>[];
+
+    for (final post in incoming) {
+      if (existingIds.add(post.id)) {
+        uniqueIncoming.add(post);
+      }
+    }
+
+    return uniqueIncoming;
+  }
+
+  void _handlePostUpdated(SocialPostModel updatedPost) {
+    final index = _posts.indexWhere((post) => post.id == updatedPost.id);
+    if (index == -1) return;
+
+    setState(() {
+      _posts[index] = updatedPost;
+      final rankedIndex = _rankedPosts.indexWhere(
+        (rankedPost) => rankedPost.post.id == updatedPost.id,
+      );
+      if (rankedIndex != -1) {
+        _rankedPosts[rankedIndex] = _rankedPosts[rankedIndex].copyWith(
+          post: updatedPost,
+        );
+      }
+    });
+  }
+
+  void _handleLikeChanged(String postId, bool isLiked, int newLikeCount) {
+    final index = _posts.indexWhere((post) => post.id == postId);
+    if (index == -1) return;
+
+    setState(() {
+      _posts[index] = _posts[index].copyWith(likeCount: newLikeCount);
+      final rankedIndex = _rankedPosts.indexWhere(
+        (rankedPost) => rankedPost.post.id == postId,
+      );
+      if (rankedIndex != -1) {
+        _rankedPosts[rankedIndex] = _rankedPosts[rankedIndex].copyWith(
+          post: _posts[index],
+        );
+      }
+      if (isLiked) {
+        _likedPostIds.add(postId);
+      } else {
+        _likedPostIds.remove(postId);
+      }
+    });
+  }
+
+  void _handleCommentCountChanged(String postId, int newCommentCount) {
+    final index = _posts.indexWhere((post) => post.id == postId);
+    if (index == -1) return;
+
+    setState(() {
+      _posts[index] = _posts[index].copyWith(commentCount: newCommentCount);
+      final rankedIndex = _rankedPosts.indexWhere(
+        (rankedPost) => rankedPost.post.id == postId,
+      );
+      if (rankedIndex != -1) {
+        _rankedPosts[rankedIndex] = _rankedPosts[rankedIndex].copyWith(
+          post: _posts[index],
+        );
+      }
+    });
+  }
+
+  void _handlePostDeleted(String postId) {
+    setState(() {
+      _posts.removeWhere((post) => post.id == postId);
+      _likedPostIds.remove(postId);
+      _rankedPosts = _rankedPosts
+          .where((rankedPost) => rankedPost.post.id != postId)
+          .toList(growable: false);
+    });
+  }
+
+  void _handleFollowChanged(String authorId, bool isFollowing) {
+    setState(() {
+      if (isFollowing) {
+        _followingIds.add(authorId);
+        _suggestedUsers = _suggestedUsers
+            .where((profile) => profile.uid != authorId)
+            .toList(growable: false);
+        _suggestionFollowRefreshCounter += 1;
+      } else {
+        _followingIds.remove(authorId);
+      }
+      _rankedPosts = _buildRankedPosts(_posts);
+    });
+    if (isFollowing && _suggestionFollowRefreshCounter >= 3) {
+      unawaited(_refreshSuggestions(resetSession: true));
+    }
+  }
+
+  bool get _shouldShowSuggestions =>
+      _suggestedUsers.isNotEmpty && _rankedPosts.length >= 3;
+
+  int get _suggestionsInsertIndex => _rankedPosts.length >= 5 ? 4 : 3;
+
+  int get _baseFeedItemCount =>
+      _rankedPosts.length + (_shouldShowSuggestions ? 1 : 0);
+
+  int _postIndexForFeedIndex(int feedIndex) {
+    if (!_shouldShowSuggestions || feedIndex < _suggestionsInsertIndex) {
+      return feedIndex;
+    }
+    return feedIndex - 1;
+  }
+
+  List<RankedPost> _rankInitialPosts(List<SocialPostModel> posts) {
+    return rankPosts(
+      posts: List<SocialPostModel>.from(posts),
+      currentUserId: _auth.currentUser?.uid,
+      userCity: _userCity,
+      userState: _userState,
+      followingIds: _followingIds,
+      userInterestTags: _userInterestTags,
+    );
+  }
+
+  void _mergeRankedPosts(List<SocialPostModel> newPosts) {
+    if (newPosts.isEmpty) return;
+
+    final decayedExisting = _rankedPosts
+        .map(
+          (rankedPost) => rankedPost.copyWith(score: rankedPost.score * 0.98),
+        )
+        .toList(growable: true);
+
+    final newRankedPosts = rankPosts(
+      posts: List<SocialPostModel>.from(newPosts),
+      currentUserId: _auth.currentUser?.uid,
+      userCity: _userCity,
+      userState: _userState,
+      followingIds: _followingIds,
+      userInterestTags: _userInterestTags,
+    );
+
+    decayedExisting.addAll(newRankedPosts);
+    sortRankedPostsInPlace(decayedExisting);
+    _rankedPosts = decayedExisting;
+  }
+
+  List<RankedPost> _buildRankedPosts(List<SocialPostModel> posts) {
+    return rankPosts(
+      posts: List<SocialPostModel>.from(posts),
+      currentUserId: _auth.currentUser?.uid,
+      userCity: _userCity,
+      userState: _userState,
+      followingIds: _followingIds,
+      userInterestTags: _userInterestTags,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final posts = const FeedMockRepository().getPosts();
+    final currentUserId = _auth.currentUser?.uid ?? '';
     final topInset = MediaQuery.paddingOf(context).top;
     const topBarHeight = 76.0;
     final topContentPadding = topInset + topBarHeight + 24;
@@ -102,112 +451,278 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           // The feed is painted edge-to-edge first so it can scroll behind the
           // floating header and bottom nav overlays.
-          ListView.separated(
-            padding: EdgeInsets.fromLTRB(
-              16,
-              topContentPadding,
-              16,
-              bottomContentPadding,
+          RefreshIndicator(
+            onRefresh: _refreshHome,
+            child: ListView.separated(
+              controller: _scrollController,
+              cacheExtent: 720,
+              padding: EdgeInsets.fromLTRB(
+                16,
+                topContentPadding,
+                16,
+                bottomContentPadding,
+              ),
+              physics: const BouncingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
+              ),
+              itemCount: _feedItemCount,
+              separatorBuilder: (context, index) => const SizedBox(height: 18),
+              itemBuilder: (context, index) {
+                if (_isLoadingFeed) {
+                  return const _FeedLoadingCard();
+                }
+                if (_feedError != null) {
+                  return _FeedStatusCard(
+                    title: 'Could not load the feed',
+                    message: _feedError!,
+                    actionLabel: 'Try Again',
+                    onPressed: _loadInitialPosts,
+                  );
+                }
+                if (_rankedPosts.isEmpty) {
+                  return const _FeedStatusCard(
+                    title: 'No posts yet',
+                    message:
+                        'The home feed will start filling up once the first Pettxo posts are published.',
+                  );
+                }
+                if (_shouldShowSuggestions &&
+                    index == _suggestionsInsertIndex) {
+                  return SuggestedUsersSection(
+                    users: _suggestedUsers,
+                    currentUserId: currentUserId,
+                    followRepository: _followRepository,
+                    onFollowed: (userId) => _handleFollowChanged(userId, true),
+                  );
+                }
+                if (index >= _baseFeedItemCount) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final rankedPost = _rankedPosts[_postIndexForFeedIndex(index)];
+                return SocialPostCard(
+                  key: ValueKey(rankedPost.post.id),
+                  post: rankedPost.post,
+                  rankingReason: rankedPost.reason,
+                  currentUserId: currentUserId,
+                  initiallyLiked: _likedPostIds.contains(rankedPost.post.id),
+                  initiallyFollowing: _followingIds.contains(
+                    rankedPost.post.authorId,
+                  ),
+                  repository: _socialPostRepository,
+                  followRepository: _followRepository,
+                  onPostUpdated: _handlePostUpdated,
+                  onPostDeleted: _handlePostDeleted,
+                  onLikeChanged: _handleLikeChanged,
+                  onCommentCountChanged: _handleCommentCountChanged,
+                  onFollowChanged: _handleFollowChanged,
+                );
+              },
             ),
-            itemCount: posts.length,
-            separatorBuilder: (context, index) => const SizedBox(height: 18),
-            itemBuilder: (context, index) {
-              return FeedPostCard(post: posts[index]);
-            },
           ),
           // Safe-area spacing is applied to the overlay itself instead of the
           // whole body, which keeps the status bar clear while still letting
           // content pass underneath the bar as the user scrolls.
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                  blurRadius: 22,
-                  offset: const Offset(0, 10),
-                ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFFFFE9DD), Color(0xFFFFF3EC)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: IconButton(
-                      onPressed: () {
-                        if (!UserRestrictionService.instance
-                            .ensureCanUseSocialFeatures(context)) {
-                          return;
-                        }
-                        Navigator.pushNamed(context, "/create");
-                      },
-                      icon: const Icon(
-                        Icons.add_rounded,
-                        color: AppColors.primary,
-                        size: 24,
-                      ),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const Spacer(),
-                  Row(
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                      blurRadius: 22,
+                      offset: const Offset(0, 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                  child: Row(
                     children: [
-                      SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: SvgPicture.asset(
-                          'assets/brand/pettxo_logo.svg',
-                          fit: BoxFit.cover,
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFFFFE9DD), Color(0xFFFFF3EC)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: IconButton(
+                          onPressed: () async {
+                            if (!UserRestrictionService.instance
+                                .ensureCanUseSocialFeatures(context)) {
+                              return;
+                            }
+                            final created = await Navigator.pushNamed(
+                              context,
+                              "/create",
+                            );
+                            if (!context.mounted) return;
+                            if (created is SocialPostModel) {
+                              await _loadInitialPosts();
+                              if (!context.mounted) return;
+                              AppFeedback.show(
+                                context,
+                                message: 'Post published successfully.',
+                                tone: AppFeedbackTone.success,
+                              );
+                            }
+                          },
+                          icon: const Icon(
+                            Icons.add_rounded,
+                            color: AppColors.primary,
+                            size: 24,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        "Pettxo",
-                        style: TextStyle(
-                          color: AppColors.primary,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: -0.4,
+                      const Spacer(),
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 28,
+                            height: 28,
+                            child: SvgPicture.asset(
+                              'assets/brand/pettxo_logo.svg',
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Pettxo",
+                            style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
                         ),
+                        child: const _NotificationsBellButton(),
                       ),
                     ],
                   ),
-                  const Spacer(),
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const _NotificationsBellButton(),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
         ],
       ),
       bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.home),
+    );
+  }
+
+  int get _feedItemCount {
+    if (_isLoadingFeed || _feedError != null || _rankedPosts.isEmpty) {
+      return 1;
+    }
+    return _baseFeedItemCount + (_isLoadingMore ? 1 : 0);
+  }
+}
+
+class _FeedStatusCard extends StatelessWidget {
+  final String title;
+  final String message;
+  final String? actionLabel;
+  final Future<void> Function()? onPressed;
+
+  const _FeedStatusCard({
+    required this.title,
+    required this.message,
+    this.actionLabel,
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 19,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              height: 1.5,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          if (actionLabel != null && onPressed != null) ...[
+            const SizedBox(height: 16),
+            SecondaryButton(
+              label: actionLabel!,
+              expand: false,
+              onPressed: () => onPressed!.call(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _FeedLoadingCard extends StatelessWidget {
+  const _FeedLoadingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 24),
+          child: CircularProgressIndicator(),
+        ),
+      ),
     );
   }
 }

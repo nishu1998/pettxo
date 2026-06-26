@@ -3,6 +3,7 @@ class FeedPost {
   final String username;
   final String roleLabel;
   final String mediaUrl;
+  final int createdAtEpoch;
   final String caption;
   final int likesCount;
   final int commentsCount;
@@ -14,6 +15,7 @@ class FeedPost {
     required this.username,
     required this.roleLabel,
     required this.mediaUrl,
+    required this.createdAtEpoch,
     required this.caption,
     required this.likesCount,
     required this.commentsCount,

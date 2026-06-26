@@ -11,6 +11,7 @@ class FeedMockRepository {
         roleLabel: "Provider",
         mediaUrl:
             "https://images.unsplash.com/photo-1517849845537-4d257902454a?auto=format&fit=crop&w=1200&q=80",
+        createdAtEpoch: 0,
         caption:
             "Fresh grooming session with this cutie. Book your appointment today.",
         likesCount: 124,
@@ -24,6 +25,7 @@ class FeedMockRepository {
         roleLabel: "Pet Parent",
         mediaUrl:
             "https://images.unsplash.com/photo-1548199973-03cce0bbc87b?auto=format&fit=crop&w=1200&q=80",
+        createdAtEpoch: 0,
         caption:
             "Morning park run, extra zoomies, and a lot of mud. Worth it every time.",
         likesCount: 296,
@@ -36,6 +38,7 @@ class FeedMockRepository {
         roleLabel: "Pet Lover",
         mediaUrl:
             "https://images.unsplash.com/photo-1519052537078-e6302a4968d4?auto=format&fit=crop&w=1200&q=80",
+        createdAtEpoch: 0,
         caption:
             "Weekend adoption meetup was full of happy tails, warm cuddles, and so much love.",
         likesCount: 412,

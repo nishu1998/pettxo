@@ -856,56 +856,63 @@ class _AddServiceBookingSetupScreenState
               ],
             ),
             Positioned(
-              left: 16,
-              right: 16,
+              left: 0,
+              right: 0,
               top: topInset + 10,
-              child: GlassSurface(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 14,
-                ),
-                borderRadius: BorderRadius.circular(24),
-                backgroundColor: Colors.white.withValues(alpha: 0.72),
-                blurSigma: 20,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.06),
-                    blurRadius: 22,
-                    offset: const Offset(0, 10),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 18,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-                child: Row(
-                  children: [
-                    Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.56),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back_rounded),
-                      ),
+              child: Align(
+                child: FractionallySizedBox(
+                  widthFactor: 0.85,
+                  child: GlassSurface(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 11,
                     ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Booking Setup',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
+                    borderRadius: BorderRadius.circular(24),
+                    backgroundColor: Colors.white.withValues(alpha: 0.72),
+                    blurSigma: 20,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.62),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withValues(alpha: 0.06),
+                        blurRadius: 22,
+                        offset: const Offset(0, 10),
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.05),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.56),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Booking Setup',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),

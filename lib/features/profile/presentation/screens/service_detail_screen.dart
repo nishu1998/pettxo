@@ -7,11 +7,14 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../bookings/data/repositories/booking_review_repository.dart';
 import '../../../bookings/domain/models/booking_review_model.dart';
 import '../../../bookings/presentation/screens/slot_selection_screen.dart';
+import '../../../messages/data/repositories/chat_repository.dart';
+import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../../moderation/presentation/widgets/report_sheet.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/profile_service_listing.dart';
@@ -29,6 +32,16 @@ class ServiceDetailScreen extends StatelessWidget {
   });
 
   void _openBookingFlow(BuildContext context) {
+    if (service.isPausedByVerification) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This service is temporarily unavailable while provider verification is pending.',
+          ),
+        ),
+      );
+      return;
+    }
     if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
       return;
     }
@@ -69,6 +82,8 @@ class ServiceDetailScreen extends StatelessWidget {
     final isOwner =
         currentUserId.isNotEmpty && currentUserId == service.ownerUserId;
     final canBook = currentUserId.isNotEmpty && !isOwner;
+    final isVerificationPaused = service.isPausedByVerification;
+    final canRequestBooking = canBook && !isVerificationPaused;
 
     return Scaffold(
       backgroundColor: const Color(0xFFFCF8F5),
@@ -84,7 +99,7 @@ class ServiceDetailScreen extends StatelessWidget {
             children: [
               _ServiceHero(
                 service: service,
-                canBook: canBook,
+                canBook: canRequestBooking,
                 isOwner: isOwner,
                 showRebookHint: showRebookHint,
                 onBookNow: () => _openBookingFlow(context),
@@ -223,69 +238,185 @@ class ServiceDetailScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 22),
+              if (canBook && isVerificationPaused)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 18),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF5F0),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: AppColors.primary.withValues(alpha: 0.16),
+                    ),
+                  ),
+                  child: const Text(
+                    'This service is temporarily unavailable while provider verification is pending.',
+                    style: TextStyle(
+                      color: AppColors.textDark,
+                      height: 1.45,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
               if (canBook)
-                GradientButton(
-                  label: 'Book Now',
-                  icon: Icons.calendar_month_rounded,
-                  onPressed: () => _openBookingFlow(context),
+                Column(
+                  children: [
+                    GradientButton(
+                      label: isVerificationPaused
+                          ? 'Temporarily Unavailable'
+                          : 'Book Now',
+                      icon: Icons.calendar_month_rounded,
+                      onPressed: canRequestBooking
+                          ? () => _openBookingFlow(context)
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    _MessageProviderButton(
+                      service: service,
+                      enabled: canRequestBooking,
+                    ),
+                  ],
                 ),
             ],
           ),
           Positioned(
-            left: 16,
-            right: 16,
+            left: 0,
+            right: 0,
             top: topInset + 10,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(24),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                  blurRadius: 22,
-                  offset: const Offset(0, 10),
-                ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+            child: Align(
+              child: FractionallySizedBox(
+                widthFactor: 0.85,
+                child: GlassSurface(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      service.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
+                  borderRadius: BorderRadius.circular(24),
+                  backgroundColor: Colors.white.withValues(alpha: 0.72),
+                  blurSigma: 20,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.62),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.06),
+                      blurRadius: 22,
+                      offset: const Offset(0, 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.56),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          service.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MessageProviderButton extends StatefulWidget {
+  const _MessageProviderButton({required this.service, required this.enabled});
+
+  final ProfileServiceListing service;
+  final bool enabled;
+
+  @override
+  State<_MessageProviderButton> createState() => _MessageProviderButtonState();
+}
+
+class _MessageProviderButtonState extends State<_MessageProviderButton> {
+  final ChatRepository _chatRepository = ChatRepository();
+  bool _isOpening = false;
+
+  Future<void> _openChat() async {
+    if (_isOpening) return;
+    if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
+      return;
+    }
+
+    debugPrint(
+      'ServiceDetail Message debug -> serviceId=${widget.service.id}, '
+      'ownerUserId=${widget.service.ownerUserId}, '
+      'currentUserId=${FirebaseAuth.instance.currentUser?.uid ?? ''}, '
+      'isPaused=${widget.service.isPaused}, '
+      'isPausedByVerification=${widget.service.isPausedByVerification}, '
+      'title=${widget.service.title}',
+    );
+
+    setState(() => _isOpening = true);
+    try {
+      final chatId = await _chatRepository.startProviderChat(
+        serviceId: widget.service.id,
+      );
+      debugPrint('ServiceDetail Message debug -> opened chatId=$chatId');
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'ServiceDetail Message debug -> exception=$error\n$stackTrace',
+      );
+      if (!mounted) return;
+      final raw = error.toString();
+      final message = raw.contains('message yourself')
+          ? 'You cannot message yourself.'
+          : raw.contains('not available for chat')
+          ? 'This service is not available for chat right now.'
+          : raw.contains('cannot start chats')
+          ? 'Your account cannot start chats right now.'
+          : raw.contains('provider is unavailable')
+          ? 'This provider is unavailable for chat right now.'
+          : 'Unable to open chat right now.';
+      AppFeedback.show(context, message: message, tone: AppFeedbackTone.error);
+    } finally {
+      if (mounted) {
+        setState(() => _isOpening = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SecondaryButton(
+      label: _isOpening ? 'Opening chat...' : 'Message Provider',
+      icon: Icons.chat_bubble_outline_rounded,
+      onPressed: widget.enabled && !_isOpening ? _openChat : null,
     );
   }
 }
@@ -307,6 +438,8 @@ class _ServiceHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showVerificationPauseMessage =
+        !isOwner && service.isPausedByVerification;
     return Container(
       decoration: BoxDecoration(
         gradient: const LinearGradient(
@@ -439,6 +572,32 @@ class _ServiceHero extends StatelessWidget {
                     color: AppColors.primary,
                     fontWeight: FontWeight.w800,
                     fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          if (showVerificationPauseMessage)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 13,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF5F0),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.14),
+                  ),
+                ),
+                child: const Text(
+                  'This service is temporarily unavailable while provider verification is pending.',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w700,
+                    height: 1.4,
                   ),
                 ),
               ),

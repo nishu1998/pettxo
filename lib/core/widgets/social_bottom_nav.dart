@@ -14,7 +14,7 @@ class SocialBottomNav extends StatefulWidget {
   /// Keeps trailing content reachable while still allowing the body to paint
   /// behind the floating bottom bar.
   static double contentBottomPadding(BuildContext context) {
-    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
     final compact = MediaQuery.sizeOf(context).width < 380;
     return (compact ? 124.0 : 132.0) + bottomInset;
   }
@@ -122,8 +122,9 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                       style: TextStyle(
                         color: color,
                         fontSize: labelFontSize,
-                        fontWeight:
-                            isActive ? FontWeight.w700 : FontWeight.w500,
+                        fontWeight: isActive
+                            ? FontWeight.w700
+                            : FontWeight.w500,
                         letterSpacing: -0.1,
                       ),
                     ),
@@ -228,7 +229,8 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                   IgnorePointer(
                                     child: Transform.rotate(
                                       angle:
-                                          _orbitController.value * 6.28318530718,
+                                          _orbitController.value *
+                                          6.28318530718,
                                       child: SizedBox(
                                         width: centerOrbitSize,
                                         height: centerOrbitSize,
@@ -259,7 +261,9 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                                   shape: BoxShape.circle,
                                                   border: Border.all(
                                                     color: AppColors.primary
-                                                        .withValues(alpha: 0.34),
+                                                        .withValues(
+                                                          alpha: 0.34,
+                                                        ),
                                                     width: 1,
                                                   ),
                                                 ),
@@ -292,7 +296,9 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                                   shape: BoxShape.circle,
                                                   border: Border.all(
                                                     color: Colors.white
-                                                        .withValues(alpha: 0.92),
+                                                        .withValues(
+                                                          alpha: 0.92,
+                                                        ),
                                                     width: 0.8,
                                                   ),
                                                 ),
@@ -310,7 +316,9 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                       gradient: AppColors.brandGradientDiagonal,
                                       shape: BoxShape.circle,
                                       border: Border.all(
-                                        color: Colors.white.withValues(alpha: 0.98),
+                                        color: Colors.white.withValues(
+                                          alpha: 0.98,
+                                        ),
                                         width: 4,
                                       ),
                                       boxShadow: [
@@ -344,7 +352,9 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                   "Services",
                                   maxLines: 1,
                                   style: TextStyle(
-                                    color: widget.activeTab == SocialAppTab.services
+                                    color:
+                                        widget.activeTab ==
+                                            SocialAppTab.services
                                         ? AppColors.primary
                                         : const Color(0xFF9A948E),
                                     fontSize: centerLabelFontSize,
@@ -388,10 +398,6 @@ class _OrbitDot extends StatelessWidget {
     final dx = center + math.cos(angle - (math.pi / 2)) * radius;
     final dy = center + math.sin(angle - (math.pi / 2)) * radius;
 
-    return Positioned(
-      left: dx,
-      top: dy,
-      child: child,
-    );
+    return Positioned(left: dx, top: dy, child: child);
   }
 }

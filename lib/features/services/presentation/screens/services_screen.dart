@@ -112,132 +112,160 @@ class _ServicesScreenState extends State<ServicesScreen> {
   void _showFiltersSheet() {
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
         var draftRadius = _selectedRadius;
         return StatefulBuilder(
           builder: (context, setSheetState) {
+            final mediaQuery = MediaQuery.of(context);
+            final maxSheetHeight = mediaQuery.size.height * 0.82;
             return SafeArea(
               top: false,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(28),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.08),
-                        blurRadius: 28,
-                        offset: const Offset(0, 14),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Filters',
-                        style: TextStyle(
-                          color: AppColors.textDark,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxSheetHeight),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(28),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 28,
+                          offset: const Offset(0, 14),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Radius',
-                        style: TextStyle(
-                          color: AppColors.textGrey,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w700,
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Filters',
+                          style: TextStyle(
+                            color: AppColors.textDark,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      ..._DiscoveryRadiusFilter.values.map((option) {
-                        final isSelected = draftRadius == option;
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(18),
-                            onTap: () {
-                              setSheetState(() => draftRadius = option);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 14,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? const Color(0xFFFFF1EA)
-                                    : const Color(0xFFFFFCFA),
-                                borderRadius: BorderRadius.circular(18),
-                                border: Border.all(
-                                  color: isSelected
-                                      ? AppColors.primary.withValues(alpha: 0.28)
-                                      : AppColors.primary.withValues(alpha: 0.08),
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      option.label,
-                                      style: TextStyle(
-                                        color: AppColors.textDark,
-                                        fontSize: 14.5,
-                                        fontWeight: isSelected
-                                            ? FontWeight.w800
-                                            : FontWeight.w700,
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Radius',
+                          style: TextStyle(
+                            color: AppColors.textGrey,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Flexible(
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: _DiscoveryRadiusFilter.values
+                                  .map((option) {
+                                    final isSelected = draftRadius == option;
+                                    return Padding(
+                                      padding: const EdgeInsets.only(
+                                        bottom: 10,
                                       ),
-                                    ),
-                                  ),
-                                  Icon(
-                                    isSelected
-                                        ? Icons.radio_button_checked_rounded
-                                        : Icons.radio_button_off_rounded,
-                                    color: isSelected
-                                        ? AppColors.primary
-                                        : AppColors.textGrey,
-                                  ),
-                                ],
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(18),
+                                        onTap: () {
+                                          setSheetState(
+                                            () => draftRadius = option,
+                                          );
+                                        },
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 14,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: isSelected
+                                                ? const Color(0xFFFFF1EA)
+                                                : const Color(0xFFFFFCFA),
+                                            borderRadius: BorderRadius.circular(
+                                              18,
+                                            ),
+                                            border: Border.all(
+                                              color: isSelected
+                                                  ? AppColors.primary
+                                                        .withValues(alpha: 0.28)
+                                                  : AppColors.primary
+                                                        .withValues(
+                                                          alpha: 0.08,
+                                                        ),
+                                            ),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  option.label,
+                                                  style: TextStyle(
+                                                    color: AppColors.textDark,
+                                                    fontSize: 14.5,
+                                                    fontWeight: isSelected
+                                                        ? FontWeight.w800
+                                                        : FontWeight.w700,
+                                                  ),
+                                                ),
+                                              ),
+                                              Icon(
+                                                isSelected
+                                                    ? Icons
+                                                          .radio_button_checked_rounded
+                                                    : Icons
+                                                          .radio_button_off_rounded,
+                                                color: isSelected
+                                                    ? AppColors.primary
+                                                    : AppColors.textGrey,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  })
+                                  .toList(growable: false),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SecondaryButton(
+                                label: 'Clear Filters',
+                                onPressed: () {
+                                  setState(() {
+                                    _selectedRadius =
+                                        _DiscoveryRadiusFilter.smart;
+                                  });
+                                  Navigator.pop(context);
+                                },
                               ),
                             ),
-                          ),
-                        );
-                      }),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: SecondaryButton(
-                              label: 'Clear Filters',
-                              onPressed: () {
-                                setState(() {
-                                  _selectedRadius = _DiscoveryRadiusFilter.smart;
-                                });
-                                Navigator.pop(context);
-                              },
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: GradientButton(
+                                label: 'Apply',
+                                onPressed: () {
+                                  setState(() {
+                                    _selectedRadius = draftRadius;
+                                  });
+                                  Navigator.pop(context);
+                                },
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: GradientButton(
-                              label: 'Apply',
-                              onPressed: () {
-                                setState(() {
-                                  _selectedRadius = draftRadius;
-                                });
-                                Navigator.pop(context);
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -248,13 +276,16 @@ class _ServicesScreenState extends State<ServicesScreen> {
     );
   }
 
-  _DiscoveryPresentation _buildDiscoveryPresentation(List<ServiceModel> services) {
+  _DiscoveryPresentation _buildDiscoveryPresentation(
+    List<ServiceModel> services,
+  ) {
     final userLatitude = _userLatitude;
     final userLongitude = _userLongitude;
     final hasUserLocation = userLatitude != null && userLongitude != null;
     final normalizedQuery = _searchQuery.trim().toLowerCase();
     final normalizedCity = _currentUserProfile?.city.trim().toLowerCase() ?? '';
-    final normalizedState = _currentUserProfile?.state.trim().toLowerCase() ?? '';
+    final normalizedState =
+        _currentUserProfile?.state.trim().toLowerCase() ?? '';
 
     final searchedServices = normalizedQuery.isEmpty
         ? services
@@ -344,12 +375,16 @@ class _ServicesScreenState extends State<ServicesScreen> {
     if (selectedRadiusKm != null && hasUserLocation) {
       final insideRadius = ranked
           .where(
-            (entry) => entry.distanceKm != null && entry.distanceKm! <= selectedRadiusKm,
+            (entry) =>
+                entry.distanceKm != null &&
+                entry.distanceKm! <= selectedRadiusKm,
           )
           .toList(growable: false);
       final outsideRadius = ranked
           .where(
-            (entry) => entry.distanceKm == null || entry.distanceKm! > selectedRadiusKm,
+            (entry) =>
+                entry.distanceKm == null ||
+                entry.distanceKm! > selectedRadiusKm,
           )
           .toList(growable: false);
 
@@ -419,7 +454,8 @@ class _ServicesScreenState extends State<ServicesScreen> {
   }) {
     final serviceCity = service.city.trim().toLowerCase();
     final serviceState = service.state.trim().toLowerCase();
-    final cityMatches = normalizedCity.isNotEmpty && serviceCity == normalizedCity;
+    final cityMatches =
+        normalizedCity.isNotEmpty && serviceCity == normalizedCity;
     final stateMatches =
         normalizedState.isNotEmpty && serviceState == normalizedState;
     return cityMatches || stateMatches;
@@ -444,7 +480,9 @@ class _ServicesScreenState extends State<ServicesScreen> {
             stream: _servicesStream,
             builder: (context, snapshot) {
               final services = snapshot.data ?? const <ServiceModel>[];
-              final discoveryPresentation = _buildDiscoveryPresentation(services);
+              final discoveryPresentation = _buildDiscoveryPresentation(
+                services,
+              );
               if (kDebugMode) {
                 debugPrint(
                   'Services discovery debug -> loaded service count: ${services.length}',
@@ -508,42 +546,43 @@ class _ServicesScreenState extends State<ServicesScreen> {
                       message:
                           'Services will appear here after people publish listings in your marketplace.',
                     )
-                  else
-                    ...[
-                      if (discoveryPresentation.helperMessage != null)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 14),
-                          child: _DiscoveryInfoBanner(
-                            message: discoveryPresentation.helperMessage!,
-                          ),
+                  else ...[
+                    if (discoveryPresentation.helperMessage != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: _DiscoveryInfoBanner(
+                          message: discoveryPresentation.helperMessage!,
                         ),
-                      ...discoveryPresentation.primaryServices.map((entry) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 16),
-                          child: _MarketplaceServiceCard(service: entry.service),
-                        );
-                      }),
-                      if (discoveryPresentation.secondaryServices.isNotEmpty) ...[
-                        if (discoveryPresentation.secondaryTitle != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4, bottom: 14),
-                            child: Text(
-                              discoveryPresentation.secondaryTitle!,
-                              style: const TextStyle(
-                                color: AppColors.textDark,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                              ),
+                      ),
+                    ...discoveryPresentation.primaryServices.map((entry) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: _MarketplaceServiceCard(service: entry.service),
+                      );
+                    }),
+                    if (discoveryPresentation.secondaryServices.isNotEmpty) ...[
+                      if (discoveryPresentation.secondaryTitle != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4, bottom: 14),
+                          child: Text(
+                            discoveryPresentation.secondaryTitle!,
+                            style: const TextStyle(
+                              color: AppColors.textDark,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
-                        ...discoveryPresentation.secondaryServices.map((entry) {
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 16),
-                            child: _MarketplaceServiceCard(service: entry.service),
-                          );
-                        }),
-                      ],
+                        ),
+                      ...discoveryPresentation.secondaryServices.map((entry) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _MarketplaceServiceCard(
+                            service: entry.service,
+                          ),
+                        );
+                      }),
                     ],
+                  ],
                 ],
               );
             },
@@ -732,11 +771,11 @@ class _ServiceSearchAndFilters extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           SizedBox(
-            height: 46,
+            height: 40,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: categories.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
                 final category = categories[index];
                 return _CategoryChip(
@@ -812,7 +851,7 @@ class _CategoryChip extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
           gradient: isActive ? AppColors.brandGradient : null,
           color: isActive ? null : const Color(0xFFFFF4E8),
@@ -823,7 +862,7 @@ class _CategoryChip extends StatelessWidget {
           style: TextStyle(
             color: isActive ? Colors.white : AppColors.textDark,
             fontWeight: FontWeight.w700,
-            fontSize: 14,
+            fontSize: 13,
           ),
         ),
       ),

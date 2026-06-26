@@ -51,13 +51,7 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
       'Nail Trimming',
       'Other',
     ],
-    'Bird': [
-      'Grooming',
-      'Sitting',
-      'Vet Visit',
-      'Wing Clipping',
-      'Other',
-    ],
+    'Bird': ['Grooming', 'Sitting', 'Vet Visit', 'Wing Clipping', 'Other'],
     'Rabbit': ['Grooming', 'Sitting', 'Vet Visit', 'Other'],
     'Guinea Pig': ['Grooming', 'Sitting', 'Vet Visit', 'Other'],
     'Hamster': ['Grooming', 'Sitting', 'Vet Visit', 'Other'],
@@ -157,7 +151,9 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
     _serviceNameController.addListener(_handleServiceNameEdit);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
+      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(
+        context,
+      )) {
         Navigator.pushReplacementNamed(context, "/profile");
       }
     });
@@ -262,13 +258,15 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
 
     setState(() {
       _animalError = _selectedAnimal == null ? 'Animal type is required' : null;
-      _customAnimalError = _isOtherAnimal &&
-              _customAnimalController.text.trim().isEmpty
+      _customAnimalError =
+          _isOtherAnimal && _customAnimalController.text.trim().isEmpty
           ? 'Please specify the animal'
           : null;
-      _categoryError = _selectedCategory == null ? 'Category is required' : null;
-      _customCategoryError = _isOtherCategory &&
-              _customCategoryController.text.trim().isEmpty
+      _categoryError = _selectedCategory == null
+          ? 'Category is required'
+          : null;
+      _customCategoryError =
+          _isOtherCategory && _customCategoryController.text.trim().isEmpty
           ? 'Please enter a custom category'
           : null;
       _serviceNameError = serviceName.isEmpty
@@ -437,10 +435,13 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
 
     final draft = ServiceDetailsDraft(
       animalType: _selectedAnimal!,
-      customAnimalType: _isOtherAnimal ? _customAnimalController.text.trim() : null,
+      customAnimalType: _isOtherAnimal
+          ? _customAnimalController.text.trim()
+          : null,
       category: _selectedCategory!,
-      customCategory:
-          _isOtherCategory ? _customCategoryController.text.trim() : null,
+      customCategory: _isOtherCategory
+          ? _customCategoryController.text.trim()
+          : null,
       serviceName: _serviceNameController.text.trim(),
       pricePerSession: int.parse(_priceController.text.trim()),
       description: _descriptionController.text.trim(),
@@ -492,14 +493,16 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
                       focusNode: _animalFocusNode,
                       options: _animalOptions,
                       errorText: _animalError,
-                      isHighlighted: _highlightedField == _ServiceDetailsField.animal,
+                      isHighlighted:
+                          _highlightedField == _ServiceDetailsField.animal,
                       noResultsText:
                           'Not listed? Select Other and type your animal below.',
                       onSelected: _onAnimalSelected,
                       onChanged: () {
                         setState(() {
                           _animalError = null;
-                          if (_highlightedField == _ServiceDetailsField.animal) {
+                          if (_highlightedField ==
+                              _ServiceDetailsField.animal) {
                             _clearHighlight();
                           }
                         });
@@ -515,7 +518,8 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
                         hintText: 'e.g. Monkey, Parrot, Snake',
                         errorText: _customAnimalError,
                         isHighlighted:
-                            _highlightedField == _ServiceDetailsField.customAnimal,
+                            _highlightedField ==
+                            _ServiceDetailsField.customAnimal,
                         maxLength: 30,
                         onChanged: (_) {
                           setState(() {
@@ -560,7 +564,8 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
                         label: 'Custom category',
                         hintText: 'e.g. Pet taxi, Aquarium cleaning',
                         errorText: _customCategoryError,
-                        isHighlighted: _highlightedField ==
+                        isHighlighted:
+                            _highlightedField ==
                             _ServiceDetailsField.customCategory,
                         maxLength: 30,
                         onChanged: (_) {
@@ -670,53 +675,63 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
               ],
             ),
             Positioned(
-              left: 16,
-              right: 16,
+              left: 0,
+              right: 0,
               top: topInset + 10,
-              child: GlassSurface(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                borderRadius: BorderRadius.circular(24),
-                backgroundColor: Colors.white.withValues(alpha: 0.72),
-                blurSigma: 20,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.06),
-                    blurRadius: 22,
-                    offset: const Offset(0, 10),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 18,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-                child: Row(
-                  children: [
-                    Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.56),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back_rounded),
-                      ),
+              child: Align(
+                child: FractionallySizedBox(
+                  widthFactor: 0.85,
+                  child: GlassSurface(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 11,
                     ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Service Details',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
+                    borderRadius: BorderRadius.circular(24),
+                    backgroundColor: Colors.white.withValues(alpha: 0.72),
+                    blurSigma: 20,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.62),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withValues(alpha: 0.06),
+                        blurRadius: 22,
+                        offset: const Offset(0, 10),
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.05),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.56),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Service Details',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -871,7 +886,10 @@ class _ServiceTextField extends StatelessWidget {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(18),
-              borderSide: const BorderSide(color: AppColors.primary, width: 1.6),
+              borderSide: const BorderSide(
+                color: AppColors.primary,
+                width: 1.6,
+              ),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(18),
@@ -1018,7 +1036,10 @@ class _SearchableDropdownFieldState extends State<_SearchableDropdownField> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(18),
-              borderSide: const BorderSide(color: AppColors.primary, width: 1.6),
+              borderSide: const BorderSide(
+                color: AppColors.primary,
+                width: 1.6,
+              ),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(18),
@@ -1037,7 +1058,9 @@ class _SearchableDropdownFieldState extends State<_SearchableDropdownField> {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.08),
+              ),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withValues(alpha: 0.05),
