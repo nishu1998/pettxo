@@ -1,10 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../bookings/domain/models/booking_flow_models.dart';
 import '../../../bookings/presentation/screens/booking_detail_screen.dart';
+import '../../../messages/presentation/screens/chat_detail_screen.dart';
+import '../../../profile/presentation/screens/profile_screen.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -26,99 +29,105 @@ class NotificationsScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            Positioned(
-              top: -50,
-              right: -35,
-              child: Container(
-                width: 180,
-                height: 180,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                ),
-              ),
-            ),
-            Column(
-              children: [
-                const _NotificationsHeader(),
-                Expanded(
-                  child: user == null
-                      ? const _NotificationStateMessage(
-                          title: 'Sign in required',
-                          message:
-                              'Sign in to see booking updates, reminders and alerts.',
-                        )
-                      : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                          stream: _notificationsFor(user.uid),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError) {
-                              return const _NotificationStateMessage(
-                                title: 'Unable to load notifications',
-                                message:
-                                    'Please check your connection and try again.',
-                              );
-                            }
-                            if (snapshot.connectionState ==
-                                ConnectionState.waiting) {
-                              return const Center(
-                                child: CircularProgressIndicator(
-                                  color: AppColors.primary,
-                                ),
-                              );
-                            }
+            const _NotificationsHeader(),
+            Expanded(
+              child: user == null
+                  ? const _NotificationStateMessage(
+                      title: 'Sign in required',
+                      message: 'Sign in to see booking and social updates.',
+                    )
+                  : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: _notificationsFor(user.uid),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasError) {
+                          return const _NotificationStateMessage(
+                            title: 'Unable to load notifications',
+                            message:
+                                'Please check your connection and try again.',
+                          );
+                        }
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(
+                              color: AppColors.primary,
+                            ),
+                          );
+                        }
 
-                            final docs = [...snapshot.data?.docs ?? []];
-                            docs.sort((a, b) {
-                              final aTime = a.data()['createdAt'];
-                              final bTime = b.data()['createdAt'];
-                              final aDate = aTime is Timestamp
-                                  ? aTime.toDate()
-                                  : DateTime.fromMillisecondsSinceEpoch(0);
-                              final bDate = bTime is Timestamp
-                                  ? bTime.toDate()
-                                  : DateTime.fromMillisecondsSinceEpoch(0);
-                              return bDate.compareTo(aDate);
-                            });
+                        final docs = _dedupeAndSortNotifications(
+                          snapshot.data?.docs ?? const [],
+                        );
 
-                            if (docs.isEmpty) {
-                              return const _NotificationStateMessage(
-                                title: 'You’re all caught up',
-                                message:
-                                    'Recent booking changes, OTP updates and completion alerts will show up here.',
-                              );
-                            }
+                        if (docs.isEmpty) {
+                          return const _NotificationStateMessage(
+                            title: 'You’re all caught up',
+                            message:
+                                'Booking changes, follows, likes and comments will show up here.',
+                          );
+                        }
 
-                            final unreadCount = docs.where((doc) {
-                              final data = doc.data();
-                              return data['read'] != true &&
-                                  data['isRead'] != true;
-                            }).length;
+                        final unreadCount = docs.where((doc) {
+                          final data = doc.data();
+                          return data['read'] != true && data['isRead'] != true;
+                        }).length;
 
-                            return ListView(
-                              padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
-                              children: [
-                                _CaughtUpCard(unreadCount: unreadCount),
-                                const SizedBox(height: 18),
-                                ...docs.map(
-                                  (doc) => _NotificationTile(
-                                    doc: doc,
-                                    onTap: () =>
-                                        _openNotification(context, doc),
-                                  ),
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                ),
-              ],
+                        return ListView(
+                          padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
+                          children: [
+                            _CaughtUpCard(unreadCount: unreadCount),
+                            const SizedBox(height: 18),
+                            ...docs.map(
+                              (doc) => _NotificationTile(
+                                doc: doc,
+                                onTap: () => _openNotification(context, doc),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _dedupeAndSortNotifications(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> source,
+  ) {
+    final latestByKey = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+    for (final doc in source) {
+      final data = doc.data();
+      final category = '${data['category'] ?? data['data']?['category'] ?? ''}';
+      final type = '${data['type'] ?? data['data']?['type'] ?? ''}';
+      final chatId = '${data['chatId'] ?? data['data']?['chatId'] ?? ''}'
+          .trim();
+      final isChat =
+          category == 'chat' || type == 'chat' || type == 'chatMessage';
+      final key = isChat && chatId.isNotEmpty ? 'chat:$chatId' : doc.id;
+      final existing = latestByKey[key];
+      if (existing == null ||
+          _sortDateFor(doc).isAfter(_sortDateFor(existing))) {
+        latestByKey[key] = doc;
+      }
+    }
+
+    final docs = latestByKey.values.toList(growable: false);
+    docs.sort((a, b) => _sortDateFor(b).compareTo(_sortDateFor(a)));
+    return docs;
+  }
+
+  DateTime _sortDateFor(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data();
+    final updatedAt = data['updatedAt'];
+    if (updatedAt is Timestamp) return updatedAt.toDate();
+    final createdAt = data['createdAt'];
+    if (createdAt is Timestamp) return createdAt.toDate();
+    return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
   Future<void> _openNotification(
@@ -135,7 +144,46 @@ class NotificationsScreen extends StatelessWidget {
     if (!context.mounted) return;
     final bookingId =
         '${data['bookingId'] ?? data['data']?['bookingId'] ?? ''}';
-    if (bookingId.isEmpty) return;
+    final category = '${data['category'] ?? data['data']?['category'] ?? ''}';
+    final type = '${data['type'] ?? data['data']?['type'] ?? ''}';
+    final chatId = '${data['chatId'] ?? data['data']?['chatId'] ?? ''}'.trim();
+    final senderId = '${data['senderId'] ?? data['data']?['senderId'] ?? ''}';
+    final recipientId =
+        '${data['userId'] ?? data['recipientId'] ?? data['data']?['recipientId'] ?? ''}';
+    if ((type == 'chat' || type == 'chatMessage' || category == 'chat') &&
+        chatId.isNotEmpty) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
+      );
+      return;
+    }
+    if (bookingId.isEmpty) {
+      if (category == 'social') {
+        String profileUserId = '';
+        if (type == 'socialFollow') {
+          profileUserId = senderId.trim();
+        } else if (type == 'socialLike' || type == 'socialComment') {
+          profileUserId = recipientId.trim();
+        }
+
+        if (profileUserId.isEmpty) {
+          Navigator.pushNamed(context, '/home');
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Profile unavailable.')));
+          return;
+        }
+
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProfileScreen(userId: profileUserId),
+          ),
+        );
+      }
+      return;
+    }
 
     final role =
         '${data['recipientRole'] ?? data['data']?['recipientRole'] ?? ''}';
@@ -228,7 +276,7 @@ class _CaughtUpCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Booking updates',
+                  'Activity updates',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
@@ -237,7 +285,7 @@ class _CaughtUpCard extends StatelessWidget {
                 ),
                 SizedBox(height: 6),
                 Text(
-                  'Requests, confirmations, OTP updates and completion alerts stay in sync here.',
+                  'Requests, confirmations, follows, likes and comments stay in sync here.',
                   style: TextStyle(
                     color: AppColors.textGrey,
                     fontSize: 14,
@@ -278,9 +326,12 @@ class _NotificationTile extends StatelessWidget {
     final title = '${data['title'] ?? 'Pettxo update'}';
     final body = '${data['body'] ?? ''}';
     final type = '${data['type'] ?? ''}';
+    final category = '${data['category'] ?? ''}';
     final isUnread = data['read'] != true && data['isRead'] != true;
     final createdAt = data['createdAt'];
     final createdDate = createdAt is Timestamp ? createdAt.toDate() : null;
+    final senderPhotoUrl =
+        '${data['senderPhotoUrl'] ?? data['data']?['senderPhotoUrl'] ?? ''}';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
@@ -313,7 +364,11 @@ class _NotificationTile extends StatelessWidget {
                 backgroundColor: isUnread
                     ? const Color(0xFFFFF2EA)
                     : AppColors.background,
-                child: Icon(_iconFor(type), color: AppColors.primary),
+                child: _avatarContent(
+                  senderPhotoUrl: senderPhotoUrl,
+                  type: type,
+                  category: category,
+                ),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -371,7 +426,39 @@ class _NotificationTile extends StatelessWidget {
     );
   }
 
-  IconData _iconFor(String type) {
+  Widget _avatarContent({
+    required String senderPhotoUrl,
+    required String type,
+    required String category,
+  }) {
+    if (category == 'social' && senderPhotoUrl.trim().isNotEmpty) {
+      return ClipOval(
+        child: CachedNetworkImage(
+          imageUrl: senderPhotoUrl,
+          width: 52,
+          height: 52,
+          fit: BoxFit.cover,
+          errorWidget: (context, url, error) =>
+              Icon(_iconFor(type, category), color: AppColors.primary),
+          placeholder: (context, url) =>
+              Icon(_iconFor(type, category), color: AppColors.primary),
+        ),
+      );
+    }
+
+    return Icon(_iconFor(type, category), color: AppColors.primary);
+  }
+
+  IconData _iconFor(String type, String category) {
+    if (category == 'chat' || type == 'chat' || type == 'chatMessage') {
+      return Icons.chat_bubble_outline_rounded;
+    }
+    if (category == 'social') {
+      if (type == 'socialFollow') return Icons.person_add_alt_1_rounded;
+      if (type == 'socialLike') return Icons.favorite_rounded;
+      if (type == 'socialComment') return Icons.mode_comment_rounded;
+      return Icons.notifications_none_rounded;
+    }
     if (type.contains('Otp')) return Icons.password_rounded;
     if (type.contains('Accepted')) return Icons.verified_rounded;
     if (type.contains('Rejected') || type.contains('Cancelled')) {
