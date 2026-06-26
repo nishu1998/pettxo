@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // START: FlutterFire Configuration
@@ -6,6 +8,12 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
 android {
@@ -35,11 +43,43 @@ android {
             project.findProperty("MAPS_API_KEY") as String? ?: ""
     }
 
+    signingConfigs {
+        create("release") {
+            val storeFilePath =
+                keystoreProperties.getProperty("storeFile")
+                    ?: System.getenv("PETTXO_UPLOAD_STORE_FILE")
+            val storePasswordValue =
+                keystoreProperties.getProperty("storePassword")
+                    ?: System.getenv("PETTXO_UPLOAD_STORE_PASSWORD")
+            val keyAliasValue =
+                keystoreProperties.getProperty("keyAlias")
+                    ?: System.getenv("PETTXO_UPLOAD_KEY_ALIAS")
+            val keyPasswordValue =
+                keystoreProperties.getProperty("keyPassword")
+                    ?: System.getenv("PETTXO_UPLOAD_KEY_PASSWORD")
+
+            if (!storeFilePath.isNullOrBlank()) {
+                storeFile = file(storeFilePath)
+            }
+            storePassword = storePasswordValue
+            keyAlias = keyAliasValue
+            keyPassword = keyPasswordValue
+        }
+    }
+
     buildTypes {
+        debug {
+            isShrinkResources = false
+        }
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig =
+                if (signingConfigs.getByName("release").storeFile != null) {
+                    signingConfigs.getByName("release")
+                } else {
+                    null
+                }
         }
     }
 }
