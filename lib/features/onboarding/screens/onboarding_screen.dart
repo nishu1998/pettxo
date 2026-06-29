@@ -114,7 +114,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ),
                       const SizedBox(width: 8),
                       const Text(
-                        'Pettexo',
+                        'Pettxo',
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w700,

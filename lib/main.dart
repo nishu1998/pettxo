@@ -46,7 +46,7 @@ class PettexoApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Pettexo',
+      title: 'Pettxo',
       debugShowCheckedModeBanner: false,
       navigatorKey: AppLoader.navigatorKey,
       builder: (context, child) {

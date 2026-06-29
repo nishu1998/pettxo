@@ -1,4 +1,4 @@
-# pettexo
+# Pettxo
 
 A new Flutter project.
 

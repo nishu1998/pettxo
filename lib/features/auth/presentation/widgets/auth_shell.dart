@@ -14,7 +14,7 @@ class AuthShell extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.child,
-    this.eyebrow = 'PETTEXO',
+    this.eyebrow = 'PETTXO',
   });
 
   @override
