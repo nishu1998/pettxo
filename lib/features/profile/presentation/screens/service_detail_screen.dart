@@ -368,30 +368,36 @@ class _MessageProviderButtonState extends State<_MessageProviderButton> {
       return;
     }
 
-    debugPrint(
-      'ServiceDetail Message debug -> serviceId=${widget.service.id}, '
-      'ownerUserId=${widget.service.ownerUserId}, '
-      'currentUserId=${FirebaseAuth.instance.currentUser?.uid ?? ''}, '
-      'isPaused=${widget.service.isPaused}, '
-      'isPausedByVerification=${widget.service.isPausedByVerification}, '
-      'title=${widget.service.title}',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        'ServiceDetail Message debug -> serviceId=${widget.service.id}, '
+        'ownerUserId=${widget.service.ownerUserId}, '
+        'currentUserId=${FirebaseAuth.instance.currentUser?.uid ?? ''}, '
+        'isPaused=${widget.service.isPaused}, '
+        'isPausedByVerification=${widget.service.isPausedByVerification}, '
+        'title=${widget.service.title}',
+      );
+    }
 
     setState(() => _isOpening = true);
     try {
       final chatId = await _chatRepository.startProviderChat(
         serviceId: widget.service.id,
       );
-      debugPrint('ServiceDetail Message debug -> opened chatId=$chatId');
+      if (kDebugMode) {
+        debugPrint('ServiceDetail Message debug -> opened chatId=$chatId');
+      }
       if (!mounted) return;
       await Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
       );
     } catch (error, stackTrace) {
-      debugPrint(
-        'ServiceDetail Message debug -> exception=$error\n$stackTrace',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'ServiceDetail Message debug -> exception=$error\n$stackTrace',
+        );
+      }
       if (!mounted) return;
       final raw = error.toString();
       final message = raw.contains('message yourself')

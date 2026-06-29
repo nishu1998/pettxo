@@ -5,9 +5,12 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/app_loader.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../auth/data/services/user_service.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
 import '../../../provider/domain/models/provider_onboarding_models.dart';
@@ -44,11 +47,15 @@ class _AddServiceAdditionalDetailsScreenState
   final ServicesRepository _servicesRepository = ServicesRepository();
   final ProviderOnboardingRepository _providerOnboardingRepository =
       ProviderOnboardingRepository();
+  final UserService _userService = UserService();
 
   final List<_SelectedPhoto> _selectedPhotos = [];
   String? _notesError;
   bool _isPublishing = false;
   bool _highlightNotes = false;
+  bool _acceptedProviderAgreement = false;
+  bool _hasStoredProviderAgreement = false;
+  String? _providerConsentError;
 
   bool get _isFormValid => _notesController.text.trim().length <= 300;
 
@@ -68,6 +75,24 @@ class _AddServiceAdditionalDetailsScreenState
         setup.location.displayAddress.trim().isNotEmpty &&
         setup.location.hasValidCoordinates &&
         setup.serviceType.trim().isNotEmpty;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProviderAgreementStatus();
+  }
+
+  Future<void> _loadProviderAgreementStatus() async {
+    try {
+      final hasAccepted = await _userService.hasAcceptedProviderAgreement();
+      if (!mounted) return;
+      setState(() {
+        _hasStoredProviderAgreement = hasAccepted;
+      });
+    } catch (_) {
+      // Best-effort preload only.
+    }
   }
 
   @override
@@ -192,10 +217,25 @@ class _AddServiceAdditionalDetailsScreenState
 
   Future<void> _publishService() async {
     if (!_validateForm() || _isPublishing) return;
+    if (!_hasStoredProviderAgreement && !_acceptedProviderAgreement) {
+      setState(() {
+        _providerConsentError =
+            'You must agree to the Service Provider Agreement.';
+      });
+      AppFeedback.show(
+        context,
+        message: 'Please review and accept the Service Provider Agreement.',
+        tone: AppFeedbackTone.info,
+      );
+      return;
+    }
 
     setState(() => _isPublishing = true);
 
     try {
+      if (!_hasStoredProviderAgreement) {
+        await _userService.acceptProviderAgreementIfNeeded();
+      }
       final onboardingReady = await _ensureProviderOnboardingReady();
       if (!onboardingReady) return;
 
@@ -476,6 +516,38 @@ class _AddServiceAdditionalDetailsScreenState
                   title: 'Ready to publish',
                   children: const [_WarningNotice()],
                 ),
+                if (!_hasStoredProviderAgreement) ...[
+                  const SizedBox(height: 18),
+                  _SectionCard(
+                    title: 'Provider Agreement',
+                    children: [
+                      LegalConsentCheckbox(
+                        value: _acceptedProviderAgreement,
+                        onChanged: (value) {
+                          setState(() {
+                            _acceptedProviderAgreement = value ?? false;
+                            if (_acceptedProviderAgreement) {
+                              _providerConsentError = null;
+                            }
+                          });
+                        },
+                        errorText: _providerConsentError,
+                        segments: [
+                          const LegalConsentSegment(text: 'I agree to the '),
+                          LegalConsentSegment(
+                            text: 'Service Provider Agreement',
+                            onTap: () => PolicyLinkService
+                                .openExternalPolicyUrlWithFeedback(
+                                  context,
+                                  PolicyLinkService.providerPolicyKey,
+                                ),
+                          ),
+                          const LegalConsentSegment(text: '.'),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 22),
                 Stack(
                   children: [

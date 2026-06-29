@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../../../restrictions/domain/models/user_restriction_state.dart';
 
 class UserProfile {
@@ -19,6 +21,9 @@ class UserProfile {
   final int followerCount;
   final String accountStatus;
   final UserRestrictionState restrictionState;
+  final DateTime? acceptedTermsAt;
+  final DateTime? acceptedPrivacyAt;
+  final DateTime? acceptedProviderAgreementAt;
 
   const UserProfile({
     required this.uid,
@@ -39,6 +44,9 @@ class UserProfile {
     required this.followerCount,
     required this.accountStatus,
     required this.restrictionState,
+    required this.acceptedTermsAt,
+    required this.acceptedPrivacyAt,
+    required this.acceptedProviderAgreementAt,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> data) {
@@ -68,6 +76,11 @@ class UserProfile {
       followerCount: (data['followerCount'] as num?)?.toInt() ?? 0,
       accountStatus: (data['accountStatus'] as String? ?? 'active').trim(),
       restrictionState: UserRestrictionState.fromMap(data),
+      acceptedTermsAt: _readDate(data['acceptedTermsAt']),
+      acceptedPrivacyAt: _readDate(data['acceptedPrivacyAt']),
+      acceptedProviderAgreementAt: _readDate(
+        data['acceptedProviderAgreementAt'],
+      ),
     );
   }
 
@@ -89,6 +102,12 @@ class UserProfile {
       'followerCount': followerCount,
       'accountStatus': accountStatus,
     };
+  }
+
+  static DateTime? _readDate(Object? value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    return null;
   }
 
   String get mobileNumber => phone;

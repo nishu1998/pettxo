@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
@@ -174,25 +175,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     final orderedIds = [currentUserId.trim(), profile.uid.trim()]..sort();
     final deterministicChatId = 'chat_${orderedIds.join('_')}';
-    debugPrint(
-      'Profile Message debug -> profileUserId=${profile.uid}, '
-      'currentUserId=$currentUserId, '
-      'deterministicChatId=$deterministicChatId',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        'Profile Message debug -> profileUserId=${profile.uid}, '
+        'currentUserId=$currentUserId, '
+        'deterministicChatId=$deterministicChatId',
+      );
+    }
 
     setState(() => _isOpeningDirectChat = true);
     try {
       final chatId = await _chatRepository.startDirectUserChat(
         otherUserId: profile.uid,
       );
-      debugPrint('Profile Message debug -> opened chatId=$chatId');
+      if (kDebugMode) {
+        debugPrint('Profile Message debug -> opened chatId=$chatId');
+      }
       if (!mounted) return;
       await Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
       );
     } catch (error, stackTrace) {
-      debugPrint('Profile Message debug -> exception=$error\n$stackTrace');
+      if (kDebugMode) {
+        debugPrint('Profile Message debug -> exception=$error\n$stackTrace');
+      }
       if (!mounted) return;
       final raw = error.toString();
       final message = raw.contains('message yourself')

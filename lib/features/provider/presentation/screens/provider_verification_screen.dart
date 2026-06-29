@@ -5,8 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../auth/data/services/user_service.dart';
 import '../../data/repositories/provider_onboarding_repository.dart';
 import '../../domain/models/provider_onboarding_models.dart';
 
@@ -23,14 +26,18 @@ class _ProviderVerificationScreenState
   final ProviderOnboardingRepository _repository =
       ProviderOnboardingRepository();
   final ImagePicker _imagePicker = ImagePicker();
+  final UserService _userService = UserService();
 
   ProviderVerificationRecord? _verification;
   String _selectedDocumentType = 'aadhaar';
   File? _frontImage;
   File? _backImage;
+  bool _acceptedProviderAgreement = false;
+  bool _hasStoredProviderAgreement = false;
   bool _isLoading = true;
   bool _isSubmitting = false;
   String? _loadError;
+  String? _consentError;
 
   @override
   void initState() {
@@ -40,10 +47,16 @@ class _ProviderVerificationScreenState
 
   Future<void> _load() async {
     try {
-      final verification = await _repository.fetchCurrentVerification();
+      final results = await Future.wait([
+        _repository.fetchCurrentVerification(),
+        _userService.hasAcceptedProviderAgreement(),
+      ]);
+      final verification = results[0] as ProviderVerificationRecord;
+      final hasAcceptedProviderAgreement = results[1] as bool;
       if (!mounted) return;
       setState(() {
         _verification = verification;
+        _hasStoredProviderAgreement = hasAcceptedProviderAgreement;
         if (verification.documentType.isNotEmpty) {
           _selectedDocumentType = verification.documentType;
         }
@@ -81,9 +94,18 @@ class _ProviderVerificationScreenState
       );
       return;
     }
+    if (!_hasStoredProviderAgreement && !_acceptedProviderAgreement) {
+      setState(() {
+        _consentError = 'You must agree to the Service Provider Agreement.';
+      });
+      return;
+    }
 
     setState(() => _isSubmitting = true);
     try {
+      if (!_hasStoredProviderAgreement) {
+        await _userService.acceptProviderAgreementIfNeeded();
+      }
       await _repository.submitVerification(
         documentType: _selectedDocumentType,
         frontImage: _frontImage!,
@@ -176,6 +198,43 @@ class _ProviderVerificationScreenState
                   existingFrontUrl: verification.documentFrontUrl,
                   existingBackUrl: verification.documentBackUrl,
                 ),
+                if (!_hasStoredProviderAgreement) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: LegalConsentCheckbox(
+                      value: _acceptedProviderAgreement,
+                      onChanged: (value) {
+                        setState(() {
+                          _acceptedProviderAgreement = value ?? false;
+                          if (_acceptedProviderAgreement) {
+                            _consentError = null;
+                          }
+                        });
+                      },
+                      errorText: _consentError,
+                      segments: [
+                        const LegalConsentSegment(text: 'I agree to the '),
+                        LegalConsentSegment(
+                          text: 'Service Provider Agreement',
+                          onTap: () =>
+                              PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                                context,
+                                PolicyLinkService.providerPolicyKey,
+                              ),
+                        ),
+                        const LegalConsentSegment(text: '.'),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 GradientButton(
                   label: verification.isRejected

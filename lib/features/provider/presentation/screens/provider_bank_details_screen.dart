@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../auth/data/services/user_service.dart';
 import '../../data/repositories/provider_onboarding_repository.dart';
 import '../../domain/models/provider_onboarding_models.dart';
 
@@ -17,6 +20,7 @@ class ProviderBankDetailsScreen extends StatefulWidget {
 class _ProviderBankDetailsScreenState extends State<ProviderBankDetailsScreen> {
   final ProviderOnboardingRepository _repository =
       ProviderOnboardingRepository();
+  final UserService _userService = UserService();
   final TextEditingController _accountHolderController =
       TextEditingController();
   final TextEditingController _bankNameController = TextEditingController();
@@ -29,7 +33,10 @@ class _ProviderBankDetailsScreenState extends State<ProviderBankDetailsScreen> {
 
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _acceptedProviderAgreement = false;
+  bool _hasStoredProviderAgreement = false;
   String? _loadError;
+  String? _consentError;
   ProviderBankDetailsRecord? _bankDetails;
 
   @override
@@ -51,9 +58,15 @@ class _ProviderBankDetailsScreenState extends State<ProviderBankDetailsScreen> {
 
   Future<void> _load() async {
     try {
-      final bankDetails = await _repository.fetchCurrentBankDetails();
+      final results = await Future.wait([
+        _repository.fetchCurrentBankDetails(),
+        _userService.hasAcceptedProviderAgreement(),
+      ]);
+      final bankDetails = results[0] as ProviderBankDetailsRecord;
+      final hasAcceptedProviderAgreement = results[1] as bool;
       if (!mounted) return;
       _bankDetails = bankDetails;
+      _hasStoredProviderAgreement = hasAcceptedProviderAgreement;
       _accountHolderController.text = bankDetails.accountHolderName;
       _bankNameController.text = bankDetails.bankName;
       _accountNumberController.clear();
@@ -103,9 +116,18 @@ class _ProviderBankDetailsScreenState extends State<ProviderBankDetailsScreen> {
       _showInfo('Enter a valid IFSC code.');
       return;
     }
+    if (!_hasStoredProviderAgreement && !_acceptedProviderAgreement) {
+      setState(() {
+        _consentError = 'You must agree to the Service Provider Agreement.';
+      });
+      return;
+    }
 
     setState(() => _isSaving = true);
     try {
+      if (!_hasStoredProviderAgreement) {
+        await _userService.acceptProviderAgreementIfNeeded();
+      }
       await _repository.saveBankDetails(
         accountHolderName: accountHolderName,
         bankName: bankName,
@@ -234,6 +256,43 @@ class _ProviderBankDetailsScreenState extends State<ProviderBankDetailsScreen> {
                     ],
                   ),
                 ),
+                if (!_hasStoredProviderAgreement) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: LegalConsentCheckbox(
+                      value: _acceptedProviderAgreement,
+                      onChanged: (value) {
+                        setState(() {
+                          _acceptedProviderAgreement = value ?? false;
+                          if (_acceptedProviderAgreement) {
+                            _consentError = null;
+                          }
+                        });
+                      },
+                      errorText: _consentError,
+                      segments: [
+                        const LegalConsentSegment(text: 'I agree to the '),
+                        LegalConsentSegment(
+                          text: 'Service Provider Agreement',
+                          onTap: () =>
+                              PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                                context,
+                                PolicyLinkService.providerPolicyKey,
+                              ),
+                        ),
+                        const LegalConsentSegment(text: '.'),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 GradientButton(
                   label: _bankDetails?.isSubmitted == true
