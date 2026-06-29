@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -122,11 +123,20 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       );
       if (!mounted) return;
       Navigator.pop(context, post);
-    } catch (error) {
+    } on FirebaseException catch (error) {
       if (!mounted) return;
       AppFeedback.show(
         context,
-        message: error.toString().replaceFirst('Exception: ', ''),
+        message: _friendlyPublishError(error),
+        tone: AppFeedbackTone.error,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('CreatePostScreen publish failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: _friendlyPublishError(error),
         tone: AppFeedbackTone.error,
       );
     } finally {
@@ -134,6 +144,29 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         setState(() => _isPublishing = false);
       }
     }
+  }
+
+  String _friendlyPublishError(Object error) {
+    if (error is FirebaseException) {
+      switch (error.code) {
+        case 'permission-denied':
+          return 'You do not have permission to publish a post right now.';
+        case 'unauthenticated':
+          return 'Please sign in again before publishing a post.';
+        case 'unavailable':
+          return 'Post publishing is temporarily unavailable. Please try again.';
+      }
+      final message = error.message?.trim() ?? '';
+      if (message.isNotEmpty) {
+        return message;
+      }
+    }
+
+    final message = error.toString().replaceFirst('Exception: ', '').trim();
+    if (message.isEmpty || message.contains('package:cloud_firestore')) {
+      return 'Unable to publish your post right now. Please try again.';
+    }
+    return message;
   }
 
   double get _previewAspectRatio {

@@ -1,4 +1,3 @@
-import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +8,7 @@ import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/domain/models/claimed_offer.dart';
 import '../../../offers/presentation/widgets/claimed_offer_card.dart';
@@ -369,6 +369,13 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
                   fallbackRoute:
                       LegalPoliciesCatalog.cancellationPolicy.routeName,
                 ),
+                onOpenRefundPolicy: () => PolicyLinkService.openPolicy(
+                  context,
+                  webUrl: PolicyLinkService.urlForKey(
+                    LegalPoliciesCatalog.refundPolicy.remoteConfigKey,
+                  ),
+                  fallbackRoute: LegalPoliciesCatalog.refundPolicy.routeName,
+                ),
               ),
             ],
           ),
@@ -462,6 +469,7 @@ class _ReviewContent extends StatelessWidget {
   final bool acceptedPolicy;
   final ValueChanged<bool?> onPolicyChanged;
   final VoidCallback onOpenCancellationPolicy;
+  final VoidCallback onOpenRefundPolicy;
 
   const _ReviewContent({
     required this.draft,
@@ -476,6 +484,7 @@ class _ReviewContent extends StatelessWidget {
     required this.acceptedPolicy,
     required this.onPolicyChanged,
     required this.onOpenCancellationPolicy,
+    required this.onOpenRefundPolicy,
   });
 
   @override
@@ -570,6 +579,7 @@ class _ReviewContent extends StatelessWidget {
             acceptedPolicy: acceptedPolicy,
             onPolicyChanged: onPolicyChanged,
             onOpenCancellationPolicy: onOpenCancellationPolicy,
+            onOpenRefundPolicy: onOpenRefundPolicy,
           ),
         ),
       ],
@@ -996,52 +1006,32 @@ class _TermsConfirmationSection extends StatelessWidget {
   final bool acceptedPolicy;
   final ValueChanged<bool?> onPolicyChanged;
   final VoidCallback onOpenCancellationPolicy;
+  final VoidCallback onOpenRefundPolicy;
 
   const _TermsConfirmationSection({
     required this.acceptedPolicy,
     required this.onPolicyChanged,
     required this.onOpenCancellationPolicy,
+    required this.onOpenRefundPolicy,
   });
 
   @override
   Widget build(BuildContext context) {
-    const linkColor = Color(0xFF2563EB);
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Checkbox(
-          value: acceptedPolicy,
-          onChanged: onPolicyChanged,
-          activeColor: AppColors.primary,
+    return LegalConsentCheckbox(
+      value: acceptedPolicy,
+      onChanged: onPolicyChanged,
+      segments: [
+        const LegalConsentSegment(text: 'I understand and agree to the '),
+        LegalConsentSegment(
+          text: 'Cancellation Policy',
+          onTap: onOpenCancellationPolicy,
         ),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(top: 10),
-            child: RichText(
-              text: TextSpan(
-                style: const TextStyle(
-                  color: AppColors.textDark,
-                  fontSize: 15,
-                  height: 1.45,
-                  fontWeight: FontWeight.w700,
-                ),
-                children: [
-                  const TextSpan(text: 'I understand and agree to the '),
-                  TextSpan(
-                    text: 'Cancellation Policy',
-                    style: const TextStyle(
-                      color: linkColor,
-                      fontWeight: FontWeight.w800,
-                    ),
-                    recognizer: TapGestureRecognizer()
-                      ..onTap = onOpenCancellationPolicy,
-                  ),
-                ],
-              ),
-            ),
-          ),
+        const LegalConsentSegment(text: ' and '),
+        LegalConsentSegment(
+          text: 'Refund Policy',
+          onTap: onOpenRefundPolicy,
         ),
+        const LegalConsentSegment(text: '.'),
       ],
     );
   }

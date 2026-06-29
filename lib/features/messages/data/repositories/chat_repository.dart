@@ -32,11 +32,17 @@ class ChatRepository {
   final FirebaseFunctions _functions;
   final FirebaseAuth _auth;
 
+  void _debugLog(String message) {
+    if (kDebugMode) {
+      debugPrint(message);
+    }
+  }
+
   Stream<List<ChatModel>> watchChatsFor(String currentUid, {int limit = 40}) {
     final uid = currentUid.trim();
     if (uid.isEmpty) return Stream.value(const []);
 
-    debugPrint(
+    _debugLog(
       'ChatRepository watchChatsFor debug -> currentUserId=$uid, path=chats, arrayContains=participantIds, orderBy=lastMessageAt desc, limit=$limit',
     );
 
@@ -157,7 +163,7 @@ class ChatRepository {
       throw Exception('Service not found.');
     }
 
-    debugPrint(
+    _debugLog(
       'ChatRepository startProviderChat debug -> serviceId=$trimmedServiceId, currentUserId=$currentUserId',
     );
 
@@ -166,7 +172,7 @@ class ChatRepository {
         .doc(trimmedServiceId)
         .get();
     final service = serviceSnapshot.data() ?? const <String, dynamic>{};
-    debugPrint(
+    _debugLog(
       'ChatRepository startProviderChat debug -> providerId=${(service['ownerUserId'] as String? ?? '').trim()}, '
       'status=${(service['status'] as String? ?? '').trim()}, '
       'isActive=${service['isActive']}, '
@@ -182,12 +188,12 @@ class ChatRepository {
         'serviceId': trimmedServiceId,
       });
       final chatId = (result.data['chatId'] as String? ?? '').trim();
-      debugPrint(
+      _debugLog(
         'ChatRepository startProviderChat debug -> callable chatId=$chatId',
       );
       return chatId;
     } catch (error, stackTrace) {
-      debugPrint(
+      _debugLog(
         'ChatRepository startProviderChat debug -> callable exception=$error\n$stackTrace',
       );
       rethrow;
@@ -209,7 +215,7 @@ class ChatRepository {
 
     final orderedParticipantIds = [currentUserId, trimmedOtherUserId]..sort();
     final chatId = 'chat_${orderedParticipantIds.join('_')}';
-    debugPrint(
+    _debugLog(
       'ChatRepository startDirectUserChat debug -> currentUserId=$currentUserId, profileUserId=$trimmedOtherUserId, deterministicChatId=$chatId',
     );
 
@@ -219,12 +225,12 @@ class ChatRepository {
         'otherUserId': trimmedOtherUserId,
       });
       final resolvedChatId = (result.data['chatId'] as String? ?? '').trim();
-      debugPrint(
+      _debugLog(
         'ChatRepository startDirectUserChat debug -> callable chatId=$resolvedChatId',
       );
       return resolvedChatId;
     } catch (error, stackTrace) {
-      debugPrint(
+      _debugLog(
         'ChatRepository startDirectUserChat debug -> callable exception=$error\n$stackTrace',
       );
       rethrow;

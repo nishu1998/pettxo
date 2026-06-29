@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -15,10 +16,12 @@ class MessagesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     final repository = ChatRepository();
-    debugPrint(
-      'Messages tab debug -> currentUserId=$currentUid, '
-      'query=chats.where(participantIds, arrayContains: $currentUid).orderBy(lastMessageAt desc).limit(40)',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        'Messages tab debug -> currentUserId=$currentUid, '
+        'query=chats.where(participantIds, arrayContains: $currentUid).orderBy(lastMessageAt desc).limit(40)',
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -67,9 +70,11 @@ class MessagesScreen extends StatelessWidget {
                       stream: repository.watchChatsFor(currentUid),
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
-                          debugPrint(
-                            'Messages tab debug -> stream exception=${snapshot.error}',
-                          );
+                          if (kDebugMode) {
+                            debugPrint(
+                              'Messages tab debug -> stream exception=${snapshot.error}',
+                            );
+                          }
                           return const _MessagesStateMessage(
                             title: 'Unable to load messages',
                             message: 'Please try again in a moment.',

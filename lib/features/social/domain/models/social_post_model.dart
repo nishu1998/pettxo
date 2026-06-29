@@ -71,8 +71,15 @@ class SocialPostModel {
 
   factory SocialPostModel.fromDocument(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data() ?? <String, dynamic>{};
+    return SocialPostModel.fromMap(data, fallbackId: doc.id);
+  }
+
+  factory SocialPostModel.fromMap(
+    Map<String, dynamic> data, {
+    String fallbackId = '',
+  }) {
     return SocialPostModel(
-      id: (data['id'] as String? ?? doc.id).trim(),
+      id: (data['id'] as String? ?? fallbackId).trim(),
       authorId: (data['authorId'] as String? ?? '').trim(),
       authorType: (data['authorType'] as String? ?? 'user').trim(),
       authorDisplayName: (data['authorDisplayName'] as String? ?? '').trim(),

@@ -1,9 +1,8 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image/image.dart' as img;
 
@@ -357,10 +356,53 @@ class SocialPostRepository {
       'updatedAt': FieldValue.serverTimestamp(),
     };
 
-    await postRef.set(payload);
-    await _updateHashtagDocuments(hashtags: hashtags, postId: postRef.id);
-    final createdSnapshot = await postRef.get();
-    return SocialPostModel.fromDocument(createdSnapshot);
+    try {
+      await postRef.set(payload);
+    } on FirebaseException catch (error) {
+      throw Exception(_mapCreatePostError(error));
+    }
+
+    try {
+      await _updateHashtagDocuments(hashtags: hashtags, postId: postRef.id);
+    } on FirebaseException catch (error, stackTrace) {
+      debugPrint(
+        'SocialPostRepository createPost hashtag update skipped for '
+        'postId=${postRef.id}: ${error.code}',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+    } catch (error, stackTrace) {
+      debugPrint(
+        'SocialPostRepository createPost hashtag update skipped for '
+        'postId=${postRef.id}: $error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+    }
+
+    try {
+      final createdSnapshot = await postRef.get();
+      return SocialPostModel.fromDocument(createdSnapshot);
+    } on FirebaseException catch (error, stackTrace) {
+      debugPrint(
+        'SocialPostRepository createPost readback skipped for '
+        'postId=${postRef.id}: ${error.code}',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+    } catch (error, stackTrace) {
+      debugPrint(
+        'SocialPostRepository createPost readback skipped for '
+        'postId=${postRef.id}: $error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+    }
+
+    return SocialPostModel.fromMap(
+      {
+        ...payload,
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      },
+      fallbackId: postRef.id,
+    );
   }
 
   Future<String> _ensureAuthenticatedForStorageWrite() async {
@@ -963,6 +1005,26 @@ class SocialPostRepository {
         return error.message?.trim().isNotEmpty == true
             ? error.message!.trim()
             : 'Unable to upload post images right now. Please try again.';
+    }
+  }
+
+  String _mapCreatePostError(FirebaseException error) {
+    switch (error.code) {
+      case 'permission-denied':
+        return 'You do not have permission to publish a post right now. Please sign in again and try once more.';
+      case 'unauthenticated':
+        return 'Please sign in again before publishing a post.';
+      case 'unavailable':
+        return 'Post publishing is temporarily unavailable. Please try again in a moment.';
+      case 'aborted':
+      case 'deadline-exceeded':
+        return 'Post publishing took too long. Please check your connection and try again.';
+      default:
+        final message = error.message?.trim() ?? '';
+        if (message.isNotEmpty) {
+          return message;
+        }
+        return 'Unable to publish your post right now. Please try again.';
     }
   }
 
