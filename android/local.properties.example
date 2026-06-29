@@ -1,0 +1,7 @@
+sdk.dir=/path/to/Android/sdk
+flutter.sdk=/path/to/flutter
+
+# Local-only Google Maps Android API key for Pettxo debug/release builds.
+# This file is an example only. Put the real key in android/local.properties,
+# which is already ignored by git.
+MAPS_API_KEY=replace-with-google-maps-android-api-key

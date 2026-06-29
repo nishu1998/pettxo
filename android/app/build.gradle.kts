@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.GradleException
 
 plugins {
     id("com.android.application")
@@ -14,6 +15,12 @@ val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+}
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use { localProperties.load(it) }
 }
 
 android {
@@ -39,8 +46,12 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        val mapsApiKey =
+            (localProperties.getProperty("MAPS_API_KEY")?.takeIf { it.isNotBlank() })
+                ?: System.getenv("PETTXO_MAPS_API_KEY")?.takeIf { it.isNotBlank() }
+                ?: ""
         manifestPlaceholders["MAPS_API_KEY"] =
-            project.findProperty("MAPS_API_KEY") as String? ?: ""
+            mapsApiKey
     }
 
     signingConfigs {
@@ -82,6 +93,19 @@ android {
                 }
         }
     }
+}
+
+val requestedTasks = gradle.startParameter.taskNames.joinToString(" ")
+if (
+    requestedTasks.contains("Release", ignoreCase = true) &&
+    (
+        localProperties.getProperty("MAPS_API_KEY")?.isBlank() != false &&
+        System.getenv("PETTXO_MAPS_API_KEY")?.isBlank() != false
+    )
+) {
+    throw GradleException(
+        "Google Maps API key is missing. Add MAPS_API_KEY to android/local.properties or export PETTXO_MAPS_API_KEY for release builds.",
+    )
 }
 
 flutter {
