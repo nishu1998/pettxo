@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/legal_acceptance_session_service.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import '../../domain/models/phone_auth_flow.dart';
@@ -21,9 +23,11 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
   final FocusNode _phoneFocus = FocusNode();
 
   String? _phoneError;
+  String? _consentError;
   String _fullPhoneNumber = '';
   bool _isLoading = false;
   bool _didNavigate = false;
+  bool _acceptedConsent = false;
 
   @override
   void dispose() {
@@ -45,9 +49,14 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
     final error = _validatePhone(_fullPhoneNumber);
     setState(() {
       _phoneError = error;
+      _consentError = _acceptedConsent
+          ? null
+          : 'You must agree before creating your account.';
     });
 
-    if (error != null) return;
+    if (error != null || !_acceptedConsent) return;
+
+    LegalAcceptanceSessionService.instance.markSignupConsentAccepted();
 
     setState(() {
       _isLoading = true;
@@ -105,7 +114,7 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
   Widget build(BuildContext context) {
     return AuthShell(
       title: 'Create Account',
-      subtitle: 'Sign up with your phone number to join the Pettexo community.',
+      subtitle: 'Sign up with your phone number to join the Pettxo community.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -121,6 +130,38 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
               });
             },
             onSubmitted: (_) => _continueWithPhone(),
+          ),
+          const SizedBox(height: 20),
+          LegalConsentCheckbox(
+            value: _acceptedConsent,
+            onChanged: (value) {
+              setState(() {
+                _acceptedConsent = value ?? false;
+                if (_acceptedConsent) {
+                  _consentError = null;
+                }
+              });
+            },
+            errorText: _consentError,
+            segments: [
+              const LegalConsentSegment(text: 'I agree to the '),
+              LegalConsentSegment(
+                text: 'Terms of Service',
+                onTap: () => PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                  context,
+                  PolicyLinkService.termsConditionsKey,
+                ),
+              ),
+              const LegalConsentSegment(text: ' and '),
+              LegalConsentSegment(
+                text: 'Privacy Policy',
+                onTap: () => PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                  context,
+                  PolicyLinkService.privacyPolicyKey,
+                ),
+              ),
+              const LegalConsentSegment(text: '.'),
+            ],
           ),
           const SizedBox(height: 20),
           CustomButton(
@@ -140,39 +181,6 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
               child: const Text(
                 'Back to Sign Up',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Center(
-            child: RichText(
-              textAlign: TextAlign.center,
-              text: const TextSpan(
-                style: TextStyle(
-                  color: AppColors.textGrey,
-                  fontSize: 13,
-                  height: 1.6,
-                ),
-                children: [
-                  TextSpan(
-                    text: 'By signing up with Pettexo, you agree to our ',
-                  ),
-                  TextSpan(
-                    text: 'Terms',
-                    style: TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  TextSpan(text: ' & '),
-                  TextSpan(
-                    text: 'Privacy Statement',
-                    style: TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
               ),
             ),
           ),

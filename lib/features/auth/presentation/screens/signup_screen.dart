@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/validators.dart';
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/services/legal_acceptance_session_service.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import 'profile_type_screen.dart';
@@ -30,9 +33,11 @@ class _SignupScreenState extends State<SignupScreen> {
 
   String? emailError;
   String? passwordError;
+  String? _consentError;
 
   bool isLoading = false;
   bool obscurePassword = true;
+  bool _acceptedConsent = false;
 
   @override
   void initState() {
@@ -58,9 +63,14 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() {
       emailError = Validators.validateEmail(email);
       passwordError = Validators.validatePassword(password);
+      _consentError = _acceptedConsent
+          ? null
+          : 'You must agree before creating your account.';
     });
 
-    if (emailError != null || passwordError != null) return;
+    if (emailError != null || passwordError != null || !_acceptedConsent) {
+      return;
+    }
 
     setState(() => isLoading = true);
     await _analytics.logSignUpAttempt(method: 'email');
@@ -71,6 +81,7 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => isLoading = false);
 
     if (result.isSuccess) {
+      LegalAcceptanceSessionService.instance.markSignupConsentAccepted();
       await _analytics.logSignUpResult(method: 'email', isSuccess: true);
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -142,6 +153,38 @@ class _SignupScreenState extends State<SignupScreen> {
                 });
               },
             ),
+          ),
+          const SizedBox(height: 18),
+          LegalConsentCheckbox(
+            value: _acceptedConsent,
+            onChanged: (value) {
+              setState(() {
+                _acceptedConsent = value ?? false;
+                if (_acceptedConsent) {
+                  _consentError = null;
+                }
+              });
+            },
+            errorText: _consentError,
+            segments: [
+              const LegalConsentSegment(text: 'I agree to the '),
+              LegalConsentSegment(
+                text: 'Terms of Service',
+                onTap: () => PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                  context,
+                  PolicyLinkService.termsConditionsKey,
+                ),
+              ),
+              const LegalConsentSegment(text: ' and '),
+              LegalConsentSegment(
+                text: 'Privacy Policy',
+                onTap: () => PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                  context,
+                  PolicyLinkService.privacyPolicyKey,
+                ),
+              ),
+              const LegalConsentSegment(text: '.'),
+            ],
           ),
           const SizedBox(height: 18),
           Center(

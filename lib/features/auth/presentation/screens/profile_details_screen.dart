@@ -3,7 +3,10 @@ import 'package:flutter/services.dart';
 
 import '../../../../core/services/location_service.dart';
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/services/legal_acceptance_session_service.dart';
+import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/user_service.dart';
 import '../../domain/models/profile_type.dart';
@@ -34,10 +37,12 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   final AnalyticsService _analytics = AnalyticsService.instance;
   bool isLoading = false;
   bool isLocationLoading = true;
+  bool _acceptedProviderAgreement = false;
   String? usernameError;
   String? phoneError;
   String? stateError;
   String? cityError;
+  String? _providerConsentError;
   String? _selectedState;
   String? _selectedCity;
   String _fullPhoneNumber = '';
@@ -113,12 +118,18 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       phoneError = phoneValidationError;
       stateError = stateValidationError;
       cityError = cityValidationError;
+      _providerConsentError =
+          widget.type == ProfileType.serviceProvider && !_acceptedProviderAgreement
+          ? 'You must agree to the Service Provider Agreement.'
+          : null;
     });
 
     if (usernameValidationError != null ||
         phoneValidationError != null ||
         stateValidationError != null ||
-        cityValidationError != null) {
+        cityValidationError != null ||
+        (widget.type == ProfileType.serviceProvider &&
+            !_acceptedProviderAgreement)) {
       return;
     }
 
@@ -134,7 +145,15 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         phone: _fullPhoneNumber,
         state: _selectedState!,
         city: _selectedCity!,
+        acceptedTerms:
+            LegalAcceptanceSessionService.instance.hasPendingSignupConsent,
+        acceptedPrivacy:
+            LegalAcceptanceSessionService.instance.hasPendingSignupConsent,
+        acceptedProviderAgreement:
+            widget.type == ProfileType.serviceProvider &&
+            _acceptedProviderAgreement,
       );
+      LegalAcceptanceSessionService.instance.clearSignupConsent();
       await _analytics.logProfileCompleted(profileType: profileTypeName);
 
       if (!mounted) return;
@@ -304,6 +323,33 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             },
           ),
           const SizedBox(height: 24),
+          if (widget.type == ProfileType.serviceProvider) ...[
+            LegalConsentCheckbox(
+              value: _acceptedProviderAgreement,
+              onChanged: (value) {
+                setState(() {
+                  _acceptedProviderAgreement = value ?? false;
+                  if (_acceptedProviderAgreement) {
+                    _providerConsentError = null;
+                  }
+                });
+              },
+              errorText: _providerConsentError,
+              segments: [
+                const LegalConsentSegment(text: 'I agree to the '),
+                LegalConsentSegment(
+                  text: 'Service Provider Agreement',
+                  onTap: () =>
+                      PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                        context,
+                        PolicyLinkService.providerPolicyKey,
+                      ),
+                ),
+                const LegalConsentSegment(text: '.'),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
           CustomButton(
             text: isLoading ? "Saving..." : "Continue",
             onPressed: isLoading ? null : () => saveProfile(),

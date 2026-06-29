@@ -21,6 +21,9 @@ class UserService {
     required String phone,
     required String state,
     required String city,
+    bool acceptedTerms = false,
+    bool acceptedPrivacy = false,
+    bool acceptedProviderAgreement = false,
   }) async {
     final user = _auth.currentUser;
 
@@ -46,10 +49,39 @@ class UserService {
       "email": user.email ?? '',
       "phone": phone.trim(),
       "mobileNumber": phone.trim(),
+      if (acceptedTerms) "acceptedTermsAt": FieldValue.serverTimestamp(),
+      if (acceptedPrivacy) "acceptedPrivacyAt": FieldValue.serverTimestamp(),
+      if (acceptedProviderAgreement)
+        "acceptedProviderAgreementAt": FieldValue.serverTimestamp(),
       "createdAt": FieldValue.serverTimestamp(),
       "updatedAt": FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     await batch.commit();
+  }
+
+  Future<bool> hasAcceptedProviderAgreement() async {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+
+    final snapshot = await _privateUserDoc(user.uid).get();
+    return snapshot.data()?['acceptedProviderAgreementAt'] != null;
+  }
+
+  Future<void> acceptProviderAgreementIfNeeded() async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception('User not authenticated');
+    }
+
+    final snapshot = await _privateUserDoc(user.uid).get();
+    if (snapshot.data()?['acceptedProviderAgreementAt'] != null) return;
+
+    await _privateUserDoc(user.uid).set({
+      'uid': user.uid,
+      if (!snapshot.exists) 'createdAt': FieldValue.serverTimestamp(),
+      'acceptedProviderAgreementAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<DocumentSnapshot?> getUserProfile() async {

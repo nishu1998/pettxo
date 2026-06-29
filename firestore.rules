@@ -344,6 +344,9 @@ service cloud.firestore {
         'email',
         'phone',
         'mobileNumber',
+        'acceptedTermsAt',
+        'acceptedPrivacyAt',
+        'acceptedProviderAgreementAt',
         'createdAt',
         'updatedAt',
         'deletionRequestedAt',
@@ -361,6 +364,18 @@ service cloud.firestore {
       (
         !request.resource.data.keys().hasAny(['mobileNumber']) ||
         request.resource.data.mobileNumber is string
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['acceptedTermsAt']) ||
+        request.resource.data.acceptedTermsAt is timestamp
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['acceptedPrivacyAt']) ||
+        request.resource.data.acceptedPrivacyAt is timestamp
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['acceptedProviderAgreementAt']) ||
+        request.resource.data.acceptedProviderAgreementAt is timestamp
       ) &&
       (
         !request.resource.data.keys().hasAny(['deletionRequestedAt']) ||

@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/services/push_notification_service.dart';
 import '../../domain/models/auth_result.dart';
 
@@ -108,6 +109,7 @@ class AuthService {
     } catch (_) {
       // Token cleanup should not block sign-out.
     }
+    LegalAcceptanceSessionService.instance.clearSignupConsent();
     await _auth.signOut();
   }
 

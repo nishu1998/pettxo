@@ -155,7 +155,7 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
                 ),
                 children: [
                   TextSpan(
-                    text: 'By signing up with Pettexo, you agree to our ',
+                    text: 'By signing up with Pettxo, you agree to our ',
                   ),
                   TextSpan(
                     text: 'Terms',

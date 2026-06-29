@@ -211,7 +211,7 @@ class _SigninScreenState extends State<SigninScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                "New to Pettexo?",
+                "New to Pettxo?",
                 style: TextStyle(color: Theme.of(context).hintColor),
               ),
               TextButton(

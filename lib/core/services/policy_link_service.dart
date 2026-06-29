@@ -63,6 +63,20 @@ class PolicyLinkService {
     }
   }
 
+  static Future<void> openExternalPolicyUrlWithFeedback(
+    BuildContext context,
+    String key,
+  ) async {
+    final opened = await openExternalPolicyUrl(key);
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to open policy link. Please try again later.'),
+        ),
+      );
+    }
+  }
+
   static Future<void> openPolicy(
     BuildContext context, {
     required String webUrl,
