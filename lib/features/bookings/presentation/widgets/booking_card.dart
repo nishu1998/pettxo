@@ -27,18 +27,17 @@ class BookingCard extends StatelessWidget {
     final card = Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: booking.isRequestHighlighted
-              ? AppColors.primary.withValues(alpha: 0.22)
-              : AppColors.primary.withValues(alpha: 0.08),
-          width: booking.isRequestHighlighted ? 1.2 : 1,
-        ),
+        borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
+            color: AppColors.primary.withValues(alpha: 0.08),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
+          ),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -50,7 +49,7 @@ class BookingCard extends StatelessWidget {
                 ),
               )
             : null,
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -64,17 +63,17 @@ class BookingCard extends StatelessWidget {
                       Text(
                         booking.title,
                         style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
                           color: AppColors.textDark,
                         ),
                       ),
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 6),
                       Text(
                         booking.subtitle,
                         style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textGrey,
+                          fontSize: 14,
+                          color: Color(0xFF8E8479),
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -91,13 +90,13 @@ class BookingCard extends StatelessWidget {
                   ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 18),
             Text(
               booking.meta,
               style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textGrey,
-                fontWeight: FontWeight.w500,
+                fontSize: 15,
+                color: Color(0xFF5F5650),
+                fontWeight: FontWeight.w600,
               ),
             ),
             if (booking.reviewSummary.isNotEmpty ||
@@ -106,15 +105,15 @@ class BookingCard extends StatelessWidget {
               _BookingReviewSummaryLine(booking: booking),
             ],
             if (countdownText != null) ...[
-              const SizedBox(height: 10),
+              const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
+                  horizontal: 14,
+                  vertical: 12,
                 ),
                 decoration: BoxDecoration(
                   color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: RichText(
                   text: TextSpan(
@@ -129,8 +128,7 @@ class BookingCard extends StatelessWidget {
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                       TextSpan(
-                        text:
-                            ' · Response window ends in $countdownText',
+                        text: ' · Response window ends in $countdownText',
                       ),
                     ],
                   ),
@@ -138,9 +136,7 @@ class BookingCard extends StatelessWidget {
               ),
             ],
             if (booking.actions.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const Divider(height: 1),
-              const SizedBox(height: 12),
+              const SizedBox(height: 18),
               Row(
                 children: booking.actions.map((action) {
                   final isLast = action == booking.actions.last;
@@ -168,7 +164,7 @@ class BookingCard extends StatelessWidget {
     if (onTap == null) return card;
 
     return InkWell(
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(28),
       onTap: onTap,
       child: card,
     );
@@ -238,7 +234,7 @@ class _TimerPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFFFEF3C7),
         borderRadius: BorderRadius.circular(999),
@@ -259,8 +255,8 @@ class _TimerPill extends StatelessWidget {
             text,
             style: const TextStyle(
               color: Color(0xFF92400E),
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w800,
             ),
           ),
         ],

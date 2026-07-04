@@ -327,20 +327,38 @@ class _BookingsScreenState extends State<BookingsScreen> {
     return 'Could not update booking. Please try again.';
   }
 
+  List<BookingTab> _tabsForContext(BookingContextMode contextMode) {
+    return contextMode == BookingContextMode.receiving
+        ? const [BookingTab.upcoming, BookingTab.past]
+        : const [
+            BookingTab.requests,
+            BookingTab.confirmed,
+            BookingTab.pastDeliveries,
+          ];
+  }
+
+  void _handleTabSwipe(bool forward) {
+    final tabs = _tabsForContext(_context);
+    final currentIndex = tabs.indexOf(_activeTab);
+    if (currentIndex == -1) return;
+
+    final nextIndex = forward ? currentIndex + 1 : currentIndex - 1;
+    if (nextIndex < 0 || nextIndex >= tabs.length) return;
+    _handleTabChanged(tabs[nextIndex]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
-    final topContentPadding = topInset + 96;
+    final topContentPadding = topInset + 70;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: const Color(0xFFFBF6EF),
       extendBody: true,
       body: Stack(
         children: [
-          // The list is drawn first so the booking content can travel beneath
-          // the floating glass header and shared bottom navigation.
           ListView(
             padding: EdgeInsets.fromLTRB(
               18,
@@ -355,20 +373,28 @@ class _BookingsScreenState extends State<BookingsScreen> {
                   setState(() => _context = contextMode);
                 },
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 8),
               if (currentUserId == null)
-                _BookingSectionShell(
-                  subtabBar: _SubtabBar(
-                    contextMode: _context,
-                    activeTab: _activeTab,
-                    requestCount: 0,
-                    onChanged: _handleTabChanged,
-                  ),
-                  child: const _EmptyState(
-                    icon: Icons.lock_outline_rounded,
-                    title: 'Sign in to view bookings',
-                    subtitle:
-                        'Your requested and received bookings will appear here after sign in.',
+                GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragEnd: (details) {
+                    final velocity = details.primaryVelocity ?? 0;
+                    if (velocity.abs() < 180) return;
+                    _handleTabSwipe(velocity < 0);
+                  },
+                  child: _BookingSectionShell(
+                    subtabBar: _SubtabBar(
+                      contextMode: _context,
+                      activeTab: _activeTab,
+                      requestCount: 0,
+                      onChanged: _handleTabChanged,
+                    ),
+                    child: const _EmptyState(
+                      icon: Icons.lock_outline_rounded,
+                      title: 'Sign in to view bookings',
+                      subtitle:
+                          'Your requested and received bookings will appear here after sign in.',
+                    ),
                   ),
                 )
               else
@@ -381,31 +407,47 @@ class _BookingsScreenState extends State<BookingsScreen> {
                         .length;
 
                     if (snapshot.hasError) {
-                      return _BookingSectionShell(
-                        subtabBar: _SubtabBar(
-                          contextMode: _context,
-                          activeTab: _activeTab,
-                          requestCount: requestCount,
-                          onChanged: _handleTabChanged,
-                        ),
-                        child: _EmptyState(
-                          icon: Icons.cloud_off_rounded,
-                          title: 'Could not load bookings',
-                          subtitle: snapshot.error.toString(),
+                      return GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onHorizontalDragEnd: (details) {
+                          final velocity = details.primaryVelocity ?? 0;
+                          if (velocity.abs() < 180) return;
+                          _handleTabSwipe(velocity < 0);
+                        },
+                        child: _BookingSectionShell(
+                          subtabBar: _SubtabBar(
+                            contextMode: _context,
+                            activeTab: _activeTab,
+                            requestCount: requestCount,
+                            onChanged: _handleTabChanged,
+                          ),
+                          child: _EmptyState(
+                            icon: Icons.cloud_off_rounded,
+                            title: 'Could not load bookings',
+                            subtitle: snapshot.error.toString(),
+                          ),
                         ),
                       );
                     }
 
                     if (snapshot.connectionState == ConnectionState.waiting &&
                         !snapshot.hasData) {
-                      return _BookingSectionShell(
-                        subtabBar: _SubtabBar(
-                          contextMode: _context,
-                          activeTab: _activeTab,
-                          requestCount: requestCount,
-                          onChanged: _handleTabChanged,
+                      return GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onHorizontalDragEnd: (details) {
+                          final velocity = details.primaryVelocity ?? 0;
+                          if (velocity.abs() < 180) return;
+                          _handleTabSwipe(velocity < 0);
+                        },
+                        child: _BookingSectionShell(
+                          subtabBar: _SubtabBar(
+                            contextMode: _context,
+                            activeTab: _activeTab,
+                            requestCount: requestCount,
+                            onChanged: _handleTabChanged,
+                          ),
+                          child: const _LoadingState(),
                         ),
-                        child: const _LoadingState(),
                       );
                     }
 
@@ -414,55 +456,66 @@ class _BookingsScreenState extends State<BookingsScreen> {
                         .map((booking) => booking.toBookingRecord(_context))
                         .toList();
 
-                    return _BookingSectionShell(
-                      subtabBar: _SubtabBar(
-                        contextMode: _context,
-                        activeTab: _activeTab,
-                        requestCount: requestCount,
-                        onChanged: _handleTabChanged,
-                      ),
-                      child: records.isEmpty
-                          ? const _EmptyState()
-                          : Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: Text(
-                                    _sectionLabelFor(
-                                      records.length,
-                                    ).toUpperCase(),
-                                    style: const TextStyle(
-                                      color: AppColors.textGrey,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: 1.0,
+                    return GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onHorizontalDragEnd: (details) {
+                        final velocity = details.primaryVelocity ?? 0;
+                        if (velocity.abs() < 180) return;
+                        _handleTabSwipe(velocity < 0);
+                      },
+                      child: _BookingSectionShell(
+                        subtabBar: _SubtabBar(
+                          contextMode: _context,
+                          activeTab: _activeTab,
+                          requestCount: requestCount,
+                          onChanged: _handleTabChanged,
+                        ),
+                        child: records.isEmpty
+                            ? const _EmptyState()
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 12),
+                                    child: Text(
+                                      _sectionLabelFor(
+                                        records.length,
+                                      ).toUpperCase(),
+                                      style: const TextStyle(
+                                        color: Color(0xFF908476),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 1.3,
+                                      ),
                                     ),
                                   ),
-                                ),
-                                ...records.map((booking) {
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 12),
-                                    child: BookingCard(
-                                      booking: booking,
-                                      loadingActionLabel:
-                                          _actionBookingId == booking.id
-                                          ? _actionLabel
-                                          : null,
-                                      countdownText:
-                                          booking.countdownSeconds != null
-                                          ? _formatCountdown(
-                                              booking.countdownSeconds!,
-                                            )
-                                          : null,
-                                      onTap: () => _openBookingDetail(booking),
-                                      onActionTap: (action) =>
-                                          _handleAction(booking, action),
-                                    ),
-                                  );
-                                }),
-                              ],
-                            ),
+                                  ...records.map((booking) {
+                                    return Padding(
+                                      padding: const EdgeInsets.only(
+                                        bottom: 16,
+                                      ),
+                                      child: BookingCard(
+                                        booking: booking,
+                                        loadingActionLabel:
+                                            _actionBookingId == booking.id
+                                            ? _actionLabel
+                                            : null,
+                                        countdownText:
+                                            booking.countdownSeconds != null
+                                            ? _formatCountdown(
+                                                booking.countdownSeconds!,
+                                              )
+                                            : null,
+                                        onTap: () =>
+                                            _openBookingDetail(booking),
+                                        onActionTap: (action) =>
+                                            _handleAction(booking, action),
+                                      ),
+                                    );
+                                  }),
+                                ],
+                              ),
+                      ),
                     );
                   },
                 ),
@@ -471,61 +524,43 @@ class _BookingsScreenState extends State<BookingsScreen> {
           Positioned(
             left: 0,
             right: 0,
-            top: topInset + 10,
-            child: Align(
-              child: FractionallySizedBox(
-                widthFactor: 0.85,
-                child: GlassSurface(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 11,
-                  ),
-                  borderRadius: BorderRadius.circular(24),
-                  backgroundColor: Colors.white.withValues(alpha: 0.72),
-                  blurSigma: 20,
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.62),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withValues(alpha: 0.06),
-                      blurRadius: 22,
-                      offset: const Offset(0, 10),
+            top: topInset + 8,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.94),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.primary.withValues(alpha: 0.07),
+                          blurRadius: 20,
+                          offset: const Offset(0, 10),
+                        ),
+                      ],
                     ),
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
+                    child: IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(
+                        Icons.arrow_back_rounded,
+                        color: AppColors.textDark,
+                      ),
                     ),
-                  ],
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.56),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.arrow_back_rounded),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Text(
-                          'Bookings',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: AppColors.textDark,
-                          ),
-                        ),
-                      ),
-                    ],
                   ),
-                ),
+                  const SizedBox(width: 16),
+                  const Text(
+                    'Bookings',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textDark,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -571,25 +606,33 @@ class _ContextToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF3F4F6),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        children: [
-          _ContextButton(
-            label: 'Receiving',
-            isActive: contextMode == BookingContextMode.receiving,
-            onTap: () => onChanged(BookingContextMode.receiving),
-          ),
-          _ContextButton(
-            label: 'Delivering',
-            isActive: contextMode == BookingContextMode.delivering,
-            onTap: () => onChanged(BookingContextMode.delivering),
-          ),
-        ],
+    return GlassSurface(
+      padding: const EdgeInsets.all(8),
+      borderRadius: BorderRadius.circular(24),
+      backgroundColor: Colors.white.withValues(alpha: 0.92),
+      blurSigma: 16,
+      border: Border.all(color: Colors.white.withValues(alpha: 0.7)),
+      boxShadow: const [],
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8F7F4),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          children: [
+            _ContextButton(
+              label: 'Receiving',
+              isActive: contextMode == BookingContextMode.receiving,
+              onTap: () => onChanged(BookingContextMode.receiving),
+            ),
+            _ContextButton(
+              label: 'Delivering',
+              isActive: contextMode == BookingContextMode.delivering,
+              onTap: () => onChanged(BookingContextMode.delivering),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -612,29 +655,28 @@ class _ContextButton extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-            color: isActive ? Colors.white : Colors.transparent,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: isActive
-                ? [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ]
-                : const [],
+            gradient: isActive
+                ? const LinearGradient(
+                    colors: [Color(0xFFFF5A1F), Color(0xFFE94D17)],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                  )
+                : null,
+            color: isActive ? null : Colors.transparent,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: const [],
           ),
           child: Text(
             label,
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: isActive ? AppColors.textDark : AppColors.textGrey,
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
+              color: isActive ? Colors.white : const Color(0xFF8E8479),
+              fontWeight: FontWeight.w800,
+              fontSize: 16,
             ),
           ),
         ),
@@ -666,20 +708,10 @@ class _SubtabBar extends StatelessWidget {
             (BookingTab.pastDeliveries, 'Past'),
           ];
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.86),
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 12,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: tabs.map((tab) {
           final isActive = tab.$1 == activeTab;
           final hasRequestBadge =
@@ -687,11 +719,11 @@ class _SubtabBar extends StatelessWidget {
               tab.$1 == BookingTab.requests &&
               requestCount > 0;
 
-          return Expanded(
+          return Flexible(
             child: GestureDetector(
               onTap: () => onChanged(tab.$1),
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -699,21 +731,25 @@ class _SubtabBar extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          tab.$2,
-                          style: TextStyle(
-                            color: isActive
-                                ? AppColors.primary
-                                : AppColors.textGrey,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
+                        Flexible(
+                          child: Text(
+                            tab.$2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isActive
+                                  ? AppColors.primary
+                                  : const Color(0xFF8E8479),
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                         ),
                         if (hasRequestBadge) ...[
                           const SizedBox(width: 6),
                           Container(
-                            width: 18,
+                            constraints: const BoxConstraints(minWidth: 18),
                             height: 18,
+                            padding: const EdgeInsets.symmetric(horizontal: 5),
                             alignment: Alignment.center,
                             decoration: const BoxDecoration(
                               color: AppColors.primary,
@@ -723,19 +759,20 @@ class _SubtabBar extends StatelessWidget {
                               requestCount > 9 ? '9+' : '$requestCount',
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
                               ),
                             ),
                           ),
                         ],
                       ],
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
-                      width: 34,
-                      height: 2.5,
+                      duration: const Duration(milliseconds: 260),
+                      curve: Curves.easeOutCubic,
+                      width: isActive ? 40 : 0,
+                      height: 4,
                       decoration: BoxDecoration(
                         color: isActive
                             ? AppColors.primary
