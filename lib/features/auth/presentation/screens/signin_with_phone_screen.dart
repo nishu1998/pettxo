@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
@@ -44,6 +43,7 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
   }
 
   Future<void> _continueWithPhone() async {
+    if (_isLoading) return;
     final error = _validatePhone(_fullPhoneNumber);
     setState(() {
       _phoneError = error;
@@ -104,10 +104,11 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
   @override
   Widget build(BuildContext context) {
     return AuthShell(
-      title: 'Get Started',
-      subtitle: 'Sign in and make pet parenting easy!',
+      title: 'Welcome Back',
+      subtitle:
+          'Sign in to continue exploring pets, bookings, and your community.',
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           CommonPhoneField(
             focusNode: _phoneFocus,
@@ -122,12 +123,12 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
             },
             onSubmitted: (_) => _continueWithPhone(),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
           CustomButton(
             text: _isLoading ? 'Please wait...' : 'Continue',
             onPressed: _isLoading ? null : _continueWithPhone,
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 24),
           Center(
             child: TextButton(
               onPressed: () => Navigator.pop(context),
@@ -138,43 +139,26 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
               child: const Text(
-                'Back to Sign In',
+                'Continue with Email',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
               ),
             ),
           ),
-          const SizedBox(height: 18),
-          Center(
-            child: RichText(
-              textAlign: TextAlign.center,
-              text: const TextSpan(
-                style: TextStyle(
-                  color: AppColors.textGrey,
-                  fontSize: 13,
-                  height: 1.6,
-                ),
-                children: [
-                  TextSpan(
-                    text: 'By signing up with Pettxo, you agree to our ',
-                  ),
-                  TextSpan(
-                    text: 'Terms',
-                    style: TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  TextSpan(text: ' & '),
-                  TextSpan(
-                    text: 'Privacy Statement',
-                    style: TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
+          const SizedBox(height: 24),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'New to Pettxo?',
+                style: TextStyle(color: Theme.of(context).hintColor),
               ),
-            ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pushReplacementNamed(context, '/signup');
+                },
+                child: const Text('Create account'),
+              ),
+            ],
           ),
         ],
       ),

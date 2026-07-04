@@ -46,6 +46,7 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
   }
 
   Future<void> _continueWithPhone() async {
+    if (_isLoading) return;
     final error = _validatePhone(_fullPhoneNumber);
     setState(() {
       _phoneError = error;
@@ -147,18 +148,20 @@ class _SignUpWithPhoneScreenState extends State<SignUpWithPhoneScreen> {
               const LegalConsentSegment(text: 'I agree to the '),
               LegalConsentSegment(
                 text: 'Terms of Service',
-                onTap: () => PolicyLinkService.openExternalPolicyUrlWithFeedback(
-                  context,
-                  PolicyLinkService.termsConditionsKey,
-                ),
+                onTap: () =>
+                    PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                      context,
+                      PolicyLinkService.termsConditionsKey,
+                    ),
               ),
               const LegalConsentSegment(text: ' and '),
               LegalConsentSegment(
                 text: 'Privacy Policy',
-                onTap: () => PolicyLinkService.openExternalPolicyUrlWithFeedback(
-                  context,
-                  PolicyLinkService.privacyPolicyKey,
-                ),
+                onTap: () =>
+                    PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                      context,
+                      PolicyLinkService.privacyPolicyKey,
+                    ),
               ),
               const LegalConsentSegment(text: '.'),
             ],
