@@ -125,6 +125,11 @@ class _SocialPostCardState extends State<SocialPostCard> {
     }
   }
 
+  void _handleImageDoubleTap() {
+    if (_isLiked || _isLiking) return;
+    _handleLikeTap();
+  }
+
   Future<void> _showPostMenu() async {
     if (_isDeleting || _isReporting || _isFollowActionRunning) return;
     final action = await showModalBottomSheet<_PostMenuAction>(
@@ -484,10 +489,6 @@ class _SocialPostCardState extends State<SocialPostCard> {
 
   @override
   Widget build(BuildContext context) {
-    final initials = _post.authorDisplayName.trim().isEmpty
-        ? 'P'
-        : _post.authorDisplayName.trim()[0].toUpperCase();
-    final hasUsername = _post.authorUsername.isNotEmpty;
     final hasLocation = _post.locationLabel.isNotEmpty;
 
     return Container(
@@ -518,101 +519,20 @@ class _SocialPostCardState extends State<SocialPostCard> {
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       child: Row(
                         children: [
-                          _ProfileAvatar(
-                            imageUrl: _post.authorPhotoUrl,
-                            initials: initials,
+                          _LiveAuthorIdentity(
+                            authorId: _post.authorId,
+                            fallbackName: _post.authorDisplayName,
+                            fallbackImageUrl: _post.authorPhotoUrl,
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        _isAdminPost
-                                            ? (_post.authorDisplayName.isEmpty
-                                                  ? 'Pettxo'
-                                                  : _post.authorDisplayName)
-                                            : _post.authorDisplayName,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontSize: 17,
-                                          fontWeight: FontWeight.w700,
-                                          color: AppColors.textDark,
-                                        ),
-                                      ),
-                                    ),
-                                    if (_post.authorCategoryLabel.isNotEmpty)
-                                      Container(
-                                        margin: const EdgeInsets.only(left: 8),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 5,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFFFF2EA),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          _isAdminPost
-                                              ? 'Verified'
-                                              : _post.authorCategoryLabel,
-                                          style: const TextStyle(
-                                            color: AppColors.primary,
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    if (_isAdminPost) ...[
-                                      const SizedBox(width: 6),
-                                      const Icon(
-                                        Icons.verified_rounded,
-                                        size: 18,
-                                        color: AppColors.primary,
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                Wrap(
-                                  spacing: 8,
-                                  runSpacing: 4,
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  children: [
-                                    if (hasUsername)
-                                      Text(
-                                        _post.authorUsername,
-                                        style: const TextStyle(
-                                          color: AppColors.textGrey,
-                                          fontSize: 13.5,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    if (hasUsername && hasLocation)
-                                      const Text(
-                                        '•',
-                                        style: TextStyle(
-                                          color: AppColors.textGrey,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    if (hasLocation)
-                                      Text(
-                                        _post.locationLabel,
-                                        style: const TextStyle(
-                                          color: AppColors.textGrey,
-                                          fontSize: 13.5,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ],
+                            child: _LiveAuthorHeader(
+                              authorId: _post.authorId,
+                              fallbackName: _post.authorDisplayName,
+                              categoryLabel: _post.authorCategoryLabel,
+                              isAdminPost: _isAdminPost,
+                              hasLocation: hasLocation,
+                              locationLabel: _post.locationLabel,
                             ),
                           ),
                         ],
@@ -631,6 +551,7 @@ class _SocialPostCardState extends State<SocialPostCard> {
             imageUrls: _post.imageUrls,
             thumbnailUrls: _post.thumbnailUrls,
             aspectRatio: _post.aspectRatioValue,
+            onImageDoubleTap: _handleImageDoubleTap,
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
@@ -717,27 +638,275 @@ class _SocialPostCardState extends State<SocialPostCard> {
           if (_post.caption.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: RichText(
-                text: TextSpan(
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 15,
-                    height: 1.45,
-                  ),
-                  children: [
-                    if (_post.authorUsername.isNotEmpty)
-                      TextSpan(
-                        text: '${_post.authorUsername} ',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    TextSpan(text: _post.caption),
-                  ],
-                ),
+              child: _ExpandableCaption(
+                username: _post.authorUsername,
+                caption: _post.caption,
               ),
             ),
         ],
       ),
     );
+  }
+}
+
+class _ExpandableCaption extends StatefulWidget {
+  final String username;
+  final String caption;
+
+  const _ExpandableCaption({required this.username, required this.caption});
+
+  @override
+  State<_ExpandableCaption> createState() => _ExpandableCaptionState();
+}
+
+class _ExpandableCaptionState extends State<_ExpandableCaption> {
+  static const int _collapsedMaxLines = 3;
+  bool _isExpanded = false;
+
+  TextStyle get _baseStyle =>
+      const TextStyle(color: AppColors.textDark, fontSize: 15, height: 1.45);
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _buildSpan();
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final painter = TextPainter(
+          text: text,
+          textDirection: Directionality.of(context),
+          maxLines: _collapsedMaxLines,
+          ellipsis: '...',
+          textWidthBasis: TextWidthBasis.parent,
+        )..layout(maxWidth: constraints.maxWidth);
+
+        final hasOverflow = painter.didExceedMaxLines;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            RichText(
+              text: text,
+              maxLines: _isExpanded ? null : _collapsedMaxLines,
+              overflow: _isExpanded
+                  ? TextOverflow.visible
+                  : TextOverflow.ellipsis,
+              textWidthBasis: TextWidthBasis.parent,
+            ),
+            if (hasOverflow || _isExpanded)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _isExpanded = !_isExpanded;
+                    });
+                  },
+                  child: Text(
+                    _isExpanded ? 'See less' : 'See more',
+                    style: const TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  TextSpan _buildSpan() {
+    return TextSpan(
+      style: _baseStyle,
+      children: [
+        if (widget.username.isNotEmpty)
+          TextSpan(
+            text: '${widget.username} ',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        TextSpan(text: widget.caption),
+      ],
+    );
+  }
+}
+
+class _LiveAuthorHeader extends StatelessWidget {
+  final String authorId;
+  final String fallbackName;
+  final String categoryLabel;
+  final bool isAdminPost;
+  final bool hasLocation;
+  final String locationLabel;
+
+  const _LiveAuthorHeader({
+    required this.authorId,
+    required this.fallbackName,
+    required this.categoryLabel,
+    required this.isAdminPost,
+    required this.hasLocation,
+    required this.locationLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (isAdminPost || authorId.trim().isEmpty) {
+      return _AuthorHeaderText(
+        displayName: fallbackName,
+        categoryLabel: categoryLabel,
+        isAdminPost: isAdminPost,
+        hasLocation: hasLocation,
+        locationLabel: locationLabel,
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(authorId.trim())
+          .snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data() ?? const <String, dynamic>{};
+        final liveName = (data['name'] as String? ?? '').trim();
+        return _AuthorHeaderText(
+          displayName: liveName.isEmpty ? fallbackName : liveName,
+          categoryLabel: categoryLabel,
+          isAdminPost: isAdminPost,
+          hasLocation: hasLocation,
+          locationLabel: locationLabel,
+        );
+      },
+    );
+  }
+}
+
+class _AuthorHeaderText extends StatelessWidget {
+  final String displayName;
+  final String categoryLabel;
+  final bool isAdminPost;
+  final bool hasLocation;
+  final String locationLabel;
+
+  const _AuthorHeaderText({
+    required this.displayName,
+    required this.categoryLabel,
+    required this.isAdminPost,
+    required this.hasLocation,
+    required this.locationLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                isAdminPost
+                    ? (displayName.isEmpty ? 'Pettxo' : displayName)
+                    : displayName,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textDark,
+                ),
+              ),
+            ),
+            if (categoryLabel.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(left: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF2EA),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  isAdminPost ? 'Verified' : categoryLabel,
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            if (isAdminPost) ...[
+              const SizedBox(width: 6),
+              const Icon(
+                Icons.verified_rounded,
+                size: 18,
+                color: AppColors.primary,
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 4),
+        if (hasLocation)
+          Text(
+            locationLabel,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 13.5,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _LiveAuthorIdentity extends StatelessWidget {
+  final String authorId;
+  final String fallbackName;
+  final String fallbackImageUrl;
+
+  const _LiveAuthorIdentity({
+    required this.authorId,
+    required this.fallbackName,
+    required this.fallbackImageUrl,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (authorId.trim().isEmpty) {
+      return _ProfileAvatar(
+        imageUrl: fallbackImageUrl,
+        initials: _initialsFor(fallbackName),
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(authorId.trim())
+          .snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data() ?? const <String, dynamic>{};
+        final liveName = (data['name'] as String? ?? '').trim();
+        final liveImageUrl = (data['profileImage'] as String? ?? '').trim();
+        final resolvedName = liveName.isEmpty ? fallbackName : liveName;
+        final resolvedImageUrl = liveImageUrl.isEmpty
+            ? fallbackImageUrl
+            : liveImageUrl;
+        return _ProfileAvatar(
+          imageUrl: resolvedImageUrl,
+          initials: _initialsFor(resolvedName),
+        );
+      },
+    );
+  }
+
+  String _initialsFor(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'P';
+    return trimmed.substring(0, 1).toUpperCase();
   }
 }
 
