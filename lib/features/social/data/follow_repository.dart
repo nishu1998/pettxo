@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import '../../notifications/data/repositories/notification_repository.dart';
 
@@ -14,15 +15,29 @@ class FollowIdsPage {
   });
 }
 
+class ProfileFollowCounts {
+  final int followerCount;
+  final int followingCount;
+
+  const ProfileFollowCounts({
+    required this.followerCount,
+    required this.followingCount,
+  });
+}
+
 class FollowRepository {
   FollowRepository({
     FirebaseFirestore? firestore,
+    FirebaseFunctions? functions,
     NotificationRepository? notificationRepository,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1'),
        _notificationRepository =
            notificationRepository ?? NotificationRepository();
 
   final FirebaseFirestore _firestore;
+  final FirebaseFunctions _functions;
   final NotificationRepository _notificationRepository;
 
   CollectionReference<Map<String, dynamic>> get _followsCollection =>
@@ -36,10 +51,7 @@ class FollowRepository {
     return trimmed;
   }
 
-  String followIdFor({
-    required String followerId,
-    required String followeeId,
-  }) {
+  String followIdFor({required String followerId, required String followeeId}) {
     return '${followerId.trim()}_${followeeId.trim()}';
   }
 
@@ -63,23 +75,14 @@ class FollowRepository {
     required String followerId,
     required String followeeId,
   }) async {
-    final trimmedFollowerId = _normalizeRequiredUserId(
-      followerId,
-      'Follower',
-    );
-    final trimmedFolloweeId = _normalizeRequiredUserId(
-      followeeId,
-      'Followee',
-    );
+    final trimmedFollowerId = _normalizeRequiredUserId(followerId, 'Follower');
+    final trimmedFolloweeId = _normalizeRequiredUserId(followeeId, 'Followee');
     if (trimmedFollowerId == trimmedFolloweeId) {
       throw Exception('You cannot follow yourself.');
     }
 
     final followRef = _followsCollection.doc(
-      followIdFor(
-        followerId: trimmedFollowerId,
-        followeeId: trimmedFolloweeId,
-      ),
+      followIdFor(followerId: trimmedFollowerId, followeeId: trimmedFolloweeId),
     );
 
     try {
@@ -105,23 +108,14 @@ class FollowRepository {
     required String followerId,
     required String followeeId,
   }) async {
-    final trimmedFollowerId = _normalizeRequiredUserId(
-      followerId,
-      'Follower',
-    );
-    final trimmedFolloweeId = _normalizeRequiredUserId(
-      followeeId,
-      'Followee',
-    );
+    final trimmedFollowerId = _normalizeRequiredUserId(followerId, 'Follower');
+    final trimmedFolloweeId = _normalizeRequiredUserId(followeeId, 'Followee');
     if (trimmedFollowerId == trimmedFolloweeId) {
       return;
     }
 
     final followRef = _followsCollection.doc(
-      followIdFor(
-        followerId: trimmedFollowerId,
-        followeeId: trimmedFolloweeId,
-      ),
+      followIdFor(followerId: trimmedFollowerId, followeeId: trimmedFolloweeId),
     );
 
     try {
@@ -227,6 +221,31 @@ class FollowRepository {
       lastDocument: snapshot.docs.isEmpty ? lastDoc : snapshot.docs.last,
       hasMore: snapshot.docs.length == limit,
     );
+  }
+
+  Future<ProfileFollowCounts> fetchProfileFollowCounts(String userId) async {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) {
+      return const ProfileFollowCounts(followerCount: 0, followingCount: 0);
+    }
+
+    try {
+      final callable = _functions.httpsCallable('getProfileFollowCounts');
+      final result = await callable.call<Map<String, dynamic>>({
+        'userId': trimmedUserId,
+      });
+      final data = result.data;
+      return ProfileFollowCounts(
+        followerCount: (data['followerCount'] as num?)?.toInt() ?? 0,
+        followingCount: (data['followingCount'] as num?)?.toInt() ?? 0,
+      );
+    } on FirebaseFunctionsException catch (error) {
+      throw Exception(
+        error.message?.trim().isNotEmpty == true
+            ? error.message!.trim()
+            : 'We could not load profile counts right now.',
+      );
+    }
   }
 
   // TODO(nishant): Public follower/following list support may need broader

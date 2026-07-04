@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/models/comment_model.dart';
@@ -97,7 +98,9 @@ class _CommentSheetState extends State<CommentSheet> {
     });
 
     try {
-      final page = await widget.repository.fetchComments(postId: widget.post.id);
+      final page = await widget.repository.fetchComments(
+        postId: widget.post.id,
+      );
       if (!mounted) return;
       setState(() {
         _comments
@@ -334,13 +337,15 @@ class _CommentSheetState extends State<CommentSheet> {
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: _commentReportReasons.map((reason) {
-                return _CommentMenuTile(
-                  icon: Icons.outlined_flag_rounded,
-                  label: reason,
-                  onTap: () => Navigator.pop(context, reason),
-                );
-              }).toList(growable: false),
+              children: _commentReportReasons
+                  .map((reason) {
+                    return _CommentMenuTile(
+                      icon: Icons.outlined_flag_rounded,
+                      label: reason,
+                      onTap: () => Navigator.pop(context, reason),
+                    );
+                  })
+                  .toList(growable: false),
             ),
           ),
         );
@@ -396,10 +401,12 @@ class _CommentSheetState extends State<CommentSheet> {
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.sizeOf(context);
     final viewInsets = MediaQuery.viewInsetsOf(context);
-    final sheetHeight = math.min(
-      screenSize.height * 0.82,
-      screenSize.height - viewInsets.bottom - 24,
-    ).clamp(320.0, screenSize.height);
+    final sheetHeight = math
+        .min(
+          screenSize.height * 0.82,
+          screenSize.height - viewInsets.bottom - 24,
+        )
+        .clamp(320.0, screenSize.height);
 
     return SafeArea(
       top: false,
@@ -445,9 +452,7 @@ class _CommentSheetState extends State<CommentSheet> {
                   ],
                 ),
               ),
-              Expanded(
-                child: _buildCommentsList(),
-              ),
+              Expanded(child: _buildCommentsList()),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
                 child: Row(
@@ -479,7 +484,8 @@ class _CommentSheetState extends State<CommentSheet> {
                     SizedBox(
                       height: 48,
                       child: FilledButton(
-                        onPressed: _commentController.text.trim().isEmpty || _isSending
+                        onPressed:
+                            _commentController.text.trim().isEmpty || _isSending
                             ? null
                             : _sendComment,
                         style: FilledButton.styleFrom(
@@ -583,7 +589,10 @@ class _CommentSheetState extends State<CommentSheet> {
         final comment = _comments[index];
         return GestureDetector(
           onLongPress: () => _showCommentActions(comment),
-          child: _CommentTile(comment: comment),
+          child: _CommentTile(
+            comment: comment,
+            currentUserId: widget.currentUserId,
+          ),
         );
       },
     );
@@ -592,8 +601,23 @@ class _CommentSheetState extends State<CommentSheet> {
 
 class _CommentTile extends StatelessWidget {
   final CommentModel comment;
+  final String currentUserId;
 
-  const _CommentTile({required this.comment});
+  const _CommentTile({required this.comment, required this.currentUserId});
+
+  void _openAuthorProfile(BuildContext context) {
+    final authorId = comment.authorId.trim();
+    if (authorId.isEmpty) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => authorId == currentUserId.trim()
+            ? const ProfileScreen()
+            : ProfileScreen(userId: authorId),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -617,9 +641,12 @@ class _CommentTile extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _CommentAvatar(
-            imageUrl: comment.authorPhotoUrl,
-            initials: initials,
+          GestureDetector(
+            onTap: () => _openAuthorProfile(context),
+            child: _CommentAvatar(
+              imageUrl: comment.authorPhotoUrl,
+              initials: initials,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -630,11 +657,14 @@ class _CommentTile extends StatelessWidget {
                   spacing: 8,
                   runSpacing: 4,
                   children: [
-                    Text(
-                      comment.authorDisplayName,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontWeight: FontWeight.w700,
+                    GestureDetector(
+                      onTap: () => _openAuthorProfile(context),
+                      child: Text(
+                        comment.authorDisplayName,
+                        style: const TextStyle(
+                          color: AppColors.textDark,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                     if (comment.authorUsername.isNotEmpty)
@@ -677,10 +707,7 @@ class _CommentAvatar extends StatelessWidget {
   final String imageUrl;
   final String initials;
 
-  const _CommentAvatar({
-    required this.imageUrl,
-    required this.initials,
-  });
+  const _CommentAvatar({required this.imageUrl, required this.initials});
 
   @override
   Widget build(BuildContext context) {
@@ -737,10 +764,7 @@ class _CommentMenuTile extends StatelessWidget {
       leading: Icon(icon, color: color),
       title: Text(
         label,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.w700,
-        ),
+        style: TextStyle(color: color, fontWeight: FontWeight.w700),
       ),
       onTap: onTap,
     );

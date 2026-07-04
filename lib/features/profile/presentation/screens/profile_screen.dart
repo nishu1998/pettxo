@@ -33,6 +33,9 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  static final Map<String, ProfileFollowCounts> _sharedFollowCountCache =
+      <String, ProfileFollowCounts>{};
+
   final ProfileRepository _profileRepository = ProfileRepository();
   final ProfileContentRepository _contentRepository =
       ProfileContentRepository();
@@ -46,9 +49,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _followTargetUserId = '';
   Future<bool>? _followStateFuture;
   bool? _followStateOverride;
-  int _localFollowerCountDelta = 0;
   bool _isFollowActionRunning = false;
   bool _isOpeningDirectChat = false;
+  final Map<String, Future<ProfileFollowCounts>> _followCountRequests =
+      <String, Future<ProfileFollowCounts>>{};
 
   @override
   void initState() {
@@ -77,6 +81,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
   }
 
+  Future<ProfileFollowCounts> _requestFollowCounts(String userId) {
+    final trimmedUserId = userId.trim();
+    return _followCountRequests.putIfAbsent(
+      trimmedUserId,
+      () => _followRepository.fetchProfileFollowCounts(trimmedUserId),
+    );
+  }
+
+  void _ensureFollowCountsLoaded(String userId, {bool forceRefresh = false}) {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) return;
+
+    if (forceRefresh) {
+      _followCountRequests.remove(trimmedUserId);
+    } else if (_sharedFollowCountCache.containsKey(trimmedUserId) ||
+        _followCountRequests.containsKey(trimmedUserId)) {
+      return;
+    }
+
+    _requestFollowCounts(trimmedUserId)
+        .then((counts) {
+          _followCountRequests.remove(trimmedUserId);
+          final previous = _sharedFollowCountCache[trimmedUserId];
+          final didChange =
+              previous?.followerCount != counts.followerCount ||
+              previous?.followingCount != counts.followingCount;
+          _sharedFollowCountCache[trimmedUserId] = counts;
+          if (!mounted || !didChange) return;
+          setState(() {});
+        })
+        .catchError((_) {
+          _followCountRequests.remove(trimmedUserId);
+          // Keep the last visible counts if refresh fails.
+        });
+  }
+
   void _syncFollowState({
     required String currentUserId,
     required String profileUserId,
@@ -86,7 +126,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _followTargetUserId = '';
       _followStateFuture = null;
       _followStateOverride = null;
-      _localFollowerCountDelta = 0;
       return;
     }
 
@@ -100,7 +139,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       followeeId: profileUserId,
     );
     _followStateOverride = null;
-    _localFollowerCountDelta = 0;
   }
 
   Future<void> _toggleFollow({
@@ -114,13 +152,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     final previous = currentlyFollowing;
-    final next = !previous;
     final previousOverride = _followStateOverride;
-    final previousFollowerDelta = _localFollowerCountDelta;
     setState(() {
       _isFollowActionRunning = true;
-      _followStateOverride = next;
-      _localFollowerCountDelta += next ? 1 : -1;
+      _followStateOverride = !previous;
     });
 
     try {
@@ -133,6 +168,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       setState(() {
         _followStateOverride = resolved;
       });
+      _ensureFollowCountsLoaded(profile.uid, forceRefresh: true);
+      _ensureFollowCountsLoaded(currentUserId, forceRefresh: true);
       AppFeedback.show(
         context,
         message: resolved ? 'Followed user.' : 'Unfollowed user.',
@@ -142,7 +179,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (!mounted) return;
       setState(() {
         _followStateOverride = previousOverride;
-        _localFollowerCountDelta = previousFollowerDelta;
       });
       AppFeedback.show(
         context,
@@ -352,6 +388,71 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Widget _buildProfileStatsRow({
+    required BuildContext context,
+    required int postsCount,
+    required int followerCount,
+    required int followingCount,
+    required bool isOwnProfile,
+    required String profileUserId,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: _ProfileStat(label: "posts", value: "$postsCount"),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: _ProfileStat(
+            label: "followers",
+            value: "$followerCount",
+            onTap: isOwnProfile
+                ? () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => UserListScreen(
+                        title: 'Followers',
+                        emptyMessage: 'No followers yet',
+                        listKind: UserListKind.followers,
+                        loader: (lastDoc) =>
+                            _followRepository.fetchFollowerIdsPage(
+                              userId: profileUserId,
+                              lastDoc: lastDoc,
+                            ),
+                      ),
+                    ),
+                  )
+                : null,
+          ),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: _ProfileStat(
+            label: "following",
+            value: "$followingCount",
+            onTap: isOwnProfile
+                ? () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => UserListScreen(
+                        title: 'Following',
+                        emptyMessage: 'Not following anyone yet',
+                        listKind: UserListKind.following,
+                        loader: (lastDoc) =>
+                            _followRepository.fetchFollowingIdsPage(
+                              userId: profileUserId,
+                              lastDoc: lastDoc,
+                            ),
+                      ),
+                    ),
+                  )
+                : null,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentUserId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
@@ -359,605 +460,597 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final isOwnProfile =
         requestedUserId.isEmpty || requestedUserId == currentUserId;
     final topInset = MediaQuery.paddingOf(context).top;
-    const topBarHeight = 76.0;
-    final topContentPadding = topInset + topBarHeight + 16;
+    const topBarHeight = 74.0;
+    final topContentPadding = topInset + topBarHeight;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      extendBody: true,
-      body: FutureBuilder<AppSettings>(
-        future: _settingsFuture,
-        builder: (context, settingsSnapshot) {
-          if (!settingsSnapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
+    return SocialTabBackScope(
+      activeTab: SocialAppTab.profile,
+      enabled: isOwnProfile,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        extendBody: true,
+        body: FutureBuilder<AppSettings>(
+          future: _settingsFuture,
+          builder: (context, settingsSnapshot) {
+            if (!settingsSnapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-          return StreamBuilder<UserProfile>(
-            stream: isOwnProfile
-                ? _profileRepository.watchCurrentUserProfile()
-                : _profileRepository.watchUserProfile(requestedUserId),
-            builder: (context, profileSnapshot) {
-              if (profileSnapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
+            return StreamBuilder<UserProfile>(
+              stream: isOwnProfile
+                  ? _profileRepository.watchCurrentUserProfile()
+                  : _profileRepository.watchUserProfile(requestedUserId),
+              builder: (context, profileSnapshot) {
+                if (profileSnapshot.connectionState ==
+                    ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-              if (profileSnapshot.hasError || !profileSnapshot.hasData) {
-                return const _ProfileErrorState();
-              }
+                if (profileSnapshot.hasError || !profileSnapshot.hasData) {
+                  return const _ProfileErrorState();
+                }
 
-              final profile = profileSnapshot.data!;
-              _syncFollowState(
-                currentUserId: currentUserId,
-                profileUserId: profile.uid,
-                isOwnProfile: isOwnProfile,
-              );
+                final profile = profileSnapshot.data!;
+                _syncFollowState(
+                  currentUserId: currentUserId,
+                  profileUserId: profile.uid,
+                  isOwnProfile: isOwnProfile,
+                );
+                _ensureFollowCountsLoaded(profile.uid);
+                final cachedCounts = _sharedFollowCountCache[profile.uid];
 
-              return StreamBuilder<List<ProfileServiceListing>>(
-                stream:
-                    (isOwnProfile
-                            ? _servicesRepository.watchOwnerServices(
-                                profile.uid,
-                              )
-                            : _servicesRepository.watchPublicOwnerServices(
-                                profile.uid,
-                              ))
-                        .map((services) => services.toProfileListings()),
-                builder: (context, servicesSnapshot) {
-                  final services = servicesSnapshot.data ?? const [];
-                  final selectedSectionIndex = _selectedSectionIndex;
+                return StreamBuilder<List<ProfileServiceListing>>(
+                  stream:
+                      (isOwnProfile
+                              ? _servicesRepository.watchOwnerServices(
+                                  profile.uid,
+                                )
+                              : _servicesRepository.watchPublicOwnerServices(
+                                  profile.uid,
+                                ))
+                          .map((services) => services.toProfileListings()),
+                  builder: (context, servicesSnapshot) {
+                    final services = servicesSnapshot.data ?? const [];
+                    final selectedSectionIndex = _selectedSectionIndex;
 
-                  return StreamBuilder<List<SocialPostModel>>(
-                    stream: _contentRepository.watchPostsForProfile(profile),
-                    builder: (context, postsSnapshot) {
-                      final posts =
-                          postsSnapshot.data ?? const <SocialPostModel>[];
+                    return StreamBuilder<List<SocialPostModel>>(
+                      stream: _contentRepository.watchPostsForProfile(profile),
+                      builder: (context, postsSnapshot) {
+                        final posts =
+                            postsSnapshot.data ?? const <SocialPostModel>[];
 
-                      return Stack(
-                        children: [
-                          // The profile list fills the screen first so cards can
-                          // move behind the glass header and bottom nav overlays.
-                          ListView(
-                            padding: EdgeInsets.fromLTRB(
-                              18,
-                              topContentPadding,
-                              18,
-                              bottomContentPadding,
-                            ),
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(20),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.97),
-                                  borderRadius: BorderRadius.circular(30),
-                                  border: Border.all(
-                                    color: AppColors.primary.withValues(
-                                      alpha: 0.08,
-                                    ),
+                        return Stack(
+                          children: [
+                            // The profile list fills the screen first so cards can
+                            // move behind the glass header and bottom nav overlays.
+                            ListView(
+                              padding: EdgeInsets.fromLTRB(
+                                18,
+                                topContentPadding,
+                                18,
+                                bottomContentPadding,
+                              ),
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    14,
+                                    12,
+                                    14,
+                                    14,
                                   ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(
-                                        alpha: 0.04,
+                                  decoration: BoxDecoration(
+                                    color: Colors.transparent,
+                                    borderRadius: BorderRadius.circular(28),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          _ProfileAvatar(
+                                            imageUrl: profile.profileImageUrl,
+                                            fallbackInitials: profile.initials,
+                                            size: 96,
+                                          ),
+                                          const SizedBox(width: 18),
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 2,
+                                              ),
+                                              child: _buildProfileStatsRow(
+                                                context: context,
+                                                postsCount: posts.length,
+                                                followerCount:
+                                                    cachedCounts
+                                                        ?.followerCount ??
+                                                    profile.followerCount,
+                                                followingCount:
+                                                    cachedCounts
+                                                        ?.followingCount ??
+                                                    profile.followingCount,
+                                                isOwnProfile: isOwnProfile,
+                                                profileUserId: profile.uid,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                      blurRadius: 22,
-                                      offset: const Offset(0, 10),
-                                    ),
-                                  ],
-                                ),
-                                child: Column(
-                                  children: [
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        _ProfileAvatar(
-                                          imageUrl: profile.profileImageUrl,
-                                          fallbackInitials: profile.initials,
-                                          size: 92,
+                                      const SizedBox(height: 10),
+                                      Text(
+                                        profile.name.isEmpty
+                                            ? 'Your Name'
+                                            : profile.name,
+                                        style: const TextStyle(
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.textDark,
+                                          letterSpacing: -0.3,
                                         ),
-                                        const SizedBox(width: 18),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Row(
+                                        children: [
+                                          Container(
+                                            width: 10,
+                                            height: 10,
+                                            decoration: const BoxDecoration(
+                                              color: AppColors.primary,
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Text(
+                                              profile.roleLabel,
+                                              style: const TextStyle(
+                                                color: AppColors.textGrey,
+                                                fontSize: 15,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      if (profile.isServiceProvider) ...[
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          profile.providerReviewSummary,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: profile.hasReviews
+                                                ? const Color(0xFF9A3412)
+                                                : AppColors.textGrey,
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(height: 8),
+                                      if (profile.bio.isNotEmpty ||
+                                          isOwnProfile) ...[
+                                        Text(
+                                          profile.bio.isEmpty
+                                              ? 'Tell people a little about you from Settings > Profile details.'
+                                              : profile.bio,
+                                          style: TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w500,
+                                            color: profile.bio.isEmpty
+                                                ? AppColors.textGrey
+                                                : AppColors.textDark,
+                                            height: 1.32,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 10),
+                                      ],
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.location_on_outlined,
+                                            color: AppColors.textGrey,
+                                            size: 22,
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Text(
+                                              profile.location.isEmpty
+                                                  ? 'Add your location in profile settings'
+                                                  : profile.location,
+                                              style: const TextStyle(
+                                                color: AppColors.textGrey,
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 14),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: isOwnProfile
+                                                ? _ProfileActionButton(
+                                                    label: 'Edit profile',
+                                                    isPrimary: false,
+                                                    onPressed: () async {
+                                                      await Navigator.pushNamed(
+                                                        context,
+                                                        "/settings/profile",
+                                                      );
+                                                    },
+                                                  )
+                                                : FutureBuilder<bool>(
+                                                    future: _followStateFuture,
+                                                    builder: (context, followSnapshot) {
+                                                      final isFollowing =
+                                                          _followStateOverride ??
+                                                          followSnapshot.data ??
+                                                          false;
+                                                      return SecondaryButton(
+                                                        label:
+                                                            _isFollowActionRunning
+                                                            ? 'Updating...'
+                                                            : (isFollowing
+                                                                  ? 'Following'
+                                                                  : 'Follow'),
+                                                        size: AppButtonSize
+                                                            .compact,
+                                                        onPressed:
+                                                            currentUserId
+                                                                    .isEmpty ||
+                                                                followSnapshot
+                                                                        .connectionState ==
+                                                                    ConnectionState
+                                                                        .waiting
+                                                            ? null
+                                                            : () => _toggleFollow(
+                                                                currentUserId:
+                                                                    currentUserId,
+                                                                profile:
+                                                                    profile,
+                                                                currentlyFollowing:
+                                                                    isFollowing,
+                                                              ),
+                                                      );
+                                                    },
+                                                  ),
+                                          ),
+                                          const SizedBox(width: 14),
+                                          Expanded(
+                                            child: isOwnProfile
+                                                ? _ProfileActionButton(
+                                                    label: 'Bookings',
+                                                    isPrimary: true,
+                                                    onPressed: () {
+                                                      Navigator.pushNamed(
+                                                        context,
+                                                        "/bookings",
+                                                      );
+                                                    },
+                                                  )
+                                                : SecondaryButton(
+                                                    label: _isOpeningDirectChat
+                                                        ? "Opening..."
+                                                        : "Message",
+                                                    size: AppButtonSize.compact,
+                                                    onPressed:
+                                                        currentUserId.isEmpty
+                                                        ? null
+                                                        : () => _openDirectChat(
+                                                            profile: profile,
+                                                            currentUserId:
+                                                                currentUserId,
+                                                          ),
+                                                  ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (isOwnProfile && _showProfileSpotlight) ...[
+                                  const SizedBox(height: 18),
+                                  Container(
+                                    padding: const EdgeInsets.all(18),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          AppColors.primary.withValues(
+                                            alpha: 0.08,
+                                          ),
+                                          Colors.white,
+                                        ],
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                      ),
+                                      borderRadius: BorderRadius.circular(24),
+                                      border: Border.all(
+                                        color: AppColors.primary.withValues(
+                                          alpha: 0.08,
+                                        ),
+                                      ),
+                                    ),
+                                    child: const Row(
+                                      children: [
                                         Expanded(
                                           child: Column(
                                             crossAxisAlignment:
                                                 CrossAxisAlignment.start,
                                             children: [
-                                              Wrap(
-                                                spacing: 10,
-                                                runSpacing: 8,
-                                                crossAxisAlignment:
-                                                    WrapCrossAlignment.center,
-                                                children: [
-                                                  Text(
-                                                    profile.name.isEmpty
-                                                        ? 'Your Name'
-                                                        : profile.name,
-                                                    style: const TextStyle(
-                                                      fontSize: 24,
-                                                      fontWeight:
-                                                          FontWeight.w800,
-                                                      color: AppColors.textDark,
-                                                    ),
-                                                  ),
-                                                  Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 12,
-                                                          vertical: 6,
-                                                        ),
-                                                    decoration: BoxDecoration(
-                                                      color: const Color(
-                                                        0xFFFFF2EA,
-                                                      ),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            999,
-                                                          ),
-                                                    ),
-                                                    child: Text(
-                                                      profile.roleLabel,
-                                                      style: const TextStyle(
-                                                        color:
-                                                            AppColors.primary,
-                                                        fontSize: 12,
-                                                        fontWeight:
-                                                            FontWeight.w700,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              const SizedBox(height: 4),
                                               Text(
-                                                profile.displayUsername.isEmpty
-                                                    ? '@username'
-                                                    : profile.displayUsername,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  color: AppColors.textGrey,
-                                                  fontSize: 15,
-                                                  fontWeight: FontWeight.w500,
+                                                "Profile spotlight",
+                                                style: TextStyle(
+                                                  color: AppColors.primary,
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w700,
                                                 ),
                                               ),
-                                              if (profile
-                                                  .isServiceProvider) ...[
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  profile.providerReviewSummary,
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    color: profile.hasReviews
-                                                        ? const Color(
-                                                            0xFF9A3412,
-                                                          )
-                                                        : AppColors.textGrey,
-                                                    fontSize: 13.5,
-                                                    fontWeight: FontWeight.w700,
-                                                  ),
+                                              SizedBox(height: 6),
+                                              Text(
+                                                "Showcase both personality and services so followers can trust you before they book.",
+                                                style: TextStyle(
+                                                  color: AppColors.textDark,
+                                                  fontSize: 15,
+                                                  fontWeight: FontWeight.w600,
+                                                  height: 1.45,
                                                 ),
-                                              ],
+                                              ),
                                             ],
                                           ),
                                         ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 20),
-                                    Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Text(
-                                        profile.bio.isEmpty
-                                            ? 'Tell people a little about you from Settings > Profile details.'
-                                            : profile.bio,
-                                        style: TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w500,
-                                          color: profile.bio.isEmpty
-                                              ? AppColors.textGrey
-                                              : AppColors.textDark,
-                                          height: 1.45,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.location_on_outlined,
-                                          color: AppColors.textGrey,
-                                          size: 20,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            profile.location.isEmpty
-                                                ? 'Add your location in profile settings'
-                                                : profile.location,
-                                            style: const TextStyle(
-                                              color: AppColors.textGrey,
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
+                                        SizedBox(width: 12),
+                                        Icon(
+                                          Icons.workspace_premium_outlined,
+                                          color: AppColors.primary,
+                                          size: 28,
                                         ),
                                       ],
-                                    ),
-                                    const SizedBox(height: 16),
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: _ProfileStat(
-                                            label: "posts",
-                                            value: "${posts.length}",
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Expanded(
-                                          child: _ProfileStat(
-                                            label: "followers",
-                                            value:
-                                                "${profile.followerCount + _localFollowerCountDelta}",
-                                            onTap: () => Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) => UserListScreen(
-                                                  title: 'Followers',
-                                                  emptyMessage:
-                                                      'No followers yet',
-                                                  listKind:
-                                                      UserListKind.followers,
-                                                  loader: (lastDoc) =>
-                                                      _followRepository
-                                                          .fetchFollowerIdsPage(
-                                                            userId: profile.uid,
-                                                            lastDoc: lastDoc,
-                                                          ),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Expanded(
-                                          child: _ProfileStat(
-                                            label: "following",
-                                            value: "${profile.followingCount}",
-                                            onTap: () => Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) => UserListScreen(
-                                                  title: 'Following',
-                                                  emptyMessage:
-                                                      'Not following anyone yet',
-                                                  listKind:
-                                                      UserListKind.following,
-                                                  loader: (lastDoc) =>
-                                                      _followRepository
-                                                          .fetchFollowingIdsPage(
-                                                            userId: profile.uid,
-                                                            lastDoc: lastDoc,
-                                                          ),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: isOwnProfile
-                                              ? SecondaryButton(
-                                                  label: "Edit Profile",
-                                                  size: AppButtonSize.compact,
-                                                  // Profile is now the primary
-                                                  // entry point to the existing
-                                                  // edit screen that used to live
-                                                  // only inside Settings.
-                                                  onPressed: () async {
-                                                    await Navigator.pushNamed(
-                                                      context,
-                                                      "/settings/profile",
-                                                    );
-                                                  },
-                                                )
-                                              : FutureBuilder<bool>(
-                                                  future: _followStateFuture,
-                                                  builder: (context, followSnapshot) {
-                                                    final isFollowing =
-                                                        _followStateOverride ??
-                                                        followSnapshot.data ??
-                                                        false;
-                                                    return SecondaryButton(
-                                                      label:
-                                                          _isFollowActionRunning
-                                                          ? 'Updating...'
-                                                          : (isFollowing
-                                                                ? 'Following'
-                                                                : 'Follow'),
-                                                      size:
-                                                          AppButtonSize.compact,
-                                                      onPressed:
-                                                          currentUserId
-                                                                  .isEmpty ||
-                                                              followSnapshot
-                                                                      .connectionState ==
-                                                                  ConnectionState
-                                                                      .waiting
-                                                          ? null
-                                                          : () => _toggleFollow(
-                                                              currentUserId:
-                                                                  currentUserId,
-                                                              profile: profile,
-                                                              currentlyFollowing:
-                                                                  isFollowing,
-                                                            ),
-                                                    );
-                                                  },
-                                                ),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: SecondaryButton(
-                                            label: isOwnProfile
-                                                ? "Bookings"
-                                                : (_isOpeningDirectChat
-                                                      ? "Opening..."
-                                                      : "Message"),
-                                            size: AppButtonSize.compact,
-                                            onPressed: isOwnProfile
-                                                ? () {
-                                                    Navigator.pushNamed(
-                                                      context,
-                                                      "/bookings",
-                                                    );
-                                                  }
-                                                : currentUserId.isEmpty
-                                                ? null
-                                                : () => _openDirectChat(
-                                                    profile: profile,
-                                                    currentUserId:
-                                                        currentUserId,
-                                                  ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (isOwnProfile && _showProfileSpotlight) ...[
-                                const SizedBox(height: 18),
-                                Container(
-                                  padding: const EdgeInsets.all(18),
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      colors: [
-                                        AppColors.primary.withValues(
-                                          alpha: 0.08,
-                                        ),
-                                        Colors.white,
-                                      ],
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                    ),
-                                    borderRadius: BorderRadius.circular(24),
-                                    border: Border.all(
-                                      color: AppColors.primary.withValues(
-                                        alpha: 0.08,
-                                      ),
                                     ),
                                   ),
-                                  child: const Row(
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              "Profile spotlight",
-                                              style: TextStyle(
-                                                color: AppColors.primary,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                            SizedBox(height: 6),
-                                            Text(
-                                              "Showcase both personality and services so followers can trust you before they book.",
-                                              style: TextStyle(
-                                                color: AppColors.textDark,
-                                                fontSize: 15,
-                                                fontWeight: FontWeight.w600,
-                                                height: 1.45,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      SizedBox(width: 12),
-                                      Icon(
-                                        Icons.workspace_premium_outlined,
-                                        color: AppColors.primary,
-                                        size: 28,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                              const SizedBox(height: 12),
-                              ProfileSectionTabs(
-                                selectedIndex: selectedSectionIndex,
-                                showServices: true,
-                                serviceCount: services.length,
-                                onChanged: (index) {
-                                  setState(() {
-                                    _selectedSectionIndex = index;
-                                  });
-                                },
-                              ),
-                              const SizedBox(height: 4),
-                              if (selectedSectionIndex == 0)
-                                ProfilePostsSection(
-                                  posts: posts,
-                                  canCreatePost: isOwnProfile,
-                                  currentUserId: currentUserId,
-                                )
-                              else
-                                ProfileServicesSection(
-                                  services: services,
-                                  canManage: isOwnProfile,
-                                  onAdd: () async {
-                                    if (!UserRestrictionService.instance
-                                        .ensureCanUseBookingFeatures(context)) {
-                                      return;
-                                    }
-                                    final added = await Navigator.pushNamed(
-                                      context,
-                                      "/profile/services/add",
-                                    );
-                                    if (!mounted) return;
-                                    if (added == true) {
-                                      setState(() {
-                                        _selectedSectionIndex = 1;
-                                      });
-                                    }
+                                ],
+                                const SizedBox(height: 6),
+                                ProfileSectionTabs(
+                                  selectedIndex: selectedSectionIndex,
+                                  showServices: true,
+                                  serviceCount: services.length,
+                                  onChanged: (index) {
+                                    setState(() {
+                                      _selectedSectionIndex = index;
+                                    });
                                   },
-                                  onManage: () => _openManageServicesSheet(
-                                    context,
-                                    services,
+                                ),
+                                const SizedBox(height: 0),
+                                if (selectedSectionIndex == 0)
+                                  ProfilePostsSection(
+                                    posts: posts,
+                                    canCreatePost: isOwnProfile,
+                                    currentUserId: currentUserId,
+                                  )
+                                else
+                                  ProfileServicesSection(
+                                    services: services,
+                                    canManage: isOwnProfile,
+                                    onAdd: () async {
+                                      if (!UserRestrictionService.instance
+                                          .ensureCanUseBookingFeatures(
+                                            context,
+                                          )) {
+                                        return;
+                                      }
+                                      final added = await Navigator.pushNamed(
+                                        context,
+                                        "/profile/services/add",
+                                      );
+                                      if (!mounted) return;
+                                      if (added == true) {
+                                        setState(() {
+                                          _selectedSectionIndex = 1;
+                                        });
+                                      }
+                                    },
+                                    onManage: () => _openManageServicesSheet(
+                                      context,
+                                      services,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              top: 0,
+                              child: GlassSurface(
+                                padding: const EdgeInsets.fromLTRB(
+                                  18,
+                                  0,
+                                  18,
+                                  10,
+                                ),
+                                borderRadius: BorderRadius.circular(0),
+                                backgroundColor: Colors.white.withValues(
+                                  alpha: 0.42,
+                                ),
+                                blurSigma: 20,
+                                border: Border(
+                                  bottom: BorderSide(
+                                    color: Colors.white.withValues(alpha: 0.5),
                                   ),
                                 ),
-                            ],
-                          ),
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            top: topInset + 10,
-                            child: Align(
-                              child: FractionallySizedBox(
-                                widthFactor: 0.85,
-                                child: GlassSurface(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 14,
-                                    vertical: 11,
-                                  ),
-                                  borderRadius: BorderRadius.circular(24),
-                                  backgroundColor: Colors.white.withValues(
-                                    alpha: 0.72,
-                                  ),
-                                  blurSigma: 20,
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.62),
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: AppColors.primary.withValues(
-                                        alpha: 0.06,
+                                boxShadow: const [],
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    Padding(
+                                      padding: EdgeInsets.only(
+                                        top: topInset + 6,
                                       ),
-                                      blurRadius: 22,
-                                      offset: const Offset(0, 10),
+                                      child: Row(
+                                        children: [
+                                          Container(
+                                            width: 48,
+                                            height: 48,
+                                            decoration: BoxDecoration(
+                                              gradient: isOwnProfile
+                                                  ? const LinearGradient(
+                                                      colors: [
+                                                        Color(0xFFFFE9DD),
+                                                        Color(0xFFFFF3EC),
+                                                      ],
+                                                      begin: Alignment.topLeft,
+                                                      end:
+                                                          Alignment.bottomRight,
+                                                    )
+                                                  : null,
+                                              color: isOwnProfile
+                                                  ? null
+                                                  : Colors.white.withValues(
+                                                      alpha: 0.8,
+                                                    ),
+                                              borderRadius:
+                                                  BorderRadius.circular(18),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black
+                                                      .withValues(alpha: 0.04),
+                                                  blurRadius: 14,
+                                                  offset: const Offset(0, 6),
+                                                ),
+                                              ],
+                                            ),
+                                            child: IconButton(
+                                              onPressed: isOwnProfile
+                                                  ? () async {
+                                                      if (!UserRestrictionService
+                                                          .instance
+                                                          .ensureCanUseSocialFeatures(
+                                                            context,
+                                                          )) {
+                                                        return;
+                                                      }
+                                                      await Navigator.pushNamed(
+                                                        context,
+                                                        "/create",
+                                                      );
+                                                    }
+                                                  : () {
+                                                      if (Navigator.of(
+                                                        context,
+                                                      ).canPop()) {
+                                                        Navigator.of(
+                                                          context,
+                                                        ).pop();
+                                                        return;
+                                                      }
+                                                      Navigator.pushReplacementNamed(
+                                                        context,
+                                                        "/home",
+                                                      );
+                                                    },
+                                              icon: Icon(
+                                                isOwnProfile
+                                                    ? Icons.add_rounded
+                                                    : Icons.arrow_back_rounded,
+                                                color: isOwnProfile
+                                                    ? AppColors.primary
+                                                    : AppColors.textDark,
+                                                size: 24,
+                                              ),
+                                            ),
+                                          ),
+                                          const Spacer(),
+                                          if (isOwnProfile)
+                                            Container(
+                                              width: 48,
+                                              height: 48,
+                                              decoration: BoxDecoration(
+                                                gradient: const LinearGradient(
+                                                  colors: [
+                                                    Color(0xFFFFE9DD),
+                                                    Color(0xFFFFF3EC),
+                                                  ],
+                                                  begin: Alignment.topLeft,
+                                                  end: Alignment.bottomRight,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(18),
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: Colors.black
+                                                        .withValues(
+                                                          alpha: 0.04,
+                                                        ),
+                                                    blurRadius: 14,
+                                                    offset: const Offset(0, 6),
+                                                  ),
+                                                ],
+                                              ),
+                                              child: IconButton(
+                                                onPressed: () async {
+                                                  await Navigator.pushNamed(
+                                                    context,
+                                                    "/settings",
+                                                  );
+                                                  if (!mounted) return;
+                                                  await _refreshSettings();
+                                                },
+                                                icon: const Icon(
+                                                  Icons.settings_outlined,
+                                                  color: AppColors.primary,
+                                                  size: 24,
+                                                ),
+                                              ),
+                                            )
+                                          else
+                                            const SizedBox(width: 48),
+                                        ],
+                                      ),
                                     ),
-                                    BoxShadow(
-                                      color: Colors.black.withValues(
-                                        alpha: 0.05,
-                                      ),
-                                      blurRadius: 18,
-                                      offset: const Offset(0, 8),
-                                    ),
-                                  ],
-                                  child: Row(
-                                    children: [
-                                      Container(
-                                        width: 42,
-                                        height: 42,
-                                        decoration: BoxDecoration(
-                                          color: Colors.white.withValues(
-                                            alpha: 0.56,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            14,
-                                          ),
+                                    IgnorePointer(
+                                      child: Padding(
+                                        padding: EdgeInsets.only(
+                                          top: topInset + 18,
                                         ),
-                                        child: IconButton(
-                                          onPressed: () {
-                                            if (!isOwnProfile &&
-                                                Navigator.of(
-                                                  context,
-                                                ).canPop()) {
-                                              Navigator.of(context).pop();
-                                              return;
-                                            }
-                                            Navigator.pushReplacementNamed(
-                                              context,
-                                              "/home",
-                                            );
-                                          },
-                                          icon: const Icon(
-                                            Icons.arrow_back_rounded,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      const Expanded(
                                         child: Text(
-                                          "Profile",
-                                          style: TextStyle(
+                                          profile.username.isNotEmpty
+                                              ? '@ ${profile.username.replaceFirst('@', '')}'
+                                              : (profile.name.isNotEmpty
+                                                    ? profile.name
+                                                    : 'Profile'),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
                                             fontSize: 22,
                                             fontWeight: FontWeight.w800,
                                             color: AppColors.textDark,
+                                            letterSpacing: -0.4,
                                           ),
                                         ),
                                       ),
-                                      if (isOwnProfile)
-                                        Container(
-                                          width: 42,
-                                          height: 42,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withValues(
-                                              alpha: 0.56,
-                                            ),
-                                            borderRadius: BorderRadius.circular(
-                                              14,
-                                            ),
-                                          ),
-                                          child: IconButton(
-                                            onPressed: () async {
-                                              await Navigator.pushNamed(
-                                                context,
-                                                "/settings",
-                                              );
-                                              if (!mounted) return;
-                                              await _refreshSettings();
-                                            },
-                                            icon: const Icon(
-                                              Icons.settings_outlined,
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          );
-        },
-      ),
-      bottomNavigationBar: const SocialBottomNav(
-        activeTab: SocialAppTab.profile,
+                          ],
+                        );
+                      },
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
+        bottomNavigationBar: const SocialBottomNav(
+          activeTab: SocialAppTab.profile,
+        ),
       ),
     );
   }
@@ -994,6 +1087,74 @@ class _ProfileErrorState extends StatelessWidget {
               child: const Text('Back to home'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileActionButton extends StatelessWidget {
+  final String label;
+  final bool isPrimary;
+  final VoidCallback? onPressed;
+
+  const _ProfileActionButton({
+    required this.label,
+    required this.isPrimary,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = AppButtonTokens.radius(AppButtonSize.compact);
+    final disabled = onPressed == null;
+    const secondaryButtonColor = Colors.white;
+
+    return Opacity(
+      opacity: disabled ? 0.5 : 1,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: isPrimary ? AppColors.brandGradient : null,
+          color: isPrimary ? null : secondaryButtonColor,
+          borderRadius: BorderRadius.circular(radius),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(radius),
+            splashColor: isPrimary
+                ? Colors.white.withValues(alpha: 0.12)
+                : AppColors.textDark.withValues(alpha: 0.05),
+            highlightColor: Colors.transparent,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: AppButtonTokens.height(AppButtonSize.compact),
+              ),
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: AppButtonTokens.horizontalPadding(
+                    AppButtonSize.compact,
+                  ),
+                  vertical: AppButtonTokens.verticalPadding(
+                    AppButtonSize.compact,
+                  ),
+                ),
+                child: Center(
+                  child: Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: isPrimary ? Colors.white : AppColors.textDark,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.1,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -1059,50 +1220,52 @@ class _ProfileStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            value,
+            maxLines: 1,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        const SizedBox(height: 2),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            label,
+            maxLines: 1,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+
+    if (onTap == null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+        child: content,
+      );
+    }
+
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFFBF8),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: AppColors.primary.withValues(alpha: 0.08),
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  value,
-                  maxLines: 1,
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 1),
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  style: const TextStyle(
-                    color: AppColors.textGrey,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: content,
         ),
       ),
     );

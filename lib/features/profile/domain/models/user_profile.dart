@@ -19,6 +19,7 @@ class UserProfile {
   final int ratingCount;
   final int followingCount;
   final int followerCount;
+  final bool hasFollowCounts;
   final String accountStatus;
   final UserRestrictionState restrictionState;
   final DateTime? acceptedTermsAt;
@@ -42,6 +43,7 @@ class UserProfile {
     required this.ratingCount,
     required this.followingCount,
     required this.followerCount,
+    required this.hasFollowCounts,
     required this.accountStatus,
     required this.restrictionState,
     required this.acceptedTermsAt,
@@ -52,6 +54,14 @@ class UserProfile {
   factory UserProfile.fromMap(Map<String, dynamic> data) {
     final username = (data['username'] as String? ?? '').trim();
     final normalizedUsername = username.replaceFirst('@', '').trim();
+    final hasFollowCounts = _hasAnyKey(data, const [
+      'followingCount',
+      'followingsCount',
+      'following',
+      'followerCount',
+      'followersCount',
+      'followers',
+    ]);
 
     return UserProfile(
       uid: (data['uid'] as String? ?? '').trim(),
@@ -72,8 +82,17 @@ class UserProfile {
       profileImageUrl: (data['profileImage'] as String? ?? '').trim(),
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
-      followingCount: (data['followingCount'] as num?)?.toInt() ?? 0,
-      followerCount: (data['followerCount'] as num?)?.toInt() ?? 0,
+      followingCount: _readCount(data, const [
+        'followingCount',
+        'followingsCount',
+        'following',
+      ]),
+      followerCount: _readCount(data, const [
+        'followerCount',
+        'followersCount',
+        'followers',
+      ]),
+      hasFollowCounts: hasFollowCounts,
       accountStatus: (data['accountStatus'] as String? ?? 'active').trim(),
       restrictionState: UserRestrictionState.fromMap(data),
       acceptedTermsAt: _readDate(data['acceptedTermsAt']),
@@ -108,6 +127,25 @@ class UserProfile {
     if (value is Timestamp) return value.toDate();
     if (value is DateTime) return value;
     return null;
+  }
+
+  static int _readCount(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final value = data[key];
+      if (value is num) return value.toInt();
+      if (value is String) {
+        final parsed = int.tryParse(value.trim());
+        if (parsed != null) return parsed;
+      }
+    }
+    return 0;
+  }
+
+  static bool _hasAnyKey(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      if (data.containsKey(key)) return true;
+    }
+    return false;
   }
 
   String get mobileNumber => phone;

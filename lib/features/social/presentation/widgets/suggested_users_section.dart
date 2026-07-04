@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../profile/domain/models/user_profile.dart';
+import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/follow_repository.dart';
 
@@ -104,6 +105,20 @@ class _SuggestedUserCard extends StatefulWidget {
 class _SuggestedUserCardState extends State<_SuggestedUserCard> {
   bool _isFollowActionRunning = false;
 
+  void _openProfile() {
+    final userId = widget.profile.uid.trim();
+    if (userId.isEmpty) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => userId == widget.currentUserId.trim()
+            ? const ProfileScreen()
+            : ProfileScreen(userId: userId),
+      ),
+    );
+  }
+
   Future<void> _handleFollow() async {
     if (_isFollowActionRunning) return;
     if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
@@ -144,82 +159,91 @@ class _SuggestedUserCardState extends State<_SuggestedUserCard> {
   Widget build(BuildContext context) {
     final location = widget.profile.location;
 
-    return Container(
-      width: 156,
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFFBF8),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _openProfile,
         borderRadius: BorderRadius.circular(22),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SuggestedUserAvatar(
-            imageUrl: widget.profile.profileImageUrl,
-            initials: widget.profile.initials,
+        child: Container(
+          width: 156,
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFFBF8),
+            borderRadius: BorderRadius.circular(22),
           ),
-          const SizedBox(height: 8),
-          Text(
-            widget.profile.name.isEmpty ? 'Pettxo user' : widget.profile.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            widget.profile.displayUsername.isEmpty
-                ? '@username'
-                : widget.profile.displayUsername,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            location.isEmpty ? 'Pettxo community' : location,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const Spacer(),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: _isFollowActionRunning ? null : _handleFollow,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                minimumSize: const Size.fromHeight(40),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _SuggestedUserAvatar(
+                imageUrl: widget.profile.profileImageUrl,
+                initials: widget.profile.initials,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                widget.profile.name.isEmpty
+                    ? 'Pettxo user'
+                    : widget.profile.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-              child: _isFollowActionRunning
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Text('Follow'),
-            ),
+              const SizedBox(height: 2),
+              Text(
+                widget.profile.displayUsername.isEmpty
+                    ? '@username'
+                    : widget.profile.displayUsername,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                location.isEmpty ? 'Pettxo community' : location,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const Spacer(),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: _isFollowActionRunning ? null : _handleFollow,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    minimumSize: const Size.fromHeight(40),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: _isFollowActionRunning
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Follow'),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -229,10 +253,7 @@ class _SuggestedUserAvatar extends StatelessWidget {
   final String imageUrl;
   final String initials;
 
-  const _SuggestedUserAvatar({
-    required this.imageUrl,
-    required this.initials,
-  });
+  const _SuggestedUserAvatar({required this.imageUrl, required this.initials});
 
   @override
   Widget build(BuildContext context) {
