@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import 'core/services/analytics_service.dart';
 import 'core/services/app_loader.dart';
+import 'core/services/network_status_service.dart';
 import 'core/services/policy_link_service.dart';
 import 'core/services/push_notification_service.dart';
+import 'core/widgets/network_status_banner.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
 import 'features/bookings/presentation/screens/bookings_screen.dart';
 import 'features/bookings/presentation/screens/provider_earnings_screen.dart';
@@ -33,11 +37,38 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  await PolicyLinkService.initialize();
-  await PushNotificationService.instance.initialize();
-  await UserRestrictionService.instance.initialize();
+  if (!kIsWeb) {
+    FirebaseFirestore.instance.settings = const Settings(
+      persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+    );
+  }
 
   runApp(const PettexoApp());
+
+  await NetworkStatusService.instance.initialize();
+
+  Future<void>(() async {
+    try {
+      await PolicyLinkService.initialize();
+    } catch (error) {
+      debugPrint('App startup debug -> policy link init skipped: $error');
+    }
+  });
+  Future<void>(() async {
+    try {
+      await PushNotificationService.instance.initialize();
+    } catch (error) {
+      debugPrint('App startup debug -> push init skipped: $error');
+    }
+  });
+  Future<void>(() async {
+    try {
+      await UserRestrictionService.instance.initialize();
+    } catch (error) {
+      debugPrint('App startup debug -> restriction init skipped: $error');
+    }
+  });
 }
 
 class PettexoApp extends StatelessWidget {
@@ -50,13 +81,15 @@ class PettexoApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: AppLoader.navigatorKey,
       builder: (context, child) {
-        return SafeArea(
-          top: false,
-          left: false,
-          right: false,
-          bottom: true,
-          maintainBottomViewPadding: true,
-          child: child ?? const SizedBox.shrink(),
+        return NetworkStatusBannerHost(
+          child: SafeArea(
+            top: false,
+            left: false,
+            right: false,
+            bottom: true,
+            maintainBottomViewPadding: true,
+            child: child ?? const SizedBox.shrink(),
+          ),
         );
       },
 

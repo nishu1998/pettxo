@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../../../core/services/firestore_cache_service.dart';
 import '../../../restrictions/domain/models/user_restriction_state.dart';
 import '../../domain/models/user_profile.dart';
 
@@ -94,8 +95,8 @@ class ProfileRepository {
 
   Future<UserProfile> getCurrentUserProfile() async {
     final snapshots = await Future.wait([
-      _publicUserDoc(_uid).get(),
-      _privateUserDoc(_uid).get(),
+      FirestoreCacheService.getDocCacheFirst(_publicUserDoc(_uid)),
+      FirestoreCacheService.getDocCacheFirst(_privateUserDoc(_uid)),
     ]);
     final publicData = snapshots[0].data();
     if (publicData == null) {
@@ -133,7 +134,9 @@ class ProfileRepository {
       throw Exception('Profile not found');
     }
 
-    final snapshot = await _publicUserDoc(trimmedUserId).get();
+    final snapshot = await FirestoreCacheService.getDocCacheFirst(
+      _publicUserDoc(trimmedUserId),
+    );
     final data = snapshot.data();
     if (data == null) {
       throw Exception('Profile not found');
@@ -190,10 +193,9 @@ class ProfileRepository {
     }
 
     final queryLimit = limit < 10 ? 20 : (limit * 3).clamp(20, 30);
-    final snapshot = await _firestore
-        .collection('users')
-        .limit(queryLimit)
-        .get();
+    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
+      _firestore.collection('users').limit(queryLimit),
+    );
 
     final excludedIds = Set<String>.from(followingIds)
       ..add(trimmedCurrentUserId);

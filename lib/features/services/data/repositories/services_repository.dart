@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 
+import '../../../../core/services/firestore_cache_service.dart';
 import '../../../profile/domain/models/profile_service_listing.dart';
 import '../../domain/models/service_model.dart';
 
@@ -95,7 +96,9 @@ class ServicesRepository {
     final id = serviceId.trim();
     if (id.isEmpty) return null;
 
-    final snapshot = await _services.doc(id).get();
+    final snapshot = await FirestoreCacheService.getDocCacheFirst(
+      _services.doc(id),
+    );
     if (!snapshot.exists) return null;
     return ServiceModel.fromDocument(snapshot);
   }
@@ -123,7 +126,7 @@ class ServicesRepository {
       query = query.startAfterDocument(startAfterDocument);
     }
 
-    final snapshot = await query.get();
+    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(query);
     final docs = snapshot.docs;
     final services = docs
         .map(ServiceModel.fromDocument)

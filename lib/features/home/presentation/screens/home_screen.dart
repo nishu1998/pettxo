@@ -11,6 +11,7 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
+import '../../../../core/services/network_status_service.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/presentation/screens/offer_wall_screen.dart';
 import '../../../offers/presentation/widgets/offer_popup_dialog.dart';
@@ -59,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _suggestionFollowRefreshCounter = 0;
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
+  late final VoidCallback _networkStatusListener;
 
   static const double _topBarTopResetOffset = 12;
   static const double _topBarHideThreshold = 32;
@@ -69,6 +71,19 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
     _scrollController.addListener(_handleScroll);
+    _networkStatusListener = () {
+      if (!mounted) return;
+      if (NetworkStatusService.instance.isOnline &&
+          (_posts.isEmpty || _feedError != null)) {
+        debugPrint('HomeScreen startup debug -> refreshing after reconnect');
+        unawaited(_refreshHome());
+      } else {
+        setState(() {});
+      }
+    };
+    NetworkStatusService.instance.isOnlineListenable.addListener(
+      _networkStatusListener,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showEligibleOffers();
     });
@@ -78,6 +93,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    NetworkStatusService.instance.isOnlineListenable.removeListener(
+      _networkStatusListener,
+    );
     _scrollController.dispose();
     super.dispose();
   }
@@ -233,7 +251,9 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (error) {
       if (!mounted) return;
       setState(
-        () => _feedError = error.toString().replaceFirst('Exception: ', ''),
+        () => _feedError = NetworkStatusService.instance.isOffline
+            ? 'You’re offline. Connect to the internet to load latest content.'
+            : error.toString().replaceFirst('Exception: ', ''),
       );
     } finally {
       if (mounted) {
@@ -523,10 +543,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   );
                 }
                 if (_rankedPosts.isEmpty) {
-                  return const _FeedStatusCard(
-                    title: 'No posts yet',
-                    message:
-                        'The home feed will start filling up once the first Pettxo posts are published.',
+                  return _FeedStatusCard(
+                    title: NetworkStatusService.instance.isOffline
+                        ? 'You’re offline'
+                        : 'No posts yet',
+                    message: NetworkStatusService.instance.isOffline
+                        ? 'Connect to the internet to load latest content.'
+                        : 'The home feed will start filling up once the first Pettxo posts are published.',
                   );
                 }
                 if (_shouldShowSuggestions &&

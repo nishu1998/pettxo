@@ -14,6 +14,8 @@ import '../../../home/presentation/screens/home_screen.dart';
 import '../../../onboarding/data/services/onboarding_state_service.dart';
 import '../../../onboarding/screens/onboarding_screen.dart';
 
+enum _SplashDestination { home, profileType, onboarding, signin }
+
 class CinematicSplash extends StatefulWidget {
   const CinematicSplash({super.key});
 
@@ -31,6 +33,8 @@ class _CinematicSplashState extends State<CinematicSplash>
   late AnimationController _controller;
   late Animation<double> logoScale;
   late Animation<double> logoOpacity;
+
+  static const Duration _startupTimeout = Duration(seconds: 4);
 
   @override
   void initState() {
@@ -59,57 +63,105 @@ class _CinematicSplashState extends State<CinematicSplash>
     await Future.delayed(const Duration(milliseconds: 250));
 
     if (!mounted) return;
+    final destination = await _resolveStartupDestination().timeout(
+      _startupTimeout,
+      onTimeout: () {
+        debugPrint('Splash startup debug -> timeout fallback activated');
+        return FirebaseAuth.instance.currentUser != null
+            ? _SplashDestination.home
+            : _SplashDestination.signin;
+      },
+    );
+    if (!mounted) return;
+    _navigateTo(destination);
+  }
 
+  Future<_SplashDestination> _resolveStartupDestination() async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser != null) {
-      final hasProfile = await userService.hasUserProfile();
-      if (!mounted) return;
-      if (hasProfile) {
-        _goToHome();
-      } else {
-        _goToProfileType();
+      final hasProfile = await userService.hasUserProfileCacheFirst().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {
+          debugPrint(
+            'Splash startup debug -> user profile lookup timed out, using cached auth session for uid=${currentUser.uid}',
+          );
+          return null;
+        },
+      );
+      debugPrint(
+        'Splash startup debug -> authenticated launch resolved from ${hasProfile == null ? 'fallback' : 'cache/server'} for uid=${currentUser.uid}',
+      );
+      if (hasProfile == false) {
+        return _SplashDestination.profileType;
       }
-      return;
+      return _SplashDestination.home;
     }
 
-    await remote.init();
-    await analytics.setOnboardingExperiment(
-      experimentId: remote.onboardingExperimentId,
-      variantId: remote.onboardingVariantId,
-    );
+    unawaited(_warmRemoteConfigAndAnalytics());
 
     final shouldShowOnboarding = await onboardingState.shouldShowOnboarding(
       currentVersion: remote.onboardingDisplayVersion,
       forceShow: remote.onboardingForceShow,
+    ).timeout(
+      const Duration(seconds: 2),
+      onTimeout: () {
+        debugPrint('Splash startup debug -> onboarding state timed out');
+        return false;
+      },
     );
-
-    if (!mounted) return;
-    _goNext(shouldShowOnboarding: shouldShowOnboarding);
+    debugPrint(
+      'Splash startup debug -> unauthenticated launch resolved from local state, showOnboarding=$shouldShowOnboarding',
+    );
+    return shouldShowOnboarding
+        ? _SplashDestination.onboarding
+        : _SplashDestination.signin;
   }
 
-  void _goNext({required bool shouldShowOnboarding}) {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => shouldShowOnboarding
-            ? const OnboardingScreen()
-            : const SigninScreen(),
-      ),
-    );
+  Future<void> _warmRemoteConfigAndAnalytics() async {
+    try {
+      await remote.init().timeout(const Duration(seconds: 2));
+      debugPrint('Splash startup debug -> remote config warmup completed');
+    } catch (error) {
+      debugPrint('Splash startup debug -> remote config warmup skipped: $error');
+    }
+
+    try {
+      await analytics.setOnboardingExperiment(
+        experimentId: remote.onboardingExperimentId,
+        variantId: remote.onboardingVariantId,
+      );
+    } catch (error) {
+      debugPrint('Splash startup debug -> analytics warmup skipped: $error');
+    }
   }
 
-  void _goToHome() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
-    );
-  }
-
-  void _goToProfileType() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
-    );
+  void _navigateTo(_SplashDestination destination) {
+    switch (destination) {
+      case _SplashDestination.home:
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+        );
+        return;
+      case _SplashDestination.profileType:
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
+        );
+        return;
+      case _SplashDestination.onboarding:
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+        );
+        return;
+      case _SplashDestination.signin:
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const SigninScreen()),
+        );
+        return;
+    }
   }
 
   @override

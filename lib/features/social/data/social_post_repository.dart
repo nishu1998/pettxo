@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image/image.dart' as img;
 
+import '../../../core/services/firestore_cache_service.dart';
 import '../../notifications/data/repositories/notification_repository.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../profile/domain/models/user_profile.dart';
@@ -172,7 +173,7 @@ class SocialPostRepository {
       query = query.startAfterDocument(startAfter);
     }
 
-    final snapshot = await query.get();
+    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(query);
     final posts = snapshot.docs.map(SocialPostModel.fromDocument).toList();
     return SocialFeedPage(
       posts: posts,
@@ -191,10 +192,9 @@ class SocialPostRepository {
   Future<List<ExploreHashtagSummary>> fetchTrendingHashtags({
     int limit = 10,
   }) async {
-    final snapshot = await _hashtagsCollection
-        .orderBy('lastUsedAt', descending: true)
-        .limit(limit)
-        .get();
+    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
+      _hashtagsCollection.orderBy('lastUsedAt', descending: true).limit(limit),
+    );
     return snapshot.docs.map(ExploreHashtagSummary.fromDocument).toList();
   }
 
@@ -205,12 +205,13 @@ class SocialPostRepository {
     final normalized = normalizeHashtag(query);
     if (normalized.isEmpty) return const <ExploreHashtagSummary>[];
 
-    final snapshot = await _hashtagsCollection
-        .orderBy('tag')
-        .startAt([normalized])
-        .endAt(['$normalized\uf8ff'])
-        .limit(limit)
-        .get();
+    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
+      _hashtagsCollection
+          .orderBy('tag')
+          .startAt([normalized])
+          .endAt(['$normalized\uf8ff'])
+          .limit(limit),
+    );
     return snapshot.docs.map(ExploreHashtagSummary.fromDocument).toList();
   }
 
@@ -231,9 +232,9 @@ class SocialPostRepository {
     for (var start = 0; start < normalizedIds.length; start += chunkSize) {
       final end = math.min(start + chunkSize, normalizedIds.length);
       final chunk = normalizedIds.sublist(start, end);
-      final snapshot = await _postsCollection
-          .where(FieldPath.documentId, whereIn: chunk)
-          .get();
+        final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
+          _postsCollection.where(FieldPath.documentId, whereIn: chunk),
+        );
       for (final doc in snapshot.docs) {
         final post = SocialPostModel.fromDocument(doc);
         if (post.visibilityStatus == 'visible' &&
@@ -430,11 +431,9 @@ class SocialPostRepository {
   }
 
   Future<bool> hasCurrentUserLikedPost(String postId) async {
-    final likeSnapshot = await _postsCollection
-        .doc(postId)
-        .collection('likes')
-        .doc(_uid)
-        .get();
+    final likeSnapshot = await FirestoreCacheService.getDocCacheFirst(
+      _postsCollection.doc(postId).collection('likes').doc(_uid),
+    );
     return likeSnapshot.exists;
   }
 

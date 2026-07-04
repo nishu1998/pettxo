@@ -14,6 +14,7 @@ import '../../features/notifications/presentation/screens/notifications_screen.d
 import '../../features/profile/presentation/screens/profile_screen.dart';
 import '../constants/app_colors.dart';
 import 'app_loader.dart';
+import 'network_status_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> pettxoFirebaseMessagingBackgroundHandler(
@@ -42,6 +43,7 @@ class PushNotificationService {
   OverlayEntry? _foregroundBannerEntry;
   Timer? _foregroundBannerTimer;
   final Set<String> _handledMessageKeys = <String>{};
+  bool _networkRetryListenerAttached = false;
 
   String _maskToken(String token) {
     if (token.isEmpty) return '';
@@ -86,6 +88,18 @@ class PushNotificationService {
         .listen((message) {
           _handleNotificationTap(message);
         });
+    if (!_networkRetryListenerAttached) {
+      _networkRetryListenerAttached = true;
+      NetworkStatusService.instance.isOnlineListenable.addListener(() {
+        if (NetworkStatusService.instance.isOffline) return;
+        final user = _auth.currentUser;
+        if (user == null) return;
+        debugPrint(
+          'PushNotificationService network debug -> online restored, retrying token sync for uid=${user.uid}',
+        );
+        unawaited(_syncForUser(user));
+      });
+    }
 
     try {
       await _syncForUser(_auth.currentUser);
@@ -103,6 +117,12 @@ class PushNotificationService {
   }
 
   Future<void> _requestPermission() async {
+    if (NetworkStatusService.instance.isOffline) {
+      debugPrint(
+        'PushNotificationService permission debug -> skipped while offline',
+      );
+      return;
+    }
     await _messaging.requestPermission(
       alert: true,
       announcement: false,
@@ -127,6 +147,14 @@ class PushNotificationService {
       }
       _currentUid = null;
       _currentToken = null;
+      return;
+    }
+
+    if (NetworkStatusService.instance.isOffline) {
+      debugPrint(
+        'PushNotificationService auth sync debug -> token update skipped offline for uid=${user.uid}',
+      );
+      _currentUid = user.uid;
       return;
     }
 
@@ -162,6 +190,12 @@ class PushNotificationService {
     required String? previousToken,
     required String newToken,
   }) async {
+    if (NetworkStatusService.instance.isOffline) {
+      debugPrint(
+        'PushNotificationService token refresh debug -> skipped offline for uid=$uid',
+      );
+      return;
+    }
     try {
       if (previousToken != null &&
           previousToken.isNotEmpty &&
@@ -177,6 +211,14 @@ class PushNotificationService {
   }
 
   Future<void> unregisterCurrentDeviceTokenForLogout() async {
+    if (NetworkStatusService.instance.isOffline) {
+      debugPrint(
+        'PushNotificationService logout token removal debug -> skipped offline',
+      );
+      _currentUid = null;
+      _currentToken = null;
+      return;
+    }
     final uid = (_auth.currentUser?.uid ?? _currentUid ?? '').trim();
     final token = (_currentToken ?? await _messaging.getToken() ?? '').trim();
     debugPrint(
@@ -194,6 +236,12 @@ class PushNotificationService {
   }
 
   Future<void> _storeToken(String uid, String token) async {
+    if (NetworkStatusService.instance.isOffline) {
+      debugPrint(
+        'PushNotificationService token registration debug -> skipped offline for uid=$uid',
+      );
+      return;
+    }
     final callable = _functions.httpsCallable('syncNotificationToken');
     final result = await callable.call<Map<String, dynamic>>({
       'token': token,
@@ -211,6 +259,12 @@ class PushNotificationService {
   }
 
   Future<void> _removeToken(String uid, String token) async {
+    if (NetworkStatusService.instance.isOffline) {
+      debugPrint(
+        'PushNotificationService token removal debug -> skipped offline for uid=$uid',
+      );
+      return;
+    }
     debugPrint(
       'PushNotificationService token removal debug -> uid=$uid, tokenMasked=${_maskToken(token)}',
     );

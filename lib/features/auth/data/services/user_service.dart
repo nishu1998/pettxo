@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../../../core/services/firestore_cache_service.dart';
+
 class UserService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -91,7 +93,7 @@ class UserService {
       return null;
     }
 
-    return _publicUserDoc(user.uid).get();
+    return FirestoreCacheService.getDocCacheFirst(_publicUserDoc(user.uid));
   }
 
   Future<bool> hasUserProfile() async {
@@ -102,8 +104,28 @@ class UserService {
     }
 
     await syncCurrentUserPrivateFields();
-    final snapshot = await _publicUserDoc(user.uid).get();
+    final snapshot = await FirestoreCacheService.getDocCacheFirst(
+      _publicUserDoc(user.uid),
+    );
     return snapshot.exists && snapshot.data() != null;
+  }
+
+  Future<bool?> hasUserProfileCacheFirst() async {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+
+    try {
+      final snapshot = await FirestoreCacheService.getDocCacheFirst(
+        _publicUserDoc(user.uid),
+      );
+      if (!snapshot.exists) return false;
+      return snapshot.data() != null;
+    } catch (error) {
+      debugPrint(
+        'UserService startup debug -> profile availability fallback for uid=${user.uid}: $error',
+      );
+      return null;
+    }
   }
 
   Future<String> getPostAuthRoute() async {

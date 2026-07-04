@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import '../../../core/services/firestore_cache_service.dart';
 import '../../notifications/data/repositories/notification_repository.dart';
 
 class FollowIdsPage {
@@ -145,9 +146,11 @@ class FollowRepository {
     final trimmedUserId = userId.trim();
     if (trimmedUserId.isEmpty) return <String>{};
 
-    final snapshot = await _followsCollection
-        .where('followerId', isEqualTo: trimmedUserId)
-        .get();
+    final query = _followsCollection.where(
+      'followerId',
+      isEqualTo: trimmedUserId,
+    );
+    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(query);
 
     return snapshot.docs
         .map((doc) => (doc.data()['followeeId'] as String? ?? '').trim())

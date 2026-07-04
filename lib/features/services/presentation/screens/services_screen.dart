@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/services/network_status_service.dart';
 import '../../../../core/utils/service_ranking.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
@@ -514,24 +515,41 @@ class _ServicesScreenState extends State<ServicesScreen> {
                       },
                     ),
                     const SizedBox(height: 18),
-                    if (snapshot.connectionState == ConnectionState.waiting)
+                    if (snapshot.connectionState == ConnectionState.waiting &&
+                        !NetworkStatusService.instance.isOffline)
                       const Padding(
                         padding: EdgeInsets.only(top: 48),
                         child: Center(child: CircularProgressIndicator()),
                       )
-                    else if (snapshot.hasError)
+                    else if (snapshot.connectionState == ConnectionState.waiting &&
+                        NetworkStatusService.instance.isOffline)
                       const _ServicesEmptyState(
-                        icon: Icons.cloud_off_rounded,
-                        title: 'Unable to load services',
+                        icon: Icons.wifi_off_rounded,
+                        title: 'You’re offline',
                         message:
-                            'Please check your connection and try again in a moment.',
+                            'Connect to the internet to load latest content.',
+                      )
+                    else if (snapshot.hasError)
+                      _ServicesEmptyState(
+                        icon: Icons.cloud_off_rounded,
+                        title: NetworkStatusService.instance.isOffline
+                            ? 'You’re offline'
+                            : 'Unable to load services',
+                        message: NetworkStatusService.instance.isOffline
+                            ? 'Connect to the internet to load latest content.'
+                            : 'Please check your connection and try again in a moment.',
                       )
                     else if (services.isEmpty)
-                      const _ServicesEmptyState(
-                        icon: Icons.design_services_outlined,
-                        title: 'No services yet',
-                        message:
-                            'Services will appear here after people publish listings in your marketplace.',
+                      _ServicesEmptyState(
+                        icon: NetworkStatusService.instance.isOffline
+                            ? Icons.wifi_off_rounded
+                            : Icons.design_services_outlined,
+                        title: NetworkStatusService.instance.isOffline
+                            ? 'You’re offline'
+                            : 'No services yet',
+                        message: NetworkStatusService.instance.isOffline
+                            ? 'Connect to the internet to load latest content.'
+                            : 'Services will appear here after people publish listings in your marketplace.',
                       )
                     else if (discoveryPresentation.allMatchedCount == 0)
                       _ServicesEmptyState(
