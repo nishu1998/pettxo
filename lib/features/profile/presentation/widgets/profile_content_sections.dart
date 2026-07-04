@@ -5,12 +5,15 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../data/repositories/profile_content_repository.dart';
 import '../../domain/models/profile_service_listing.dart';
 import '../screens/service_detail_screen.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
+
+const _profileSectionSurfaceColor = Colors.white;
 
 class ProfileSectionTabs extends StatelessWidget {
   final int selectedIndex;
@@ -31,7 +34,7 @@ class ProfileSectionTabs extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.72),
+        color: _profileSectionSurfaceColor,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -77,23 +80,15 @@ class _ProfileTabButton extends StatelessWidget {
         curve: Curves.easeOut,
         padding: const EdgeInsets.symmetric(vertical: 8),
         decoration: BoxDecoration(
-          color: isActive ? Colors.white : Colors.transparent,
+          gradient: isActive ? AppColors.brandGradient : null,
+          color: isActive ? null : _profileSectionSurfaceColor,
           borderRadius: BorderRadius.circular(16),
-          boxShadow: isActive
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 14,
-                    offset: const Offset(0, 8),
-                  ),
-                ]
-              : null,
         ),
         child: Text(
           label,
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: isActive ? AppColors.textDark : AppColors.textGrey,
+            color: isActive ? Colors.white : AppColors.textDark,
             fontWeight: FontWeight.w800,
             fontSize: 16,
           ),
@@ -126,8 +121,6 @@ class ProfilePostsSection extends StatelessWidget {
       );
     }
 
-    final itemCount = posts.length + (canCreatePost ? 1 : 0);
-
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -137,17 +130,9 @@ class ProfilePostsSection extends StatelessWidget {
         mainAxisSpacing: 12,
         childAspectRatio: 0.96,
       ),
-      itemCount: itemCount,
+      itemCount: posts.length,
       itemBuilder: (context, index) {
-        const createTileIndex = 0;
-        if (canCreatePost && index == createTileIndex) {
-          return const _ProfileNewPostTile();
-        }
-
-        final postIndex = canCreatePost && index > createTileIndex
-            ? index - 1
-            : index;
-        final post = posts[postIndex];
+        final post = posts[index];
         return _ProfilePostGridItem(
           post: post,
           posts: posts,
@@ -179,7 +164,7 @@ class _ProfilePostGridItem extends StatelessWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => _ProfilePostDetailScreen(
+            builder: (_) => _ProfilePostDetailScreen(
                 posts: posts,
                 initialIndex: initialIndex < 0 ? 0 : initialIndex,
                 currentUserId: currentUserId,
@@ -235,40 +220,6 @@ class _ProfilePostGridItem extends StatelessWidget {
                             );
                           },
                         ),
-                      if (post.likeCount > 0)
-                        Positioned(
-                          right: 10,
-                          bottom: 10,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 5,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.44),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.favorite_rounded,
-                                  color: Colors.white,
-                                  size: 13,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '${post.likeCount}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
                     ],
                   ),
                 ),
@@ -277,6 +228,23 @@ class _ProfilePostGridItem extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
                 child: Row(
                   children: [
+                    if (post.likeCount > 0) ...[
+                      const Icon(
+                        Icons.favorite_rounded,
+                        color: AppColors.primary,
+                        size: 15,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${post.likeCount}',
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                     const Spacer(),
                     Text(
                       _formatPostAge(post.createdAtEpoch),
@@ -297,39 +265,44 @@ class _ProfilePostGridItem extends StatelessWidget {
   }
 }
 
-class _ProfileNewPostTile extends StatelessWidget {
-  const _ProfileNewPostTile();
+class ProfilePostDetailScreen extends StatelessWidget {
+  final List<SocialPostModel>? posts;
+  final int? initialIndex;
+  final String? authorId;
+  final String? initialPostId;
+  final String currentUserId;
+
+  const ProfilePostDetailScreen({
+    super.key,
+    required this.posts,
+    required this.initialIndex,
+    required this.currentUserId,
+  }) : authorId = null,
+       initialPostId = null;
+
+  const ProfilePostDetailScreen.fromPostId({
+    super.key,
+    required this.authorId,
+    required this.initialPostId,
+    required this.currentUserId,
+  }) : posts = null,
+       initialIndex = null;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => Navigator.pushNamed(context, '/create'),
-        borderRadius: BorderRadius.circular(26),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.9),
-            borderRadius: BorderRadius.circular(26),
-          ),
-          child: CustomPaint(
-            painter: _DashedBorderPainter(
-              color: Colors.black.withValues(alpha: 0.35),
-              radius: 26,
-            ),
-            child: const Center(
-              child: Text(
-                'New post',
-                style: TextStyle(
-                  color: AppColors.textGrey,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+    final availablePosts = posts;
+    if (availablePosts != null) {
+      return _ProfilePostFeedScreen(
+        posts: availablePosts,
+        initialIndex: initialIndex ?? 0,
+        currentUserId: currentUserId,
+      );
+    }
+
+    return _ProfilePostLoaderScreen(
+      authorId: authorId ?? '',
+      initialPostId: initialPostId ?? '',
+      currentUserId: currentUserId,
     );
   }
 }
@@ -347,10 +320,114 @@ class _ProfilePostDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _ProfilePostFeedScreen(
+    return ProfilePostDetailScreen(
       posts: posts,
       initialIndex: initialIndex,
       currentUserId: currentUserId,
+    );
+  }
+}
+
+class _ProfilePostLoaderScreen extends StatelessWidget {
+  final String authorId;
+  final String initialPostId;
+  final String currentUserId;
+
+  const _ProfilePostLoaderScreen({
+    required this.authorId,
+    required this.initialPostId,
+    required this.currentUserId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = ProfileContentRepository();
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: StreamBuilder<List<SocialPostModel>>(
+        stream: repository.watchPostsForAuthorId(authorId),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const _ProfilePostDetailStateMessage(
+              title: 'Unable to load post',
+              message: 'Please try again in a moment.',
+            );
+          }
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            );
+          }
+
+          final posts = snapshot.data ?? const <SocialPostModel>[];
+          if (posts.isEmpty) {
+            return const _ProfilePostDetailStateMessage(
+              title: 'Post unavailable',
+              message: 'This post may have been removed or is no longer visible.',
+            );
+          }
+
+          final resolvedIndex = posts.indexWhere(
+            (post) => post.id == initialPostId,
+          );
+
+          return _ProfilePostFeedScreen(
+            posts: posts,
+            initialIndex: resolvedIndex < 0 ? 0 : resolvedIndex,
+            currentUserId: currentUserId,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ProfilePostDetailStateMessage extends StatelessWidget {
+  final String title;
+  final String message;
+
+  const _ProfilePostDetailStateMessage({
+    required this.title,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.insert_photo_outlined,
+              color: AppColors.primary,
+              size: 30,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 14,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -493,18 +570,15 @@ class _ProfilePostFeedScreenState extends State<_ProfilePostFeedScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top;
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        foregroundColor: AppColors.textDark,
-      ),
-      body: _posts.isEmpty
-          ? const SizedBox.shrink()
-          : ListView.separated(
+      body: Stack(
+        children: [
+          if (_posts.isNotEmpty)
+            ListView.separated(
               controller: _scrollController,
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
+              padding: EdgeInsets.fromLTRB(18, topInset + 14, 18, 24),
               itemCount: _posts.length,
               separatorBuilder: (context, index) => const SizedBox(height: 18),
               itemBuilder: (context, index) {
@@ -529,44 +603,33 @@ class _ProfilePostFeedScreenState extends State<_ProfilePostFeedScreen> {
                 );
               },
             ),
+          Positioned(
+            top: topInset + 8,
+            left: 18,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.08),
+                shape: BoxShape.circle,
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x1A000000),
+                    blurRadius: 16,
+                    offset: Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(
+                  Icons.arrow_back_rounded,
+                  color: AppColors.primary,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
-  }
-}
-
-class _DashedBorderPainter extends CustomPainter {
-  final Color color;
-  final double radius;
-
-  const _DashedBorderPainter({required this.color, required this.radius});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-
-    const dashWidth = 14.0;
-    const dashGap = 10.0;
-    final path = Path()..addRRect(rrect);
-    for (final metric in path.computeMetrics()) {
-      double distance = 0;
-      while (distance < metric.length) {
-        final nextDistance = distance + dashWidth;
-        canvas.drawPath(
-          metric.extractPath(distance, nextDistance.clamp(0, metric.length)),
-          paint,
-        );
-        distance += dashWidth + dashGap;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _DashedBorderPainter oldDelegate) {
-    return oldDelegate.color != color || oldDelegate.radius != radius;
   }
 }
 
@@ -633,11 +696,12 @@ class ProfileServicesSection extends StatelessWidget {
           const SizedBox(height: 14),
         ],
         if (services.isEmpty)
-          const EmptyProfileSection(
+          EmptyProfileSection(
             icon: Icons.design_services_outlined,
             title: 'No services listed',
-            message:
-                'Add your first service to start showing visitors what you offer and encourage bookings from your profile.',
+            message: canManage
+                ? 'Add your first service to start showing visitors what you offer and encourage bookings from your profile.'
+                : null,
           )
         else
           ...services.map((service) {
@@ -1012,13 +1076,13 @@ class ManageServiceTile extends StatelessWidget {
 class EmptyProfileSection extends StatelessWidget {
   final IconData icon;
   final String title;
-  final String message;
+  final String? message;
 
   const EmptyProfileSection({
     super.key,
     required this.icon,
     required this.title,
-    required this.message,
+    this.message,
   });
 
   @override
@@ -1043,16 +1107,18 @@ class EmptyProfileSection extends StatelessWidget {
               fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              height: 1.45,
-              fontWeight: FontWeight.w500,
+          if (message != null && message!.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              message!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                height: 1.45,
+                fontWeight: FontWeight.w500,
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );

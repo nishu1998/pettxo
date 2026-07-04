@@ -10,14 +10,18 @@ class ProfileContentRepository {
   final FirebaseFirestore _firestore;
 
   Stream<List<SocialPostModel>> watchPostsForProfile(UserProfile profile) {
-    final authorId = profile.uid.trim();
-    if (authorId.isEmpty) {
+    return watchPostsForAuthorId(profile.uid);
+  }
+
+  Stream<List<SocialPostModel>> watchPostsForAuthorId(String authorId) {
+    final trimmedAuthorId = authorId.trim();
+    if (trimmedAuthorId.isEmpty) {
       return Stream<List<SocialPostModel>>.value(const <SocialPostModel>[]);
     }
 
     return _firestore
         .collection('socialPosts')
-        .where('authorId', isEqualTo: authorId)
+        .where('authorId', isEqualTo: trimmedAuthorId)
         .where('visibilityStatus', isEqualTo: 'visible')
         .where('moderationStatus', isEqualTo: 'approved')
         .snapshots()

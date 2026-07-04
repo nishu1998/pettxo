@@ -8,6 +8,7 @@ import '../../../bookings/domain/models/booking_flow_models.dart';
 import '../../../bookings/presentation/screens/booking_detail_screen.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
+import '../../../profile/presentation/widgets/profile_content_sections.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -29,69 +30,74 @@ class NotificationsScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Column(
-          children: [
-            const _NotificationsHeader(),
-            Expanded(
-              child: user == null
-                  ? const _NotificationStateMessage(
+        child: user == null
+            ? const Column(
+                children: [
+                  _NotificationsHeader(unreadCount: 0),
+                  Expanded(
+                    child: _NotificationStateMessage(
                       title: 'Sign in required',
                       message: 'Sign in to see booking and social updates.',
-                    )
-                  : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                      stream: _notificationsFor(user.uid),
-                      builder: (context, snapshot) {
-                        if (snapshot.hasError) {
-                          return const _NotificationStateMessage(
-                            title: 'Unable to load notifications',
-                            message:
-                                'Please check your connection and try again.',
-                          );
-                        }
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Center(
-                            child: CircularProgressIndicator(
-                              color: AppColors.primary,
-                            ),
-                          );
-                        }
-
-                        final docs = _dedupeAndSortNotifications(
-                          snapshot.data?.docs ?? const [],
-                        );
-
-                        if (docs.isEmpty) {
-                          return const _NotificationStateMessage(
-                            title: 'You’re all caught up',
-                            message:
-                                'Booking changes, follows, likes and comments will show up here.',
-                          );
-                        }
-
-                        final unreadCount = docs.where((doc) {
-                          final data = doc.data();
-                          return data['read'] != true && data['isRead'] != true;
-                        }).length;
-
-                        return ListView(
-                          padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
-                          children: [
-                            _CaughtUpCard(unreadCount: unreadCount),
-                            const SizedBox(height: 18),
-                            ...docs.map(
-                              (doc) => _NotificationTile(
-                                doc: doc,
-                                onTap: () => _openNotification(context, doc),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
                     ),
-            ),
-          ],
-        ),
+                  ),
+                ],
+              )
+            : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: _notificationsFor(user.uid),
+                builder: (context, snapshot) {
+                  final docs = _dedupeAndSortNotifications(
+                    snapshot.data?.docs ?? const [],
+                  );
+                  final unreadCount = docs.where((doc) {
+                    final data = doc.data();
+                    return data['read'] != true && data['isRead'] != true;
+                  }).length;
+
+                  return Column(
+                    children: [
+                      _NotificationsHeader(unreadCount: unreadCount),
+                      Expanded(
+                        child: () {
+                          if (snapshot.hasError) {
+                            return const _NotificationStateMessage(
+                              title: 'Unable to load notifications',
+                              message:
+                                  'Please check your connection and try again.',
+                            );
+                          }
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                color: AppColors.primary,
+                              ),
+                            );
+                          }
+                          if (docs.isEmpty) {
+                            return const _NotificationStateMessage(
+                              title: 'You’re all caught up',
+                              message:
+                                  'Booking changes, follows, likes and comments will show up here.',
+                            );
+                          }
+
+                          return ListView(
+                            padding: const EdgeInsets.fromLTRB(18, 4, 18, 24),
+                            children: docs
+                                .map(
+                                  (doc) => _NotificationTile(
+                                    doc: doc,
+                                    onTap: () => _openNotification(context, doc),
+                                  ),
+                                )
+                                .toList(growable: false),
+                          );
+                        }(),
+                      ),
+                    ],
+                  );
+                },
+              ),
       ),
     );
   }
@@ -117,16 +123,30 @@ class NotificationsScreen extends StatelessWidget {
     }
 
     final docs = latestByKey.values.toList(growable: false);
-    docs.sort((a, b) => _sortDateFor(b).compareTo(_sortDateFor(a)));
+    docs.sort((a, b) {
+      final aUnread = _isUnread(a);
+      final bUnread = _isUnread(b);
+      if (aUnread != bUnread) {
+        return aUnread ? -1 : 1;
+      }
+      return _sortDateFor(b).compareTo(_sortDateFor(a));
+    });
     return docs;
+  }
+
+  bool _isUnread(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data();
+    return data['read'] != true && data['isRead'] != true;
   }
 
   DateTime _sortDateFor(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
-    final updatedAt = data['updatedAt'];
-    if (updatedAt is Timestamp) return updatedAt.toDate();
     final createdAt = data['createdAt'];
     if (createdAt is Timestamp) return createdAt.toDate();
+    final sentAt = data['sentAt'];
+    if (sentAt is Timestamp) return sentAt.toDate();
+    final updatedAt = data['updatedAt'];
+    if (updatedAt is Timestamp) return updatedAt.toDate();
     return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
@@ -135,11 +155,18 @@ class NotificationsScreen extends StatelessWidget {
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
   ) async {
     final data = doc.data();
-    await doc.reference.update({
-      'read': true,
-      'isRead': true,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    final isUnread = data['read'] != true && data['isRead'] != true;
+    if (isUnread) {
+      try {
+        await doc.reference.update({
+          'read': true,
+          'isRead': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {
+        // Navigation should still work even if the read-state write fails.
+      }
+    }
 
     if (!context.mounted) return;
     final bookingId =
@@ -150,6 +177,7 @@ class NotificationsScreen extends StatelessWidget {
     final senderId = '${data['senderId'] ?? data['data']?['senderId'] ?? ''}';
     final recipientId =
         '${data['userId'] ?? data['recipientId'] ?? data['data']?['recipientId'] ?? ''}';
+    final postId = '${data['postId'] ?? data['data']?['postId'] ?? ''}';
     if ((type == 'chat' || type == 'chatMessage' || category == 'chat') &&
         chatId.isNotEmpty) {
       Navigator.push(
@@ -172,6 +200,21 @@ class NotificationsScreen extends StatelessWidget {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('Profile unavailable.')));
+          return;
+        }
+
+        if ((type == 'socialLike' || type == 'socialComment') &&
+            postId.trim().isNotEmpty) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ProfilePostDetailScreen.fromPostId(
+                authorId: profileUserId,
+                initialPostId: postId.trim(),
+                currentUserId: FirebaseAuth.instance.currentUser?.uid ?? '',
+              ),
+            ),
+          );
           return;
         }
 
@@ -202,112 +245,74 @@ class NotificationsScreen extends StatelessWidget {
 }
 
 class _NotificationsHeader extends StatelessWidget {
-  const _NotificationsHeader();
+  final int unreadCount;
+
+  const _NotificationsHeader({required this.unreadCount});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 14, 18, 10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.95),
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        ),
-        child: Row(
-          children: [
-            IconButton(
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 6),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.94),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.07),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: IconButton(
               onPressed: () => Navigator.pop(context),
               icon: const Icon(
                 Icons.arrow_back_rounded,
                 color: AppColors.textDark,
               ),
             ),
-            const SizedBox(width: 4),
-            const Icon(
-              Icons.notifications_active_outlined,
-              color: AppColors.primary,
-              size: 24,
+          ),
+          const SizedBox(width: 16),
+          const Text(
+            'Notifications',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textDark,
             ),
-            const SizedBox(width: 12),
-            const Expanded(
+          ),
+          const Spacer(),
+          if (unreadCount > 0) ...[
+            Container(
+              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.94),
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.07),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
               child: Text(
-                'Notifications',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.textDark,
+                '$unreadCount',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.primary,
                 ),
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CaughtUpCard extends StatelessWidget {
-  final int unreadCount;
-
-  const _CaughtUpCard({required this.unreadCount});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            AppColors.primary.withValues(alpha: 0.08),
-            Colors.white.withValues(alpha: 0.96),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-      ),
-      child: Row(
-        children: [
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Activity updates',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textDark,
-                  ),
-                ),
-                SizedBox(height: 6),
-                Text(
-                  'Requests, confirmations, follows, likes and comments stay in sync here.',
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                    fontSize: 14,
-                    height: 1.45,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: Colors.white,
-            child: Text(
-              '$unreadCount',
-              style: const TextStyle(
-                color: AppColors.primary,
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -330,123 +335,96 @@ class _NotificationTile extends StatelessWidget {
     final isUnread = data['read'] != true && data['isRead'] != true;
     final createdAt = data['createdAt'];
     final createdDate = createdAt is Timestamp ? createdAt.toDate() : null;
+    final senderId = '${data['senderId'] ?? data['data']?['senderId'] ?? ''}';
+    final senderDisplayName =
+        '${data['senderDisplayName'] ?? data['data']?['senderDisplayName'] ?? ''}';
     final senderPhotoUrl =
         '${data['senderPhotoUrl'] ?? data['data']?['senderPhotoUrl'] ?? ''}';
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(24),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: isUnread
-                  ? AppColors.primary.withValues(alpha: 0.18)
-                  : AppColors.primary.withValues(alpha: 0.08),
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: Colors.white.withValues(alpha: 0.95),
+              width: 1.2,
             ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.03),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
-              ),
-            ],
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              CircleAvatar(
-                radius: 26,
-                backgroundColor: isUnread
-                    ? const Color(0xFFFFF2EA)
-                    : AppColors.background,
-                child: _avatarContent(
-                  senderPhotoUrl: senderPhotoUrl,
-                  type: type,
-                  category: category,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isUnread) ...[
+              Container(
+                width: 10,
+                height: 10,
+                margin: const EdgeInsets.only(top: 18, right: 10),
+                decoration: const BoxDecoration(
+                  color: AppColors.primary,
+                  shape: BoxShape.circle,
                 ),
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textDark,
-                        fontWeight: FontWeight.w800,
-                        height: 1.35,
-                      ),
-                    ),
-                    if (body.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        body,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: AppColors.textGrey,
-                          height: 1.4,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    Text(
-                      _relativeTime(createdDate),
-                      style: const TextStyle(
-                        color: AppColors.textGrey,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
+            ] else
+              const SizedBox(width: 20),
+            CircleAvatar(
+              radius: 26,
+              backgroundColor: AppColors.background,
+              child: _avatarContent(
+                senderId: senderId,
+                senderDisplayName: senderDisplayName,
+                senderPhotoUrl: senderPhotoUrl,
+                type: type,
+                category: category,
               ),
-              if (isUnread) ...[
-                const SizedBox(width: 12),
-                Container(
-                  width: 10,
-                  height: 10,
-                  decoration: const BoxDecoration(
-                    color: AppColors.primary,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ],
-            ],
-          ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildStyledText(title, body),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              _relativeTime(createdDate),
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
   Widget _avatarContent({
+    required String senderId,
+    required String senderDisplayName,
     required String senderPhotoUrl,
     required String type,
     required String category,
   }) {
-    if (category == 'social' && senderPhotoUrl.trim().isNotEmpty) {
-      return ClipOval(
-        child: CachedNetworkImage(
-          imageUrl: senderPhotoUrl,
-          width: 52,
-          height: 52,
-          fit: BoxFit.cover,
-          errorWidget: (context, url, error) =>
-              Icon(_iconFor(type, category), color: AppColors.primary),
-          placeholder: (context, url) =>
-              Icon(_iconFor(type, category), color: AppColors.primary),
-        ),
+    if (category == 'social') {
+      return _SocialNotificationAvatar(
+        senderId: senderId,
+        senderDisplayName: senderDisplayName,
+        fallbackPhotoUrl: senderPhotoUrl,
+        badgeColor: _badgeColorFor(type, category),
+        badgeIcon: _iconFor(type, category),
       );
     }
 
     return Icon(_iconFor(type, category), color: AppColors.primary);
+  }
+
+  Color _badgeColorFor(String type, String category) {
+    if (category == 'social') {
+      if (type == 'socialFollow') return const Color(0xFF2FA56A);
+      if (type == 'socialComment') return const Color(0xFF4A78D1);
+      if (type == 'socialLike') return AppColors.primary;
+    }
+    return AppColors.primary;
   }
 
   IconData _iconFor(String type, String category) {
@@ -469,14 +447,207 @@ class _NotificationTile extends StatelessWidget {
     return Icons.calendar_today_outlined;
   }
 
+  Widget _buildStyledText(String title, String body) {
+    final cleanedTitle = title.trim();
+    final cleanedBody = body.trim();
+    final combined = cleanedTitle.isEmpty
+        ? 'Pettxo update'
+        : cleanedTitle;
+    final subjectLength = _subjectLengthFor(combined);
+    final safeSubjectLength = subjectLength.clamp(0, combined.length);
+    final subject = combined.substring(0, safeSubjectLength).trim();
+    final remainder = combined.substring(safeSubjectLength).trimLeft();
+    final bodySuffix = _shouldHideBody(cleanedBody) ? '' : cleanedBody;
+
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(
+            text: subject,
+            style: const TextStyle(
+              fontSize: 16,
+              color: AppColors.textDark,
+              fontWeight: FontWeight.w800,
+              height: 1.45,
+            ),
+          ),
+          if (remainder.isNotEmpty)
+            TextSpan(
+              text: ' $remainder',
+              style: const TextStyle(
+                fontSize: 16,
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w400,
+                height: 1.45,
+              ),
+            ),
+          if (bodySuffix.isNotEmpty)
+            TextSpan(
+              text: ' $bodySuffix',
+              style: const TextStyle(
+                fontSize: 16,
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w400,
+                height: 1.45,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  int _subjectLengthFor(String title) {
+    const actionMarkers = <String>[
+      ' liked',
+      ' followed',
+      ' commented',
+      ' started',
+      ' replied',
+      ' requested',
+      ' accepted',
+      ' rejected',
+      ' cancelled',
+      ' completed',
+      ' sent',
+      ' mentioned',
+    ];
+
+    var splitIndex = title.length;
+    for (final marker in actionMarkers) {
+      final index = title.indexOf(marker);
+      if (index > 0 && index < splitIndex) {
+        splitIndex = index;
+      }
+    }
+    return splitIndex;
+  }
+
+  bool _shouldHideBody(String body) {
+    if (body.isEmpty) return true;
+    final normalized = body.toLowerCase();
+    return normalized.startsWith('tap to view') ||
+        normalized.startsWith('tap to see') ||
+        normalized.startsWith('see what they are sharing') ||
+        normalized.startsWith('see what they’re sharing') ||
+        normalized.startsWith("see what they're sharing");
+  }
+
   String _relativeTime(DateTime? date) {
     if (date == null) return 'Just now';
     final diff = DateTime.now().difference(date);
     if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
-    if (diff.inHours < 24) return '${diff.inHours} hr ago';
-    if (diff.inDays < 7) return '${diff.inDays} d ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+    if (diff.inHours < 24) return '${diff.inHours}h';
+    if (diff.inDays < 7) return '${diff.inDays}d';
     return '${date.day}/${date.month}/${date.year}';
+  }
+}
+
+class _SocialNotificationAvatar extends StatelessWidget {
+  final String senderId;
+  final String senderDisplayName;
+  final String fallbackPhotoUrl;
+  final Color badgeColor;
+  final IconData badgeIcon;
+
+  const _SocialNotificationAvatar({
+    required this.senderId,
+    required this.senderDisplayName,
+    required this.fallbackPhotoUrl,
+    required this.badgeColor,
+    required this.badgeIcon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (senderId.trim().isEmpty) {
+      return _buildAvatarStack(fallbackPhotoUrl.trim());
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(senderId.trim())
+          .snapshots(),
+      builder: (context, snapshot) {
+        final livePhotoUrl =
+            '${snapshot.data?.data()?['profileImage'] ?? ''}'.trim();
+        final resolvedPhotoUrl = livePhotoUrl.isNotEmpty
+            ? livePhotoUrl
+            : fallbackPhotoUrl.trim();
+        return _buildAvatarStack(resolvedPhotoUrl);
+      },
+    );
+  }
+
+  Widget _buildAvatarStack(String photoUrl) {
+    return SizedBox(
+      width: 56,
+      height: 56,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          ClipOval(
+            child: SizedBox(
+              width: 56,
+              height: 56,
+              child: photoUrl.isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: photoUrl,
+                      fit: BoxFit.cover,
+                      placeholder: (context, imageUrl) => _fallbackAvatar(),
+                      errorWidget: (context, imageUrl, error) =>
+                          _fallbackAvatar(),
+                    )
+                  : _fallbackAvatar(),
+            ),
+          ),
+          Positioned(
+            right: -1,
+            bottom: -1,
+            child: Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: badgeColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: Icon(badgeIcon, size: 13, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fallbackAvatar() {
+    return CircleAvatar(
+      radius: 28,
+      backgroundColor: AppColors.background,
+      child: Text(
+        _initialsFromName(senderDisplayName),
+        style: const TextStyle(
+          color: AppColors.textDark,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
+  String _initialsFromName(String name) {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+    if (parts.isEmpty) return 'P';
+    if (parts.length == 1) {
+      return parts.first.substring(0, 1).toUpperCase();
+    }
+    return '${parts.first.substring(0, 1)}${parts.last.substring(0, 1)}'
+        .toUpperCase();
   }
 }
 
