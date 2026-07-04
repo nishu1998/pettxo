@@ -181,8 +181,7 @@ class ProviderOnboardingSnapshot {
   bool get needsBankDetails => !bankDetails.isSubmitted;
 
   bool get canCreateServiceNow {
-    if (verification.isApproved) return bankDetails.isSubmitted;
-    if (!bankDetails.isSubmitted) return false;
+    if (verification.isApproved) return true;
     if (!verification.isSubmitted) return false;
     return !verification.graceExpired;
   }
@@ -190,9 +189,6 @@ class ProviderOnboardingSnapshot {
   String? get blockingMessage {
     if (!verification.isSubmitted) {
       return 'Complete provider verification before publishing your first service.';
-    }
-    if (!bankDetails.isSubmitted) {
-      return 'Add your bank details before publishing this service.';
     }
     if (verification.isApproved) return null;
     if (verification.graceExpired) {

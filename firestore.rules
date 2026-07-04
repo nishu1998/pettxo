@@ -293,15 +293,21 @@ service cloud.firestore {
 
     function safeServiceVerificationCreate(userId) {
       return exists(/databases/$(database)/documents/users/$(userId)/providerVerification/main) &&
-        exists(/databases/$(database)/documents/users/$(userId)/providerBankDetails/main) &&
-        get(/databases/$(database)/documents/users/$(userId)).data.deletionRequested != true &&
-        request.resource.data.providerVerificationStatus ==
-          providerVerificationDoc(userId).data.status &&
-        request.resource.data.isPausedByVerification == false &&
-        request.resource.data.pauseReason == '' &&
         (
           providerVerificationDoc(userId).data.status == 'approved' ||
-          request.resource.data.providerVerificationGraceEndsAt is timestamp
+          (
+            providerVerificationDoc(userId).data.status == 'pending' &&
+            (
+              (
+                providerVerificationDoc(userId).data.gracePeriodEndsAt == null &&
+                providerVerificationDoc(userId).data.firstServiceListedAt == null
+              ) ||
+              (
+                providerVerificationDoc(userId).data.gracePeriodEndsAt is timestamp &&
+                providerVerificationDoc(userId).data.gracePeriodEndsAt > request.time
+              )
+            )
+          )
         );
     }
 
@@ -734,10 +740,36 @@ service cloud.firestore {
     }
 
     function safeProviderVerificationOwnerUpdate(userId) {
-      return safeProviderVerificationOwnerWrite(userId) &&
+      return (
+        safeProviderVerificationOwnerWrite(userId) &&
         request.resource.data.createdAt == resource.data.createdAt &&
         request.resource.data.submittedAt == request.time &&
-        resource.data.status != 'approved';
+        resource.data.status != 'approved'
+      ) || (
+        validProviderVerificationDocKeys(request.resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.status == resource.data.status &&
+        request.resource.data.documentType == resource.data.documentType &&
+        request.resource.data.documentFrontUrl == resource.data.documentFrontUrl &&
+        request.resource.data.documentBackUrl == resource.data.documentBackUrl &&
+        request.resource.data.submittedAt == resource.data.submittedAt &&
+        request.resource.data.reviewedAt == resource.data.reviewedAt &&
+        request.resource.data.reviewedBy == resource.data.reviewedBy &&
+        request.resource.data.rejectionReason == resource.data.rejectionReason &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.updatedAt == request.time &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'firstServiceListedAt',
+          'gracePeriodEndsAt',
+          'updatedAt'
+        ]) &&
+        request.resource.data.firstServiceListedAt is timestamp &&
+        request.resource.data.gracePeriodEndsAt is timestamp &&
+        request.resource.data.gracePeriodEndsAt > request.time &&
+        resource.data.status == 'pending' &&
+        resource.data.reviewedAt == null &&
+        resource.data.reviewedBy == null
+      );
     }
 
     function safeProviderBankDetailsOwnerWrite(userId) {
@@ -1003,9 +1035,6 @@ service cloud.firestore {
 
       allow create: if signedIn() &&
         request.resource.data.ownerUserId == request.auth.uid &&
-        request.resource.data.isDeleted == false &&
-        request.resource.data.moderationStatus == 'pending' &&
-        safeServiceOwnerCreate() &&
         safeServiceVerificationCreate(request.auth.uid);
 
       allow update: if isAdmin() ||

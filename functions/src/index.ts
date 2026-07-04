@@ -6680,6 +6680,91 @@ export const previewOfferForBooking = onCall(async (request) => {
   };
 });
 
+function readCountValue(data: DocumentData | undefined, key: string): number {
+  const value = data?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+async function applyUserFollowCountDelta(
+  userId: string,
+  {
+    followerDelta = 0,
+    followingDelta = 0,
+  }: {
+    followerDelta?: number;
+    followingDelta?: number;
+  },
+): Promise<void> {
+  const trimmedUserId = userId.trim();
+  if (!trimmedUserId || (followerDelta === 0 && followingDelta === 0)) {
+    return;
+  }
+
+  const userRef = db.collection("users").doc(trimmedUserId);
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(userRef);
+    if (!snapshot.exists) return;
+
+    const data = snapshot.data();
+    const nextFollowerCount = Math.max(
+      0,
+      readCountValue(data, "followerCount") + followerDelta,
+    );
+    const nextFollowingCount = Math.max(
+      0,
+      readCountValue(data, "followingCount") + followingDelta,
+    );
+
+    transaction.set(userRef, {
+      followerCount: nextFollowerCount,
+      followingCount: nextFollowingCount,
+    }, {merge: true});
+  });
+}
+
+export const syncProfileFollowCounts = onDocumentWritten(
+  "follows/{followId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+
+    if (!before && !after) return;
+    if (before && after) return;
+
+    const source = after ?? before;
+    const followerId = String(source?.followerId ?? "").trim();
+    const followeeId = String(source?.followeeId ?? "").trim();
+    if (!followerId || !followeeId || followerId === followeeId) return;
+
+    const delta = after ? 1 : -1;
+    await Promise.all([
+      applyUserFollowCountDelta(followerId, {followingDelta: delta}),
+      applyUserFollowCountDelta(followeeId, {followerDelta: delta}),
+    ]);
+  },
+);
+
+export const getProfileFollowCounts = onCall({invoker: "public"}, async (request) => {
+  requireUid(request.auth);
+
+  const payload = (request.data ?? {}) as Record<string, unknown>;
+  const userId = asTrimmedString(payload.userId);
+  if (!userId) {
+    throw new HttpsError("invalid-argument", "User id is required.");
+  }
+
+  const [followerAggregate, followingAggregate] = await Promise.all([
+    db.collection("follows").where("followeeId", "==", userId).count().get(),
+    db.collection("follows").where("followerId", "==", userId).count().get(),
+  ]);
+
+  return {
+    userId,
+    followerCount: followerAggregate.data().count,
+    followingCount: followingAggregate.data().count,
+  };
+});
+
 export const createSocialNotification = onCall({invoker: "public"}, async (request) => {
   const senderId = request.auth?.uid ?? "";
   if (!senderId) {

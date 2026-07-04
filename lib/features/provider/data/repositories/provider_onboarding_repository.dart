@@ -48,30 +48,44 @@ class ProviderOnboardingRepository {
   CollectionReference<Map<String, dynamic>> get _services =>
       _firestore.collection('services');
 
-  Future<ProviderVerificationRecord> fetchCurrentVerification() async {
+  Future<ProviderVerificationRecord> fetchCurrentVerification({
+    bool forceServer = false,
+  }) async {
     final uid = _currentUid;
-    final snapshot = await _verificationDoc(uid).get();
+    final snapshot = await _verificationDoc(
+      uid,
+    ).get(forceServer ? const GetOptions(source: Source.server) : null);
     if (!snapshot.exists) return ProviderVerificationRecord.empty(uid);
     return ProviderVerificationRecord.fromMap(uid, snapshot.data() ?? {});
   }
 
-  Future<ProviderBankDetailsRecord> fetchCurrentBankDetails() async {
+  Future<ProviderBankDetailsRecord> fetchCurrentBankDetails({
+    bool forceServer = false,
+  }) async {
     final uid = _currentUid;
-    final snapshot = await _bankDetailsDoc(uid).get();
+    final snapshot = await _bankDetailsDoc(
+      uid,
+    ).get(forceServer ? const GetOptions(source: Source.server) : null);
     if (!snapshot.exists) return ProviderBankDetailsRecord.empty(uid);
     return ProviderBankDetailsRecord.fromMap(uid, snapshot.data() ?? {});
   }
 
-  Future<ProviderOnboardingSnapshot> fetchCurrentOnboarding() async {
+  Future<ProviderOnboardingSnapshot> fetchCurrentOnboarding({
+    bool forceServer = false,
+  }) async {
     final uid = _currentUid;
     final results = await Future.wait([
-      _verificationDoc(uid).get(),
-      _bankDetailsDoc(uid).get(),
+      _verificationDoc(
+        uid,
+      ).get(forceServer ? const GetOptions(source: Source.server) : null),
+      _bankDetailsDoc(
+        uid,
+      ).get(forceServer ? const GetOptions(source: Source.server) : null),
       _services
           .where('ownerUserId', isEqualTo: uid)
           .where('isDeleted', isEqualTo: false)
           .limit(1)
-          .get(),
+          .get(forceServer ? const GetOptions(source: Source.server) : null),
     ]);
 
     final verificationSnapshot =
@@ -94,6 +108,45 @@ class ProviderOnboardingRepository {
       bankDetails: bankDetails,
       hasListedService: servicesSnapshot.docs.isNotEmpty,
     );
+  }
+
+  Future<ProviderOnboardingSnapshot> repairVerificationGraceWindowIfNeeded({
+    bool forceServer = false,
+  }) async {
+    var onboarding = await fetchCurrentOnboarding(forceServer: forceServer);
+    final verification = onboarding.verification;
+    if (!onboarding.hasListedService ||
+        !verification.isPending ||
+        verification.gracePeriodEndsAt != null) {
+      return onboarding;
+    }
+
+    final servicesSnapshot = await _services
+        .where('ownerUserId', isEqualTo: _currentUid)
+        .where('isDeleted', isEqualTo: false)
+        .limit(50)
+        .get(forceServer ? const GetOptions(source: Source.server) : null);
+
+    DateTime? earliestCreatedAt;
+    for (final doc in servicesSnapshot.docs) {
+      final createdAt = _readServiceCreatedAt(doc.data());
+      if (createdAt == null) continue;
+      if (earliestCreatedAt == null || createdAt.isBefore(earliestCreatedAt)) {
+        earliestCreatedAt = createdAt;
+      }
+    }
+
+    final firstListedAt = earliestCreatedAt ?? DateTime.now();
+    final gracePeriodEndsAt = firstListedAt.add(const Duration(hours: 72));
+
+    await _verificationDoc(_currentUid).set({
+      'firstServiceListedAt': Timestamp.fromDate(firstListedAt),
+      'gracePeriodEndsAt': Timestamp.fromDate(gracePeriodEndsAt),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    onboarding = await fetchCurrentOnboarding(forceServer: forceServer);
+    return onboarding;
   }
 
   Future<void> submitVerification({
@@ -179,17 +232,21 @@ class ProviderOnboardingRepository {
   }) async {
     final uid = _currentUid;
     final docRef = _verificationDoc(uid);
-    await _firestore.runTransaction((transaction) async {
-      final snapshot = await transaction.get(docRef);
-      if (!snapshot.exists) return;
-      final data = snapshot.data() ?? const {};
-      if (data['firstServiceListedAt'] != null) return;
-      transaction.set(docRef, {
-        'firstServiceListedAt': FieldValue.serverTimestamp(),
-        'gracePeriodEndsAt': Timestamp.fromDate(gracePeriodEndsAt),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    });
+    try {
+      await _firestore.runTransaction((transaction) async {
+        final snapshot = await transaction.get(docRef);
+        if (!snapshot.exists) return;
+        final data = snapshot.data() ?? const {};
+        if (data['firstServiceListedAt'] != null) return;
+        transaction.set(docRef, {
+          'firstServiceListedAt': FieldValue.serverTimestamp(),
+          'gracePeriodEndsAt': Timestamp.fromDate(gracePeriodEndsAt),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      });
+    } on FirebaseException catch (error) {
+      if (!_isPermissionDenied(error)) rethrow;
+    }
   }
 
   Future<void> syncServicesForCurrentVerificationStatus() async {
@@ -220,7 +277,11 @@ class ProviderOnboardingRepository {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }
-    await batch.commit();
+    try {
+      await batch.commit();
+    } on FirebaseException catch (error) {
+      if (!_isPermissionDenied(error)) rethrow;
+    }
   }
 
   Future<String> _uploadIdentityImage({
@@ -248,6 +309,20 @@ class ProviderOnboardingRepository {
     if (accountNumber.length <= 4) return accountNumber;
     final visiblePart = accountNumber.substring(accountNumber.length - 4);
     return 'XXXX$visiblePart';
+  }
+
+  bool _isPermissionDenied(FirebaseException error) {
+    return error.code == 'permission-denied' || error.code == 'unauthorized';
+  }
+
+  DateTime? _readServiceCreatedAt(Map<String, dynamic> data) {
+    final createdAt = data['createdAt'];
+    if (createdAt is Timestamp) return createdAt.toDate();
+    if (createdAt is DateTime) return createdAt;
+    final publishedAt = data['publishedAt'];
+    if (publishedAt is Timestamp) return publishedAt.toDate();
+    if (publishedAt is DateTime) return publishedAt;
+    return null;
   }
 
   String? _normalizeDocumentType(String documentType) {

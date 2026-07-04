@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../../../profile/domain/models/profile_service_listing.dart';
 import '../../domain/models/service_model.dart';
@@ -268,16 +270,36 @@ class ServicesRepository {
 
     for (var index = 0; index < photos.length; index++) {
       final photo = photos[index];
-      final extension = photo.path.split('.').last.toLowerCase();
+      final uploadBytes = await _prepareServicePhotoBytes(photo);
       final ref = _storage.ref().child(
-        'users/$ownerUserId/services/$serviceId/photo_$index.$extension',
+        'users/$ownerUserId/services/$serviceId/photo_$index.jpg',
       );
 
-      await ref.putFile(photo);
+      await ref.putData(
+        uploadBytes,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
       urls.add(await ref.getDownloadURL());
     }
 
     return urls;
+  }
+
+  Future<Uint8List> _prepareServicePhotoBytes(File photo) async {
+    final originalBytes = await photo.readAsBytes();
+    final compressedBytes = await FlutterImageCompress.compressWithList(
+      originalBytes,
+      quality: 84,
+      minWidth: 1600,
+      minHeight: 1600,
+      format: CompressFormat.jpeg,
+    );
+
+    if (compressedBytes.isEmpty) {
+      return Uint8List.fromList(originalBytes);
+    }
+
+    return Uint8List.fromList(compressedBytes);
   }
 }
 

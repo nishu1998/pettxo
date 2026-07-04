@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -14,7 +16,6 @@ import '../../../auth/data/services/user_service.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
 import '../../../provider/domain/models/provider_onboarding_models.dart';
-import '../../../provider/presentation/screens/provider_bank_details_screen.dart';
 import '../../../provider/presentation/screens/provider_verification_screen.dart';
 import '../../data/repositories/profile_repository.dart';
 import '../../domain/models/add_service_flow_draft.dart';
@@ -240,12 +241,20 @@ class _AddServiceAdditionalDetailsScreenState
       if (!onboardingReady) return;
 
       final onboarding = await _providerOnboardingRepository
-          .fetchCurrentOnboarding();
+          .repairVerificationGraceWindowIfNeeded(forceServer: true);
       final firstServiceDraftGraceEndsAt =
           onboarding.verification.firstServiceListedAt == null &&
               !onboarding.hasListedService
           ? DateTime.now().add(const Duration(hours: 72))
           : onboarding.verification.gracePeriodEndsAt;
+      if (kDebugMode) {
+        debugPrint(
+          'Publishing service with verificationStatus='
+          '${onboarding.verification.status}, '
+          'hasListedService=${onboarding.hasListedService}, '
+          'graceEndsAt=$firstServiceDraftGraceEndsAt',
+        );
+      }
 
       AppLoader.showWithMessage(
         _selectedPhotos.isEmpty
@@ -254,8 +263,16 @@ class _AddServiceAdditionalDetailsScreenState
       );
 
       final profile = await _profileRepository.getCurrentUserProfile();
+      final currentAuthUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+      if (kDebugMode) {
+        debugPrint(
+          'Publishing service with authUid=$currentAuthUid '
+          'profileUid=${profile.uid}',
+        );
+      }
       final service = _buildServiceModel(
         profile,
+        authUid: currentAuthUid,
         verification: onboarding.verification,
         gracePeriodEndsAt: firstServiceDraftGraceEndsAt,
       );
@@ -282,14 +299,25 @@ class _AddServiceAdditionalDetailsScreenState
         tone: AppFeedbackTone.success,
       );
       Navigator.pop(context, true);
-    } catch (_) {
+    } catch (error, stackTrace) {
       AppLoader.hide();
       if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: 'We could not publish this service right now.',
-        tone: AppFeedbackTone.error,
-      );
+      if (kDebugMode) {
+        debugPrint('Service publish failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      final message = switch (error) {
+        FirebaseException(code: 'permission-denied') =>
+          'Your service could not be published due to a permissions issue. Please confirm your provider verification submission and try again.',
+        FirebaseException(code: 'unauthenticated') =>
+          'Please sign in again before publishing your service.',
+        FirebaseException(code: 'unauthorized') =>
+          'One of the selected images is not supported. Please use JPG, PNG, or WEBP photos and try again.',
+        FirebaseException(code: 'object-not-found') =>
+          'One of the selected images could not be processed. Please reselect the photos and try again.',
+        _ => 'We could not publish this service right now.',
+      };
+      AppFeedback.show(context, message: message, tone: AppFeedbackTone.error);
     } finally {
       AppLoader.hide();
       if (mounted) {
@@ -301,8 +329,9 @@ class _AddServiceAdditionalDetailsScreenState
   Future<bool> _ensureProviderOnboardingReady() async {
     await _providerOnboardingRepository
         .syncServicesForCurrentVerificationStatus();
-    var onboarding = await _providerOnboardingRepository
-        .fetchCurrentOnboarding();
+    var onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding(
+      forceServer: true,
+    );
 
     if (!onboarding.verification.isSubmitted ||
         onboarding.verification.isRejected) {
@@ -314,26 +343,17 @@ class _AddServiceAdditionalDetailsScreenState
       if (!mounted || submitted != true) {
         return false;
       }
-      onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding();
-      if (!mounted) return false;
-    }
-
-    if (!onboarding.bankDetails.isSubmitted) {
-      if (!mounted) return false;
-      final saved = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(builder: (_) => const ProviderBankDetailsScreen()),
+      onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding(
+        forceServer: true,
       );
-      if (!mounted || saved != true) {
-        return false;
-      }
-      onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding();
       if (!mounted) return false;
     }
 
     await _providerOnboardingRepository
         .syncServicesForCurrentVerificationStatus();
-    onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding();
+    onboarding = await _providerOnboardingRepository.fetchCurrentOnboarding(
+      forceServer: true,
+    );
     if (!mounted) return false;
 
     if (onboarding.verification.graceExpired &&
@@ -363,6 +383,7 @@ class _AddServiceAdditionalDetailsScreenState
 
   ServiceModel _buildServiceModel(
     UserProfile profile, {
+    required String authUid,
     required ProviderVerificationRecord verification,
     required DateTime? gracePeriodEndsAt,
   }) {
@@ -371,7 +392,7 @@ class _AddServiceAdditionalDetailsScreenState
 
     return ServiceModel(
       id: '',
-      ownerUserId: profile.uid,
+      ownerUserId: authUid.trim().isNotEmpty ? authUid.trim() : profile.uid,
       ownerName: profile.name,
       ownerUsername: profile.username,
       ownerPhotoUrl: profile.profileImageUrl,
@@ -536,8 +557,8 @@ class _AddServiceAdditionalDetailsScreenState
                           const LegalConsentSegment(text: 'I agree to the '),
                           LegalConsentSegment(
                             text: 'Service Provider Agreement',
-                            onTap: () => PolicyLinkService
-                                .openExternalPolicyUrlWithFeedback(
+                            onTap: () =>
+                                PolicyLinkService.openExternalPolicyUrlWithFeedback(
                                   context,
                                   PolicyLinkService.providerPolicyKey,
                                 ),
