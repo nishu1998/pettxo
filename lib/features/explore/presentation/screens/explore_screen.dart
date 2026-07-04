@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
@@ -39,10 +40,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
+  final ScrollController _scrollController = ScrollController();
 
   Timer? _searchDebounce;
   bool _isLoadingSections = true;
   bool _isSearching = false;
+  bool _isSearchBarVisible = true;
   String? _sectionsError;
   String? _searchError;
   String _searchQuery = '';
@@ -61,6 +64,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
       const <ExploreHashtagSummary>[];
   List<SocialPostModel> _hashtagResults = const <SocialPostModel>[];
   Set<String> _followingIds = <String>{};
+  double _lastScrollOffset = 0;
+  double _scrollDeltaAccumulator = 0;
+
+  static const double _topBarTopResetOffset = 12;
+  static const double _topBarHideThreshold = 32;
+  static const double _topBarShowThreshold = 14;
 
   String get _currentUserId => _auth.currentUser?.uid.trim() ?? '';
   bool get _isSearchMode => _searchQuery.trim().isNotEmpty;
@@ -68,6 +77,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_handleScroll);
     _searchController.addListener(_handleSearchChanged);
     final cache = _memoryCache;
     if (cache != null && cache.hasDiscoveryData) {
@@ -81,6 +91,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _scrollController.dispose();
     _searchController.removeListener(_handleSearchChanged);
     _searchController.dispose();
     _searchFocusNode.dispose();
@@ -480,17 +491,44 @@ class _ExploreScreenState extends State<ExploreScreen> {
     _saveCache();
   }
 
-  void _appendPrefetchedPopularPosts() {
-    if (_prefetchedPopularPosts.isEmpty) return;
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final direction = position.userScrollDirection;
+    final pixels = position.pixels;
+    final delta = pixels - _lastScrollOffset;
+    _lastScrollOffset = pixels;
 
-    setState(() {
-      _popularPosts = <SocialPostModel>[
-        ..._popularPosts,
-        ..._prefetchedPopularPosts,
-      ];
-      _prefetchedPopularPosts = const <SocialPostModel>[];
-    });
-    _saveCache();
+    if (pixels <= _topBarTopResetOffset) {
+      _scrollDeltaAccumulator = 0;
+      if (!_isSearchBarVisible && mounted) {
+        setState(() => _isSearchBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.reverse && delta > 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        0.0,
+        _topBarHideThreshold,
+      );
+      if (_isSearchBarVisible &&
+          _scrollDeltaAccumulator >= _topBarHideThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isSearchBarVisible = false);
+      }
+    } else if (direction == ScrollDirection.forward && delta < 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        -_topBarShowThreshold,
+        0.0,
+      );
+      if (!_isSearchBarVisible &&
+          _scrollDeltaAccumulator <= -_topBarShowThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isSearchBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.idle) {
+      _scrollDeltaAccumulator = 0;
+    }
   }
 
   void _handleSearchChanged() {
@@ -610,26 +648,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
     _runSearch('#$normalized');
   }
 
-  void _openPostSeeAll({
-    required String title,
-    required String subtitle,
-    required List<SocialPostModel> posts,
-  }) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => _ExploreListScreen(
-          title: title,
-          subtitle: subtitle,
-          postItems: posts,
-          currentUserId: _currentUserId,
-          followingIds: _followingIds,
-          onOpenPost: _openPostDetail,
-        ),
-      ),
-    );
-  }
-
   void _openServiceSeeAll() {
     Navigator.push(
       context,
@@ -740,124 +758,135 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      extendBody: true,
-      body: RefreshIndicator(
-        onRefresh: _refreshExploreSections,
-        child: CustomScrollView(
-          cacheExtent: 1200,
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverAppBar(
-              pinned: true,
-              backgroundColor: Colors.transparent,
-              elevation: 0,
-              toolbarHeight: 92,
-              automaticallyImplyLeading: false,
-              flexibleSpace: SafeArea(
-                bottom: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                  child: GlassSurface(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 14,
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    backgroundColor: Colors.white.withValues(alpha: 0.72),
-                    blurSigma: 20,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.62),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.06),
-                        blurRadius: 22,
-                        offset: const Offset(0, 10),
-                      ),
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.56),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: IconButton(
-                            onPressed: () => Navigator.pushReplacementNamed(
-                              context,
-                              '/home',
-                            ),
-                            icon: const Icon(Icons.arrow_back_rounded),
-                          ),
+    final topInset = MediaQuery.paddingOf(context).top;
+    const headerHeight = 72.0;
+
+    return SocialTabBackScope(
+      activeTab: SocialAppTab.explore,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        extendBody: true,
+        body: Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: _refreshExploreSections,
+              child: NotificationListener<ScrollNotification>(
+                onNotification: (notification) {
+                  final metrics = notification.metrics;
+                  if (_isSearchMode ||
+                      _prefetchedTrendingPosts.isEmpty ||
+                      metrics.axis != Axis.vertical ||
+                      metrics.maxScrollExtent <= 0) {
+                    return false;
+                  }
+
+                  if (metrics.pixels >= metrics.maxScrollExtent - 320) {
+                    _appendPrefetchedTrendingPosts();
+                  }
+                  return false;
+                },
+                child: CustomScrollView(
+                  controller: _scrollController,
+                  cacheExtent: 1200,
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          topInset + headerHeight,
+                          16,
+                          SocialBottomNav.contentBottomPadding(context),
                         ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Explore',
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textDark,
-                            ),
-                          ),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          switchInCurve: Curves.easeOut,
+                          switchOutCurve: Curves.easeIn,
+                          child: _isSearchMode
+                              ? KeyedSubtree(
+                                  key: const ValueKey<String>('search'),
+                                  child: _buildSearchContent(),
+                                )
+                              : KeyedSubtree(
+                                  key: const ValueKey<String>('discovery'),
+                                  child: _buildDiscoveryContent(),
+                                ),
                         ),
-                      ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
-            SliverPersistentHeader(
-              pinned: true,
-              delegate: _PinnedSearchHeaderDelegate(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-                  child: _SearchBar(
-                    controller: _searchController,
-                    focusNode: _searchFocusNode,
-                    isSearching: _isSearching,
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: IgnorePointer(
+                ignoring: true,
+                child: GlassSurface(
+                  padding: EdgeInsets.only(top: topInset),
+                  borderRadius: BorderRadius.zero,
+                  backgroundColor: AppColors.background.withValues(alpha: 0.72),
+                  blurSigma: 24,
+                  border: Border.all(
+                    color: Colors.transparent,
+                    width: 0,
                   ),
+                  boxShadow: const [],
+                  child: const SizedBox(height: 4),
                 ),
               ),
             ),
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(
-                  16,
-                  8,
-                  16,
-                  SocialBottomNav.contentBottomPadding(context),
-                ),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 220),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  child: _isSearchMode
-                      ? KeyedSubtree(
-                          key: const ValueKey<String>('search'),
-                          child: _buildSearchContent(),
-                        )
-                      : KeyedSubtree(
-                          key: const ValueKey<String>('discovery'),
-                          child: _buildDiscoveryContent(),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: ClipRect(
+                child: AnimatedAlign(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOutCubic,
+                  alignment: Alignment.topCenter,
+                  heightFactor: _isSearchBarVisible ? 1 : 0,
+                  child: AnimatedSlide(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOutCubic,
+                    offset: _isSearchBarVisible
+                        ? Offset.zero
+                        : const Offset(0, -0.22),
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 260),
+                      curve: Curves.easeInOutCubic,
+                      opacity: _isSearchBarVisible ? 1 : 0,
+                      child: IgnorePointer(
+                        ignoring: !_isSearchBarVisible,
+                        child: GlassSurface(
+                          padding: EdgeInsets.fromLTRB(16, topInset + 4, 16, 8),
+                          borderRadius: BorderRadius.zero,
+                          backgroundColor: Colors.white.withValues(alpha: 0.58),
+                          blurSigma: 22,
+                          border: Border(
+                            bottom: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.45),
+                            ),
+                          ),
+                          child: _SearchBar(
+                            controller: _searchController,
+                            focusNode: _searchFocusNode,
+                            isSearching: _isSearching,
+                          ),
                         ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
           ],
         ),
-      ),
-      bottomNavigationBar: const SocialBottomNav(
-        activeTab: SocialAppTab.explore,
+        bottomNavigationBar: const SocialBottomNav(
+          activeTab: SocialAppTab.explore,
+        ),
       ),
     );
   }
@@ -880,59 +909,25 @@ class _ExploreScreenState extends State<ExploreScreen> {
         if (_trendingHashtags.isNotEmpty) ...[
           _FadeInSection(
             child: _HashtagSection(
-              title: 'Trending Hashtags',
-              subtitle: 'Topics pet parents are using right now.',
+              title: 'Trending tags',
               hashtags: _trendingHashtags,
               onTapHashtag: _applyHashtagSearch,
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 10),
         ],
         _FadeInSection(
           delay: const Duration(milliseconds: 40),
-          child: _PostSection(
-            title: 'Trending Posts',
-            subtitle: 'Fresh conversations getting attention right now.',
+          child: _DiscoverSection(
+            title: 'Discover',
             posts: _trendingPosts,
             onOpenPost: _openPostDetail,
-            onReachedEnd: _prefetchedTrendingPosts.isNotEmpty
-                ? _appendPrefetchedTrendingPosts
-                : null,
-            onSeeAll: _trendingPosts.isNotEmpty
-                ? () => _openPostSeeAll(
-                    title: 'Trending Posts',
-                    subtitle:
-                        'Fresh conversations getting attention right now.',
-                    posts: _trendingPosts,
-                  )
-                : null,
-          ),
-        ),
-        const SizedBox(height: 18),
-        _FadeInSection(
-          delay: const Duration(milliseconds: 80),
-          child: _PostSection(
-            title: 'Popular Posts',
-            subtitle: 'Community favorites based on likes and conversation.',
-            posts: _popularPosts,
-            onOpenPost: _openPostDetail,
-            onReachedEnd: _prefetchedPopularPosts.isNotEmpty
-                ? _appendPrefetchedPopularPosts
-                : null,
-            onSeeAll: _popularPosts.isNotEmpty
-                ? () => _openPostSeeAll(
-                    title: 'Popular Posts',
-                    subtitle:
-                        'Community favorites based on likes and conversation.',
-                    posts: _popularPosts,
-                  )
-                : null,
           ),
         ),
         if (_nearbyServices.isNotEmpty) ...[
           const SizedBox(height: 18),
           _FadeInSection(
-            delay: const Duration(milliseconds: 120),
+            delay: const Duration(milliseconds: 80),
             child: _ServiceSection(
               title: 'Popular Services Nearby',
               subtitle:
@@ -944,8 +939,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
           ),
         ],
         if (_trendingPosts.isEmpty &&
-            _popularPosts.isEmpty &&
-            _nearbyServices.isEmpty)
+            _nearbyServices.isEmpty &&
+            _trendingHashtags.isEmpty)
           const _ExploreEmptyState(
             title: 'Nothing to explore yet',
             message:
@@ -1101,32 +1096,6 @@ class _RankedExplorePost {
   });
 }
 
-class _PinnedSearchHeaderDelegate extends SliverPersistentHeaderDelegate {
-  final Widget child;
-
-  const _PinnedSearchHeaderDelegate({required this.child});
-
-  @override
-  double get minExtent => 76;
-
-  @override
-  double get maxExtent => 76;
-
-  @override
-  Widget build(
-    BuildContext context,
-    double shrinkOffset,
-    bool overlapsContent,
-  ) {
-    return ColoredBox(color: AppColors.background, child: child);
-  }
-
-  @override
-  bool shouldRebuild(covariant _PinnedSearchHeaderDelegate oldDelegate) {
-    return oldDelegate.child != child;
-  }
-}
-
 class _FadeInSection extends StatefulWidget {
   final Widget child;
   final Duration delay;
@@ -1169,29 +1138,19 @@ class _FadeInSectionState extends State<_FadeInSection> {
 class _ExploreListScreen extends StatelessWidget {
   final String title;
   final String subtitle;
-  final List<SocialPostModel> postItems;
   final List<ServiceModel> serviceItems;
-  final String currentUserId;
-  final Set<String> followingIds;
-  final ValueChanged<SocialPostModel>? onOpenPost;
   final ValueChanged<ServiceModel>? onOpenService;
 
   const _ExploreListScreen({
     required this.title,
     required this.subtitle,
-    this.postItems = const <SocialPostModel>[],
     this.serviceItems = const <ServiceModel>[],
-    this.currentUserId = '',
-    this.followingIds = const <String>{},
-    this.onOpenPost,
     this.onOpenService,
   });
 
-  bool get _showsPosts => postItems.isNotEmpty;
-
   @override
   Widget build(BuildContext context) {
-    final items = _showsPosts ? postItems.length : serviceItems.length;
+    final items = serviceItems.length;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -1226,7 +1185,7 @@ class _ExploreListScreen extends StatelessWidget {
                         final maxCrossAxisExtent = constraints.maxWidth < 420
                             ? 220.0
                             : 240.0;
-                        final mainAxisExtent = _showsPosts ? 292.0 : 318.0;
+                        const mainAxisExtent = 318.0;
 
                         return GridView.builder(
                           cacheExtent: 900,
@@ -1239,15 +1198,6 @@ class _ExploreListScreen extends StatelessWidget {
                               ),
                           itemCount: items,
                           itemBuilder: (context, index) {
-                            if (_showsPosts) {
-                              final post = postItems[index];
-                              return _CompactPostCard(
-                                post: post,
-                                onTap: () => onOpenPost?.call(post),
-                                expandToAvailableWidth: true,
-                              );
-                            }
-
                             final service = serviceItems[index];
                             return _CompactServiceCard(
                               service: service,
@@ -1368,83 +1318,47 @@ class _ResultSectionTitle extends StatelessWidget {
 
 class _HashtagSection extends StatelessWidget {
   final String title;
-  final String subtitle;
   final List<ExploreHashtagSummary> hashtags;
   final ValueChanged<String> onTapHashtag;
 
   const _HashtagSection({
     required this.title,
-    required this.subtitle,
     required this.hashtags,
     required this.onTapHashtag,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            color: AppColors.textDark,
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
           ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 14),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final pills = hashtags
-                  .map(
-                    (hashtag) => _HashtagPill(
-                      label: '#${hashtag.tag}',
-                      countLabel: '${hashtag.postCount} posts',
-                      onTap: () => onTapHashtag(hashtag.tag),
-                    ),
-                  )
-                  .toList(growable: false);
-
-              if (constraints.maxWidth < 360) {
-                return Wrap(spacing: 10, runSpacing: 10, children: pills);
-              }
-
-              return SizedBox(
-                height: 60,
-                child: ListView.separated(
-                  cacheExtent: 360,
-                  scrollDirection: Axis.horizontal,
-                  itemCount: pills.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 10),
-                  itemBuilder: (context, index) => pills[index],
-                ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 68,
+          child: ListView.separated(
+            cacheExtent: 420,
+            scrollDirection: Axis.horizontal,
+            itemCount: hashtags.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, index) {
+              final hashtag = hashtags[index];
+              return _HashtagPill(
+                label: '#${hashtag.tag}',
+                countLabel: '${hashtag.postCount} posts',
+                onTap: () => onTapHashtag(hashtag.tag),
               );
             },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -1495,16 +1409,20 @@ class _HashtagPill extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(999),
         child: Ink(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          width: 108,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFFFFF6F0),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(
-              color: AppColors.primary.withValues(alpha: 0.10),
-            ),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.035),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1513,15 +1431,17 @@ class _HashtagPill extends StatelessWidget {
                 maxLines: 1,
                 style: const TextStyle(
                   color: AppColors.primary,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
                 ),
               ),
+              const SizedBox(height: 2),
               Text(
                 countLabel,
                 maxLines: 1,
                 style: const TextStyle(
                   color: AppColors.textGrey,
-                  fontSize: 11.5,
+                  fontSize: 11,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -1533,102 +1453,57 @@ class _HashtagPill extends StatelessWidget {
   }
 }
 
-class _PostSection extends StatelessWidget {
+class _DiscoverSection extends StatelessWidget {
   final String title;
-  final String subtitle;
   final List<SocialPostModel> posts;
   final ValueChanged<SocialPostModel> onOpenPost;
-  final VoidCallback? onReachedEnd;
-  final VoidCallback? onSeeAll;
 
-  const _PostSection({
+  const _DiscoverSection({
     required this.title,
-    required this.subtitle,
     required this.posts,
     required this.onOpenPost,
-    this.onReachedEnd,
-    this.onSeeAll,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            color: AppColors.textDark,
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
           ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              if (onSeeAll != null)
-                TextButton(onPressed: onSeeAll, child: const Text('See All')),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w500,
+        ),
+        const SizedBox(height: 14),
+        if (posts.isEmpty)
+          const _InlineEmptyState(message: 'No posts available right now.')
+        else
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              mainAxisExtent: 292,
             ),
+            itemCount: posts.length,
+            itemBuilder: (context, index) {
+              final post = posts[index];
+              return _CompactPostCard(
+                post: post,
+                onTap: () => onOpenPost(post),
+                expandToAvailableWidth: true,
+                showUsername: false,
+                showShareStat: false,
+                imageHeightOverride: 196,
+              );
+            },
           ),
-          const SizedBox(height: 14),
-          if (posts.isEmpty)
-            const _InlineEmptyState(message: 'No posts available right now.')
-          else
-            SizedBox(
-              height: 286,
-              child: NotificationListener<ScrollNotification>(
-                onNotification: (notification) {
-                  final metrics = notification.metrics;
-                  if (onReachedEnd == null ||
-                      metrics.axis != Axis.horizontal ||
-                      metrics.maxScrollExtent <= 0) {
-                    return false;
-                  }
-
-                  if (metrics.pixels >= metrics.maxScrollExtent - 140) {
-                    onReachedEnd?.call();
-                  }
-                  return false;
-                },
-                child: ListView.separated(
-                  cacheExtent: 600,
-                  scrollDirection: Axis.horizontal,
-                  itemCount: posts.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 12),
-                  itemBuilder: (context, index) {
-                    return _CompactPostCard(
-                      post: posts[index],
-                      onTap: () => onOpenPost(posts[index]),
-                    );
-                  },
-                ),
-              ),
-            ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -1910,11 +1785,17 @@ class _CompactPostCard extends StatelessWidget {
   final SocialPostModel post;
   final VoidCallback onTap;
   final bool expandToAvailableWidth;
+  final bool showUsername;
+  final bool showShareStat;
+  final double? imageHeightOverride;
 
   const _CompactPostCard({
     required this.post,
     required this.onTap,
     this.expandToAvailableWidth = false,
+    this.showUsername = true,
+    this.showShareStat = true,
+    this.imageHeightOverride,
   });
 
   @override
@@ -1927,9 +1808,11 @@ class _CompactPostCard extends StatelessWidget {
       builder: (context, constraints) {
         final isHorizontalSectionCard = !expandToAvailableWidth;
         final compact = constraints.maxWidth < 190;
-        final imageHeight = isHorizontalSectionCard
-            ? (compact ? 150.0 : 168.0)
-            : (compact ? 104.0 : 122.0);
+        final imageHeight =
+            imageHeightOverride ??
+            (isHorizontalSectionCard
+                ? (compact ? 150.0 : 168.0)
+                : (compact ? 104.0 : 122.0));
 
         return Material(
           color: Colors.transparent,
@@ -1939,8 +1822,15 @@ class _CompactPostCard extends StatelessWidget {
             child: Container(
               width: expandToAvailableWidth ? double.infinity : 220,
               decoration: BoxDecoration(
-                color: const Color(0xFFFFFBF8),
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(22),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.045),
+                    blurRadius: 18,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1958,15 +1848,16 @@ class _CompactPostCard extends StatelessWidget {
                             : (post.imageUrls.isNotEmpty
                                   ? post.imageUrls.first
                                   : ''),
+                        fit: BoxFit.cover,
                       ),
                     ),
                   ),
                   Padding(
                     padding: EdgeInsets.fromLTRB(
-                      compact ? 10 : 12,
-                      10,
-                      compact ? 10 : 12,
-                      12,
+                      compact ? 14 : 18,
+                      14,
+                      compact ? 14 : 18,
+                      8,
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1979,11 +1870,11 @@ class _CompactPostCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: AppColors.textDark,
-                            fontSize: compact ? 14 : 16,
-                            fontWeight: FontWeight.w700,
+                            fontSize: compact ? 15 : 16,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
-                        if (!isHorizontalSectionCard) ...[
+                        if (!isHorizontalSectionCard && showUsername) ...[
                           const SizedBox(height: 4),
                           Text(
                             post.authorUsername,
@@ -2008,30 +1899,34 @@ class _CompactPostCard extends StatelessWidget {
                           style: TextStyle(
                             color: AppColors.textDark,
                             fontSize: compact ? 13 : 14,
-                            height: 1.35,
+                            height: 1.28,
                           ),
                         ),
                         if (!isHorizontalSectionCard) ...[
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
+                          const SizedBox(height: 10),
+                          Row(
                             children: [
                               _StatChip(
                                 icon: Icons.favorite_border_rounded,
                                 value: '${post.likeCount}',
                                 compact: compact,
+                                minimal: !showShareStat,
                               ),
+                              const SizedBox(width: 12),
                               _StatChip(
                                 icon: Icons.mode_comment_outlined,
                                 value: '${post.commentCount}',
                                 compact: compact,
+                                minimal: !showShareStat,
                               ),
-                              _StatChip(
-                                icon: Icons.share_outlined,
-                                value: '${post.shareCount}',
-                                compact: compact,
-                              ),
+                              if (showShareStat) ...[
+                                const SizedBox(width: 12),
+                                _StatChip(
+                                  icon: Icons.share_outlined,
+                                  value: '${post.shareCount}',
+                                  compact: compact,
+                                ),
+                              ],
                             ],
                           ),
                         ],
@@ -2244,8 +2139,9 @@ class _ProfileAvatar extends StatelessWidget {
 
 class _RemoteImage extends StatelessWidget {
   final String url;
+  final BoxFit fit;
 
-  const _RemoteImage({required this.url});
+  const _RemoteImage({required this.url, this.fit = BoxFit.cover});
 
   @override
   Widget build(BuildContext context) {
@@ -2266,7 +2162,7 @@ class _RemoteImage extends StatelessWidget {
       color: const Color(0xFFFCF8F5),
       child: CachedNetworkImage(
         imageUrl: url,
-        fit: BoxFit.contain,
+        fit: fit,
         errorWidget: (_, _, _) => const Center(
           child: Icon(
             Icons.image_not_supported_outlined,
@@ -2283,15 +2179,35 @@ class _StatChip extends StatelessWidget {
   final IconData icon;
   final String value;
   final bool compact;
+  final bool minimal;
 
   const _StatChip({
     required this.icon,
     required this.value,
     this.compact = false,
+    this.minimal = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    if (minimal) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: compact ? 17 : 18, color: AppColors.textGrey),
+          const SizedBox(width: 4),
+          Text(
+            value,
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontSize: compact ? 12 : 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: compact ? 8 : 10,

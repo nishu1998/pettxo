@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../constants/app_colors.dart';
 import '../navigation/social_app_tab.dart';
@@ -21,6 +22,35 @@ class SocialBottomNav extends StatefulWidget {
 
   @override
   State<SocialBottomNav> createState() => _SocialBottomNavState();
+}
+
+class SocialTabBackScope extends StatelessWidget {
+  final SocialAppTab activeTab;
+  final Widget child;
+  final bool enabled;
+
+  const SocialTabBackScope({
+    super.key,
+    required this.activeTab,
+    required this.child,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!enabled || activeTab == SocialAppTab.home) {
+      return child;
+    }
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop || !context.mounted) return;
+        Navigator.pushReplacementNamed(context, '/home');
+      },
+      child: child,
+    );
+  }
 }
 
 class _SocialBottomNavState extends State<SocialBottomNav>
@@ -331,10 +361,17 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                         ),
                                       ],
                                     ),
-                                    child: Icon(
-                                      Icons.auto_awesome_rounded,
-                                      color: Colors.white,
-                                      size: compact ? 25 : 28,
+                                    child: Padding(
+                                      padding: EdgeInsets.all(
+                                        compact ? 12 : 13,
+                                      ),
+                                      child: SvgPicture.asset(
+                                        'assets/brand/pettxo_logo.svg',
+                                        colorFilter: const ColorFilter.mode(
+                                          Colors.white,
+                                          BlendMode.srcIn,
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ],

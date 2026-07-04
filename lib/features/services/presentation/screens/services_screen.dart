@@ -468,112 +468,95 @@ class _ServicesScreenState extends State<ServicesScreen> {
     final topContentPadding = topInset + topBarHeight + 26;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      extendBody: true,
-      body: Stack(
-        children: [
-          // The scroll view fills the whole screen so cards can move under the
-          // glass overlays. Internal padding preserves access to the first and
-          // last interactive elements.
-          StreamBuilder<List<ServiceModel>>(
-            stream: _servicesStream,
-            builder: (context, snapshot) {
-              final services = snapshot.data ?? const <ServiceModel>[];
-              final discoveryPresentation = _buildDiscoveryPresentation(
-                services,
-              );
-              if (kDebugMode) {
-                debugPrint(
-                  'Services discovery debug -> loaded service count: ${services.length}',
+    return SocialTabBackScope(
+      activeTab: SocialAppTab.services,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        extendBody: true,
+        body: Stack(
+          children: [
+            // The scroll view fills the whole screen so cards can move under the
+            // glass overlays. Internal padding preserves access to the first and
+            // last interactive elements.
+            StreamBuilder<List<ServiceModel>>(
+              stream: _servicesStream,
+              builder: (context, snapshot) {
+                final services = snapshot.data ?? const <ServiceModel>[];
+                final discoveryPresentation = _buildDiscoveryPresentation(
+                  services,
                 );
-                debugPrint(
-                  'Services discovery debug -> user location available: ${_userLatitude != null && _userLongitude != null}',
-                );
-              }
+                if (kDebugMode) {
+                  debugPrint(
+                    'Services discovery debug -> loaded service count: ${services.length}',
+                  );
+                  debugPrint(
+                    'Services discovery debug -> user location available: ${_userLatitude != null && _userLongitude != null}',
+                  );
+                }
 
-              return ListView(
-                padding: EdgeInsets.fromLTRB(
-                  18,
-                  topContentPadding,
-                  18,
-                  bottomContentPadding,
-                ),
-                children: [
-                  _ServiceSearchAndFilters(
-                    searchController: _searchController,
-                    onSearchChanged: (value) {
-                      setState(() => _searchQuery = value);
-                    },
-                    selectedCategory: _selectedCategory,
-                    categories: _categories,
-                    onCategorySelected: (category) {
-                      setState(() => _selectedCategory = category);
-                    },
+                return ListView(
+                  padding: EdgeInsets.fromLTRB(
+                    18,
+                    topContentPadding,
+                    18,
+                    bottomContentPadding,
                   ),
-                  const SizedBox(height: 18),
-                  if (snapshot.connectionState == ConnectionState.waiting)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 48),
-                      child: Center(child: CircularProgressIndicator()),
-                    )
-                  else if (snapshot.hasError)
-                    const _ServicesEmptyState(
-                      icon: Icons.cloud_off_rounded,
-                      title: 'Unable to load services',
-                      message:
-                          'Please check your connection and try again in a moment.',
-                    )
-                  else if (services.isEmpty)
-                    const _ServicesEmptyState(
-                      icon: Icons.design_services_outlined,
-                      title: 'No services yet',
-                      message:
-                          'Services will appear here after people publish listings in your marketplace.',
-                    )
-                  else if (discoveryPresentation.allMatchedCount == 0)
-                    _ServicesEmptyState(
-                      icon: Icons.search_off_rounded,
-                      title: 'No services found',
-                      message:
-                          "No services found for '${discoveryPresentation.searchQuery}'.",
-                    )
-                  else if (discoveryPresentation.primaryServices.isEmpty &&
-                      discoveryPresentation.secondaryServices.isEmpty)
-                    const _ServicesEmptyState(
-                      icon: Icons.design_services_outlined,
-                      title: 'No services yet',
-                      message:
-                          'Services will appear here after people publish listings in your marketplace.',
-                    )
-                  else ...[
-                    if (discoveryPresentation.helperMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 14),
-                        child: _DiscoveryInfoBanner(
-                          message: discoveryPresentation.helperMessage!,
-                        ),
-                      ),
-                    ...discoveryPresentation.primaryServices.map((entry) {
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
-                        child: _MarketplaceServiceCard(service: entry.service),
-                      );
-                    }),
-                    if (discoveryPresentation.secondaryServices.isNotEmpty) ...[
-                      if (discoveryPresentation.secondaryTitle != null)
+                  children: [
+                    _ServiceSearchAndFilters(
+                      searchController: _searchController,
+                      onSearchChanged: (value) {
+                        setState(() => _searchQuery = value);
+                      },
+                      selectedCategory: _selectedCategory,
+                      categories: _categories,
+                      onCategorySelected: (category) {
+                        setState(() => _selectedCategory = category);
+                      },
+                    ),
+                    const SizedBox(height: 18),
+                    if (snapshot.connectionState == ConnectionState.waiting)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 48),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (snapshot.hasError)
+                      const _ServicesEmptyState(
+                        icon: Icons.cloud_off_rounded,
+                        title: 'Unable to load services',
+                        message:
+                            'Please check your connection and try again in a moment.',
+                      )
+                    else if (services.isEmpty)
+                      const _ServicesEmptyState(
+                        icon: Icons.design_services_outlined,
+                        title: 'No services yet',
+                        message:
+                            'Services will appear here after people publish listings in your marketplace.',
+                      )
+                    else if (discoveryPresentation.allMatchedCount == 0)
+                      _ServicesEmptyState(
+                        icon: Icons.search_off_rounded,
+                        title: 'No services found',
+                        message:
+                            "No services found for '${discoveryPresentation.searchQuery}'.",
+                      )
+                    else if (discoveryPresentation.primaryServices.isEmpty &&
+                        discoveryPresentation.secondaryServices.isEmpty)
+                      const _ServicesEmptyState(
+                        icon: Icons.design_services_outlined,
+                        title: 'No services yet',
+                        message:
+                            'Services will appear here after people publish listings in your marketplace.',
+                      )
+                    else ...[
+                      if (discoveryPresentation.helperMessage != null)
                         Padding(
-                          padding: const EdgeInsets.only(top: 4, bottom: 14),
-                          child: Text(
-                            discoveryPresentation.secondaryTitle!,
-                            style: const TextStyle(
-                              color: AppColors.textDark,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                            ),
+                          padding: const EdgeInsets.only(bottom: 14),
+                          child: _DiscoveryInfoBanner(
+                            message: discoveryPresentation.helperMessage!,
                           ),
                         ),
-                      ...discoveryPresentation.secondaryServices.map((entry) {
+                      ...discoveryPresentation.primaryServices.map((entry) {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 16),
                           child: _MarketplaceServiceCard(
@@ -581,80 +564,107 @@ class _ServicesScreenState extends State<ServicesScreen> {
                           ),
                         );
                       }),
+                      if (discoveryPresentation
+                          .secondaryServices
+                          .isNotEmpty) ...[
+                        if (discoveryPresentation.secondaryTitle != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4, bottom: 14),
+                            child: Text(
+                              discoveryPresentation.secondaryTitle!,
+                              style: const TextStyle(
+                                color: AppColors.textDark,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ...discoveryPresentation.secondaryServices.map((entry) {
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: _MarketplaceServiceCard(
+                              service: entry.service,
+                            ),
+                          );
+                        }),
+                      ],
                     ],
                   ],
-                ],
-              );
-            },
-          ),
-          Positioned(
-            left: 18,
-            right: 18,
-            top: topInset + 14,
-            child: GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              borderRadius: BorderRadius.circular(28),
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 20,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.06),
-                  blurRadius: 24,
-                  offset: const Offset(0, 10),
+                );
+              },
+            ),
+            Positioned(
+              left: 18,
+              right: 18,
+              top: topInset + 14,
+              child: GlassSurface(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
                 ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: IconButton(
-                      onPressed: () =>
-                          Navigator.pushReplacementNamed(context, "/home"),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
+                borderRadius: BorderRadius.circular(28),
+                backgroundColor: Colors.white.withValues(alpha: 0.72),
+                blurSigma: 20,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.06),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      "Services",
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+                child: Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.56),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: IconButton(
+                        onPressed: () =>
+                            Navigator.pushReplacementNamed(context, "/home"),
+                        icon: const Icon(Icons.arrow_back_rounded),
                       ),
                     ),
-                  ),
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.56),
-                      borderRadius: BorderRadius.circular(14),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        "Services",
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textDark,
+                        ),
+                      ),
                     ),
-                    child: IconButton(
-                      onPressed: _showFiltersSheet,
-                      icon: const Icon(Icons.tune_rounded),
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.56),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: IconButton(
+                        onPressed: _showFiltersSheet,
+                        icon: const Icon(Icons.tune_rounded),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const SocialBottomNav(
-        activeTab: SocialAppTab.services,
+          ],
+        ),
+        bottomNavigationBar: const SocialBottomNav(
+          activeTab: SocialAppTab.services,
+        ),
       ),
     );
   }

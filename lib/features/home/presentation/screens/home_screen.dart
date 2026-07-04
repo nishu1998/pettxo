@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
+import 'package:flutter/rendering.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
@@ -43,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _checkedOffers = false;
   bool _isLoadingFeed = true;
   bool _isLoadingMore = false;
+  bool _isTopBarVisible = true;
   bool _hasMorePosts = true;
   String? _feedError;
   DocumentSnapshot<Map<String, dynamic>>? _lastPostDocument;
@@ -56,6 +57,12 @@ class _HomeScreenState extends State<HomeScreen> {
   final Set<String> _shownSuggestionIds = <String>{};
   final Set<String> _userInterestTags = <String>{};
   int _suggestionFollowRefreshCounter = 0;
+  double _lastScrollOffset = 0;
+  double _scrollDeltaAccumulator = 0;
+
+  static const double _topBarTopResetOffset = 12;
+  static const double _topBarHideThreshold = 32;
+  static const double _topBarShowThreshold = 14;
 
   @override
   void initState() {
@@ -274,7 +281,43 @@ class _HomeScreenState extends State<HomeScreen> {
   void _handleScroll() {
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
-    if (position.pixels >= position.maxScrollExtent - 320) {
+    final direction = position.userScrollDirection;
+    final pixels = position.pixels;
+    final delta = pixels - _lastScrollOffset;
+    _lastScrollOffset = pixels;
+
+    if (pixels <= _topBarTopResetOffset) {
+      _scrollDeltaAccumulator = 0;
+      if (!_isTopBarVisible && mounted) {
+        setState(() => _isTopBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.reverse && delta > 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        0.0,
+        _topBarHideThreshold,
+      );
+      if (_isTopBarVisible &&
+          _scrollDeltaAccumulator >= _topBarHideThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isTopBarVisible = false);
+      }
+    } else if (direction == ScrollDirection.forward && delta < 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        -_topBarShowThreshold,
+        0.0,
+      );
+      if (!_isTopBarVisible &&
+          _scrollDeltaAccumulator <= -_topBarShowThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isTopBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.idle) {
+      _scrollDeltaAccumulator = 0;
+    }
+
+    if (pixels >= position.maxScrollExtent - 320) {
       _loadMorePosts();
     }
   }
@@ -440,8 +483,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final currentUserId = _auth.currentUser?.uid ?? '';
     final topInset = MediaQuery.paddingOf(context).top;
-    const topBarHeight = 76.0;
-    final topContentPadding = topInset + topBarHeight + 24;
+    const topBarHeight = 68.0;
+    final topContentPadding = topInset + topBarHeight + 8;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
 
     return Scaffold(
@@ -528,108 +571,162 @@ class _HomeScreenState extends State<HomeScreen> {
           Positioned(
             left: 0,
             right: 0,
-            top: topInset + 10,
-            child: Align(
-              child: FractionallySizedBox(
-                widthFactor: 0.85,
-                child: GlassSurface(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 11,
-                  ),
-                  borderRadius: BorderRadius.circular(24),
-                  backgroundColor: Colors.white.withValues(alpha: 0.72),
-                  blurSigma: 20,
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.62),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withValues(alpha: 0.06),
-                      blurRadius: 22,
-                      offset: const Offset(0, 10),
+            top: 0,
+            child: IgnorePointer(
+              ignoring: true,
+              child: GlassSurface(
+                padding: EdgeInsets.only(top: topInset),
+                borderRadius: BorderRadius.zero,
+                backgroundColor: AppColors.background.withValues(
+                  alpha: 0.72,
+                ),
+                blurSigma: 24,
+                border: Border.all(
+                  color: Colors.transparent,
+                  width: 0,
+                ),
+                boxShadow: const [],
+                child: const SizedBox(height: 4),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: topInset,
+            child: AnimatedSlide(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOutCubic,
+              offset: _isTopBarVisible
+                  ? Offset.zero
+                  : const Offset(0, -1.15),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeInOutCubic,
+                opacity: _isTopBarVisible ? 1 : 0,
+                child: AnimatedScale(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOutCubic,
+                  scale: _isTopBarVisible ? 1 : 0.97,
+                  child: IgnorePointer(
+                    ignoring: !_isTopBarVisible,
+                    child: GlassSurface(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 8,
+                      ),
+                      borderRadius: BorderRadius.zero,
+                      backgroundColor: AppColors.background.withValues(
+                        alpha: 0.56,
+                      ),
+                      blurSigma: 20,
+                      border: Border.all(
+                        color: Colors.transparent,
+                        width: 0,
+                      ),
+                      boxShadow: const [],
+                      child: Align(
+                        child: FractionallySizedBox(
+                          widthFactor: 0.89,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 48,
+                                    height: 48,
+                                    decoration: BoxDecoration(
+                                      gradient: const LinearGradient(
+                                        colors: [
+                                          Color(0xFFFFE9DD),
+                                          Color(0xFFFFF3EC),
+                                        ],
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                      ),
+                                      borderRadius: BorderRadius.circular(18),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.04,
+                                          ),
+                                          blurRadius: 14,
+                                          offset: const Offset(0, 6),
+                                        ),
+                                      ],
+                                    ),
+                                    child: IconButton(
+                                      onPressed: () async {
+                                        if (!UserRestrictionService.instance
+                                            .ensureCanUseSocialFeatures(
+                                              context,
+                                            )) {
+                                          return;
+                                        }
+                                        final created =
+                                            await Navigator.pushNamed(
+                                              context,
+                                              "/create",
+                                            );
+                                        if (!context.mounted) return;
+                                        if (created is SocialPostModel) {
+                                          await _loadInitialPosts();
+                                          if (!context.mounted) return;
+                                          AppFeedback.show(
+                                            context,
+                                            message:
+                                                'Post published successfully.',
+                                            tone: AppFeedbackTone.success,
+                                          );
+                                        }
+                                      },
+                                      icon: const Icon(
+                                        Icons.add_rounded,
+                                        color: AppColors.primary,
+                                        size: 24,
+                                      ),
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Container(
+                                    width: 48,
+                                    height: 48,
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.68,
+                                      ),
+                                      borderRadius: BorderRadius.circular(18),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.04,
+                                          ),
+                                          blurRadius: 14,
+                                          offset: const Offset(0, 6),
+                                        ),
+                                      ],
+                                    ),
+                                    child: const _NotificationsBellButton(),
+                                  ),
+                                ],
+                              ),
+                              const IgnorePointer(
+                                child: Text(
+                                  "Pettxo",
+                                  style: TextStyle(
+                                    color: AppColors.primary,
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: -0.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFFFFE9DD), Color(0xFFFFF3EC)],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: IconButton(
-                          onPressed: () async {
-                            if (!UserRestrictionService.instance
-                                .ensureCanUseSocialFeatures(context)) {
-                              return;
-                            }
-                            final created = await Navigator.pushNamed(
-                              context,
-                              "/create",
-                            );
-                            if (!context.mounted) return;
-                            if (created is SocialPostModel) {
-                              await _loadInitialPosts();
-                              if (!context.mounted) return;
-                              AppFeedback.show(
-                                context,
-                                message: 'Post published successfully.',
-                                tone: AppFeedbackTone.success,
-                              );
-                            }
-                          },
-                          icon: const Icon(
-                            Icons.add_rounded,
-                            color: AppColors.primary,
-                            size: 24,
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      Row(
-                        children: [
-                          SizedBox(
-                            width: 28,
-                            height: 28,
-                            child: SvgPicture.asset(
-                              'assets/brand/pettxo_logo.svg',
-                              fit: BoxFit.cover,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text(
-                            "Pettxo",
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: -0.4,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Spacer(),
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.56),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const _NotificationsBellButton(),
-                      ),
-                    ],
                   ),
                 ),
               ),
