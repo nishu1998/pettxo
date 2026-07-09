@@ -343,33 +343,35 @@ class _SocialBottomNavState extends State<SocialBottomNav>
                                     width: centerButtonSize,
                                     height: centerButtonSize,
                                     decoration: BoxDecoration(
-                                      gradient: AppColors.brandGradientDiagonal,
                                       shape: BoxShape.circle,
                                       border: Border.all(
-                                        color: Colors.white.withValues(
-                                          alpha: 0.98,
+                                        color: AppColors.primary.withValues(
+                                          alpha:
+                                              widget.activeTab ==
+                                                  SocialAppTab.services
+                                              ? 0.7
+                                              : 0.48,
                                         ),
-                                        width: 4,
+                                        width: 1.9,
                                       ),
                                       boxShadow: [
                                         BoxShadow(
-                                          color: AppColors.primary.withValues(
-                                            alpha: 0.18,
+                                          color: Colors.black.withValues(
+                                            alpha: 0.04,
                                           ),
-                                          blurRadius: 18,
-                                          offset: const Offset(0, 8),
+                                          blurRadius: 14,
+                                          offset: const Offset(0, 6),
                                         ),
                                       ],
                                     ),
-                                    child: Padding(
-                                      padding: EdgeInsets.all(
-                                        compact ? 12 : 13,
-                                      ),
-                                      child: SvgPicture.asset(
-                                        'assets/brand/pettxo_logo.svg',
-                                        colorFilter: const ColorFilter.mode(
-                                          Colors.white,
-                                          BlendMode.srcIn,
+                                    child: ClipOval(
+                                      child: Padding(
+                                        padding: EdgeInsets.all(
+                                          compact ? 0.5 : 0.5,
+                                        ),
+                                        child: SvgPicture.asset(
+                                          'assets/brand/pettxo_logo.svg',
+                                          fit: BoxFit.contain,
                                         ),
                                       ),
                                     ),

@@ -24,6 +24,8 @@ import '../../../social/presentation/widgets/social_post_card.dart';
 
 const bool _debugExploreRanking = false;
 
+enum _DiscoverContentTab { posts, services }
+
 class ExploreScreen extends StatefulWidget {
   const ExploreScreen({super.key});
 
@@ -65,6 +67,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
       const <ExploreHashtagSummary>[];
   List<SocialPostModel> _hashtagResults = const <SocialPostModel>[];
   Set<String> _followingIds = <String>{};
+  _DiscoverContentTab _selectedDiscoverTab = _DiscoverContentTab.posts;
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
 
@@ -647,21 +650,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
     _runSearch('#$normalized');
   }
 
-  void _openServiceSeeAll() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => _ExploreListScreen(
-          title: 'Popular Services Nearby',
-          subtitle:
-              'Strong local options ranked by trust, reviews, and demand.',
-          serviceItems: _nearbyServices,
-          onOpenService: _openService,
-        ),
-      ),
-    );
-  }
-
   void _openProfile(UserProfile profile) {
     final userId = profile.uid.trim();
     if (userId.isEmpty) return;
@@ -888,6 +876,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
   }
 
   Widget _buildDiscoveryContent() {
+    final discoverPosts = _popularPosts.isNotEmpty
+        ? _popularPosts
+        : _trendingPosts;
+
     if (_isLoadingSections) {
       return const _ExploreLoadingState();
     }
@@ -916,25 +908,18 @@ class _ExploreScreenState extends State<ExploreScreen> {
           delay: const Duration(milliseconds: 40),
           child: _DiscoverSection(
             title: 'Discover',
-            posts: _trendingPosts,
+            selectedTab: _selectedDiscoverTab,
+            posts: discoverPosts,
+            services: _nearbyServices,
+            onSelectTab: (tab) {
+              if (_selectedDiscoverTab == tab) return;
+              setState(() => _selectedDiscoverTab = tab);
+            },
             onOpenPost: _openPostDetail,
+            onOpenService: _openService,
           ),
         ),
-        if (_nearbyServices.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          _FadeInSection(
-            delay: const Duration(milliseconds: 80),
-            child: _ServiceSection(
-              title: 'Popular Services Nearby',
-              subtitle:
-                  'Strong local options ranked by trust, reviews, and demand.',
-              services: _nearbyServices,
-              onOpenService: _openService,
-              onSeeAll: _nearbyServices.isNotEmpty ? _openServiceSeeAll : null,
-            ),
-          ),
-        ],
-        if (_trendingPosts.isEmpty &&
+        if (discoverPosts.isEmpty &&
             _nearbyServices.isEmpty &&
             _trendingHashtags.isEmpty)
           const _ExploreEmptyState(
@@ -1131,87 +1116,6 @@ class _FadeInSectionState extends State<_FadeInSection> {
   }
 }
 
-class _ExploreListScreen extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final List<ServiceModel> serviceItems;
-  final ValueChanged<ServiceModel>? onOpenService;
-
-  const _ExploreListScreen({
-    required this.title,
-    required this.subtitle,
-    this.serviceItems = const <ServiceModel>[],
-    this.onOpenService,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final items = serviceItems.length;
-
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        title: Text(title),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: AppColors.textDark,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              subtitle,
-              style: const TextStyle(
-                color: AppColors.textGrey,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: items == 0
-                  ? const _ExploreEmptyState(
-                      title: 'Nothing here yet',
-                      message:
-                          'This section will fill up as more posts and services become available.',
-                    )
-                  : LayoutBuilder(
-                      builder: (context, constraints) {
-                        final maxCrossAxisExtent = constraints.maxWidth < 420
-                            ? 220.0
-                            : 240.0;
-                        const mainAxisExtent = 318.0;
-
-                        return GridView.builder(
-                          cacheExtent: 900,
-                          gridDelegate:
-                              SliverGridDelegateWithMaxCrossAxisExtent(
-                                maxCrossAxisExtent: maxCrossAxisExtent,
-                                mainAxisSpacing: 12,
-                                crossAxisSpacing: 12,
-                                mainAxisExtent: mainAxisExtent,
-                              ),
-                          itemCount: items,
-                          itemBuilder: (context, index) {
-                            final service = serviceItems[index];
-                            return _CompactServiceCard(
-                              service: service,
-                              onTap: () => onOpenService?.call(service),
-                              expandToAvailableWidth: true,
-                            );
-                          },
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _SearchBar extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -1334,6 +1238,7 @@ class _HashtagSection extends StatelessWidget {
             color: AppColors.textDark,
             fontSize: 22,
             fontWeight: FontWeight.w800,
+            letterSpacing: -0.3,
           ),
         ),
         const SizedBox(height: 8),
@@ -1451,31 +1356,79 @@ class _HashtagPill extends StatelessWidget {
 
 class _DiscoverSection extends StatelessWidget {
   final String title;
+  final _DiscoverContentTab selectedTab;
   final List<SocialPostModel> posts;
+  final List<ServiceModel> services;
+  final ValueChanged<_DiscoverContentTab> onSelectTab;
   final ValueChanged<SocialPostModel> onOpenPost;
+  final ValueChanged<ServiceModel> onOpenService;
 
   const _DiscoverSection({
     required this.title,
+    required this.selectedTab,
     required this.posts,
+    required this.services,
+    required this.onSelectTab,
     required this.onOpenPost,
+    required this.onOpenService,
   });
 
   @override
   Widget build(BuildContext context) {
+    final isPostsSelected = selectedTab == _DiscoverContentTab.posts;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textDark,
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-          ),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final titleWidget = Text(
+              title,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3,
+              ),
+            );
+
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(child: titleWidget),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: _DiscoverTabSwitcher(
+                        selectedTab: selectedTab,
+                        onSelectTab: onSelectTab,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
+        if (!isPostsSelected) ...[
+          const SizedBox(height: 8),
+          const Text(
+            'Popular services ranked by trust, reviews, and demand.',
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
         const SizedBox(height: 14),
-        if (posts.isEmpty)
+        if (isPostsSelected && posts.isEmpty)
           const _InlineEmptyState(message: 'No posts available right now.')
+        else if (!isPostsSelected && services.isEmpty)
+          const _InlineEmptyState(message: 'No popular services found yet.')
         else
           GridView.builder(
             shrinkWrap: true,
@@ -1486,16 +1439,25 @@ class _DiscoverSection extends StatelessWidget {
               crossAxisSpacing: 12,
               mainAxisExtent: 292,
             ),
-            itemCount: posts.length,
+            itemCount: isPostsSelected ? posts.length : services.length,
             itemBuilder: (context, index) {
-              final post = posts[index];
-              return _CompactPostCard(
-                post: post,
-                onTap: () => onOpenPost(post),
+              if (isPostsSelected) {
+                final post = posts[index];
+                return _CompactPostCard(
+                  post: post,
+                  onTap: () => onOpenPost(post),
+                  expandToAvailableWidth: true,
+                  showUsername: false,
+                  showShareStat: false,
+                  imageHeightOverride: 196,
+                );
+              }
+
+              final service = services[index];
+              return _CompactServiceCard(
+                service: service,
+                onTap: () => onOpenService(service),
                 expandToAvailableWidth: true,
-                showUsername: false,
-                showShareStat: false,
-                imageHeightOverride: 196,
               );
             },
           ),
@@ -1504,82 +1466,95 @@ class _DiscoverSection extends StatelessWidget {
   }
 }
 
-class _ServiceSection extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final List<ServiceModel> services;
-  final ValueChanged<ServiceModel> onOpenService;
-  final VoidCallback? onSeeAll;
+class _DiscoverTabSwitcher extends StatelessWidget {
+  final _DiscoverContentTab selectedTab;
+  final ValueChanged<_DiscoverContentTab> onSelectTab;
 
-  const _ServiceSection({
-    required this.title,
-    required this.subtitle,
-    required this.services,
-    required this.onOpenService,
-    this.onSeeAll,
+  const _DiscoverTabSwitcher({
+    required this.selectedTab,
+    required this.onSelectTab,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+        color: const Color(0xFFFFF5EE),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.12)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
+            color: AppColors.primary.withValues(alpha: 0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              if (onSeeAll != null)
-                TextButton(onPressed: onSeeAll, child: const Text('See All')),
-            ],
+          _DiscoverTabChip(
+            label: 'Posts',
+            selected: selectedTab == _DiscoverContentTab.posts,
+            onTap: () => onSelectTab(_DiscoverContentTab.posts),
           ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 14),
-          SizedBox(
-            height: 312,
-            child: ListView.separated(
-              cacheExtent: 600,
-              scrollDirection: Axis.horizontal,
-              itemCount: services.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 12),
-              itemBuilder: (context, index) {
-                final service = services[index];
-                return _CompactServiceCard(
-                  service: service,
-                  onTap: () => onOpenService(service),
-                );
-              },
-            ),
+          const SizedBox(width: 4),
+          _DiscoverTabChip(
+            label: 'Services',
+            selected: selectedTab == _DiscoverContentTab.services,
+            onTap: () => onSelectTab(_DiscoverContentTab.services),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _DiscoverTabChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _DiscoverTabChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(999),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.16),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? AppColors.primary : AppColors.textGrey,
+              fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
+              fontSize: 12.5,
+            ),
+          ),
+        ),
       ),
     );
   }
