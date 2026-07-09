@@ -51,11 +51,12 @@ class PushNotificationService {
     return '${'*' * (token.length - 4)}${token.substring(token.length - 4)}';
   }
 
-  Future<void> initialize() async {
-    FirebaseMessaging.onBackgroundMessage(
-      pettxoFirebaseMessagingBackgroundHandler,
-    );
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    debugPrint(message);
+  }
 
+  Future<void> initialize() async {
     await _requestPermission();
     await _messaging.setForegroundNotificationPresentationOptions(
       alert: true,
@@ -68,7 +69,7 @@ class PushNotificationService {
       final previousToken = _currentToken;
       _currentToken = token;
       final uid = _auth.currentUser?.uid;
-      debugPrint(
+      _debugLog(
         'PushNotificationService token refresh debug -> uid=${uid ?? ''}, tokenMasked=${_maskToken(token)}',
       );
       if (uid != null) {
@@ -94,7 +95,7 @@ class PushNotificationService {
         if (NetworkStatusService.instance.isOffline) return;
         final user = _auth.currentUser;
         if (user == null) return;
-        debugPrint(
+        _debugLog(
           'PushNotificationService network debug -> online restored, retrying token sync for uid=${user.uid}',
         );
         unawaited(_syncForUser(user));
@@ -102,9 +103,9 @@ class PushNotificationService {
     }
 
     try {
-      await _syncForUser(_auth.currentUser);
+      await forceSyncCurrentUser(reason: 'app-start');
     } catch (error, stackTrace) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService initialize debug -> initial sync failed: $error\n$stackTrace',
       );
     }
@@ -118,12 +119,12 @@ class PushNotificationService {
 
   Future<void> _requestPermission() async {
     if (NetworkStatusService.instance.isOffline) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService permission debug -> skipped while offline',
       );
       return;
     }
-    await _messaging.requestPermission(
+    final settings = await _messaging.requestPermission(
       alert: true,
       announcement: false,
       badge: true,
@@ -132,12 +133,16 @@ class PushNotificationService {
       provisional: false,
       sound: true,
     );
+    _debugLog(
+      'PushNotificationService permission debug -> status=${settings.authorizationStatus.name}, '
+      'alert=${settings.alert}, badge=${settings.badge}, sound=${settings.sound}',
+    );
   }
 
   Future<void> _syncForUser(User? user) async {
     final previousUid = _currentUid;
     final previousToken = _currentToken;
-    debugPrint(
+    _debugLog(
       'PushNotificationService auth sync debug -> nextUserId=${user?.uid ?? ''}, previousUserId=${previousUid ?? ''}, previousTokenMasked=${previousToken == null ? '' : _maskToken(previousToken)}',
     );
 
@@ -151,7 +156,7 @@ class PushNotificationService {
     }
 
     if (NetworkStatusService.instance.isOffline) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService auth sync debug -> token update skipped offline for uid=${user.uid}',
       );
       _currentUid = user.uid;
@@ -160,11 +165,14 @@ class PushNotificationService {
 
     final token = await _messaging.getToken();
     if (token == null || token.isEmpty) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService auth sync debug -> no registration token available for uid=${user.uid}',
       );
       return;
     }
+    _debugLog(
+      'PushNotificationService auth sync debug -> fetched token for uid=${user.uid}, tokenMasked=${_maskToken(token)}',
+    );
 
     if (previousUid != null && previousToken != null) {
       final shouldRemovePreviousToken =
@@ -179,7 +187,7 @@ class PushNotificationService {
     try {
       await _storeToken(user.uid, token);
     } catch (error, stackTrace) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService auth sync debug -> token sync failed for uid=${user.uid}: $error\n$stackTrace',
       );
     }
@@ -191,7 +199,7 @@ class PushNotificationService {
     required String newToken,
   }) async {
     if (NetworkStatusService.instance.isOffline) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService token refresh debug -> skipped offline for uid=$uid',
       );
       return;
@@ -204,7 +212,7 @@ class PushNotificationService {
       }
       await _storeToken(uid, newToken);
     } catch (error, stackTrace) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService token refresh debug -> sync failed for uid=$uid: $error\n$stackTrace',
       );
     }
@@ -212,7 +220,7 @@ class PushNotificationService {
 
   Future<void> unregisterCurrentDeviceTokenForLogout() async {
     if (NetworkStatusService.instance.isOffline) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService logout token removal debug -> skipped offline',
       );
       _currentUid = null;
@@ -221,7 +229,7 @@ class PushNotificationService {
     }
     final uid = (_auth.currentUser?.uid ?? _currentUid ?? '').trim();
     final token = (_currentToken ?? await _messaging.getToken() ?? '').trim();
-    debugPrint(
+    _debugLog(
       'PushNotificationService logout token removal debug -> uid=$uid, tokenMasked=${token.isEmpty ? '' : _maskToken(token)}',
     );
     if (uid.isEmpty || token.isEmpty) return;
@@ -235,9 +243,17 @@ class PushNotificationService {
     }
   }
 
+  Future<void> forceSyncCurrentUser({String reason = 'manual'}) async {
+    final user = _auth.currentUser;
+    _debugLog(
+      'PushNotificationService force sync debug -> reason=$reason, currentUserId=${user?.uid ?? ''}',
+    );
+    await _syncForUser(user);
+  }
+
   Future<void> _storeToken(String uid, String token) async {
     if (NetworkStatusService.instance.isOffline) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService token registration debug -> skipped offline for uid=$uid',
       );
       return;
@@ -253,19 +269,20 @@ class PushNotificationService {
             .map((value) => value.toString())
             .toList(growable: false);
     final savedToUserId = (data['savedToUserId'] as String? ?? '').trim();
-    debugPrint(
-      'PushNotificationService token registration debug -> currentUserId=$uid, tokenMasked=${_maskToken(token)}, removedFromUserIds=$removedFromUserIds, savedToUserId=$savedToUserId',
+    final savedPath = (data['savedPath'] as String? ?? '').trim();
+    _debugLog(
+      'PushNotificationService token registration debug -> currentUserId=$uid, tokenMasked=${_maskToken(token)}, removedFromUserIds=$removedFromUserIds, savedToUserId=$savedToUserId, savedPath=$savedPath',
     );
   }
 
   Future<void> _removeToken(String uid, String token) async {
     if (NetworkStatusService.instance.isOffline) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService token removal debug -> skipped offline for uid=$uid',
       );
       return;
     }
-    debugPrint(
+    _debugLog(
       'PushNotificationService token removal debug -> uid=$uid, tokenMasked=${_maskToken(token)}',
     );
     final callable = _functions.httpsCallable('removeNotificationToken');
@@ -275,8 +292,12 @@ class PushNotificationService {
         (data['removedFromUserIds'] as List<dynamic>? ?? const <dynamic>[])
             .map((value) => value.toString())
             .toList(growable: false);
-    debugPrint(
-      'PushNotificationService token removal debug -> currentUserId=$uid, tokenMasked=${_maskToken(token)}, removedFromUserIds=$removedFromUserIds',
+    final removedPaths =
+        (data['removedPaths'] as List<dynamic>? ?? const <dynamic>[])
+            .map((value) => value.toString())
+            .toList(growable: false);
+    _debugLog(
+      'PushNotificationService token removal debug -> currentUserId=$uid, tokenMasked=${_maskToken(token)}, removedFromUserIds=$removedFromUserIds, removedPaths=$removedPaths',
     );
   }
 
@@ -301,7 +322,7 @@ class PushNotificationService {
         senderId.isNotEmpty &&
         currentUserId == senderId &&
         (type == 'chat' || type == 'chatMessage' || category == 'chat')) {
-      debugPrint(
+      _debugLog(
         'PushNotificationService foreground banner skipped -> currentUserId=$currentUserId, senderId=$senderId, type=$type, category=$category',
       );
       return;
@@ -317,7 +338,7 @@ class PushNotificationService {
       message.data['body'],
       'You have a new notification.',
     );
-    debugPrint(
+    _debugLog(
       'PushNotificationService foreground banner debug -> currentUserId=$currentUserId, senderId=$senderId, type=$type, category=$category, chatId=${_stringValue(message.data['chatId'])}',
     );
 
@@ -359,7 +380,7 @@ class PushNotificationService {
     final key = _messageKeyFor(message);
     if (!_handledMessageKeys.add(key)) return;
 
-    debugPrint(
+    _debugLog(
       'PushNotificationService notification tap debug -> key=$key, type=${_stringValue(data['type'])}, chatId=${_stringValue(data['chatId'])}, senderId=${_stringValue(data['senderId'])}',
     );
     _dismissForegroundBanner();
@@ -390,7 +411,7 @@ class PushNotificationService {
     final recipientId = _stringValue(data['recipientId']);
     final recipientRole = _stringValue(data['recipientRole']);
 
-    debugPrint(
+    _debugLog(
       'PushNotificationService navigate debug -> type=$type, chatId=$chatId, senderId=$senderId, recipientId=$recipientId, recipientRole=$recipientRole',
     );
 

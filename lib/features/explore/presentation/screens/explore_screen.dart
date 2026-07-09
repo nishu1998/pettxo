@@ -19,6 +19,7 @@ import '../../../services/domain/models/service_model.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
+import '../../../social/presentation/widgets/live_author_resolver.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 
 const bool _debugExploreRanking = false;
@@ -357,8 +358,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
       return ranked.take(10).toList(growable: false);
     } catch (_) {
-      // TODO(nishant): Promote nearby service ranking to geo-aware queries once
-      // the service location index and user city accuracy are production-ready.
       return const <ServiceModel>[];
     }
   }
@@ -829,10 +828,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   borderRadius: BorderRadius.zero,
                   backgroundColor: AppColors.background.withValues(alpha: 0.72),
                   blurSigma: 24,
-                  border: Border.all(
-                    color: Colors.transparent,
-                    width: 0,
-                  ),
+                  border: Border.all(color: Colors.transparent, width: 0),
                   boxShadow: const [],
                   child: const SizedBox(height: 4),
                 ),
@@ -1694,89 +1690,95 @@ class _SearchPostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(24),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
+    return LiveAuthorResolver(
+      authorId: post.authorId,
+      fallbackName: post.authorDisplayName,
+      fallbackUsername: post.authorUsername,
+      fallbackImageUrl: post.authorPhotoUrl,
+      builder: (context, author) {
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: AppColors.primary.withValues(alpha: 0.08),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.04),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: SizedBox(
-                  width: 90,
-                  height: 90,
-                  child: _RemoteImage(
-                    url: post.thumbnailUrls.isNotEmpty
-                        ? post.thumbnailUrls.first
-                        : (post.imageUrls.isNotEmpty
-                              ? post.imageUrls.first
-                              : ''),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.08),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
                   ),
-                ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      post.authorDisplayName.isEmpty
-                          ? 'Pettxo user'
-                          : post.authorDisplayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontWeight: FontWeight.w700,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(18),
+                    child: SizedBox(
+                      width: 90,
+                      height: 90,
+                      child: _RemoteImage(
+                        url: post.thumbnailUrls.isNotEmpty
+                            ? post.thumbnailUrls.first
+                            : (post.imageUrls.isNotEmpty
+                                  ? post.imageUrls.first
+                                  : ''),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      post.authorUsername,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textGrey,
-                        fontWeight: FontWeight.w500,
-                      ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          author.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textDark,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          author.username,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          post.caption.isEmpty
+                              ? post.hashtags.map((tag) => '#$tag').join(' ')
+                              : post.caption,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textDark,
+                            height: 1.45,
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      post.caption.isEmpty
-                          ? post.hashtags.map((tag) => '#$tag').join(' ')
-                          : post.caption,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        height: 1.45,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -1804,139 +1806,145 @@ class _CompactPostCard extends StatelessWidget {
         ? post.hashtags.map((tag) => '#$tag').join(' ')
         : post.caption.trim();
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isHorizontalSectionCard = !expandToAvailableWidth;
-        final compact = constraints.maxWidth < 190;
-        final imageHeight =
-            imageHeightOverride ??
-            (isHorizontalSectionCard
-                ? (compact ? 150.0 : 168.0)
-                : (compact ? 104.0 : 122.0));
+    return LiveAuthorResolver(
+      authorId: post.authorId,
+      fallbackName: post.authorDisplayName,
+      fallbackUsername: post.authorUsername,
+      fallbackImageUrl: post.authorPhotoUrl,
+      builder: (context, author) {
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final isHorizontalSectionCard = !expandToAvailableWidth;
+            final compact = constraints.maxWidth < 190;
+            final imageHeight =
+                imageHeightOverride ??
+                (isHorizontalSectionCard
+                    ? (compact ? 150.0 : 168.0)
+                    : (compact ? 104.0 : 122.0));
 
-        return Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(22),
-            child: Container(
-              width: expandToAvailableWidth ? double.infinity : 220,
-              decoration: BoxDecoration(
-                color: Colors.white,
+            return Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onTap,
                 borderRadius: BorderRadius.circular(22),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.045),
-                    blurRadius: 18,
-                    offset: const Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(22),
-                    ),
-                    child: SizedBox(
-                      height: imageHeight,
-                      width: double.infinity,
-                      child: _RemoteImage(
-                        url: post.thumbnailUrls.isNotEmpty
-                            ? post.thumbnailUrls.first
-                            : (post.imageUrls.isNotEmpty
-                                  ? post.imageUrls.first
-                                  : ''),
-                        fit: BoxFit.cover,
+                child: Container(
+                  width: expandToAvailableWidth ? double.infinity : 220,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(22),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.045),
+                        blurRadius: 18,
+                        offset: const Offset(0, 10),
                       ),
-                    ),
+                    ],
                   ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      compact ? 14 : 18,
-                      14,
-                      compact ? 14 : 18,
-                      8,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          post.authorDisplayName.isEmpty
-                              ? 'Pettxo user'
-                              : post.authorDisplayName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: AppColors.textDark,
-                            fontSize: compact ? 15 : 16,
-                            fontWeight: FontWeight.w800,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ClipRRect(
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(22),
+                        ),
+                        child: SizedBox(
+                          height: imageHeight,
+                          width: double.infinity,
+                          child: _RemoteImage(
+                            url: post.thumbnailUrls.isNotEmpty
+                                ? post.thumbnailUrls.first
+                                : (post.imageUrls.isNotEmpty
+                                      ? post.imageUrls.first
+                                      : ''),
+                            fit: BoxFit.cover,
                           ),
                         ),
-                        if (!isHorizontalSectionCard && showUsername) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            post.authorUsername,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: AppColors.textGrey,
-                              fontSize: compact ? 12 : 13,
-                              fontWeight: FontWeight.w500,
+                      ),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          compact ? 14 : 18,
+                          14,
+                          compact ? 14 : 18,
+                          8,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              author.displayName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: AppColors.textDark,
+                                fontSize: compact ? 15 : 16,
+                                fontWeight: FontWeight.w800,
+                              ),
                             ),
-                          ),
-                        ],
-                        const SizedBox(height: 6),
-                        Text(
-                          previewText.isEmpty
-                              ? 'Tap to open post.'
-                              : previewText,
-                          maxLines: isHorizontalSectionCard
-                              ? (compact ? 2 : 3)
-                              : (compact ? 1 : 2),
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: AppColors.textDark,
-                            fontSize: compact ? 13 : 14,
-                            height: 1.28,
-                          ),
-                        ),
-                        if (!isHorizontalSectionCard) ...[
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              _StatChip(
-                                icon: Icons.favorite_border_rounded,
-                                value: '${post.likeCount}',
-                                compact: compact,
-                                minimal: !showShareStat,
-                              ),
-                              const SizedBox(width: 12),
-                              _StatChip(
-                                icon: Icons.mode_comment_outlined,
-                                value: '${post.commentCount}',
-                                compact: compact,
-                                minimal: !showShareStat,
-                              ),
-                              if (showShareStat) ...[
-                                const SizedBox(width: 12),
-                                _StatChip(
-                                  icon: Icons.share_outlined,
-                                  value: '${post.shareCount}',
-                                  compact: compact,
+                            if (!isHorizontalSectionCard && showUsername) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                author.username,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: AppColors.textGrey,
+                                  fontSize: compact ? 12 : 13,
+                                  fontWeight: FontWeight.w500,
                                 ),
-                              ],
+                              ),
                             ],
-                          ),
-                        ],
-                      ],
-                    ),
+                            const SizedBox(height: 6),
+                            Text(
+                              previewText.isEmpty
+                                  ? 'Tap to open post.'
+                                  : previewText,
+                              maxLines: isHorizontalSectionCard
+                                  ? (compact ? 2 : 3)
+                                  : (compact ? 1 : 2),
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: AppColors.textDark,
+                                fontSize: compact ? 13 : 14,
+                                height: 1.28,
+                              ),
+                            ),
+                            if (!isHorizontalSectionCard) ...[
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  _StatChip(
+                                    icon: Icons.favorite_border_rounded,
+                                    value: '${post.likeCount}',
+                                    compact: compact,
+                                    minimal: !showShareStat,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  _StatChip(
+                                    icon: Icons.mode_comment_outlined,
+                                    value: '${post.commentCount}',
+                                    compact: compact,
+                                    minimal: !showShareStat,
+                                  ),
+                                  if (showShareStat) ...[
+                                    const SizedBox(width: 12),
+                                    _StatChip(
+                                      icon: Icons.share_outlined,
+                                      value: '${post.shareCount}',
+                                      compact: compact,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );

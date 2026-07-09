@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
@@ -20,8 +21,15 @@ class CreatePostScreen extends StatefulWidget {
 }
 
 class _CreatePostScreenState extends State<CreatePostScreen> {
+  static const List<SocialPostAspectRatio> _supportedAspectRatios =
+      <SocialPostAspectRatio>[
+        SocialPostAspectRatio.square,
+        SocialPostAspectRatio.portrait,
+      ];
+
   final SocialPostRepository _repository = SocialPostRepository();
   final ImagePicker _imagePicker = ImagePicker();
+  final ImageCropService _imageCropService = ImageCropService();
   final TextEditingController _captionController = TextEditingController();
   final TextEditingController _hashtagController = TextEditingController();
 
@@ -36,7 +44,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
+      if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(
+        context,
+      )) {
         Navigator.pushReplacementNamed(context, '/home');
       }
     });
@@ -54,19 +64,69 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     if (!mounted) return;
     if (picked.isEmpty) return;
 
-    final nextImages = <XFile>[..._selectedImages, ...picked];
-    if (nextImages.length > 5) {
+    final remainingSlots = 5 - _selectedImages.length;
+    if (remainingSlots <= 0) {
       AppFeedback.show(
         context,
         message: 'You can add up to 5 images per post.',
         tone: AppFeedbackTone.warning,
       );
+      return;
     }
 
+    if (picked.length > remainingSlots) {
+      AppFeedback.show(
+        context,
+        message:
+            'Only the first $remainingSlots images can be added right now.',
+        tone: AppFeedbackTone.info,
+      );
+    }
+
+    final croppedImages = <XFile>[];
+    var cancelledCount = 0;
+    var failedCropCount = 0;
+    for (final file in picked.take(remainingSlots)) {
+      final croppedImage = await _imageCropService.cropImage(
+        source: file,
+        context: ImageCropContext.post,
+        ratio: _cropRatioForPost(_aspectRatio),
+      );
+      if (!mounted) return;
+      if (croppedImage == null) {
+        if (_imageCropService.hadLastError) {
+          failedCropCount += 1;
+        } else {
+          cancelledCount += 1;
+        }
+        continue;
+      }
+      croppedImages.add(XFile(croppedImage.path));
+    }
+
+    if (!mounted) return;
+    if (cancelledCount > 0) {
+      AppFeedback.show(
+        context,
+        message: croppedImages.isEmpty
+            ? 'Image cropping was cancelled.'
+            : '$cancelledCount image ${cancelledCount == 1 ? 'was' : 'were'} skipped because cropping was cancelled.',
+        tone: AppFeedbackTone.info,
+      );
+    }
+    if (failedCropCount > 0) {
+      AppFeedback.show(
+        context,
+        message: failedCropCount == 1
+            ? 'Image crop failed. Please try again.'
+            : '$failedCropCount images failed to crop. Please try again.',
+        tone: AppFeedbackTone.error,
+      );
+    }
+    if (croppedImages.isEmpty) return;
+
     setState(() {
-      _selectedImages
-        ..clear()
-        ..addAll(nextImages.take(5));
+      _selectedImages.addAll(croppedImages);
       _previewIndex = 0;
     });
   }
@@ -75,7 +135,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() {
       _selectedImages.removeAt(index);
       if (_previewIndex >= _selectedImages.length) {
-        _previewIndex = _selectedImages.isEmpty ? 0 : _selectedImages.length - 1;
+        _previewIndex = _selectedImages.isEmpty
+            ? 0
+            : _selectedImages.length - 1;
       }
     });
   }
@@ -169,6 +231,21 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     return message;
   }
 
+  void _selectAspectRatio(SocialPostAspectRatio ratio) {
+    if (ratio == _aspectRatio) return;
+    if (_selectedImages.isNotEmpty) {
+      AppFeedback.show(
+        context,
+        message:
+            'Remove selected images before switching between Square 1:1 and Portrait 4:5.',
+        tone: AppFeedbackTone.info,
+      );
+      return;
+    }
+
+    setState(() => _aspectRatio = ratio);
+  }
+
   double get _previewAspectRatio {
     switch (_aspectRatio) {
       case SocialPostAspectRatio.square:
@@ -178,6 +255,14 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       case SocialPostAspectRatio.landscape:
         return 1.91;
     }
+  }
+
+  ImageCropRatio _cropRatioForPost(SocialPostAspectRatio ratio) {
+    return switch (ratio) {
+      SocialPostAspectRatio.square => ImageCropRatio.square,
+      SocialPostAspectRatio.portrait => ImageCropRatio.portraitFourByFive,
+      SocialPostAspectRatio.landscape => ImageCropRatio.square,
+    };
   }
 
   @override
@@ -210,7 +295,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       images: _selectedImages,
                       aspectRatio: _previewAspectRatio,
                       previewIndex: _previewIndex,
-                      onPageChanged: (value) => setState(() => _previewIndex = value),
+                      onPageChanged: (value) =>
+                          setState(() => _previewIndex = value),
                       onRemove: _removeImage,
                       onSelectImages: _selectedImages.length >= 5
                           ? null
@@ -226,34 +312,47 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
+                    const Text(
+                      'Choose once before selecting images. New posts support Square 1:1 or Portrait 4:5 only.',
+                      style: TextStyle(color: AppColors.textGrey, height: 1.45),
+                    ),
+                    const SizedBox(height: 12),
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
-                      children: SocialPostAspectRatio.values.map((ratio) {
-                        final selected = ratio == _aspectRatio;
-                        return InkWell(
-                          onTap: () => setState(() => _aspectRatio = ratio),
-                          borderRadius: BorderRadius.circular(999),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
-                              gradient: selected ? AppColors.brandGradient : null,
-                              color: selected ? null : const Color(0xFFFFF4E8),
+                      children: _supportedAspectRatios
+                          .map((ratio) {
+                            final selected = ratio == _aspectRatio;
+                            return InkWell(
+                              onTap: () => _selectAspectRatio(ratio),
                               borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text(
-                              ratio.label,
-                              style: TextStyle(
-                                color: selected ? Colors.white : AppColors.textDark,
-                                fontWeight: FontWeight.w700,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 10,
+                                ),
+                                decoration: BoxDecoration(
+                                  gradient: selected
+                                      ? AppColors.brandGradient
+                                      : null,
+                                  color: selected
+                                      ? null
+                                      : const Color(0xFFFFF4E8),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  _ratioLabel(ratio),
+                                  style: TextStyle(
+                                    color: selected
+                                        ? Colors.white
+                                        : AppColors.textDark,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        );
-                      }).toList(growable: false),
+                            );
+                          })
+                          .toList(growable: false),
                     ),
                   ],
                 ),
@@ -316,24 +415,27 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
-                      children: _hashtags.map((tag) {
-                        return Chip(
-                          label: Text(
-                            '#$tag',
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          onDeleted: () => setState(() => _hashtags.remove(tag)),
-                          deleteIconColor: AppColors.primary,
-                          backgroundColor: const Color(0xFFFFF4EC),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(999),
-                            side: BorderSide.none,
-                          ),
-                        );
-                      }).toList(growable: false),
+                      children: _hashtags
+                          .map((tag) {
+                            return Chip(
+                              label: Text(
+                                '#$tag',
+                                style: const TextStyle(
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              onDeleted: () =>
+                                  setState(() => _hashtags.remove(tag)),
+                              deleteIconColor: AppColors.primary,
+                              backgroundColor: const Color(0xFFFFF4EC),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(999),
+                                side: BorderSide.none,
+                              ),
+                            );
+                          })
+                          .toList(growable: false),
                     ),
                   ],
                 ),
@@ -341,7 +443,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               const SizedBox(height: 20),
               GradientButton(
                 label: _isPublishing ? 'Publishing...' : 'Publish Post',
-                onPressed: _selectedImages.isEmpty || _isPublishing ? null : _publish,
+                onPressed: _selectedImages.isEmpty || _isPublishing
+                    ? null
+                    : _publish,
               ),
             ],
           ),
@@ -516,12 +620,9 @@ class _ImagePreview extends StatelessWidget {
                 ),
                 SizedBox(height: 6),
                 Text(
-                  'Images will be resized and compressed before upload.',
+                  'Images will be cropped to the selected ratio, then resized and compressed before upload.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                    height: 1.45,
-                  ),
+                  style: TextStyle(color: AppColors.textGrey, height: 1.45),
                 ),
               ],
             ),
@@ -546,7 +647,7 @@ class _ImagePreview extends StatelessWidget {
                       color: const Color(0xFFFCF8F5),
                       child: Image.file(
                         File(images[index].path),
-                        fit: BoxFit.contain,
+                        fit: BoxFit.cover,
                         errorBuilder: (_, _, _) => Container(
                           color: const Color(0xFFFFF2EA),
                           child: const Center(
@@ -568,7 +669,10 @@ class _ImagePreview extends StatelessWidget {
                     backgroundColor: Colors.black.withValues(alpha: 0.45),
                     child: IconButton(
                       onPressed: () => onRemove(previewIndex),
-                      icon: const Icon(Icons.close_rounded, color: Colors.white),
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
                 ),
@@ -598,4 +702,12 @@ class _ImagePreview extends StatelessWidget {
       ],
     );
   }
+}
+
+String _ratioLabel(SocialPostAspectRatio ratio) {
+  return switch (ratio) {
+    SocialPostAspectRatio.square => 'Square 1:1',
+    SocialPostAspectRatio.portrait => 'Portrait 4:5',
+    SocialPostAspectRatio.landscape => 'Landscape',
+  };
 }

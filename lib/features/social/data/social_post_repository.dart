@@ -86,14 +86,14 @@ class SocialPostRepository {
   final FirebaseAuth _auth;
   final ProfileRepository _profileRepository;
   final NotificationRepository _notificationRepository;
+  final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
   CollectionReference<Map<String, dynamic>> get _postsCollection =>
       _firestore.collection('socialPosts');
   CollectionReference<Map<String, dynamic>> get _hashtagsCollection =>
       _firestore.collection('hashtags');
 
-  // TODO(nishant): Move this counter mutation to Cloud Function before
-  // production abuse scale.
+  // Counter updates stay colocated with the write transaction for now.
   Future<void> _updatePostLikeCounter({
     required Transaction transaction,
     required DocumentReference<Map<String, dynamic>> postRef,
@@ -102,8 +102,7 @@ class SocialPostRepository {
     transaction.update(postRef, {'likeCount': nextLikeCount});
   }
 
-  // TODO(nishant): Move this counter mutation to Cloud Function before
-  // production abuse scale.
+  // Counter updates stay colocated with the write transaction for now.
   Future<void> _updatePostCommentCounter({
     required Transaction transaction,
     required DocumentReference<Map<String, dynamic>> postRef,
@@ -112,8 +111,7 @@ class SocialPostRepository {
     transaction.update(postRef, {'commentCount': nextCommentCount});
   }
 
-  // TODO(nishant): Move this counter mutation to Cloud Function before
-  // production abuse scale.
+  // Counter updates stay colocated with the write transaction for now.
   Future<void> _updatePostShareCounter({
     required Transaction transaction,
     required DocumentReference<Map<String, dynamic>> postRef,
@@ -122,8 +120,7 @@ class SocialPostRepository {
     transaction.update(postRef, {'shareCount': nextShareCount});
   }
 
-  // TODO(nishant): Move this counter mutation and moderation threshold
-  // transition to Cloud Function before production abuse scale.
+  // Report updates keep moderation thresholds in the same transaction.
   Future<void> _updatePostReportCounter({
     required Transaction transaction,
     required DocumentReference<Map<String, dynamic>> postRef,
@@ -136,8 +133,7 @@ class SocialPostRepository {
     });
   }
 
-  // TODO(nishant): Move this counter mutation and moderation threshold
-  // transition to Cloud Function before production abuse scale.
+  // Report updates keep moderation thresholds in the same transaction.
   Future<void> _updateCommentReportCounter({
     required Transaction transaction,
     required DocumentReference<Map<String, dynamic>> commentRef,
@@ -168,17 +164,37 @@ class SocialPostRepository {
     DocumentSnapshot<Map<String, dynamic>>? startAfter,
     int limit = 10,
   }) async {
-    Query<Map<String, dynamic>> query = _visiblePostsQuery.limit(limit);
-    if (startAfter != null) {
-      query = query.startAfterDocument(startAfter);
+    final posts = <SocialPostModel>[];
+    DocumentSnapshot<Map<String, dynamic>>? cursor = startAfter;
+    var hasMore = true;
+    final pageSize = math.max(limit * 2, 20);
+
+    while (posts.length < limit && hasMore) {
+      Query<Map<String, dynamic>> query = _visiblePostsQuery.limit(pageSize);
+      if (cursor != null) {
+        query = query.startAfterDocument(cursor);
+      }
+
+      final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
+        query,
+      );
+      if (snapshot.docs.isEmpty) {
+        hasMore = false;
+        break;
+      }
+
+      cursor = snapshot.docs.last;
+      hasMore = snapshot.docs.length == pageSize;
+      final visiblePosts = await _filterPostsByVisibleAuthors(
+        snapshot.docs.map(SocialPostModel.fromDocument).toList(growable: false),
+      );
+      posts.addAll(visiblePosts);
     }
 
-    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(query);
-    final posts = snapshot.docs.map(SocialPostModel.fromDocument).toList();
     return SocialFeedPage(
-      posts: posts,
-      lastDocument: snapshot.docs.isEmpty ? startAfter : snapshot.docs.last,
-      hasMore: snapshot.docs.length == limit,
+      posts: posts.take(limit).toList(growable: false),
+      lastDocument: cursor ?? startAfter,
+      hasMore: hasMore,
     );
   }
 
@@ -232,9 +248,9 @@ class SocialPostRepository {
     for (var start = 0; start < normalizedIds.length; start += chunkSize) {
       final end = math.min(start + chunkSize, normalizedIds.length);
       final chunk = normalizedIds.sublist(start, end);
-        final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
-          _postsCollection.where(FieldPath.documentId, whereIn: chunk),
-        );
+      final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
+        _postsCollection.where(FieldPath.documentId, whereIn: chunk),
+      );
       for (final doc in snapshot.docs) {
         final post = SocialPostModel.fromDocument(doc);
         if (post.visibilityStatus == 'visible' &&
@@ -244,10 +260,13 @@ class SocialPostRepository {
       }
     }
 
-    return normalizedIds
-        .map((id) => postsById[id])
-        .whereType<SocialPostModel>()
-        .toList(growable: false);
+    final visiblePosts = await _filterPostsByVisibleAuthors(
+      normalizedIds
+          .map((id) => postsById[id])
+          .whereType<SocialPostModel>()
+          .toList(growable: false),
+    );
+    return visiblePosts;
   }
 
   Future<List<SocialPostModel>> fetchPopularPosts({
@@ -261,7 +280,9 @@ class SocialPostRepository {
           .orderBy('likeCount', descending: true)
           .limit(limit)
           .get();
-      return snapshot.docs.map(SocialPostModel.fromDocument).toList();
+      return _filterPostsByVisibleAuthors(
+        snapshot.docs.map(SocialPostModel.fromDocument).toList(growable: false),
+      );
     } on FirebaseException catch (error) {
       if (error.code != 'failed-precondition' || !allowLocalFallback) {
         rethrow;
@@ -396,14 +417,11 @@ class SocialPostRepository {
       debugPrintStack(stackTrace: stackTrace);
     }
 
-    return SocialPostModel.fromMap(
-      {
-        ...payload,
-        'createdAt': Timestamp.now(),
-        'updatedAt': Timestamp.now(),
-      },
-      fallbackId: postRef.id,
-    );
+    return SocialPostModel.fromMap({
+      ...payload,
+      'createdAt': Timestamp.now(),
+      'updatedAt': Timestamp.now(),
+    }, fallbackId: postRef.id);
   }
 
   Future<String> _ensureAuthenticatedForStorageWrite() async {
@@ -479,6 +497,9 @@ class SocialPostRepository {
         throw Exception('This post is no longer available for likes.');
       }
       recipientId = (postData['authorId'] as String? ?? '').trim();
+      if (!await _isUserVisible(recipientId)) {
+        throw Exception('This post is no longer available for likes.');
+      }
 
       final likeSnapshot = await transaction.get(likeRef);
       final currentLikeCount = (postData['likeCount'] as num?)?.toInt() ?? 0;
@@ -538,6 +559,10 @@ class SocialPostRepository {
       if (visibilityStatus != 'visible' || moderationStatus != 'approved') {
         throw Exception('This post is no longer available for sharing.');
       }
+      final authorId = (postData['authorId'] as String? ?? '').trim();
+      if (!await _isUserVisible(authorId)) {
+        throw Exception('This post is no longer available for sharing.');
+      }
 
       final currentShareCount = (postData['shareCount'] as num?)?.toInt() ?? 0;
       nextShareCount = currentShareCount + 1;
@@ -574,6 +599,10 @@ class SocialPostRepository {
       final moderationStatus = (postData['moderationStatus'] as String? ?? '')
           .trim();
       if (visibilityStatus != 'visible' || moderationStatus != 'approved') {
+        throw Exception('This post is no longer available for reports.');
+      }
+      final authorId = (postData['authorId'] as String? ?? '').trim();
+      if (!await _isUserVisible(authorId)) {
         throw Exception('This post is no longer available for reports.');
       }
 
@@ -636,7 +665,8 @@ class SocialPostRepository {
         for (final doc in snapshot.docs) {
           final comment = CommentModel.fromDocument(doc);
           if (comment.visibilityStatus == 'visible' &&
-              comment.moderationStatus == 'approved') {
+              comment.moderationStatus == 'approved' &&
+              await _isUserVisible(comment.authorId)) {
             comments.add(comment);
             if (comments.length == limit) {
               break;
@@ -669,6 +699,9 @@ class SocialPostRepository {
     }
 
     final profile = await _profileRepository.getCurrentUserProfile();
+    if (!profile.isPubliclyVisible) {
+      throw Exception('Your account is not available for commenting.');
+    }
     final postRef = _postsCollection.doc(postId);
     final commentRef = postRef.collection('comments').doc();
     var postAuthorId = '';
@@ -690,6 +723,9 @@ class SocialPostRepository {
         throw Exception('This post is no longer available for comments.');
       }
       postAuthorId = (postData['authorId'] as String? ?? '').trim();
+      if (!await _isUserVisible(postAuthorId)) {
+        throw Exception('This post is no longer available for comments.');
+      }
 
       final currentCommentCount =
           (postData['commentCount'] as num?)?.toInt() ?? 0;
@@ -1049,14 +1085,14 @@ class SocialPostRepository {
       throw Exception('One of the selected images could not be processed.');
     }
 
-    final fitted = _fitImageToAspectRatio(decoded, aspectRatio);
+    final cropped = _cropImageToAspectRatio(decoded, aspectRatio);
     final resizedFeed = img.copyResize(
-      fitted,
-      width: math.min(fitted.width, 1080),
+      cropped,
+      width: math.min(cropped.width, 1080),
     );
     final resizedThumb = img.copyResize(
-      fitted,
-      width: math.min(fitted.width, 300),
+      cropped,
+      width: math.min(cropped.width, 300),
     );
 
     final feedBytes = await FlutterImageCompress.compressWithList(
@@ -1076,7 +1112,7 @@ class SocialPostRepository {
     );
   }
 
-  img.Image _fitImageToAspectRatio(
+  img.Image _cropImageToAspectRatio(
     img.Image source,
     SocialPostAspectRatio aspectRatio,
   ) {
@@ -1091,21 +1127,70 @@ class SocialPostRepository {
       return source;
     }
 
-    var targetWidth = source.width;
-    var targetHeight = source.height;
-
     if (sourceRatio > targetRatio) {
-      targetHeight = math.max(1, (source.width / targetRatio).round());
-    } else {
-      targetWidth = math.max(1, (source.height * targetRatio).round());
+      final targetWidth = math.max(1, (source.height * targetRatio).round());
+      final offsetX = ((source.width - targetWidth) / 2).round();
+      return img.copyCrop(
+        source,
+        x: offsetX.clamp(0, math.max(0, source.width - targetWidth)),
+        y: 0,
+        width: targetWidth,
+        height: source.height,
+      );
     }
 
-    final canvas = img.Image(width: targetWidth, height: targetHeight);
-    img.fill(canvas, color: img.ColorRgb8(252, 248, 245));
-    final offsetX = ((targetWidth - source.width) / 2).round();
-    final offsetY = ((targetHeight - source.height) / 2).round();
-    img.compositeImage(canvas, source, dstX: offsetX, dstY: offsetY);
-    return canvas;
+    final targetHeight = math.max(1, (source.width / targetRatio).round());
+    final offsetY = ((source.height - targetHeight) / 2).round();
+    return img.copyCrop(
+      source,
+      x: 0,
+      y: offsetY.clamp(0, math.max(0, source.height - targetHeight)),
+      width: source.width,
+      height: targetHeight,
+    );
+  }
+
+  Future<List<SocialPostModel>> _filterPostsByVisibleAuthors(
+    List<SocialPostModel> posts,
+  ) async {
+    if (posts.isEmpty) return const <SocialPostModel>[];
+
+    final missingAuthorIds = posts
+        .map((post) => post.authorId.trim())
+        .where((authorId) => authorId.isNotEmpty)
+        .where((authorId) => !_authorVisibilityCache.containsKey(authorId))
+        .toSet()
+        .toList(growable: false);
+
+    if (missingAuthorIds.isNotEmpty) {
+      final fetchedVisibility = await _profileRepository
+          .fetchPublicVisibilityByIds(missingAuthorIds);
+      _authorVisibilityCache.addAll(fetchedVisibility);
+    }
+
+    return posts
+        .where((post) {
+          final authorId = post.authorId.trim();
+          if (authorId.isEmpty) return false;
+          return _authorVisibilityCache[authorId] ?? false;
+        })
+        .toList(growable: false);
+  }
+
+  Future<bool> _isUserVisible(String userId) async {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) return false;
+
+    final cached = _authorVisibilityCache[trimmedUserId];
+    if (cached != null) {
+      return cached;
+    }
+
+    final fetchedVisibility = await _profileRepository
+        .fetchPublicVisibilityByIds([trimmedUserId]);
+    final resolved = fetchedVisibility[trimmedUserId] ?? false;
+    _authorVisibilityCache[trimmedUserId] = resolved;
+    return resolved;
   }
 }
 

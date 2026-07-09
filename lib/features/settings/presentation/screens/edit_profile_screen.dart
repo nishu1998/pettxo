@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/presentation/widgets/common_phone_field.dart';
@@ -23,6 +24,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   final ProfileRepository _profileRepository = ProfileRepository();
   final ImagePicker _imagePicker = ImagePicker();
+  final ImageCropService _imageCropService = ImageCropService();
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
@@ -80,8 +82,25 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
     if (image == null || !mounted) return;
 
+    final croppedImage = await _imageCropService.cropImage(
+      source: image,
+      context: ImageCropContext.profile,
+      ratio: ImageCropRatio.square,
+    );
+    if (!mounted) return;
+    if (croppedImage == null) {
+      AppFeedback.show(
+        context,
+        message: _imageCropService.hadLastError
+            ? 'Image crop failed. Please try again.'
+            : 'Profile photo update cancelled.',
+        tone: AppFeedbackTone.info,
+      );
+      return;
+    }
+
     setState(() {
-      _selectedImage = File(image.path);
+      _selectedImage = croppedImage;
     });
   }
 

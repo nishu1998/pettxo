@@ -11,6 +11,7 @@ import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../data/services/settings_service.dart';
 import '../../domain/models/app_settings.dart';
+import 'account_info_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -394,6 +395,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ),
                           onTap: _openProviderBankDetails,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _SectionLabel(title: 'ACCOUNT INFO'),
+                  _SettingsCard(
+                    child: Column(
+                      children: [
+                        _NavTile(
+                          icon: Icons.manage_accounts_outlined,
+                          title: 'View account info',
+                          subtitle: const Text(
+                            'Name, username, email, phone and sign-in provider',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    AccountInfoScreen(profile: profile),
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ),

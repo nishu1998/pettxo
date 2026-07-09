@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
 import 'core/services/analytics_service.dart';
@@ -33,10 +34,18 @@ import 'features/splash/presentation/screens/splash_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
 
+void _debugStartupLog(String message) {
+  if (!kDebugMode) return;
+  debugPrint(message);
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(
+    pettxoFirebaseMessagingBackgroundHandler,
+  );
   if (!kIsWeb) {
     FirebaseFirestore.instance.settings = const Settings(
       persistenceEnabled: true,
@@ -52,21 +61,21 @@ void main() async {
     try {
       await PolicyLinkService.initialize();
     } catch (error) {
-      debugPrint('App startup debug -> policy link init skipped: $error');
+      _debugStartupLog('App startup debug -> policy link init skipped: $error');
     }
   });
   Future<void>(() async {
     try {
       await PushNotificationService.instance.initialize();
     } catch (error) {
-      debugPrint('App startup debug -> push init skipped: $error');
+      _debugStartupLog('App startup debug -> push init skipped: $error');
     }
   });
   Future<void>(() async {
     try {
       await UserRestrictionService.instance.initialize();
     } catch (error) {
-      debugPrint('App startup debug -> restriction init skipped: $error');
+      _debugStartupLog('App startup debug -> restriction init skipped: $error');
     }
   });
 }

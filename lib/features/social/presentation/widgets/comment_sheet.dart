@@ -11,6 +11,7 @@ import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/models/comment_model.dart';
 import '../../domain/models/social_post_model.dart';
+import 'live_author_resolver.dart';
 
 class CommentSheet extends StatefulWidget {
   final SocialPostModel post;
@@ -623,82 +624,87 @@ class _CommentTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final createdAt = comment.createdAt?.toDate();
     final timestamp = createdAt == null ? '' : _formatRelativeTime(createdAt);
-    final initials = comment.authorDisplayName.trim().isEmpty
-        ? 'P'
-        : comment.authorDisplayName.trim()[0].toUpperCase();
     final isUnderReview = comment.moderationStatus == 'pending';
     final isRemoved = comment.visibilityStatus == 'deleted';
     final bodyText = isUnderReview
         ? 'This content is under review.'
         : (isRemoved ? 'Comment removed.' : comment.text);
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(22),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          GestureDetector(
-            onTap: () => _openAuthorProfile(context),
-            child: _CommentAvatar(
-              imageUrl: comment.authorPhotoUrl,
-              initials: initials,
-            ),
+    return LiveAuthorResolver(
+      authorId: comment.authorId,
+      fallbackName: comment.authorDisplayName,
+      fallbackUsername: comment.authorUsername,
+      fallbackImageUrl: comment.authorPhotoUrl,
+      builder: (context, author) {
+        return Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(22),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              GestureDetector(
+                onTap: () => _openAuthorProfile(context),
+                child: _CommentAvatar(
+                  imageUrl: author.imageUrl,
+                  initials: author.initials,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    GestureDetector(
-                      onTap: () => _openAuthorProfile(context),
-                      child: Text(
-                        comment.authorDisplayName,
-                        style: const TextStyle(
-                          color: AppColors.textDark,
-                          fontWeight: FontWeight.w700,
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        GestureDetector(
+                          onTap: () => _openAuthorProfile(context),
+                          child: Text(
+                            author.displayName,
+                            style: const TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
+                        if (author.username.isNotEmpty)
+                          Text(
+                            author.username,
+                            style: const TextStyle(
+                              color: AppColors.textGrey,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        if (timestamp.isNotEmpty)
+                          Text(
+                            timestamp,
+                            style: const TextStyle(
+                              color: AppColors.textGrey,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      bodyText,
+                      style: const TextStyle(
+                        color: AppColors.textDark,
+                        height: 1.45,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                    if (comment.authorUsername.isNotEmpty)
-                      Text(
-                        comment.authorUsername,
-                        style: const TextStyle(
-                          color: AppColors.textGrey,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    if (timestamp.isNotEmpty)
-                      Text(
-                        timestamp,
-                        style: const TextStyle(
-                          color: AppColors.textGrey,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
                   ],
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  bodyText,
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    height: 1.45,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

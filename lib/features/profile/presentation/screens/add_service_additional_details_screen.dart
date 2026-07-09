@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/app_loader.dart';
+import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
@@ -41,6 +42,7 @@ class _AddServiceAdditionalDetailsScreenState
   static const List<String> _allowedExtensions = ['jpg', 'jpeg', 'png', 'webp'];
 
   final ImagePicker _imagePicker = ImagePicker();
+  final ImageCropService _imageCropService = ImageCropService();
   final TextEditingController _notesController = TextEditingController();
   final FocusNode _notesFocusNode = FocusNode();
   final GlobalKey _notesFieldKey = GlobalKey();
@@ -118,10 +120,13 @@ class _AddServiceAdditionalDetailsScreenState
     if (!mounted || files.isEmpty) return;
 
     final accepted = <_SelectedPhoto>[];
+    var cancelledCount = 0;
+    var failedCropCount = 0;
 
     // Validation stays frontend-only for now: the files are kept in memory
     // and their local paths are reused to preview the mock published service.
     for (final file in files) {
+      if (accepted.length >= remaining) break;
       final extension = file.path.split('.').last.toLowerCase();
       if (!_allowedExtensions.contains(extension)) {
         if (!mounted) return;
@@ -145,14 +150,53 @@ class _AddServiceAdditionalDetailsScreenState
         continue;
       }
 
-      accepted.add(_SelectedPhoto(path: file.path, name: file.name));
+      final croppedImage = await _imageCropService.cropImage(
+        source: file,
+        context: ImageCropContext.service,
+        ratio: ImageCropRatio.portraitFourByFive,
+      );
+      if (!mounted) return;
+      if (croppedImage == null) {
+        if (_imageCropService.hadLastError) {
+          failedCropCount += 1;
+        } else {
+          cancelledCount += 1;
+        }
+        continue;
+      }
+
+      accepted.add(_SelectedPhoto(path: croppedImage.path, name: file.name));
     }
 
-    if (!mounted || accepted.isEmpty) return;
+    if (!mounted) return;
 
-    setState(() {
-      _selectedPhotos.addAll(accepted.take(remaining));
-    });
+    if (accepted.isNotEmpty) {
+      setState(() {
+        _selectedPhotos.addAll(accepted.take(remaining));
+      });
+    }
+
+    if (cancelledCount > 0) {
+      AppFeedback.show(
+        context,
+        message: accepted.isEmpty
+            ? 'Photo cropping was cancelled.'
+            : '$cancelledCount photo ${cancelledCount == 1 ? 'was' : 'were'} skipped because cropping was cancelled.',
+        tone: AppFeedbackTone.info,
+      );
+    }
+
+    if (failedCropCount > 0) {
+      AppFeedback.show(
+        context,
+        message: failedCropCount == 1
+            ? 'Image crop failed. Please try again.'
+            : '$failedCropCount images failed to crop. Please try again.',
+        tone: AppFeedbackTone.error,
+      );
+    }
+
+    if (accepted.isEmpty) return;
 
     if (accepted.length > remaining) {
       AppFeedback.show(
@@ -504,7 +548,7 @@ class _AddServiceAdditionalDetailsScreenState
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Supports JPG, JPEG, PNG, and WEBP up to 5 MB each. Service cards will later crop these previews to square (1:1).',
+                      'Supports JPG, JPEG, PNG, and WEBP up to 5 MB each. Photos are cropped to Portrait 4:5 before upload for a cleaner service layout.',
                       style: TextStyle(
                         color: AppColors.textGrey,
                         fontSize: 12.5,

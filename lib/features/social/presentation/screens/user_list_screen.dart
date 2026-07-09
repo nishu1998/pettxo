@@ -11,7 +11,9 @@ import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/follow_repository.dart';
 
 typedef FollowIdsPageLoader =
-    Future<FollowIdsPage> Function(DocumentSnapshot<Map<String, dynamic>>? lastDoc);
+    Future<FollowIdsPage> Function(
+      DocumentSnapshot<Map<String, dynamic>>? lastDoc,
+    );
 
 enum UserListKind { followers, following }
 
@@ -119,10 +121,7 @@ class _UserListScreenState extends State<UserListScreen> {
     }
   }
 
-  Future<void> _applyPage(
-    FollowIdsPage page, {
-    required bool replace,
-  }) async {
+  Future<void> _applyPage(FollowIdsPage page, {required bool replace}) async {
     final uniqueIds = replace
         ? page.userIds
         : page.userIds.where((id) => !_userIds.contains(id)).toList();
@@ -132,15 +131,21 @@ class _UserListScreenState extends State<UserListScreen> {
     final fetchedProfiles = await _profileRepository.fetchUserProfilesByIds(
       uncachedIds,
     );
+    final visibleIds = uniqueIds
+        .where((id) {
+          return _profileCache.containsKey(id) ||
+              fetchedProfiles.containsKey(id);
+        })
+        .toList(growable: false);
 
     if (!mounted) return;
     setState(() {
       if (replace) {
         _userIds
           ..clear()
-          ..addAll(uniqueIds);
+          ..addAll(visibleIds);
       } else {
-        _userIds.addAll(uniqueIds);
+        _userIds.addAll(visibleIds);
       }
       _profileCache.addAll(fetchedProfiles);
       _lastDocument = page.lastDocument;
@@ -302,7 +307,9 @@ class _UserListRowState extends State<_UserListRow> {
   }
 
   Future<void> _toggleFollow() async {
-    if (_isOwnProfile || _isFollowActionRunning || widget.isFollowStateLoading) {
+    if (_isOwnProfile ||
+        _isFollowActionRunning ||
+        widget.isFollowStateLoading) {
       return;
     }
     if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
@@ -360,7 +367,9 @@ class _UserListRowState extends State<_UserListRow> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  widget.profile.name.isEmpty ? 'Pettxo user' : widget.profile.name,
+                  widget.profile.name.isEmpty
+                      ? 'Pettxo user'
+                      : widget.profile.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -390,8 +399,12 @@ class _UserListRowState extends State<_UserListRow> {
                   ? null
                   : _toggleFollow,
               style: FilledButton.styleFrom(
-                backgroundColor: _isFollowing ? Colors.white : AppColors.primary,
-                foregroundColor: _isFollowing ? AppColors.textDark : Colors.white,
+                backgroundColor: _isFollowing
+                    ? Colors.white
+                    : AppColors.primary,
+                foregroundColor: _isFollowing
+                    ? AppColors.textDark
+                    : Colors.white,
                 side: _isFollowing
                     ? BorderSide(
                         color: AppColors.primary.withValues(alpha: 0.22),
@@ -422,10 +435,7 @@ class _UserAvatar extends StatelessWidget {
   final String imageUrl;
   final String initials;
 
-  const _UserAvatar({
-    required this.imageUrl,
-    required this.initials,
-  });
+  const _UserAvatar({required this.imageUrl, required this.initials});
 
   @override
   Widget build(BuildContext context) {

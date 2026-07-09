@@ -21,10 +21,11 @@ class AuthService {
         email: email,
         password: password,
       );
+      await _syncNotificationsSafely('sign-up');
 
       return AuthResult(user: credential.user);
     } on FirebaseAuthException catch (e) {
-      return AuthResult(error: _mapFirebaseError(e));
+      return AuthResult(error: _mapFirebaseError(e), errorCode: e.code);
     } catch (_) {
       return AuthResult(error: "Unexpected error occurred.");
     }
@@ -39,10 +40,11 @@ class AuthService {
         email: email,
         password: password,
       );
+      await _syncNotificationsSafely('login');
 
       return AuthResult(user: credential.user);
     } on FirebaseAuthException catch (e) {
-      return AuthResult(error: _mapFirebaseError(e));
+      return AuthResult(error: _mapFirebaseError(e), errorCode: e.code);
     } catch (_) {
       return AuthResult(error: "Unexpected login error.");
     }
@@ -126,7 +128,9 @@ class AuthService {
         verificationId: verificationId,
         smsCode: smsCode,
       );
-      return await _auth.signInWithCredential(credential);
+      final result = await _auth.signInWithCredential(credential);
+      await _syncNotificationsSafely('phone-otp-login');
+      return result;
     } on FirebaseAuthException catch (e) {
       _logFirebaseAuthException('signInWithPhoneCredential:failed', e);
       throw Exception(_mapFirebaseError(e));
@@ -145,7 +149,9 @@ class AuthService {
   ) async {
     try {
       _debugLog('signInWithCredential:start provider=phone');
-      return await _auth.signInWithCredential(credential);
+      final result = await _auth.signInWithCredential(credential);
+      await _syncNotificationsSafely('phone-auto-login');
+      return result;
     } on FirebaseAuthException catch (e) {
       _logFirebaseAuthException('signInWithCredential:failed', e);
       throw Exception(_mapFirebaseError(e));
@@ -250,5 +256,15 @@ class AuthService {
     if (trimmed.length <= 4) return trimmed;
     final suffix = trimmed.substring(trimmed.length - 4);
     return '***$suffix';
+  }
+
+  Future<void> _syncNotificationsSafely(String reason) async {
+    try {
+      await PushNotificationService.instance.forceSyncCurrentUser(
+        reason: reason,
+      );
+    } catch (error, stackTrace) {
+      _logUnexpectedError('notificationSync:$reason', error, stackTrace);
+    }
   }
 }

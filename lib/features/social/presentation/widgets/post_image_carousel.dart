@@ -161,12 +161,14 @@ class _ProgressiveNetworkImage extends StatelessWidget {
   final String imageUrl;
   final String thumbnailUrl;
   final Color backgroundColor;
+  final BoxFit fit;
 
   const _ProgressiveNetworkImage({
     super.key,
     required this.imageUrl,
     required this.thumbnailUrl,
     this.backgroundColor = const Color(0xFFFCF8F5),
+    this.fit = BoxFit.cover,
   });
 
   @override
@@ -175,12 +177,12 @@ class _ProgressiveNetworkImage extends StatelessWidget {
       color: backgroundColor,
       child: CachedNetworkImage(
         imageUrl: imageUrl,
-        fit: BoxFit.contain,
+        fit: fit,
         fadeInDuration: const Duration(milliseconds: 220),
         placeholderFadeInDuration: const Duration(milliseconds: 120),
         placeholder: (context, placeholderUrl) => CachedNetworkImage(
           imageUrl: thumbnailUrl,
-          fit: BoxFit.contain,
+          fit: fit,
           fadeInDuration: const Duration(milliseconds: 120),
           placeholder: (context, nestedUrl) => const _ImagePlaceholder(),
           errorWidget: (context, nestedUrl, error) =>
@@ -492,6 +494,7 @@ class _ZoomableFullscreenImageState extends State<_ZoomableFullscreenImage> {
                 imageUrl: widget.imageUrl,
                 thumbnailUrl: widget.thumbnailUrl,
                 backgroundColor: Colors.black,
+                fit: BoxFit.contain,
               ),
             ),
           ),

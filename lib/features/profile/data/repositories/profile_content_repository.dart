@@ -2,12 +2,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../social/domain/models/social_post_model.dart';
 import '../../domain/models/user_profile.dart';
+import 'profile_repository.dart';
 
 class ProfileContentRepository {
   ProfileContentRepository({FirebaseFirestore? firestore})
     : _firestore = firestore ?? FirebaseFirestore.instance;
 
   final FirebaseFirestore _firestore;
+  final ProfileRepository _profileRepository = ProfileRepository();
 
   Stream<List<SocialPostModel>> watchPostsForProfile(UserProfile profile) {
     return watchPostsForAuthorId(profile.uid);
@@ -25,7 +27,13 @@ class ProfileContentRepository {
         .where('visibilityStatus', isEqualTo: 'visible')
         .where('moderationStatus', isEqualTo: 'approved')
         .snapshots()
-        .map((snapshot) {
+        .asyncMap((snapshot) async {
+          final isAuthorVisible = await _profileRepository
+              .isUserPubliclyVisible(trimmedAuthorId);
+          if (!isAuthorVisible) {
+            return const <SocialPostModel>[];
+          }
+
           final orderedDocs = snapshot.docs.toList(growable: false)
             ..sort((a, b) {
               final aEpoch = (a.data()['createdAtEpoch'] as num?)?.toInt() ?? 0;

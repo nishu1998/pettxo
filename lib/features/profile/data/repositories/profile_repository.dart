@@ -29,10 +29,11 @@ class ProfileRepository {
     bool privateExists,
   ) async {
     final email = (publicData['email'] as String? ?? '').trim();
-    final phone = (publicData['phone'] as String? ??
-            publicData['mobileNumber'] as String? ??
-            '')
-        .trim();
+    final phone =
+        (publicData['phone'] as String? ??
+                publicData['mobileNumber'] as String? ??
+                '')
+            .trim();
     final hasSensitivePublicFields =
         publicData.containsKey('email') ||
         publicData.containsKey('phone') ||
@@ -117,9 +118,7 @@ class ProfileRepository {
       throw Exception('Profile not found');
     }
 
-    return _publicUserDoc(trimmedUserId).snapshots().map((
-      snapshot,
-    ) {
+    return _publicUserDoc(trimmedUserId).snapshots().map((snapshot) {
       final data = snapshot.data();
       if (data == null) {
         throw Exception('Profile not found');
@@ -143,6 +142,60 @@ class ProfileRepository {
     }
 
     return UserProfile.fromMap(data);
+  }
+
+  Future<bool> isUserPubliclyVisible(String userId) async {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) return false;
+
+    try {
+      final profile = await getUserProfileById(trimmedUserId);
+      return profile.isPubliclyVisible;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Map<String, bool>> fetchPublicVisibilityByIds(
+    List<String> userIds,
+  ) async {
+    final normalizedIds = userIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (normalizedIds.isEmpty) {
+      return <String, bool>{};
+    }
+
+    final visibilityById = <String, bool>{};
+    const chunkSize = 10;
+
+    for (var start = 0; start < normalizedIds.length; start += chunkSize) {
+      final end = (start + chunkSize) > normalizedIds.length
+          ? normalizedIds.length
+          : (start + chunkSize);
+      final chunk = normalizedIds.sublist(start, end);
+      final snapshot = await _firestore
+          .collection('users')
+          .where('uid', whereIn: chunk)
+          .get();
+
+      final foundIds = <String>{};
+      for (final doc in snapshot.docs) {
+        final profile = UserProfile.fromMap(doc.data());
+        final profileId = profile.uid.trim();
+        if (profileId.isEmpty) continue;
+        foundIds.add(profileId);
+        visibilityById[profileId] = profile.isPubliclyVisible;
+      }
+
+      for (final userId in chunk) {
+        visibilityById.putIfAbsent(userId, () => false);
+      }
+    }
+
+    return visibilityById;
   }
 
   Future<Map<String, UserProfile>> fetchUserProfilesByIds(
@@ -172,6 +225,7 @@ class ProfileRepository {
 
       for (final doc in snapshot.docs) {
         final profile = UserProfile.fromMap(doc.data());
+        if (!profile.isPubliclyVisible) continue;
         profilesById[profile.uid] = profile;
       }
     }
@@ -202,6 +256,7 @@ class ProfileRepository {
     final profiles = snapshot.docs
         .map((doc) => UserProfile.fromMap(doc.data()))
         .where((profile) => profile.uid.isNotEmpty)
+        .where((profile) => profile.isPubliclyVisible)
         .where((profile) => !excludedIds.contains(profile.uid))
         .toList(growable: true);
 
@@ -273,6 +328,7 @@ class ProfileRepository {
         final profile = UserProfile.fromMap(doc.data());
         final profileId = profile.uid.trim();
         if (profileId.isEmpty || profileId == exactExcludedId) continue;
+        if (!profile.isPubliclyVisible) continue;
 
         final name = profile.name.trim().toLowerCase();
         final username = profile.usernameLowercase.trim();
@@ -396,11 +452,12 @@ class ProfileRepository {
     String? profileImageUrl,
   }) async {
     final privateSnapshot = await _privateUserDoc(_uid).get();
+    final normalizedLocationPayload = _buildNormalizedLocationPayload(location);
     final publicPayload = <String, dynamic>{
       'name': name.trim(),
-      'location': location.trim(),
       'bio': bio.trim(),
       'updatedAt': FieldValue.serverTimestamp(),
+      ...normalizedLocationPayload,
     };
     final privatePayload = <String, dynamic>{
       'uid': _uid,
@@ -420,6 +477,51 @@ class ProfileRepository {
     batch.set(_publicUserDoc(_uid), publicPayload, SetOptions(merge: true));
     batch.set(_privateUserDoc(_uid), privatePayload, SetOptions(merge: true));
     await batch.commit();
+  }
+
+  Map<String, dynamic> _buildNormalizedLocationPayload(String location) {
+    final trimmedLocation = location.trim();
+    final parts = trimmedLocation
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+
+    final payload = <String, dynamic>{
+      'location': trimmedLocation,
+      'address': FieldValue.delete(),
+      'city': FieldValue.delete(),
+      'state': FieldValue.delete(),
+      'country': FieldValue.delete(),
+    };
+
+    if (parts.isEmpty) {
+      return payload;
+    }
+
+    if (parts.length == 1) {
+      payload['city'] = parts[0];
+      return payload;
+    }
+
+    if (parts.length == 2) {
+      payload['city'] = parts[0];
+      payload['state'] = parts[1];
+      return payload;
+    }
+
+    if (parts.length == 3) {
+      payload['city'] = parts[0];
+      payload['state'] = parts[1];
+      payload['country'] = parts[2];
+      return payload;
+    }
+
+    payload['address'] = parts.sublist(0, parts.length - 3).join(', ');
+    payload['city'] = parts[parts.length - 3];
+    payload['state'] = parts[parts.length - 2];
+    payload['country'] = parts.last;
+    return payload;
   }
 
   String normalizeUsername(String username) => _normalizeUsername(username);

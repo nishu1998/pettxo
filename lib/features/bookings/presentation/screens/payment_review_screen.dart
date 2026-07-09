@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -45,6 +46,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
   bool _isPreviewingOffer = false;
   ClaimedOffer? _selectedOffer;
   BookingPaymentOrder? _pendingOrder;
+  BookingPaymentOrder? _activePaymentSession;
   double _discountAmount = 0;
   double get _serviceAmount => widget.draft.totalAmount.toDouble();
   double get _platformFee => _serviceAmount * 0.15;
@@ -62,7 +64,9 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
     try {
       final pending = await _bookingRepository.getPendingPaymentBooking(
         bookingId: widget.pendingBookingId,
-        serviceId: widget.pendingBookingId == null ? widget.draft.serviceId : null,
+        serviceId: widget.pendingBookingId == null
+            ? widget.draft.serviceId
+            : null,
         slotId: widget.pendingBookingId == null ? widget.draft.slotId : null,
       );
       if (!mounted || pending == null) return;
@@ -73,6 +77,11 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
       setState(() {
         _pendingOrder = _bookingPaymentOrderFromPending(pending);
       });
+      _logPaymentDebug(
+        'Loaded pending payment booking',
+        bookingId: pending.bookingId,
+        orderId: pending.razorpayOrderId,
+      );
     } catch (_) {
       // Best-effort preload only. Checkout creation still reuses pending orders server-side.
     }
@@ -203,6 +212,12 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
             );
       var resolvedOrder = order;
       _pendingOrder = resolvedOrder;
+      _activePaymentSession = resolvedOrder;
+      _logPaymentDebug(
+        'Prepared payment order',
+        bookingId: resolvedOrder.bookingId,
+        orderId: resolvedOrder.razorpayOrderId,
+      );
 
       if (!resolvedOrder.alreadyVerified && resolvedOrder.keyId.isEmpty) {
         resolvedOrder = await _bookingRepository.createRazorpayBookingOrder(
@@ -212,12 +227,19 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
           claimedOfferId: _selectedOffer?.id,
         );
         _pendingOrder = resolvedOrder;
+        _activePaymentSession = resolvedOrder;
+        _logPaymentDebug(
+          'Refreshed payment order after missing key',
+          bookingId: resolvedOrder.bookingId,
+          orderId: resolvedOrder.razorpayOrderId,
+        );
       }
 
       if (resolvedOrder.alreadyVerified) {
         AppLoader.hide();
         if (!mounted) return;
         _pendingOrder = null;
+        _activePaymentSession = null;
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) =>
@@ -237,6 +259,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
       if (!mounted) return;
 
       final checkoutOrder = resolvedOrder;
+      _activePaymentSession = checkoutOrder;
       final checkoutResult = await _razorpayCheckoutService.openCheckout(
         order: checkoutOrder,
         customerName:
@@ -249,17 +272,51 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
       );
 
       if (!mounted) return;
+      _logPaymentDebug(
+        'Razorpay success callback received',
+        bookingId: checkoutOrder.bookingId,
+        orderId: checkoutOrder.razorpayOrderId,
+        callbackOrderId: checkoutResult.orderId,
+        paymentId: checkoutResult.paymentId,
+      );
+      var sessionOrder = _activePaymentSession ?? checkoutOrder;
+      if (checkoutResult.orderId != sessionOrder.razorpayOrderId) {
+        final refreshedPending = await _bookingRepository
+            .getPendingPaymentBooking(bookingId: sessionOrder.bookingId);
+        if (refreshedPending != null) {
+          final refreshedOrder = _bookingPaymentOrderFromPending(
+            refreshedPending,
+          );
+          _pendingOrder = refreshedOrder;
+          _activePaymentSession = refreshedOrder;
+          sessionOrder = refreshedOrder;
+          _logPaymentDebug(
+            'Refreshed pending payment after callback/order mismatch',
+            bookingId: refreshedOrder.bookingId,
+            orderId: refreshedOrder.razorpayOrderId,
+            callbackOrderId: checkoutResult.orderId,
+            paymentId: checkoutResult.paymentId,
+          );
+        }
+      }
       AppLoader.showWithMessage('Verifying payment...');
       final bookingId = await _bookingRepository.verifyRazorpayPayment(
-        bookingId: checkoutOrder.bookingId,
+        bookingId: sessionOrder.bookingId,
         razorpayOrderId: checkoutResult.orderId,
         razorpayPaymentId: checkoutResult.paymentId,
         razorpaySignature: checkoutResult.signature,
+      );
+      _logPaymentDebug(
+        'verifyRazorpayPayment completed',
+        bookingId: bookingId,
+        orderId: checkoutResult.orderId,
+        paymentId: checkoutResult.paymentId,
       );
 
       AppLoader.hide();
       if (!mounted) return;
       _pendingOrder = null;
+      _activePaymentSession = null;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => BookingConfirmationScreen(bookingId: bookingId),
@@ -274,6 +331,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
             'Payment was closed. You can retry while the booking is pending.',
         tone: AppFeedbackTone.info,
       );
+      _activePaymentSession = null;
     } on RazorpayCheckoutFailure catch (error) {
       AppLoader.hide();
       final failedBookingId = _pendingOrder?.bookingId ?? '';
@@ -294,6 +352,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
             : error.message,
         tone: AppFeedbackTone.error,
       );
+      _activePaymentSession = null;
     } on FirebaseFunctionsException catch (error) {
       final message = (error.message ?? '').trim();
       final friendlyMessage = message.isNotEmpty
@@ -306,6 +365,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
         message: friendlyMessage,
         tone: AppFeedbackTone.error,
       );
+      _activePaymentSession = null;
     } catch (error) {
       AppLoader.hide();
       if (!mounted) return;
@@ -314,12 +374,37 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
         message: 'We could not request this booking. Please try again.',
         tone: AppFeedbackTone.error,
       );
+      _activePaymentSession = null;
     } finally {
       AppLoader.hide();
       if (mounted) {
         setState(() => _isSubmitting = false);
       }
     }
+  }
+
+  void _logPaymentDebug(
+    String message, {
+    String bookingId = '',
+    String orderId = '',
+    String callbackOrderId = '',
+    String paymentId = '',
+  }) {
+    if (!kDebugMode) return;
+    debugPrint(
+      'PaymentReviewScreen debug -> $message, '
+      'bookingId=$bookingId, '
+      'orderId=${_maskValue(orderId)}, '
+      'callbackOrderId=${_maskValue(callbackOrderId)}, '
+      'paymentId=${_maskValue(paymentId)}',
+    );
+  }
+
+  String _maskValue(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return '';
+    if (trimmed.length <= 8) return trimmed;
+    return '${trimmed.substring(0, 4)}...${trimmed.substring(trimmed.length - 4)}';
   }
 
   @override
@@ -1027,10 +1112,7 @@ class _TermsConfirmationSection extends StatelessWidget {
           onTap: onOpenCancellationPolicy,
         ),
         const LegalConsentSegment(text: ' and '),
-        LegalConsentSegment(
-          text: 'Refund Policy',
-          onTap: onOpenRefundPolicy,
-        ),
+        LegalConsentSegment(text: 'Refund Policy', onTap: onOpenRefundPolicy),
         const LegalConsentSegment(text: '.'),
       ],
     );

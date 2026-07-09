@@ -37,6 +37,7 @@ const serviceResponseCutoffMs = hourMs;
 const minimumBookingLeadMs = serviceResponseCutoffMs;
 const otpAvailabilityWindowMs = hourMs;
 const otpValidityMs = hourMs;
+const defaultPushChannelId = "pettxo_general_notifications";
 
 type BookingStatus =
   | "paymentPending"
@@ -796,6 +797,19 @@ function pendingPaymentSnapshotFromDocs(params: {
   };
 }
 
+function resolveStoredBookingPaymentOrderId(params: {
+  booking: DocumentData;
+  payment: DocumentData | undefined;
+  bookingFinancial: DocumentData | undefined;
+}): string {
+  const pricing = asRecord(params.booking.pricing);
+  return asTrimmedString(
+    params.payment?.razorpayOrderId ??
+    params.bookingFinancial?.razorpayOrderId ??
+    pricing.razorpayOrderId,
+  );
+}
+
 async function createRazorpayOrder(params: {
   bookingId: string;
   amountPaise: number;
@@ -1113,11 +1127,28 @@ async function finalizeCapturedBookingPayment(params: {
       throw new HttpsError("deadline-exceeded", "This payment window has expired.");
     }
 
-    const storedOrderId = asTrimmedString(
-      asRecord(booking.pricing).razorpayOrderId ??
-      bookingFinancialSnapshot.data()?.razorpayOrderId ??
-      paymentSnapshot.data()?.razorpayOrderId,
-    );
+    const storedOrderId = resolveStoredBookingPaymentOrderId({
+      booking,
+      payment: paymentSnapshot.exists ? paymentSnapshot.data() ?? {} : undefined,
+      bookingFinancial: bookingFinancialSnapshot.exists ?
+        bookingFinancialSnapshot.data() ?? {} :
+        undefined,
+    });
+    console.log(JSON.stringify({
+      event: "finalizeCapturedBookingPayment.lookup",
+      bookingId,
+      userId: uid,
+      providerId: asTrimmedString(booking.serviceOwnerId ?? booking.providerId),
+      expectedOrderIdMasked: maskIdentifier(storedOrderId),
+      receivedOrderIdMasked: maskIdentifier(razorpayOrderId),
+      razorpayPaymentIdMasked: maskIdentifier(razorpayPaymentId),
+      bookingStatus: status,
+      bookingPaymentStatus: paymentStatus,
+      paymentDocStatus: asTrimmedString(
+        paymentSnapshot.data()?.paymentStatus ?? paymentSnapshot.data()?.status,
+      ),
+      paymentDocId: paymentSnapshot.id,
+    }));
     if (!storedOrderId || storedOrderId !== razorpayOrderId) {
       throw new HttpsError("failed-precondition", "Razorpay order does not match this booking.");
     }
@@ -2382,6 +2413,42 @@ function notificationTokenDocId(token: string): string {
   return Buffer.from(token, "utf8").toString("base64url");
 }
 
+function defaultPushPayload(params: {
+  title: string;
+  body: string;
+  data: Record<string, string>;
+  tag: string;
+  tokens: string[];
+}) {
+  return {
+    tokens: params.tokens,
+    notification: {
+      title: params.title,
+      body: params.body,
+    },
+    data: params.data,
+    android: {
+      priority: "high" as const,
+      ttl: 60 * 60 * 1000,
+      notification: {
+        channelId: defaultPushChannelId,
+        sound: "default",
+        priority: "high" as const,
+        visibility: "public" as const,
+        tag: params.tag,
+      },
+    },
+    apns: {
+      payload: {
+        aps: {
+          sound: "default",
+          badge: 1,
+        },
+      },
+    },
+  };
+}
+
 function notificationPreferenceValue(
   data: Record<string, unknown>,
   key: string,
@@ -2552,10 +2619,14 @@ export const syncNotificationToken = onCall({invoker: "public"}, async (request)
     .doc(uid)
     .collection("notificationTokens")
     .doc(tokenId);
+  const savedPath = tokenRef.path;
   const currentTokenSnapshot = await tokenRef.get();
   const tokenPayload: Record<string, unknown> = {
     token,
     platform,
+    disabled: false,
+    disabledAt: FieldValue.delete(),
+    errorCode: FieldValue.delete(),
     updatedAt: FieldValue.serverTimestamp(),
     lastSeenAt: FieldValue.serverTimestamp(),
   };
@@ -2567,14 +2638,18 @@ export const syncNotificationToken = onCall({invoker: "public"}, async (request)
 
   const removedList = Array.from(removedFromUserIds);
   console.info("Notification token synced", {
-    currentUserId: uid,
+    uid,
+    tokenReceived: token,
     tokenMasked: maskIdentifier(token),
+    savedPath,
+    platform,
     removedFromUserIds: removedList,
     savedToUserId: uid,
   });
 
   return {
     currentUserId: uid,
+    savedPath,
     removedFromUserIds: removedList,
     savedToUserId: uid,
   };
@@ -2587,17 +2662,33 @@ export const removeNotificationToken = onCall({invoker: "public"}, async (reques
     throw new HttpsError("invalid-argument", "token is required.");
   }
 
-  const existingTokenSnapshots = await db
-    .collectionGroup("notificationTokens")
+  const removedFromUserIds = new Set<string>();
+  const removedPaths: string[] = [];
+  const batch = db.batch();
+  const tokenId = notificationTokenDocId(token);
+  const directTokenRef = db
+    .collection("users")
+    .doc(uid)
+    .collection("notificationTokens")
+    .doc(tokenId);
+  const directTokenSnapshot = await directTokenRef.get();
+  if (directTokenSnapshot.exists) {
+    removedFromUserIds.add(uid);
+    removedPaths.push(directTokenRef.path);
+    batch.delete(directTokenRef);
+  }
+
+  const sameUserTokenSnapshots = await db
+    .collection("users")
+    .doc(uid)
+    .collection("notificationTokens")
     .where("token", "==", token)
     .get();
 
-  const removedFromUserIds = new Set<string>();
-  const batch = db.batch();
-  for (const doc of existingTokenSnapshots.docs) {
-    const ownerUserId = doc.ref.parent.parent?.id ?? "";
-    if (!ownerUserId) continue;
-    removedFromUserIds.add(ownerUserId);
+  for (const doc of sameUserTokenSnapshots.docs) {
+    if (doc.id == tokenId && directTokenSnapshot.exists) continue;
+    removedFromUserIds.add(uid);
+    removedPaths.push(doc.ref.path);
     batch.delete(doc.ref);
   }
   await batch.commit();
@@ -2607,11 +2698,95 @@ export const removeNotificationToken = onCall({invoker: "public"}, async (reques
     currentUserId: uid,
     tokenMasked: maskIdentifier(token),
     removedFromUserIds: removedList,
+    removedPaths,
   });
 
   return {
     currentUserId: uid,
     removedFromUserIds: removedList,
+    removedPaths,
+  };
+});
+
+export const sendTestPushToSelf = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const title = safeText(request.data?.title, "Pettxo test notification");
+  const body = safeText(
+    request.data?.body,
+    "This is a direct push test from Pettxo.",
+  );
+  const rawData = request.data?.data;
+  const extraData =
+    rawData && typeof rawData === "object" && !Array.isArray(rawData) ?
+      rawData as Record<string, unknown> :
+      {};
+
+  const tokenSnapshot = await db
+    .collection("users")
+    .doc(uid)
+    .collection("notificationTokens")
+    .where("disabled", "!=", true)
+    .get();
+
+  const tokens = Array.from(new Set(
+    tokenSnapshot.docs
+      .map((doc) => asTrimmedString(doc.data().token))
+      .filter((token) => token.length > 0),
+  ));
+
+  if (tokens.length === 0) {
+    console.info("Test push skipped", {
+      userId: uid,
+      reason: "no-active-tokens",
+      tokenCount: 0,
+    });
+    return {
+      ok: false,
+      tokenCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      fcmErrorCodes: [],
+      message: "No active notification tokens found for this user.",
+    };
+  }
+
+  const data = notificationData({
+    ...extraData,
+    type: "testPush",
+    category: "system",
+    senderId: uid,
+    recipientId: uid,
+    click_action: "FLUTTER_NOTIFICATION_CLICK",
+  });
+
+  const response = await messaging.sendEachForMulticast(defaultPushPayload({
+    tokens,
+    title,
+    body,
+    data,
+    tag: `test-${uid}`,
+  }));
+
+  const failureCodes = Array.from(new Set(
+    response.responses
+      .map((result) => result.error?.code)
+      .filter((code): code is string => Boolean(code)),
+  ));
+
+  console.info("Test push completed", {
+    userId: uid,
+    tokenCount: tokens.length,
+    successCount: response.successCount,
+    failureCount: response.failureCount,
+    fcmErrorCodes: failureCodes,
+  });
+
+  return {
+    ok: response.successCount > 0,
+    tokenCount: tokens.length,
+    successCount: response.successCount,
+    failureCount: response.failureCount,
+    fcmErrorCodes: failureCodes,
   };
 });
 
@@ -2719,7 +2894,6 @@ export const requestAccountDeletion = onCall({invoker: "public"}, async (request
 export const sendPushForNotification = onDocumentWritten(
   {
     document: "notifications/{notificationId}",
-    region: "us-central1",
   },
   async (event) => {
     const notification = event.data?.after.data();
@@ -2878,59 +3052,47 @@ export const sendPushForNotification = onDocumentWritten(
 
     console.info("Notification created", {
       notificationId: event.params.notificationId,
-      recipientUserId: recipientId,
-      senderUserId: senderId,
+      recipientId,
+      senderId,
+      type: notificationType,
       chatId,
-      notificationType,
-      targetTokenCount: tokens.length,
+      tokenCount: tokens.length,
       skippedSenderTokenCount: skippedSenderTokens.length,
       skippedStaleTokenCount: skippedStaleTokens.length,
     });
 
-    const response = await messaging.sendEachForMulticast({
+    const response = await messaging.sendEachForMulticast(defaultPushPayload({
       tokens,
-      notification: {
-        title: safeText(notification.title, "Pettxo booking update"),
-        body: safeText(notification.body, "You have a new booking update."),
-      },
+      title: safeText(notification.title, "Pettxo booking update"),
+      body: safeText(notification.body, "You have a new booking update."),
       data,
-      android: {
-        priority: "high",
-        notification: {
-          sound: "default",
-          tag: String(
-            notification.bookingId ??
-              notification.postId ??
-              event.params.notificationId,
-          ),
-        },
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: "default",
-            badge: 1,
-          },
-        },
-      },
-    });
+      tag: String(
+        notification.bookingId ??
+          notification.postId ??
+          event.params.notificationId,
+      ),
+    }));
 
     const cleanupBatch = db.batch();
     let cleanupCount = 0;
+    const failureCodes = new Set<string>();
     response.responses.forEach((result, index) => {
       const code = result.error?.code;
       if (!result.success) {
+        if (code) {
+          failureCodes.add(code);
+        }
         console.warn("Push delivery failed", {
           notificationId: event.params.notificationId,
-          recipientUserId: recipientId,
-          senderUserId: senderId,
+          recipientId,
+          senderId,
+          type: notificationType,
           chatId,
-          notificationType,
-          targetTokenCount: tokens.length,
+          tokenCount: tokens.length,
           skippedSenderTokenCount: skippedSenderTokens.length,
           skippedStaleTokenCount: skippedStaleTokens.length,
           tokenDocIdMasked: maskIdentifier(tokenDocs[index]?.id ?? ""),
-          code: code ?? "unknown",
+          fcmErrorCode: code ?? "unknown",
           message: result.error?.message ?? "",
         });
       }
@@ -2951,6 +3113,20 @@ export const sendPushForNotification = onDocumentWritten(
       });
       await cleanupBatch.commit();
     }
+
+    console.info("Push delivery completed", {
+      notificationId: event.params.notificationId,
+      recipientId,
+      senderId,
+      type: notificationType,
+      chatId,
+      tokenCount: tokens.length,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      fcmErrorCodes: Array.from(failureCodes),
+      skippedSenderTokenCount: skippedSenderTokens.length,
+      skippedStaleTokenCount: skippedStaleTokens.length,
+    });
   },
 );
 
@@ -3720,12 +3896,37 @@ export const verifyRazorpayPayment = onCall({
   if (asTrimmedString(initialBooking.customerId) !== uid) {
     throw new HttpsError("permission-denied", "Only the booking owner can verify payment.");
   }
+  const [initialPaymentSnapshot, initialBookingFinancialSnapshot] = await Promise.all([
+    db.collection("payments").doc(bookingId).get(),
+    db.collection("bookingFinancials").doc(bookingId).get(),
+  ]);
   const initialStatus = asTrimmedString(initialBooking.status);
   const initialPaymentStatus = asTrimmedString(asRecord(initialBooking.pricing).paymentStatus);
   if (!(initialStatus === "paymentPending" || (initialStatus === "requested" && initialPaymentStatus === "paid"))) {
     throw new HttpsError("failed-precondition", "This booking is not awaiting payment.");
   }
-  const initialStoredOrderId = asTrimmedString(asRecord(initialBooking.pricing).razorpayOrderId);
+  const initialStoredOrderId = resolveStoredBookingPaymentOrderId({
+    booking: initialBooking,
+    payment: initialPaymentSnapshot.exists ? initialPaymentSnapshot.data() ?? {} : undefined,
+    bookingFinancial: initialBookingFinancialSnapshot.exists ?
+      initialBookingFinancialSnapshot.data() ?? {} :
+      undefined,
+  });
+  console.log(JSON.stringify({
+    event: "verifyRazorpayPayment.lookup",
+    bookingId,
+    userId: uid,
+    providerId: asTrimmedString(initialBooking.serviceOwnerId ?? initialBooking.providerId),
+    expectedOrderIdMasked: maskIdentifier(initialStoredOrderId),
+    receivedOrderIdMasked: maskIdentifier(razorpayOrderId),
+    razorpayPaymentIdMasked: maskIdentifier(razorpayPaymentId),
+    bookingStatus: initialStatus,
+    bookingPaymentStatus: initialPaymentStatus,
+    paymentDocStatus: asTrimmedString(
+      initialPaymentSnapshot.data()?.paymentStatus ?? initialPaymentSnapshot.data()?.status,
+    ),
+    paymentDocId: initialPaymentSnapshot.id,
+  }));
   if (!initialStoredOrderId || initialStoredOrderId !== razorpayOrderId) {
     throw new HttpsError("failed-precondition", "Razorpay order does not match this booking.");
   }

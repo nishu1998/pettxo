@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../domain/models/booking_cancellation_preview.dart';
 import '../../domain/models/booking_model.dart';
@@ -127,8 +128,15 @@ class BookingRepository {
       'userId': userId,
       'claimedOfferId': claimedOfferId,
     });
-
-    return BookingPaymentOrder.fromMap(Map<String, dynamic>.from(result.data));
+    final order = BookingPaymentOrder.fromMap(
+      Map<String, dynamic>.from(result.data),
+    );
+    _debugLog(
+      'createRazorpayBookingOrder -> bookingId=${order.bookingId}, '
+      'orderId=${_maskValue(order.razorpayOrderId)}, '
+      'amountPaise=${order.amountPaise}',
+    );
+    return order;
   }
 
   Future<PendingPaymentBooking?> getPendingPaymentBooking({
@@ -164,7 +172,24 @@ class BookingRepository {
     });
 
     final data = result.data;
+    _debugLog(
+      'verifyRazorpayPayment -> bookingId=$bookingId, '
+      'orderId=${_maskValue(razorpayOrderId)}, '
+      'paymentId=${_maskValue(razorpayPaymentId)}',
+    );
     return (data['bookingId'] as String? ?? bookingId).trim();
+  }
+
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    debugPrint('BookingRepository debug -> $message');
+  }
+
+  String _maskValue(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return '';
+    if (trimmed.length <= 8) return trimmed;
+    return '${trimmed.substring(0, 4)}...${trimmed.substring(trimmed.length - 4)}';
   }
 
   Future<void> markRazorpayPaymentFailed({

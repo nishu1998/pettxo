@@ -492,6 +492,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 }
 
                 final profile = profileSnapshot.data!;
+                if (!isOwnProfile && !profile.isPubliclyVisible) {
+                  return const _ProfileUnavailableState();
+                }
                 _syncFollowState(
                   currentUserId: currentUserId,
                   profileUserId: profile.uid,
@@ -1048,8 +1051,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             );
           },
         ),
-        bottomNavigationBar: const SocialBottomNav(
-          activeTab: SocialAppTab.profile,
+        bottomNavigationBar: SocialBottomNav(
+          activeTab: isOwnProfile ? SocialAppTab.profile : null,
         ),
       ),
     );
@@ -1075,6 +1078,44 @@ class _ProfileErrorState extends StatelessWidget {
             const SizedBox(height: 12),
             const Text(
               'We could not load the profile right now.',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textDark,
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () => Navigator.pushReplacementNamed(context, "/home"),
+              child: const Text('Back to home'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileUnavailableState extends StatelessWidget {
+  const _ProfileUnavailableState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.person_off_outlined,
+              size: 40,
+              color: AppColors.textGrey,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'This account is no longer available.',
+              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w700,

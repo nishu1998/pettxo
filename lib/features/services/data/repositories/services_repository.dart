@@ -7,6 +7,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../../../../core/services/firestore_cache_service.dart';
+import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/profile_service_listing.dart';
 import '../../domain/models/service_model.dart';
 
@@ -14,6 +15,8 @@ class ServicesRepository {
   final FirebaseFirestore _firestore;
   final FirebaseAuth _auth;
   final FirebaseStorage _storage;
+  final ProfileRepository _profileRepository = ProfileRepository();
+  final Map<String, bool> _ownerVisibilityCache = <String, bool>{};
 
   ServicesRepository({
     FirebaseFirestore? firestore,
@@ -35,7 +38,9 @@ class ServicesRepository {
   }
 
   Stream<List<ServiceModel>> watchActiveServices({int limit = 30}) {
-    return _activeServicesQuery(limit: limit).snapshots().map(_mapSnapshot);
+    return _activeServicesQuery(limit: limit).snapshots().asyncMap(
+      (snapshot) => _filterServicesByVisibleOwners(_mapSnapshot(snapshot)),
+    );
   }
 
   Stream<List<ServiceModel>> watchActiveServicesByCategory(
@@ -45,7 +50,9 @@ class ServicesRepository {
     return _activeServicesQuery(limit: limit)
         .where('categoryLowercase', isEqualTo: category.trim().toLowerCase())
         .snapshots()
-        .map(_mapSnapshot);
+        .asyncMap(
+          (snapshot) => _filterServicesByVisibleOwners(_mapSnapshot(snapshot)),
+        );
   }
 
   Stream<List<ServiceModel>> watchActiveServicesByCity(
@@ -55,7 +62,9 @@ class ServicesRepository {
     return _activeServicesQuery(limit: limit)
         .where('location.city', isEqualTo: city.trim())
         .snapshots()
-        .map(_mapSnapshot);
+        .asyncMap(
+          (snapshot) => _filterServicesByVisibleOwners(_mapSnapshot(snapshot)),
+        );
   }
 
   Stream<List<ServiceModel>> watchOwnerServices(String ownerUserId) {
@@ -75,8 +84,10 @@ class ServicesRepository {
         .where('isDeleted', isEqualTo: false)
         .where('isVisibleToMarketplace', isEqualTo: true)
         .snapshots()
-        .map((snapshot) {
-          final services = _mapSnapshot(snapshot);
+        .asyncMap((snapshot) async {
+          final services = await _filterServicesByVisibleOwners(
+            _mapSnapshot(snapshot),
+          );
           services.sort((a, b) {
             final aTime =
                 a.updatedAt?.millisecondsSinceEpoch ??
@@ -100,7 +111,9 @@ class ServicesRepository {
       _services.doc(id),
     );
     if (!snapshot.exists) return null;
-    return ServiceModel.fromDocument(snapshot);
+    final service = ServiceModel.fromDocument(snapshot);
+    if (!_isServicePubliclyVisible(service)) return null;
+    return await _isOwnerVisible(service.ownerUserId) ? service : null;
   }
 
   Future<ServicesPage> fetchActiveServicesPage({
@@ -128,10 +141,12 @@ class ServicesRepository {
 
     final snapshot = await FirestoreCacheService.getCollectionCacheFirst(query);
     final docs = snapshot.docs;
-    final services = docs
-        .map(ServiceModel.fromDocument)
-        .where((service) => !service.isEffectivelyPausedByVerification)
-        .toList();
+    final services = await _filterServicesByVisibleOwners(
+      docs
+          .map(ServiceModel.fromDocument)
+          .where((service) => !service.isEffectivelyPausedByVerification)
+          .toList(),
+    );
 
     return ServicesPage(
       services: services,
@@ -262,6 +277,57 @@ class ServicesRepository {
         .map(ServiceModel.fromDocument)
         .where((service) => !service.isEffectivelyPausedByVerification)
         .toList();
+  }
+
+  bool _isServicePubliclyVisible(ServiceModel service) {
+    return !service.isDeleted &&
+        service.isActive &&
+        !service.isPaused &&
+        service.isVisibleToMarketplace;
+  }
+
+  Future<List<ServiceModel>> _filterServicesByVisibleOwners(
+    List<ServiceModel> services,
+  ) async {
+    if (services.isEmpty) return const <ServiceModel>[];
+
+    final missingOwnerIds = services
+        .map((service) => service.ownerUserId.trim())
+        .where((ownerId) => ownerId.isNotEmpty)
+        .where((ownerId) => !_ownerVisibilityCache.containsKey(ownerId))
+        .toSet()
+        .toList(growable: false);
+
+    if (missingOwnerIds.isNotEmpty) {
+      final fetchedVisibility = await _profileRepository
+          .fetchPublicVisibilityByIds(missingOwnerIds);
+      _ownerVisibilityCache.addAll(fetchedVisibility);
+    }
+
+    return services
+        .where((service) {
+          final ownerId = service.ownerUserId.trim();
+          if (ownerId.isEmpty) return false;
+          if (!_isServicePubliclyVisible(service)) return false;
+          return _ownerVisibilityCache[ownerId] ?? false;
+        })
+        .toList(growable: false);
+  }
+
+  Future<bool> _isOwnerVisible(String ownerUserId) async {
+    final trimmedOwnerId = ownerUserId.trim();
+    if (trimmedOwnerId.isEmpty) return false;
+
+    final cached = _ownerVisibilityCache[trimmedOwnerId];
+    if (cached != null) {
+      return cached;
+    }
+
+    final fetchedVisibility = await _profileRepository
+        .fetchPublicVisibilityByIds([trimmedOwnerId]);
+    final resolved = fetchedVisibility[trimmedOwnerId] ?? false;
+    _ownerVisibilityCache[trimmedOwnerId] = resolved;
+    return resolved;
   }
 
   Future<List<String>> _uploadServicePhotos({

@@ -3,6 +3,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 
 import '../../../core/services/firestore_cache_service.dart';
 import '../../notifications/data/repositories/notification_repository.dart';
+import '../../profile/data/repositories/profile_repository.dart';
 
 class FollowIdsPage {
   final List<String> userIds;
@@ -40,6 +41,7 @@ class FollowRepository {
   final FirebaseFirestore _firestore;
   final FirebaseFunctions _functions;
   final NotificationRepository _notificationRepository;
+  final ProfileRepository _profileRepository = ProfileRepository();
 
   CollectionReference<Map<String, dynamic>> get _followsCollection =>
       _firestore.collection('follows');
@@ -80,6 +82,12 @@ class FollowRepository {
     final trimmedFolloweeId = _normalizeRequiredUserId(followeeId, 'Followee');
     if (trimmedFollowerId == trimmedFolloweeId) {
       throw Exception('You cannot follow yourself.');
+    }
+    final isFolloweeVisible = await _profileRepository.isUserPubliclyVisible(
+      trimmedFolloweeId,
+    );
+    if (!isFolloweeVisible) {
+      throw Exception('This account is no longer available.');
     }
 
     final followRef = _followsCollection.doc(
@@ -250,10 +258,6 @@ class FollowRepository {
       );
     }
   }
-
-  // TODO(nishant): Public follower/following list support may need broader
-  // read rules, user-scoped mirrors, or Cloud Functions before we expose
-  // profile relationship lists safely at scale.
 
   bool _isMissingDocumentError(FirebaseException error) {
     return error.code == 'not-found' ||

@@ -11,6 +11,7 @@ import '../../data/follow_repository.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/models/social_post_model.dart';
 import 'comment_sheet.dart';
+import 'live_author_resolver.dart';
 import 'post_image_carousel.dart';
 
 class SocialPostCard extends StatefulWidget {
@@ -491,160 +492,168 @@ class _SocialPostCardState extends State<SocialPostCard> {
   Widget build(BuildContext context) {
     final hasLocation = _post.locationLabel.isNotEmpty;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
+    return LiveAuthorResolver(
+      authorId: _post.authorId,
+      fallbackName: _post.authorDisplayName,
+      fallbackUsername: _post.authorUsername,
+      fallbackImageUrl: _post.authorPhotoUrl,
+      builder: (context, author) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(26),
+            border: Border.all(
+              color: AppColors.primary.withValues(alpha: 0.08),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 24,
+                offset: const Offset(0, 12),
+              ),
+            ],
           ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 12, 12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: InkWell(
-                    onTap: _openAuthorProfile,
-                    borderRadius: BorderRadius.circular(22),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        children: [
-                          _LiveAuthorIdentity(
-                            authorId: _post.authorId,
-                            fallbackName: _post.authorDisplayName,
-                            fallbackImageUrl: _post.authorPhotoUrl,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 12, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: _openAuthorProfile,
+                        borderRadius: BorderRadius.circular(22),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            children: [
+                              _ProfileAvatar(
+                                imageUrl: author.imageUrl,
+                                initials: author.initials,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _AuthorHeaderText(
+                                  displayName: author.displayName,
+                                  categoryLabel: _post.authorCategoryLabel,
+                                  isAdminPost: _isAdminPost,
+                                  hasLocation: hasLocation,
+                                  locationLabel: _post.locationLabel,
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _LiveAuthorHeader(
-                              authorId: _post.authorId,
-                              fallbackName: _post.authorDisplayName,
-                              categoryLabel: _post.authorCategoryLabel,
-                              isAdminPost: _isAdminPost,
-                              hasLocation: hasLocation,
-                              locationLabel: _post.locationLabel,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _showPostMenu,
+                      icon: const Icon(Icons.more_horiz_rounded),
+                    ),
+                  ],
+                ),
+              ),
+              PostImageCarousel(
+                imageUrls: _post.imageUrls,
+                thumbnailUrls: _post.thumbnailUrls,
+                aspectRatio: _post.aspectRatioValue,
+                onImageDoubleTap: _handleImageDoubleTap,
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+                child: Row(
+                  children: [
+                    _ActionPill(
+                      icon: _isLiked
+                          ? Icons.favorite_rounded
+                          : Icons.favorite_border_rounded,
+                      iconColor: _isLiked
+                          ? const Color(0xFFE45858)
+                          : AppColors.textDark,
+                      label: '${_post.likeCount}',
+                      onTap: _isLiking ? null : _handleLikeTap,
+                      enabled: !_isLiking,
+                    ),
+                    const SizedBox(width: 12),
+                    _ActionPill(
+                      icon: Icons.mode_comment_outlined,
+                      label: '${_post.commentCount}',
+                      onTap: _openComments,
+                    ),
+                    const SizedBox(width: 12),
+                    _ActionPill(
+                      icon: Icons.share_outlined,
+                      label: '${_post.shareCount}',
+                      onTap: _handleShareTap,
+                    ),
+                  ],
+                ),
+              ),
+              if (_post.hashtags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _post.hashtags
+                        .map((tag) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
                             ),
-                          ),
-                        ],
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF7F1),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              '#$tag',
+                              style: const TextStyle(
+                                color: AppColors.primary,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          );
+                        })
+                        .toList(growable: false),
+                  ),
+                ),
+              if (_post.moderationStatus == 'pending')
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E7),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Text(
+                      'This content is under review.',
+                      style: TextStyle(
+                        color: AppColors.primary,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ),
                 ),
-                IconButton(
-                  onPressed: _showPostMenu,
-                  icon: const Icon(Icons.more_horiz_rounded),
-                ),
-              ],
-            ),
-          ),
-          PostImageCarousel(
-            imageUrls: _post.imageUrls,
-            thumbnailUrls: _post.thumbnailUrls,
-            aspectRatio: _post.aspectRatioValue,
-            onImageDoubleTap: _handleImageDoubleTap,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-            child: Row(
-              children: [
-                _ActionPill(
-                  icon: _isLiked
-                      ? Icons.favorite_rounded
-                      : Icons.favorite_border_rounded,
-                  iconColor: _isLiked
-                      ? const Color(0xFFE45858)
-                      : AppColors.textDark,
-                  label: '${_post.likeCount}',
-                  onTap: _isLiking ? null : _handleLikeTap,
-                  enabled: !_isLiking,
-                ),
-                const SizedBox(width: 12),
-                _ActionPill(
-                  icon: Icons.mode_comment_outlined,
-                  label: '${_post.commentCount}',
-                  onTap: _openComments,
-                ),
-                const SizedBox(width: 12),
-                _ActionPill(
-                  icon: Icons.share_outlined,
-                  label: '${_post.shareCount}',
-                  onTap: _handleShareTap,
-                ),
-              ],
-            ),
-          ),
-          if (_post.hashtags.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _post.hashtags
-                    .map((tag) {
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFFF7F1),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          '#$tag',
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      );
-                    })
-                    .toList(growable: false),
-              ),
-            ),
-          if (_post.moderationStatus == 'pending')
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF3E7),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Text(
-                  'This content is under review.',
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w700,
+              if (_post.caption.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: _ExpandableCaption(
+                    username: author.username,
+                    caption: _post.caption,
                   ),
                 ),
-              ),
-            ),
-          if (_post.caption.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: _ExpandableCaption(
-                username: _post.authorUsername,
-                caption: _post.caption,
-              ),
-            ),
-        ],
-      ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -733,55 +742,6 @@ class _ExpandableCaptionState extends State<_ExpandableCaption> {
   }
 }
 
-class _LiveAuthorHeader extends StatelessWidget {
-  final String authorId;
-  final String fallbackName;
-  final String categoryLabel;
-  final bool isAdminPost;
-  final bool hasLocation;
-  final String locationLabel;
-
-  const _LiveAuthorHeader({
-    required this.authorId,
-    required this.fallbackName,
-    required this.categoryLabel,
-    required this.isAdminPost,
-    required this.hasLocation,
-    required this.locationLabel,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (isAdminPost || authorId.trim().isEmpty) {
-      return _AuthorHeaderText(
-        displayName: fallbackName,
-        categoryLabel: categoryLabel,
-        isAdminPost: isAdminPost,
-        hasLocation: hasLocation,
-        locationLabel: locationLabel,
-      );
-    }
-
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('users')
-          .doc(authorId.trim())
-          .snapshots(),
-      builder: (context, snapshot) {
-        final data = snapshot.data?.data() ?? const <String, dynamic>{};
-        final liveName = (data['name'] as String? ?? '').trim();
-        return _AuthorHeaderText(
-          displayName: liveName.isEmpty ? fallbackName : liveName,
-          categoryLabel: categoryLabel,
-          isAdminPost: isAdminPost,
-          hasLocation: hasLocation,
-          locationLabel: locationLabel,
-        );
-      },
-    );
-  }
-}
-
 class _AuthorHeaderText extends StatelessWidget {
   final String displayName;
   final String categoryLabel;
@@ -859,54 +819,6 @@ class _AuthorHeaderText extends StatelessWidget {
           ),
       ],
     );
-  }
-}
-
-class _LiveAuthorIdentity extends StatelessWidget {
-  final String authorId;
-  final String fallbackName;
-  final String fallbackImageUrl;
-
-  const _LiveAuthorIdentity({
-    required this.authorId,
-    required this.fallbackName,
-    required this.fallbackImageUrl,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (authorId.trim().isEmpty) {
-      return _ProfileAvatar(
-        imageUrl: fallbackImageUrl,
-        initials: _initialsFor(fallbackName),
-      );
-    }
-
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('users')
-          .doc(authorId.trim())
-          .snapshots(),
-      builder: (context, snapshot) {
-        final data = snapshot.data?.data() ?? const <String, dynamic>{};
-        final liveName = (data['name'] as String? ?? '').trim();
-        final liveImageUrl = (data['profileImage'] as String? ?? '').trim();
-        final resolvedName = liveName.isEmpty ? fallbackName : liveName;
-        final resolvedImageUrl = liveImageUrl.isEmpty
-            ? fallbackImageUrl
-            : liveImageUrl;
-        return _ProfileAvatar(
-          imageUrl: resolvedImageUrl,
-          initials: _initialsFor(resolvedName),
-        );
-      },
-    );
-  }
-
-  String _initialsFor(String name) {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return 'P';
-    return trimmed.substring(0, 1).toUpperCase();
   }
 }
 

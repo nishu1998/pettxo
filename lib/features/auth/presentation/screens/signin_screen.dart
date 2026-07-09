@@ -8,6 +8,7 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
+import '../../data/services/email_sign_in_lockout_service.dart';
 import '../../data/services/user_service.dart';
 import '../widgets/auth_input_field.dart';
 import '../widgets/auth_shell.dart';
@@ -22,6 +23,8 @@ class SigninScreen extends StatefulWidget {
 
 class _SigninScreenState extends State<SigninScreen> {
   final AuthService _authService = AuthService();
+  final EmailSignInLockoutService _emailSignInLockoutService =
+      EmailSignInLockoutService();
   final UserService _userService = UserService();
   final AnalyticsService _analytics = AnalyticsService.instance;
 
@@ -81,6 +84,18 @@ class _SigninScreenState extends State<SigninScreen> {
 
     if (emailError != null || passwordError != null) return;
 
+    final lockoutState = await _emailSignInLockoutService.getState(email);
+    if (!mounted) return;
+    if (lockoutState.isLocked) {
+      AppSnackbar.showError(
+        context,
+        _buildLockoutMessage(lockoutState),
+        title: 'Too Many Attempts',
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
+
     setState(() => isLoading = true);
     await _analytics.logSignInAttempt(method: 'email');
 
@@ -90,6 +105,7 @@ class _SigninScreenState extends State<SigninScreen> {
     setState(() => isLoading = false);
 
     if (result.isSuccess) {
+      await _emailSignInLockoutService.clear(email);
       await _analytics.logSignInResult(method: 'email', isSuccess: true);
       if (!mounted) return;
       AppFeedback.show(
@@ -104,15 +120,58 @@ class _SigninScreenState extends State<SigninScreen> {
       await _analytics.logSignInResult(
         method: 'email',
         isSuccess: false,
-        errorCode: result.error,
+        errorCode: result.errorCode ?? result.error,
       );
       if (!mounted) return;
+      if (result.errorCode == 'wrong-password' ||
+          (result.errorCode == null &&
+              (result.error ?? '').toLowerCase().contains(
+                'incorrect password',
+              ))) {
+        final nextState = await _emailSignInLockoutService
+            .registerWrongPassword(email);
+        if (!mounted) return;
+        AppSnackbar.showError(
+          context,
+          nextState.isLocked
+              ? _buildLockoutMessage(nextState)
+              : _buildWrongPasswordMessage(nextState),
+          title: nextState.isLocked
+              ? 'Too Many Attempts'
+              : 'Incorrect Password',
+          duration: const Duration(seconds: 5),
+        );
+        return;
+      }
+
       AppFeedback.show(
         context,
         message: result.error ?? "Login failed",
         tone: AppFeedbackTone.error,
       );
     }
+  }
+
+  String _buildWrongPasswordMessage(EmailSignInLockoutState state) {
+    final remainingAttempts = state.remainingAttemptsBeforeLockout;
+    if (remainingAttempts <= 0) {
+      return 'Wrong password again. One more failed attempt will lock email sign-in for 30 minutes.';
+    }
+    final attemptLabel = remainingAttempts == 1 ? 'attempt' : 'attempts';
+    return 'The password you entered is incorrect. $remainingAttempts $attemptLabel left before email sign-in is locked for 30 minutes.';
+  }
+
+  String _buildLockoutMessage(EmailSignInLockoutState state) {
+    final remaining = state.remainingLockoutDuration;
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds % 60;
+    if (minutes <= 0) {
+      return 'Email sign-in is temporarily locked. Try again in less than a minute.';
+    }
+    if (seconds == 0) {
+      return 'Email sign-in is temporarily locked. Try again in $minutes minutes.';
+    }
+    return 'Email sign-in is temporarily locked. Try again in $minutes min ${seconds.toString().padLeft(2, '0')} sec.';
   }
 
   @override
