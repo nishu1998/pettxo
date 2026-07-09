@@ -42,10 +42,6 @@ const chatPushChannelId = "pettxo_chat_messages";
 const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
 const socialActivityPushChannelId = "pettxo_social_activity";
 const otherUpdatesPushChannelId = "pettxo_other_updates";
-const chatPushGroupKey = "pettxo_group_chat";
-const bookingsPaymentsPushGroupKey = "pettxo_group_bookings_payments";
-const socialActivityPushGroupKey = "pettxo_group_social";
-const otherUpdatesPushGroupKey = "pettxo_group_other";
 
 type BookingStatus =
   | "paymentPending"
@@ -2413,8 +2409,7 @@ function notificationData(data: Record<string, unknown>): Record<string, string>
 
 function isInvalidMessagingToken(code: string | undefined): boolean {
   return code === "messaging/registration-token-not-registered" ||
-    code === "messaging/invalid-registration-token" ||
-    code === "messaging/invalid-argument";
+    code === "messaging/invalid-registration-token";
 }
 
 function notificationTokenDocId(token: string): string {
@@ -2425,11 +2420,8 @@ function defaultPushPayload(params: {
   title: string;
   body: string;
   data: Record<string, string>;
-  tag: string;
   tokens: string[];
   channelId?: string;
-  groupKey?: string;
-  androidCategory?: string;
 }) {
   return {
     tokens: params.tokens,
@@ -2446,9 +2438,6 @@ function defaultPushPayload(params: {
         sound: "default",
         priority: "high" as const,
         visibility: "public" as const,
-        tag: params.tag,
-        group: params.groupKey,
-        category: params.androidCategory,
       },
     },
     apns: {
@@ -2473,9 +2462,7 @@ function normalizedNotificationType(type: unknown, category: unknown): string {
 
 type PushRouting = {
   channelId: string;
-  groupKey: string;
   emoji: string;
-  androidCategory: string;
   categoryName: string;
 };
 
@@ -2486,9 +2473,7 @@ function resolvePushRouting(notificationType: string): PushRouting {
     case "providerChat":
       return {
         channelId: chatPushChannelId,
-        groupKey: chatPushGroupKey,
         emoji: "💬",
-        androidCategory: "msg",
         categoryName: "chat",
       };
     case "bookingRequest":
@@ -2498,9 +2483,7 @@ function resolvePushRouting(notificationType: string): PushRouting {
     case "bookingReminder":
       return {
         channelId: bookingsPaymentsPushChannelId,
-        groupKey: bookingsPaymentsPushGroupKey,
         emoji: "📅",
-        androidCategory: "event",
         categoryName: "bookings_payments",
       };
     case "paymentSuccess":
@@ -2508,128 +2491,56 @@ function resolvePushRouting(notificationType: string): PushRouting {
     case "payout":
       return {
         channelId: bookingsPaymentsPushChannelId,
-        groupKey: bookingsPaymentsPushGroupKey,
         emoji: "💳",
-        androidCategory: "status",
         categoryName: "bookings_payments",
       };
     case "refund":
       return {
         channelId: bookingsPaymentsPushChannelId,
-        groupKey: bookingsPaymentsPushGroupKey,
         emoji: "↩️",
-        androidCategory: "status",
         categoryName: "bookings_payments",
       };
     case "socialLike":
     case "like":
       return {
         channelId: socialActivityPushChannelId,
-        groupKey: socialActivityPushGroupKey,
         emoji: "❤️",
-        androidCategory: "social",
         categoryName: "social",
       };
     case "socialComment":
     case "comment":
       return {
         channelId: socialActivityPushChannelId,
-        groupKey: socialActivityPushGroupKey,
         emoji: "💬",
-        androidCategory: "social",
         categoryName: "social",
       };
     case "socialFollow":
     case "follow":
       return {
         channelId: socialActivityPushChannelId,
-        groupKey: socialActivityPushGroupKey,
         emoji: "👤",
-        androidCategory: "social",
         categoryName: "social",
       };
     case "promotion":
       return {
         channelId: otherUpdatesPushChannelId,
-        groupKey: otherUpdatesPushGroupKey,
         emoji: "🎉",
-        androidCategory: "social",
         categoryName: "other",
       };
     case "general":
     case "announcement":
       return {
         channelId: otherUpdatesPushChannelId,
-        groupKey: otherUpdatesPushGroupKey,
         emoji: "📢",
-        androidCategory: "status",
         categoryName: "other",
       };
     default:
       return {
         channelId: otherUpdatesPushChannelId,
-        groupKey: otherUpdatesPushGroupKey,
         emoji: "📢",
-        androidCategory: "status",
         categoryName: "other",
       };
   }
-}
-
-function resolvePushTag(params: {
-  notificationType: string;
-  notificationId: string;
-  chatId?: string;
-  bookingId?: string;
-  postId?: string;
-}): string {
-  const chatId = asTrimmedString(params.chatId);
-  if (
-    (params.notificationType === "chat" ||
-      params.notificationType === "message" ||
-      params.notificationType === "providerChat") &&
-    chatId
-  ) {
-    return `chat_${chatId}`;
-  }
-
-  const bookingId = asTrimmedString(params.bookingId);
-  if (
-    [
-      "bookingRequest",
-      "bookingAccepted",
-      "bookingRejected",
-      "bookingCancelled",
-      "bookingReminder",
-      "paymentSuccess",
-      "paymentFailed",
-      "refund",
-      "payout",
-    ].includes(params.notificationType) &&
-    bookingId
-  ) {
-    return `booking_${bookingId}`;
-  }
-
-  const postId = asTrimmedString(params.postId);
-  if (
-    [
-      "socialLike",
-      "socialComment",
-      "socialFollow",
-      "like",
-      "comment",
-      "follow",
-    ].includes(params.notificationType)
-  ) {
-    return postId ? `social_${postId}` : `social_${params.notificationType}`;
-  }
-
-  if (params.notificationType) {
-    return params.notificationType;
-  }
-
-  return params.notificationId;
 }
 
 function ensureSingleLeadingEmoji(text: string, emoji: string): string {
@@ -2953,10 +2864,7 @@ export const sendTestPushToSelf = onCall({invoker: "public"}, async (request) =>
     title,
     body,
     data,
-    tag: `test-${uid}`,
     channelId: otherUpdatesPushChannelId,
-    groupKey: otherUpdatesPushGroupKey,
-    androidCategory: "status",
   }));
 
   const failureCodes = Array.from(new Set(
@@ -3241,16 +3149,8 @@ export const sendPushForNotification = onDocumentWritten(
     });
     const routing = resolvePushRouting(notificationType);
     const selectedChannelId = routing.channelId;
-    const selectedGroupKey = routing.groupKey;
     const selectedCategoryName = routing.categoryName;
     const emojiUsed = routing.emoji;
-    const selectedTag = resolvePushTag({
-      notificationType,
-      notificationId: event.params.notificationId,
-      chatId,
-      bookingId,
-      postId,
-    });
     const pushTitle = ensureSingleLeadingEmoji(
       safeText(notification.title, "Pettxo booking update"),
       emojiUsed,
@@ -3264,8 +3164,6 @@ export const sendPushForNotification = onDocumentWritten(
       notificationType,
       selectedCategoryName,
       selectedChannelId,
-      selectedGroupKey,
-      selectedTag,
       emojiUsed,
       chatId,
       tokenCount: tokens.length,
@@ -3278,10 +3176,7 @@ export const sendPushForNotification = onDocumentWritten(
       title: pushTitle,
       body: pushBody,
       data,
-      tag: selectedTag,
       channelId: selectedChannelId,
-      groupKey: selectedGroupKey,
-      androidCategory: routing.androidCategory,
     }));
 
     const cleanupBatch = db.batch();
@@ -3300,8 +3195,6 @@ export const sendPushForNotification = onDocumentWritten(
           notificationType,
           selectedCategoryName,
           selectedChannelId,
-          selectedGroupKey,
-          selectedTag,
           emojiUsed,
           chatId,
           tokenCount: tokens.length,
@@ -3337,8 +3230,6 @@ export const sendPushForNotification = onDocumentWritten(
       notificationType,
       selectedCategoryName,
       selectedChannelId,
-      selectedGroupKey,
-      selectedTag,
       emojiUsed,
       chatId,
       tokenCount: tokens.length,

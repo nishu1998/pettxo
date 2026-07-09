@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -6,6 +7,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../features/bookings/domain/models/booking_flow_models.dart';
 import '../../features/bookings/presentation/screens/booking_detail_screen.dart';
@@ -23,13 +25,44 @@ Future<void> pettxoFirebaseMessagingBackgroundHandler(
   await Firebase.initializeApp();
 }
 
+@pragma('vm:entry-point')
+void pettxoLocalNotificationTapBackground(NotificationResponse response) {}
+
+class _AndroidChannelSpec {
+  final String id;
+  final String name;
+  final String description;
+  final Importance importance;
+  final Priority priority;
+
+  const _AndroidChannelSpec({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.importance,
+    required this.priority,
+  });
+}
+
 class PushNotificationService {
   PushNotificationService._();
 
   static final PushNotificationService instance = PushNotificationService._();
+  static const String _generalChannelId = 'pettxo_general_notifications';
+  static const String _chatChannelId = 'pettxo_chat_messages';
+  static const String _bookingsChannelId = 'pettxo_bookings_payments';
+  static const String _socialChannelId = 'pettxo_social_activity';
+  static const String _otherChannelId = 'pettxo_other_updates';
+
+  static const String _chatGroupKey = 'pettxo_group_chat';
+  static const String _bookingsGroupKey = 'pettxo_group_bookings_payments';
+  static const String _socialGroupKey = 'pettxo_group_social';
+  static const String _otherGroupKey = 'pettxo_group_other';
 
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
   final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(
     region: 'asia-south1',
   );
@@ -43,7 +76,10 @@ class PushNotificationService {
   OverlayEntry? _foregroundBannerEntry;
   Timer? _foregroundBannerTimer;
   final Set<String> _handledMessageKeys = <String>{};
+  final Map<String, List<String>> _localGroupInboxLines =
+      <String, List<String>>{};
   bool _networkRetryListenerAttached = false;
+  bool _localNotificationsInitialized = false;
 
   String _maskToken(String token) {
     if (token.isEmpty) return '';
@@ -57,6 +93,7 @@ class PushNotificationService {
   }
 
   Future<void> initialize() async {
+    await _initializeLocalNotifications();
     await _requestPermission();
     await _messaging.setForegroundNotificationPresentationOptions(
       alert: true,
@@ -115,6 +152,37 @@ class PushNotificationService {
         _handleNotificationTap(initialMessage);
       });
     }
+  }
+
+  Future<void> _initializeLocalNotifications() async {
+    if (kIsWeb || _localNotificationsInitialized) return;
+
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    );
+
+    await _localNotifications.initialize(
+      settings,
+      onDidReceiveNotificationResponse: (response) {
+        final payload = response.payload;
+        if (payload == null || payload.isEmpty) return;
+        _handleLocalNotificationPayload(payload);
+      },
+      onDidReceiveBackgroundNotificationResponse:
+          pettxoLocalNotificationTapBackground,
+    );
+
+    final launchDetails = await _localNotifications
+        .getNotificationAppLaunchDetails();
+    final payload = launchDetails?.notificationResponse?.payload;
+    if (payload != null && payload.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _handleLocalNotificationPayload(payload);
+      });
+    }
+
+    _localNotificationsInitialized = true;
   }
 
   Future<void> _requestPermission() async {
@@ -313,7 +381,7 @@ class PushNotificationService {
     };
   }
 
-  void _handleForegroundMessage(RemoteMessage message) {
+  Future<void> _handleForegroundMessage(RemoteMessage message) async {
     final currentUserId = _auth.currentUser?.uid.trim() ?? '';
     final senderId = _stringValue(message.data['senderId']);
     final type = _stringValue(message.data['type']);
@@ -338,6 +406,16 @@ class PushNotificationService {
       message.data['body'],
       'You have a new notification.',
     );
+
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      await _showAndroidGroupedNotification(
+        message: message,
+        title: title,
+        body: body,
+      );
+      return;
+    }
+
     _debugLog(
       'PushNotificationService foreground banner debug -> currentUserId=$currentUserId, senderId=$senderId, type=$type, category=$category, chatId=${_stringValue(message.data['chatId'])}',
     );
@@ -385,6 +463,19 @@ class PushNotificationService {
     );
     _dismissForegroundBanner();
     _navigateFromPayload(data);
+  }
+
+  void _handleLocalNotificationPayload(String payload) {
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is! Map<String, dynamic>) return;
+      _dismissForegroundBanner();
+      _navigateFromPayload(decoded);
+    } catch (error) {
+      _debugLog(
+        'PushNotificationService local notification payload debug -> parse failed: $error',
+      );
+    }
   }
 
   String _messageKeyFor(RemoteMessage message) {
@@ -467,6 +558,203 @@ class PushNotificationService {
     final second = (b ?? '').trim();
     if (second.isNotEmpty) return second;
     return fallback;
+  }
+
+  Future<void> _showAndroidGroupedNotification({
+    required RemoteMessage message,
+    required String title,
+    required String body,
+  }) async {
+    await _initializeLocalNotifications();
+
+    final normalizedType = _normalizedNotificationType(
+      _stringValue(message.data['type']),
+      _stringValue(message.data['category']),
+    );
+    final channel = _channelSpecForType(normalizedType);
+    final groupKey = _groupKeyForType(normalizedType);
+    final payload = jsonEncode(message.data);
+    final notificationId = _stableNotificationId(_messageKeyFor(message));
+
+    final lines = _localGroupInboxLines.putIfAbsent(groupKey, () => <String>[]);
+    final previewLine = body.isEmpty ? title : '$title - $body';
+    lines.add(previewLine);
+    if (lines.length > 5) {
+      lines.removeRange(0, lines.length - 5);
+    }
+
+    final androidDetails = AndroidNotificationDetails(
+      channel.id,
+      channel.name,
+      channelDescription: channel.description,
+      importance: channel.importance,
+      priority: channel.priority,
+      groupKey: groupKey,
+      styleInformation: const DefaultStyleInformation(true, true),
+      playSound: true,
+      enableVibration: true,
+      visibility: NotificationVisibility.public,
+      channelShowBadge: true,
+    );
+
+    await _localNotifications.show(
+      notificationId,
+      title,
+      body,
+      NotificationDetails(android: androidDetails),
+      payload: payload,
+    );
+
+    if (lines.length < 2) return;
+
+    final summaryDetails = AndroidNotificationDetails(
+      channel.id,
+      channel.name,
+      channelDescription: channel.description,
+      importance: channel.importance,
+      priority: channel.priority,
+      groupKey: groupKey,
+      setAsGroupSummary: true,
+      styleInformation: InboxStyleInformation(
+        lines.reversed.take(5).toList(growable: false),
+        contentTitle: _summaryTitleForGroup(groupKey, lines.length),
+        summaryText: '${lines.length} notifications',
+      ),
+      playSound: false,
+      enableVibration: false,
+      visibility: NotificationVisibility.public,
+      channelShowBadge: true,
+    );
+
+    await _localNotifications.show(
+      _stableNotificationId('summary_$groupKey'),
+      _summaryTitleForGroup(groupKey, lines.length),
+      '${lines.length} new notifications',
+      NotificationDetails(android: summaryDetails),
+      payload: payload,
+    );
+  }
+
+  String _normalizedNotificationType(String type, String category) {
+    final trimmedType = type.trim();
+    final trimmedCategory = category.trim();
+    if (trimmedCategory == 'chat' || trimmedType == 'chatMessage') {
+      return 'chat';
+    }
+    return trimmedType;
+  }
+
+  _AndroidChannelSpec _channelSpecForType(String notificationType) {
+    switch (notificationType) {
+      case 'chat':
+      case 'message':
+      case 'providerChat':
+        return const _AndroidChannelSpec(
+          id: _chatChannelId,
+          name: '💬 Chat Messages',
+          description: 'Direct chat and provider/customer messages.',
+          importance: Importance.high,
+          priority: Priority.high,
+        );
+      case 'bookingRequest':
+      case 'bookingAccepted':
+      case 'bookingRejected':
+      case 'bookingCancelled':
+      case 'bookingReminder':
+      case 'paymentSuccess':
+      case 'paymentFailed':
+      case 'refund':
+      case 'payout':
+        return const _AndroidChannelSpec(
+          id: _bookingsChannelId,
+          name: '📅 Bookings & Payments',
+          description: 'Booking requests, updates, and payment alerts.',
+          importance: Importance.high,
+          priority: Priority.high,
+        );
+      case 'socialLike':
+      case 'socialComment':
+      case 'socialFollow':
+      case 'like':
+      case 'comment':
+      case 'follow':
+        return const _AndroidChannelSpec(
+          id: _socialChannelId,
+          name: '❤️ Social Activity',
+          description: 'Likes, comments, follows, and social activity.',
+          importance: Importance.defaultImportance,
+          priority: Priority.defaultPriority,
+        );
+      case 'general':
+      case 'promotion':
+      case 'announcement':
+        return const _AndroidChannelSpec(
+          id: _otherChannelId,
+          name: '📢 Other Updates',
+          description: 'Announcements, promotions, and Pettxo updates.',
+          importance: Importance.defaultImportance,
+          priority: Priority.defaultPriority,
+        );
+      default:
+        return const _AndroidChannelSpec(
+          id: _generalChannelId,
+          name: 'Pettxo Alerts',
+          description: 'General Pettxo notifications.',
+          importance: Importance.high,
+          priority: Priority.high,
+        );
+    }
+  }
+
+  String _groupKeyForType(String notificationType) {
+    switch (notificationType) {
+      case 'chat':
+      case 'message':
+      case 'providerChat':
+        return _chatGroupKey;
+      case 'bookingRequest':
+      case 'bookingAccepted':
+      case 'bookingRejected':
+      case 'bookingCancelled':
+      case 'bookingReminder':
+      case 'paymentSuccess':
+      case 'paymentFailed':
+      case 'refund':
+      case 'payout':
+        return _bookingsGroupKey;
+      case 'socialLike':
+      case 'socialComment':
+      case 'socialFollow':
+      case 'like':
+      case 'comment':
+      case 'follow':
+        return _socialGroupKey;
+      case 'general':
+      case 'promotion':
+      case 'announcement':
+        return _otherGroupKey;
+      default:
+        return _otherGroupKey;
+    }
+  }
+
+  String _summaryTitleForGroup(String groupKey, int count) {
+    switch (groupKey) {
+      case _chatGroupKey:
+        return '$count chat messages';
+      case _bookingsGroupKey:
+        return '$count booking updates';
+      case _socialGroupKey:
+        return '$count social updates';
+      case _otherGroupKey:
+        return '$count Pettxo updates';
+      default:
+        return '$count notifications';
+    }
+  }
+
+  int _stableNotificationId(String source) {
+    return source.hashCode & 0x7fffffff;
   }
 }
 
