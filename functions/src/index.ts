@@ -38,6 +38,14 @@ const minimumBookingLeadMs = serviceResponseCutoffMs;
 const otpAvailabilityWindowMs = hourMs;
 const otpValidityMs = hourMs;
 const defaultPushChannelId = "pettxo_general_notifications";
+const chatPushChannelId = "pettxo_chat_messages";
+const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
+const socialActivityPushChannelId = "pettxo_social_activity";
+const otherUpdatesPushChannelId = "pettxo_other_updates";
+const chatPushGroupKey = "pettxo_group_chat";
+const bookingsPaymentsPushGroupKey = "pettxo_group_bookings_payments";
+const socialActivityPushGroupKey = "pettxo_group_social";
+const otherUpdatesPushGroupKey = "pettxo_group_other";
 
 type BookingStatus =
   | "paymentPending"
@@ -2419,6 +2427,9 @@ function defaultPushPayload(params: {
   data: Record<string, string>;
   tag: string;
   tokens: string[];
+  channelId?: string;
+  groupKey?: string;
+  androidCategory?: string;
 }) {
   return {
     tokens: params.tokens,
@@ -2431,11 +2442,13 @@ function defaultPushPayload(params: {
       priority: "high" as const,
       ttl: 60 * 60 * 1000,
       notification: {
-        channelId: defaultPushChannelId,
+        channelId: params.channelId || defaultPushChannelId,
         sound: "default",
         priority: "high" as const,
         visibility: "public" as const,
         tag: params.tag,
+        group: params.groupKey,
+        category: params.androidCategory,
       },
     },
     apns: {
@@ -2447,6 +2460,182 @@ function defaultPushPayload(params: {
       },
     },
   };
+}
+
+function normalizedNotificationType(type: unknown, category: unknown): string {
+  const trimmedType = asTrimmedString(type);
+  const trimmedCategory = asTrimmedString(category);
+  if (trimmedCategory === "chat" || trimmedType === "chatMessage") {
+    return "chat";
+  }
+  return trimmedType;
+}
+
+type PushRouting = {
+  channelId: string;
+  groupKey: string;
+  emoji: string;
+  androidCategory: string;
+  categoryName: string;
+};
+
+function resolvePushRouting(notificationType: string): PushRouting {
+  switch (notificationType) {
+    case "chat":
+    case "message":
+    case "providerChat":
+      return {
+        channelId: chatPushChannelId,
+        groupKey: chatPushGroupKey,
+        emoji: "💬",
+        androidCategory: "msg",
+        categoryName: "chat",
+      };
+    case "bookingRequest":
+    case "bookingAccepted":
+    case "bookingRejected":
+    case "bookingCancelled":
+    case "bookingReminder":
+      return {
+        channelId: bookingsPaymentsPushChannelId,
+        groupKey: bookingsPaymentsPushGroupKey,
+        emoji: "📅",
+        androidCategory: "event",
+        categoryName: "bookings_payments",
+      };
+    case "paymentSuccess":
+    case "paymentFailed":
+    case "payout":
+      return {
+        channelId: bookingsPaymentsPushChannelId,
+        groupKey: bookingsPaymentsPushGroupKey,
+        emoji: "💳",
+        androidCategory: "status",
+        categoryName: "bookings_payments",
+      };
+    case "refund":
+      return {
+        channelId: bookingsPaymentsPushChannelId,
+        groupKey: bookingsPaymentsPushGroupKey,
+        emoji: "↩️",
+        androidCategory: "status",
+        categoryName: "bookings_payments",
+      };
+    case "socialLike":
+    case "like":
+      return {
+        channelId: socialActivityPushChannelId,
+        groupKey: socialActivityPushGroupKey,
+        emoji: "❤️",
+        androidCategory: "social",
+        categoryName: "social",
+      };
+    case "socialComment":
+    case "comment":
+      return {
+        channelId: socialActivityPushChannelId,
+        groupKey: socialActivityPushGroupKey,
+        emoji: "💬",
+        androidCategory: "social",
+        categoryName: "social",
+      };
+    case "socialFollow":
+    case "follow":
+      return {
+        channelId: socialActivityPushChannelId,
+        groupKey: socialActivityPushGroupKey,
+        emoji: "👤",
+        androidCategory: "social",
+        categoryName: "social",
+      };
+    case "promotion":
+      return {
+        channelId: otherUpdatesPushChannelId,
+        groupKey: otherUpdatesPushGroupKey,
+        emoji: "🎉",
+        androidCategory: "social",
+        categoryName: "other",
+      };
+    case "general":
+    case "announcement":
+      return {
+        channelId: otherUpdatesPushChannelId,
+        groupKey: otherUpdatesPushGroupKey,
+        emoji: "📢",
+        androidCategory: "status",
+        categoryName: "other",
+      };
+    default:
+      return {
+        channelId: otherUpdatesPushChannelId,
+        groupKey: otherUpdatesPushGroupKey,
+        emoji: "📢",
+        androidCategory: "status",
+        categoryName: "other",
+      };
+  }
+}
+
+function resolvePushTag(params: {
+  notificationType: string;
+  notificationId: string;
+  chatId?: string;
+  bookingId?: string;
+  postId?: string;
+}): string {
+  const chatId = asTrimmedString(params.chatId);
+  if (
+    (params.notificationType === "chat" ||
+      params.notificationType === "message" ||
+      params.notificationType === "providerChat") &&
+    chatId
+  ) {
+    return `chat_${chatId}`;
+  }
+
+  const bookingId = asTrimmedString(params.bookingId);
+  if (
+    [
+      "bookingRequest",
+      "bookingAccepted",
+      "bookingRejected",
+      "bookingCancelled",
+      "bookingReminder",
+      "paymentSuccess",
+      "paymentFailed",
+      "refund",
+      "payout",
+    ].includes(params.notificationType) &&
+    bookingId
+  ) {
+    return `booking_${bookingId}`;
+  }
+
+  const postId = asTrimmedString(params.postId);
+  if (
+    [
+      "socialLike",
+      "socialComment",
+      "socialFollow",
+      "like",
+      "comment",
+      "follow",
+    ].includes(params.notificationType)
+  ) {
+    return postId ? `social_${postId}` : `social_${params.notificationType}`;
+  }
+
+  if (params.notificationType) {
+    return params.notificationType;
+  }
+
+  return params.notificationId;
+}
+
+function ensureSingleLeadingEmoji(text: string, emoji: string): string {
+  const trimmed = text.trim();
+  if (!trimmed || !emoji) return trimmed;
+  return trimmed.startsWith(emoji) ? trimmed : `${emoji} ${trimmed}`;
 }
 
 function notificationPreferenceValue(
@@ -2765,6 +2954,9 @@ export const sendTestPushToSelf = onCall({invoker: "public"}, async (request) =>
     body,
     data,
     tag: `test-${uid}`,
+    channelId: otherUpdatesPushChannelId,
+    groupKey: otherUpdatesPushGroupKey,
+    androidCategory: "status",
   }));
 
   const failureCodes = Array.from(new Set(
@@ -2907,9 +3099,7 @@ export const sendPushForNotification = onDocumentWritten(
     const postId = String(notification.postId ?? "");
     const chatId = String(notification.chatId ?? "");
     const category = String(notification.category ?? "");
-    const notificationType = category === "chat" || String(notification.type ?? "") === "chatMessage" ?
-      "chat" :
-      String(notification.type ?? "");
+    const notificationType = normalizedNotificationType(notification.type, category);
     const currentLastMessageId = String(notification.lastMessageId ?? "");
     const previousLastMessageId = String(previousNotification?.lastMessageId ?? "");
 
@@ -3049,12 +3239,34 @@ export const sendPushForNotification = onDocumentWritten(
       recipientRole: notification.recipientRole ?? "",
       click_action: "FLUTTER_NOTIFICATION_CLICK",
     });
+    const routing = resolvePushRouting(notificationType);
+    const selectedChannelId = routing.channelId;
+    const selectedGroupKey = routing.groupKey;
+    const selectedCategoryName = routing.categoryName;
+    const emojiUsed = routing.emoji;
+    const selectedTag = resolvePushTag({
+      notificationType,
+      notificationId: event.params.notificationId,
+      chatId,
+      bookingId,
+      postId,
+    });
+    const pushTitle = ensureSingleLeadingEmoji(
+      safeText(notification.title, "Pettxo booking update"),
+      emojiUsed,
+    );
+    const pushBody = safeText(notification.body, "You have a new booking update.");
 
     console.info("Notification created", {
       notificationId: event.params.notificationId,
       recipientId,
       senderId,
-      type: notificationType,
+      notificationType,
+      selectedCategoryName,
+      selectedChannelId,
+      selectedGroupKey,
+      selectedTag,
+      emojiUsed,
       chatId,
       tokenCount: tokens.length,
       skippedSenderTokenCount: skippedSenderTokens.length,
@@ -3063,14 +3275,13 @@ export const sendPushForNotification = onDocumentWritten(
 
     const response = await messaging.sendEachForMulticast(defaultPushPayload({
       tokens,
-      title: safeText(notification.title, "Pettxo booking update"),
-      body: safeText(notification.body, "You have a new booking update."),
+      title: pushTitle,
+      body: pushBody,
       data,
-      tag: String(
-        notification.bookingId ??
-          notification.postId ??
-          event.params.notificationId,
-      ),
+      tag: selectedTag,
+      channelId: selectedChannelId,
+      groupKey: selectedGroupKey,
+      androidCategory: routing.androidCategory,
     }));
 
     const cleanupBatch = db.batch();
@@ -3086,7 +3297,12 @@ export const sendPushForNotification = onDocumentWritten(
           notificationId: event.params.notificationId,
           recipientId,
           senderId,
-          type: notificationType,
+          notificationType,
+          selectedCategoryName,
+          selectedChannelId,
+          selectedGroupKey,
+          selectedTag,
+          emojiUsed,
           chatId,
           tokenCount: tokens.length,
           skippedSenderTokenCount: skippedSenderTokens.length,
@@ -3118,7 +3334,12 @@ export const sendPushForNotification = onDocumentWritten(
       notificationId: event.params.notificationId,
       recipientId,
       senderId,
-      type: notificationType,
+      notificationType,
+      selectedCategoryName,
+      selectedChannelId,
+      selectedGroupKey,
+      selectedTag,
+      emojiUsed,
       chatId,
       tokenCount: tokens.length,
       successCount: response.successCount,
