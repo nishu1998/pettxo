@@ -10,16 +10,20 @@ class BookingCard extends StatelessWidget {
   final BookingRecord booking;
   final String? countdownText;
   final String? loadingActionLabel;
+  final bool isDeletingPendingRequest;
   final VoidCallback? onTap;
   final void Function(BookingActionData action)? onActionTap;
+  final VoidCallback? onDeletePendingRequest;
 
   const BookingCard({
     super.key,
     required this.booking,
     this.countdownText,
     this.loadingActionLabel,
+    this.isDeletingPendingRequest = false,
     this.onTap,
     this.onActionTap,
+    this.onDeletePendingRequest,
   });
 
   @override
@@ -88,6 +92,14 @@ class BookingCard extends StatelessWidget {
                     label: booking.statusLabel,
                     tone: booking.statusTone,
                   ),
+                if (onDeletePendingRequest != null ||
+                    isDeletingPendingRequest) ...[
+                  const SizedBox(width: 8),
+                  _PendingRequestMenu(
+                    isLoading: isDeletingPendingRequest,
+                    onDelete: onDeletePendingRequest,
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 18),
@@ -167,6 +179,70 @@ class BookingCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(28),
       onTap: onTap,
       child: card,
+    );
+  }
+}
+
+class _PendingRequestMenu extends StatelessWidget {
+  final bool isLoading;
+  final VoidCallback? onDelete;
+
+  const _PendingRequestMenu({required this.isLoading, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF7ED),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Padding(
+          padding: EdgeInsets.all(8),
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+
+    return PopupMenuButton<String>(
+      tooltip: 'More options',
+      onSelected: (value) {
+        if (value == 'delete_pending_request') {
+          onDelete?.call();
+        }
+      },
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      itemBuilder: (context) => const [
+        PopupMenuItem<String>(
+          value: 'delete_pending_request',
+          child: Row(
+            children: [
+              Icon(
+                Icons.delete_outline_rounded,
+                color: Color(0xFFB91C1C),
+                size: 18,
+              ),
+              SizedBox(width: 10),
+              Text('Delete pending request'),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF7ED),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Icon(
+          Icons.more_vert_rounded,
+          color: AppColors.textGrey,
+          size: 20,
+        ),
+      ),
     );
   }
 }

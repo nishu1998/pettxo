@@ -18,6 +18,8 @@ import '../../data/repositories/booking_repository.dart';
 import '../../data/repositories/booking_review_repository.dart';
 import '../../domain/models/booking_model.dart';
 import '../../domain/models/booking_flow_models.dart';
+import '../../../messages/data/repositories/chat_repository.dart';
+import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../widgets/section_block.dart';
 import '../widgets/status_chip.dart';
 
@@ -41,6 +43,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   final BookingRepository _bookingRepository = BookingRepository();
   final BookingReviewRepository _bookingReviewRepository =
       BookingReviewRepository();
+  final ChatRepository _chatRepository = ChatRepository();
   late final Timer _timer;
   static const List<String> _reviewQuickTags = [
     'Friendly provider',
@@ -57,6 +60,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   String? _generatedOtp;
   bool _isSubmittingReview = false;
   bool _reviewSubmittedLocally = false;
+  bool _isOpeningBookingChat = false;
   final Set<String> _selectedReviewTags = <String>{};
   final Map<String, Future<BookingContactSnapshot>> _contactDetailsCache = {};
   final TextEditingController _reviewController = TextEditingController();
@@ -196,6 +200,75 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     }
 
     await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _openBookingChat(BookingModel booking) async {
+    if (_isOpeningBookingChat) return;
+    if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
+      return;
+    }
+
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    final customerId = booking.customerId.trim();
+    final providerId = booking.providerId.trim();
+
+    if (currentUserId.isEmpty) {
+      _showToast(
+        'Please sign in again and try once more.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+    if (customerId.isEmpty) {
+      _showToast(
+        'Customer details are not available for this booking.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+    if (providerId.isEmpty) {
+      _showToast(
+        'Provider details are not available for this booking.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+
+    final otherUserId = currentUserId == providerId ? customerId : providerId;
+    if (otherUserId.isEmpty || otherUserId == currentUserId) {
+      _showToast(
+        'Unable to open chat for this booking right now.',
+        tone: AppSnackbarTone.error,
+      );
+      return;
+    }
+
+    setState(() => _isOpeningBookingChat = true);
+    try {
+      final chatId = await _chatRepository.startDirectUserChat(
+        otherUserId: otherUserId,
+      );
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      final raw = error.toString();
+      final message = raw.contains('message yourself')
+          ? 'You cannot message yourself.'
+          : raw.contains('cannot start chats')
+          ? 'Your account cannot start chats right now.'
+          : raw.contains('profile not found')
+          ? 'This chat participant is unavailable right now.'
+          : 'Unable to open chat right now. Please try again.';
+      _showToast(message, tone: AppSnackbarTone.error);
+    } finally {
+      if (mounted) {
+        setState(() => _isOpeningBookingChat = false);
+      }
+    }
   }
 
   Future<void> _runRequestAction({
@@ -744,6 +817,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   List<Widget> _bookingPolicySections(BookingModel booking) {
     final sections = <Widget>[];
     final remainingGrace = booking.remainingGraceDuration;
+    final isCustomer = _isCustomer(booking);
 
     if (booking.isNoShow) {
       sections.add(
@@ -760,7 +834,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               'Cancellation recorded. Refund: ${_moneyFromPaise(booking.cancellationRefundAmountPaise)} · Provider share: ${_moneyFromPaise(booking.cancellationProviderAmountPaise)}.',
         ),
       );
-    } else if (remainingGrace != null && remainingGrace > Duration.zero) {
+    } else if (isCustomer &&
+        remainingGrace != null &&
+        remainingGrace > Duration.zero) {
       sections.add(
         _BannerCard(
           backgroundColor: const Color(0xFFDCFCE7),
@@ -768,7 +844,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               'Cancel within ${_formatCountdown(remainingGrace.inSeconds)} for a full refund.',
         ),
       );
-    } else if ((booking.isRequested || booking.isAccepted) &&
+    } else if (isCustomer &&
+        (booking.isRequested || booking.isAccepted) &&
         !booking.isCancelled &&
         !booking.isCompleted &&
         !booking.isInProgress) {
@@ -904,18 +981,14 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
       const SizedBox(height: 12),
       ..._postConfirmationActionSections(booking),
       const SizedBox(height: 12),
-      _DualActionRow(
-        primaryLabel: _activeLifecycleAction == 'cancelBooking'
+      SecondaryButton(
+        label: _activeLifecycleAction == 'cancelBooking'
             ? 'Cancelling...'
             : 'Cancel booking',
-        primaryStyle: BookingActionStyle.danger,
-        secondaryLabel: 'Message',
-        secondaryStyle: BookingActionStyle.secondary,
-        onPrimaryTap:
+        onPressed:
             booking.canCancelBeforeStart && _activeLifecycleAction == null
             ? () => _cancelBooking(booking)
             : null,
-        onSecondaryTap: () => _showToast('Messaging flow opened'),
       ),
     ];
   }
@@ -988,26 +1061,28 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         ],
       ),
       const SizedBox(height: 12),
-      const SectionBlock(
+      SectionBlock(
         title: 'CONTACT',
-        backgroundColor: Color(0xFFF3F4F6),
-        child: Text(
-          'Phone number unlocks after the provider confirms the booking.',
-          style: TextStyle(color: AppColors.textGrey, fontSize: 12.5),
+        child: _CustomerProviderContact(
+          providerName: booking.providerName,
+          maskedPhone: _emptyFallback(
+            booking.providerPhoneMasked,
+            fallback: 'Provider phone not available yet',
+          ),
+          canCall: false,
+          isLoading: false,
+          onCall: () {},
+          onMessage: () => _openBookingChat(booking),
         ),
       ),
       const SizedBox(height: 12),
-      _DualActionRow(
-        primaryLabel: _activeLifecycleAction == 'cancelBooking'
+      SecondaryButton(
+        label: _activeLifecycleAction == 'cancelBooking'
             ? 'Cancelling...'
             : 'Cancel request',
-        primaryStyle: BookingActionStyle.danger,
-        secondaryLabel: 'Message',
-        secondaryStyle: BookingActionStyle.secondary,
-        onPrimaryTap: _activeLifecycleAction == null
+        onPressed: _activeLifecycleAction == null
             ? () => _cancelBooking(booking)
             : null,
-        onSecondaryTap: () => _showToast('Messaging flow opened'),
       ),
       const SizedBox(height: 12),
       ..._postConfirmationActionSections(booking),
@@ -1354,18 +1429,14 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
       ..._postConfirmationActionSections(booking),
       if (!booking.isInProgress && !booking.isCompleted) ...[
         const SizedBox(height: 12),
-        _DualActionRow(
-          primaryLabel: _activeLifecycleAction == 'cancelBooking'
+        GradientButton(
+          label: _activeLifecycleAction == 'cancelBooking'
               ? 'Cancelling...'
               : 'Cancel booking',
-          primaryStyle: BookingActionStyle.danger,
-          secondaryLabel: 'Message',
-          secondaryStyle: BookingActionStyle.secondary,
-          onPrimaryTap:
+          onPressed:
               booking.canCancelBeforeStart && _activeLifecycleAction == null
               ? () => _cancelBooking(booking)
               : null,
-          onSecondaryTap: () => _showToast('Messaging flow opened'),
         ),
       ],
     ];
@@ -1475,7 +1546,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                         snapshot.connectionState == ConnectionState.waiting &&
                         !snapshot.hasData,
                     onCall: () => _launchPhoneDialer(providerPhone),
-                    onMessage: () => _showToast('Messaging flow opened'),
+                    onMessage: () => _openBookingChat(booking),
                   ),
                 )
               else if (isProvider)
@@ -1483,7 +1554,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                   title: 'CONTACT',
                   child: _ProviderMessagingOnly(
                     customerName: booking.customerName,
-                    onMessage: () => _showToast('Messaging flow opened'),
+                    isLoading: _isOpeningBookingChat,
+                    onMessage: () => _openBookingChat(booking),
                   ),
                 ),
             ],
@@ -2155,10 +2227,12 @@ class _CustomerProviderContact extends StatelessWidget {
 
 class _ProviderMessagingOnly extends StatelessWidget {
   final String customerName;
+  final bool isLoading;
   final VoidCallback onMessage;
 
   const _ProviderMessagingOnly({
     required this.customerName,
+    required this.isLoading,
     required this.onMessage,
   });
 
@@ -2177,8 +2251,8 @@ class _ProviderMessagingOnly extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         GradientButton(
-          label: 'Message',
-          onPressed: onMessage,
+          label: isLoading ? 'Opening chat...' : 'Message',
+          onPressed: isLoading ? null : onMessage,
           size: AppButtonSize.compact,
         ),
       ],

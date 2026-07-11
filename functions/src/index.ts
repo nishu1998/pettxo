@@ -3987,6 +3987,117 @@ export const getPendingPaymentBooking = onCall(async (request) => {
   };
 });
 
+export const deletePendingPaymentBookingForCustomer = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const bookingId = asTrimmedString(request.data?.bookingId);
+
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+
+  const bookingRef = db.collection("bookings").doc(bookingId);
+  const now = Timestamp.now();
+  const normalizeStatus = (value: unknown): string => {
+    const raw = asTrimmedString(value);
+    if (!raw) return "";
+    const normalized = raw
+      .replace(/([a-z])([A-Z])/g, "$1_$2")
+      .toLowerCase()
+      .replace(/-/g, "_")
+      .replace(/ /g, "_");
+    switch (normalized) {
+    case "paymentpending":
+      return "payment_pending";
+    case "paymentexpired":
+      return "payment_expired";
+    default:
+      return normalized;
+    }
+  };
+
+  const result = await db.runTransaction(async (transaction) => {
+    const bookingSnapshot = await transaction.get(bookingRef);
+    if (!bookingSnapshot.exists) {
+      throw new HttpsError("not-found", "Booking not found.");
+    }
+
+    const booking = bookingSnapshot.data() ?? {};
+    const bookingCustomerId = asTrimmedString(booking.customerId);
+    if (bookingCustomerId !== uid) {
+      throw new HttpsError(
+        "permission-denied",
+        "Only the booking owner can remove this pending request.",
+      );
+    }
+
+    const rawStatus = normalizeStatus(booking.status);
+    const pricing = asRecord(booking.pricing);
+    const rawPaymentStatus = normalizeStatus(pricing.paymentStatus);
+    const paymentExpiresAt = asDate(booking.paymentExpiresAt);
+    const scheduledStartAt = asDate(booking.scheduledStartAt);
+    const alreadyDeleted = booking.deletedFromCustomerBookings === true;
+    const isPendingPayment =
+      rawStatus === "payment_pending" &&
+      (rawPaymentStatus === "" ||
+        rawPaymentStatus === "pending" ||
+        rawPaymentStatus === "payment_pending");
+    const hasExpired =
+      rawStatus === "payment_expired" ||
+      (paymentExpiresAt != null && paymentExpiresAt.getTime() <= now.toMillis()) ||
+      (scheduledStartAt != null && scheduledStartAt.getTime() <= now.toMillis());
+
+    if (alreadyDeleted) {
+      return {outcome: "already_hidden"};
+    }
+
+    if (isPendingPayment && !hasExpired) {
+      transaction.update(bookingRef, {
+        status: "paymentExpired",
+        deletedFromCustomerBookings: true,
+        customerDeletedPendingPaymentAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        "pricing.paymentStatus": "cancelled",
+      });
+      return {outcome: "deleted"};
+    }
+
+    if (rawPaymentStatus === "paid") {
+      throw new HttpsError(
+        "failed-precondition",
+        "payment-completed",
+      );
+    }
+
+    if (rawStatus === "payment_expired" || (isPendingPayment && hasExpired)) {
+      const updates: Record<string, unknown> = {
+        deletedFromCustomerBookings: true,
+        customerDeletedPendingPaymentAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (rawStatus === "payment_pending") {
+        updates.status = "paymentExpired";
+        updates.paymentExpiresAt = null;
+      }
+      if (rawPaymentStatus === "" || rawPaymentStatus === "pending") {
+        updates["pricing.paymentStatus"] = "expired";
+      }
+      transaction.update(bookingRef, updates);
+      return {outcome: "hidden_expired"};
+    }
+
+    throw new HttpsError(
+      "failed-precondition",
+      "This payment request can no longer be removed.",
+    );
+  });
+
+  return {
+    ok: true,
+    bookingId,
+    outcome: result.outcome,
+  };
+});
+
 export const verifyRazorpayPayment = onCall({
   secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
 }, async (request) => {

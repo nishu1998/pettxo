@@ -54,6 +54,7 @@ class BookingRecord {
   final String? sectionLabel;
   final String statusLabel;
   final BookingStatusTone statusTone;
+  final bool isPendingPaymentRequest;
   final bool isRequestHighlighted;
   final int? countdownSeconds;
   final List<BookingActionData> actions;
@@ -76,6 +77,7 @@ class BookingRecord {
     this.durationMinutes = 0,
     required this.statusLabel,
     required this.statusTone,
+    this.isPendingPaymentRequest = false,
     this.sectionLabel,
     this.isRequestHighlighted = false,
     this.countdownSeconds,

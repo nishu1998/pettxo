@@ -9,6 +9,8 @@ import '../../domain/models/pending_payment_booking.dart';
 import '../../domain/models/provider_earning_record.dart';
 import '../../domain/models/service_slot_model.dart';
 
+enum PendingPaymentRemovalOutcome { deleted, hiddenExpired, alreadyHidden }
+
 class BookingRepository {
   final FirebaseFirestore _firestore;
   final FirebaseFunctions _functions;
@@ -33,7 +35,11 @@ class BookingRepository {
         .orderBy('scheduledStartAt', descending: true)
         .limit(limit)
         .snapshots()
-        .map(_mapBookings);
+        .map(
+          (snapshot) => _mapBookings(
+            snapshot,
+          ).where((booking) => !booking.isHiddenFromCustomer).toList(),
+        );
   }
 
   Stream<List<BookingModel>> watchDeliveringBookings(
@@ -66,6 +72,15 @@ class BookingRepository {
           (snapshot) =>
               snapshot.exists ? BookingModel.fromDocument(snapshot) : null,
         );
+  }
+
+  Future<BookingModel?> fetchBookingById(String bookingId) async {
+    final id = bookingId.trim();
+    if (id.isEmpty) return null;
+
+    final snapshot = await _firestore.collection('bookings').doc(id).get();
+    if (!snapshot.exists) return null;
+    return BookingModel.fromDocument(snapshot);
   }
 
   Stream<List<ServiceSlotModel>> watchServiceSlotsForDate({
@@ -392,6 +407,31 @@ class BookingRepository {
 
     final callable = _functions.httpsCallable('completeBooking');
     await callable.call<Map<String, dynamic>>({'bookingId': id});
+  }
+
+  Future<PendingPaymentRemovalOutcome> deletePendingPaymentBookingForCustomer({
+    required String bookingId,
+  }) async {
+    final trimmedBookingId = bookingId.trim();
+    if (trimmedBookingId.isEmpty) {
+      throw ArgumentError.value(
+        bookingId,
+        'bookingId',
+        'bookingId is required',
+      );
+    }
+    final callable = _functions.httpsCallable(
+      'deletePendingPaymentBookingForCustomer',
+    );
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': trimmedBookingId,
+    });
+    final outcome = (result.data['outcome'] as String? ?? '').trim();
+    return switch (outcome) {
+      'hidden_expired' => PendingPaymentRemovalOutcome.hiddenExpired,
+      'already_hidden' => PendingPaymentRemovalOutcome.alreadyHidden,
+      _ => PendingPaymentRemovalOutcome.deleted,
+    };
   }
 
   Future<BookingContactSnapshot> fetchPostConfirmationDetails(

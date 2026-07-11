@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -38,6 +39,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
   Stream<List<BookingModel>>? _cachedBookingStream;
   String? _actionBookingId;
   String? _actionLabel;
+  String? _deletingPendingBookingId;
 
   @override
   void initState() {
@@ -213,6 +215,247 @@ class _BookingsScreenState extends State<BookingsScreen> {
     );
   }
 
+  Future<void> _deletePendingRequest(BookingRecord booking) async {
+    if (_deletingPendingBookingId != null) return;
+
+    final bookingOwnerId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    if (bookingOwnerId.isEmpty) {
+      _showToast(
+        'Please sign in again and try once more.',
+        tone: AppSnackbarTone.warning,
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 22),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFCF8F5),
+              borderRadius: BorderRadius.circular(30),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.14),
+                  blurRadius: 28,
+                  offset: const Offset(0, 16),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    gradient: AppColors.brandGradient,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'Delete request?',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Remove this unpaid booking request?',
+                  style: TextStyle(
+                    fontSize: 15,
+                    height: 1.45,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textGrey,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(dialogContext, false),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.textGrey,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          backgroundColor: Colors.white,
+                        ),
+                        child: const Text(
+                          'Keep',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => Navigator.pop(dialogContext, true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                        ),
+                        child: const Text(
+                          'Delete',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _deletingPendingBookingId = booking.id);
+    try {
+      final outcome = await _bookingRepository
+          .deletePendingPaymentBookingForCustomer(bookingId: booking.id);
+      final message = switch (outcome) {
+        PendingPaymentRemovalOutcome.hiddenExpired ||
+        PendingPaymentRemovalOutcome.alreadyHidden =>
+          'Old pending request removed.',
+        PendingPaymentRemovalOutcome.deleted => 'Pending request deleted',
+      };
+      _showToast(
+        message,
+        tone: outcome == PendingPaymentRemovalOutcome.deleted
+            ? AppSnackbarTone.success
+            : AppSnackbarTone.info,
+      );
+    } on FirebaseFunctionsException catch (error) {
+      if (error.code == 'failed-precondition') {
+        await _resolveStalePendingDeletion(bookingId: booking.id);
+      } else {
+        _showToast(
+          _friendlyPendingDeleteError(error),
+          tone: AppSnackbarTone.error,
+        );
+      }
+    } catch (error) {
+      _showToast(
+        'Could not delete the pending request. Please try again.',
+        tone: AppSnackbarTone.error,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _deletingPendingBookingId = null);
+      }
+    }
+  }
+
+  Future<void> _resolveStalePendingDeletion({required String bookingId}) async {
+    try {
+      final latestBooking = await _bookingRepository.fetchBookingById(
+        bookingId,
+      );
+      if (latestBooking == null) {
+        _showToast('Old pending request removed.', tone: AppSnackbarTone.info);
+        return;
+      }
+
+      if (latestBooking.canDeletePendingPayment) {
+        _showToast(
+          'This payment request changed. Please try again.',
+          tone: AppSnackbarTone.warning,
+        );
+        return;
+      }
+
+      if (latestBooking.normalizedPaymentStatus == 'paid' ||
+          latestBooking.isAccepted ||
+          latestBooking.isInProgress ||
+          latestBooking.isCompleted) {
+        _showToast(
+          'Payment already completed. Booking refreshed.',
+          tone: AppSnackbarTone.info,
+        );
+        return;
+      }
+
+      if (latestBooking.isExpiredPendingPayment ||
+          latestBooking.normalizedStatus == 'payment_expired' ||
+          latestBooking.hasServiceStartedOrPassed) {
+        final outcome = await _bookingRepository
+            .deletePendingPaymentBookingForCustomer(bookingId: bookingId);
+        final removed =
+            outcome == PendingPaymentRemovalOutcome.hiddenExpired ||
+            outcome == PendingPaymentRemovalOutcome.alreadyHidden;
+        _showToast(
+          removed ? 'Old pending request removed.' : 'Pending request deleted',
+          tone: removed ? AppSnackbarTone.info : AppSnackbarTone.success,
+        );
+        return;
+      }
+
+      _showToast(
+        'This payment request is no longer available.',
+        tone: AppSnackbarTone.warning,
+      );
+    } on FirebaseFunctionsException catch (error) {
+      _showToast(
+        _friendlyPendingDeleteError(error),
+        tone: AppSnackbarTone.error,
+      );
+    } catch (_) {
+      _showToast(
+        'Could not update this pending request right now.',
+        tone: AppSnackbarTone.error,
+      );
+    }
+  }
+
+  String _friendlyPendingDeleteError(FirebaseFunctionsException error) {
+    switch (error.code) {
+      case 'permission-denied':
+        return 'Only the user who created this booking can remove this pending request.';
+      case 'not-found':
+        return 'This pending request was not found.';
+      case 'unauthenticated':
+        return 'Please sign in again and try once more.';
+      case 'unavailable':
+        return 'Booking service is unavailable right now. Please try again in a moment.';
+      case 'internal':
+        return error.message?.trim().isNotEmpty == true
+            ? error.message!.trim()
+            : 'Booking service hit an internal error. Please try again.';
+      case 'failed-precondition':
+        final message = error.message?.trim().toLowerCase() ?? '';
+        if (message == 'payment-completed') {
+          return 'Payment already completed. Booking refreshed.';
+        }
+        return 'This payment request can no longer be removed.';
+      default:
+        return error.message?.trim().isNotEmpty == true
+            ? error.message!.trim()
+            : 'Could not delete the pending request. Please try again.';
+    }
+  }
+
   Future<void> _openRebookService(BookingRecord booking) async {
     // In Pettxo's booking context naming, "receiving" is the customer-side
     // view (bookings where currentUser == customerId) and "delivering" is the
@@ -350,7 +593,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
-    final topContentPadding = topInset + 70;
+    final topContentPadding = topInset + 118;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
@@ -500,6 +743,9 @@ class _BookingsScreenState extends State<BookingsScreen> {
                                             _actionBookingId == booking.id
                                             ? _actionLabel
                                             : null,
+                                        isDeletingPendingRequest:
+                                            _deletingPendingBookingId ==
+                                            booking.id,
                                         countdownText:
                                             booking.countdownSeconds != null
                                             ? _formatCountdown(
@@ -510,6 +756,11 @@ class _BookingsScreenState extends State<BookingsScreen> {
                                             _openBookingDetail(booking),
                                         onActionTap: (action) =>
                                             _handleAction(booking, action),
+                                        onDeletePendingRequest:
+                                            booking.isPendingPaymentRequest
+                                            ? () =>
+                                                  _deletePendingRequest(booking)
+                                            : null,
                                       ),
                                     );
                                   }),
@@ -524,24 +775,33 @@ class _BookingsScreenState extends State<BookingsScreen> {
           Positioned(
             left: 0,
             right: 0,
-            top: topInset + 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 18),
+            top: 0,
+            child: GlassSurface(
+              padding: EdgeInsets.fromLTRB(18, topInset + 10, 18, 12),
+              borderRadius: BorderRadius.zero,
+              backgroundColor: Colors.white.withValues(alpha: 0.72),
+              blurSigma: 22,
+              border: Border(
+                bottom: BorderSide(color: Colors.white.withValues(alpha: 0.58)),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.05),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
               child: Row(
                 children: [
                   Container(
                     width: 46,
                     height: 46,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.94),
+                      color: Colors.white.withValues(alpha: 0.84),
                       borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.primary.withValues(alpha: 0.07),
-                          blurRadius: 20,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.7),
+                      ),
                     ),
                     child: IconButton(
                       onPressed: () => Navigator.pop(context),
@@ -552,12 +812,14 @@ class _BookingsScreenState extends State<BookingsScreen> {
                     ),
                   ),
                   const SizedBox(width: 16),
-                  const Text(
-                    'Bookings',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.textDark,
+                  const Expanded(
+                    child: Text(
+                      'Bookings',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark,
+                      ),
                     ),
                   ),
                 ],

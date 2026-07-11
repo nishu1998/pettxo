@@ -43,6 +43,7 @@ class BookingModel {
   final int providerEarningsPaise;
   final String currency;
   final String paymentStatus;
+  final DateTime? paymentExpiresAt;
   final String otpStatus;
   final int otpAttempts;
   final int otpMaxAttempts;
@@ -70,6 +71,8 @@ class BookingModel {
   final int cancellationProviderAmount;
   final int cancellationProviderAmountPaise;
   final String cancellationCase;
+  final bool deletedFromCustomerBookings;
+  final DateTime? customerDeletedPendingPaymentAt;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -114,6 +117,7 @@ class BookingModel {
     required this.providerEarningsPaise,
     required this.currency,
     required this.paymentStatus,
+    this.paymentExpiresAt,
     required this.otpStatus,
     required this.otpAttempts,
     required this.otpMaxAttempts,
@@ -141,6 +145,8 @@ class BookingModel {
     required this.cancellationProviderAmount,
     required this.cancellationProviderAmountPaise,
     required this.cancellationCase,
+    this.deletedFromCustomerBookings = false,
+    this.customerDeletedPendingPaymentAt,
     this.createdAt,
     this.updatedAt,
   });
@@ -225,6 +231,7 @@ class BookingModel {
         fallback: _string(serviceSnapshot['currency'], fallback: 'INR'),
       ),
       paymentStatus: _string(pricing['paymentStatus']),
+      paymentExpiresAt: _dateTime(data['paymentExpiresAt']),
       otpStatus: _string(otp['status']),
       otpAttempts: _int(otp['attempts']),
       otpMaxAttempts: _int(otp['maxAttempts']),
@@ -276,6 +283,11 @@ class BookingModel {
         cancellation['cancellationCase'],
         fallback: _string(data['cancellationCase']),
       ),
+      deletedFromCustomerBookings:
+          data['deletedFromCustomerBookings'] as bool? ?? false,
+      customerDeletedPendingPaymentAt: _dateTime(
+        data['customerDeletedPendingPaymentAt'],
+      ),
       createdAt: _dateTime(data['createdAt']),
       updatedAt: _dateTime(data['updatedAt']),
     );
@@ -307,6 +319,25 @@ class BookingModel {
     final value = otpStatus.trim().toLowerCase().replaceAll('-', '_');
     return switch (value) {
       'notgenerated' => 'not_generated',
+      _ => value,
+    };
+  }
+
+  String get normalizedPaymentStatus {
+    final value = paymentStatus
+        .trim()
+        .replaceAllMapped(
+          RegExp(r'(?<=[a-z])([A-Z])'),
+          (match) => '_${match.group(1)}',
+        )
+        .toLowerCase()
+        .replaceAll('-', '_')
+        .replaceAll(' ', '_');
+
+    return switch (value) {
+      'paymentpending' => 'payment_pending',
+      'paymentexpired' => 'payment_expired',
+      'refundpending' => 'refund_pending',
       _ => value,
     };
   }
@@ -411,7 +442,37 @@ class BookingModel {
     }.contains(normalizedStatus);
   }
 
+  bool get isHiddenFromCustomer =>
+      deletedFromCustomerBookings && customerDeletedPendingPaymentAt != null;
+
   bool get hasReview => reviewId.trim().isNotEmpty;
+
+  bool get isPendingPayment {
+    if (normalizedStatus != 'payment_pending') return false;
+    return normalizedPaymentStatus.isEmpty ||
+        normalizedPaymentStatus == 'pending' ||
+        normalizedPaymentStatus == 'payment_pending';
+  }
+
+  bool get hasServiceStartedOrPassed {
+    final start = scheduledStartAt;
+    if (start == null) return false;
+    return !start.isAfter(DateTime.now());
+  }
+
+  bool get isPaymentExpired {
+    final expiresAt = paymentExpiresAt;
+    return expiresAt != null && !expiresAt.isAfter(DateTime.now());
+  }
+
+  bool get isExpiredPendingPayment {
+    return isPendingPayment && (isPaymentExpired || hasServiceStartedOrPassed);
+  }
+
+  bool get canDeletePendingPayment =>
+      !isHiddenFromCustomer && isPendingPayment && !isExpiredPendingPayment;
+
+  bool get canResumePayment => canDeletePendingPayment;
 
   String get providerReviewSummary {
     if (providerRatingCount <= 0) return 'New provider';
@@ -420,18 +481,18 @@ class BookingModel {
   }
 
   bool get belongsInReceivingUpcoming {
-    if (normalizedStatus == 'payment_pending') {
-      return true;
-    }
-    if (normalizedStatus == 'payment_expired') {
-      return false;
-    }
+    if (isHiddenFromCustomer) return false;
+    if (isPendingPayment) return canResumePayment;
+    if (normalizedStatus == 'payment_expired' || isFinished) return false;
+    if (isInProgress) return true;
+    if (hasServiceStartedOrPassed) return false;
     if (isRequested || isConfirmedLike) return true;
     final start = scheduledStartAt;
-    return start != null && start.isAfter(DateTime.now()) && !isFinished;
+    return start != null && start.isAfter(DateTime.now());
   }
 
-  bool get belongsInReceivingPast => !belongsInReceivingUpcoming;
+  bool get belongsInReceivingPast =>
+      !isHiddenFromCustomer && !belongsInReceivingUpcoming;
 
   bool get belongsInDeliveringPast => isFinished;
 
@@ -465,6 +526,9 @@ class BookingModel {
       durationMinutes: durationMinutes,
       statusLabel: _statusLabel(contextMode),
       statusTone: _statusTone(contextMode),
+      isPendingPaymentRequest:
+          contextMode == BookingContextMode.receiving &&
+          canDeletePendingPayment,
       countdownSeconds: countdownSeconds,
       isRequestHighlighted: isDelivering && isRequested,
       actions: _actionsFor(contextMode),
@@ -497,13 +561,17 @@ class BookingModel {
 
   List<BookingActionData> _actionsFor(BookingContextMode contextMode) {
     if (contextMode == BookingContextMode.receiving) {
-      if (normalizedStatus == 'payment_pending') {
+      if (canResumePayment) {
         return const [
           BookingActionData(
             label: 'Resume Payment',
             style: BookingActionStyle.primary,
           ),
         ];
+      }
+      if (normalizedStatus == 'payment_pending' ||
+          normalizedStatus == 'payment_expired') {
+        return const [];
       }
       if (normalizedStatus == 'completed') {
         return const [
