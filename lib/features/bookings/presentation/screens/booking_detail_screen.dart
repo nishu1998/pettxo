@@ -12,6 +12,7 @@ import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
@@ -143,6 +144,34 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
 
   bool _isProvider(BookingModel booking) {
     return FirebaseAuth.instance.currentUser?.uid == booking.providerId;
+  }
+
+  Widget _withProviderIdentity(
+    BookingModel booking,
+    Widget Function(ResolvedUserIdentity provider) builder,
+  ) {
+    return LiveUserIdentityResolver(
+      userId: booking.providerId,
+      fallbackName: booking.providerName,
+      fallbackUsername: booking.providerUsername,
+      fallbackImageUrl: booking.providerPhotoUrl,
+      placeholderName: 'Provider',
+      builder: (context, identity) => builder(identity),
+    );
+  }
+
+  Widget _withCustomerIdentity(
+    BookingModel booking,
+    Widget Function(ResolvedUserIdentity customer) builder,
+  ) {
+    return LiveUserIdentityResolver(
+      userId: booking.customerId,
+      fallbackName: booking.customerName,
+      fallbackUsername: booking.customerUsername,
+      fallbackImageUrl: booking.customerPhotoUrl,
+      placeholderName: 'Pet parent',
+      builder: (context, identity) => builder(identity),
+    );
   }
 
   String _maskPhone(String phone) {
@@ -914,20 +943,23 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             'Booking confirmed for ${_dateLabel(booking.scheduledStartAt)} at ${_timeLabel(booking.scheduledStartAt)}.',
       ),
       ..._bookingPolicySections(booking),
-      SectionBlock(
-        title: 'SERVICE',
-        rows: [
-          DetailRowData(label: 'Service', value: booking.serviceName),
-          DetailRowData(
-            label: 'Animal',
-            value: _emptyFallback(booking.animalType),
-          ),
-          DetailRowData(
-            label: 'Provider',
-            value: '${booking.providerName} ↗',
-            valueColor: AppColors.primary,
-          ),
-        ],
+      _withProviderIdentity(
+        booking,
+        (provider) => SectionBlock(
+          title: 'SERVICE',
+          rows: [
+            DetailRowData(label: 'Service', value: booking.serviceName),
+            DetailRowData(
+              label: 'Animal',
+              value: _emptyFallback(booking.animalType),
+            ),
+            DetailRowData(
+              label: 'Provider',
+              value: '${provider.displayName} ↗',
+              valueColor: AppColors.primary,
+            ),
+          ],
+        ),
       ),
       const SizedBox(height: 12),
       SectionBlock(
@@ -1009,20 +1041,23 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             'Payment status: ${_titleCase(_emptyFallback(booking.paymentStatus, fallback: 'pending'))}',
       ),
       ..._bookingPolicySections(booking),
-      SectionBlock(
-        title: 'SERVICE',
-        rows: [
-          DetailRowData(label: 'Service', value: booking.serviceName),
-          DetailRowData(
-            label: 'Animal',
-            value: _emptyFallback(booking.animalType),
-          ),
-          DetailRowData(
-            label: 'Provider',
-            value: '${booking.providerName} ↗',
-            valueColor: AppColors.primary,
-          ),
-        ],
+      _withProviderIdentity(
+        booking,
+        (provider) => SectionBlock(
+          title: 'SERVICE',
+          rows: [
+            DetailRowData(label: 'Service', value: booking.serviceName),
+            DetailRowData(
+              label: 'Animal',
+              value: _emptyFallback(booking.animalType),
+            ),
+            DetailRowData(
+              label: 'Provider',
+              value: '${provider.displayName} ↗',
+              valueColor: AppColors.primary,
+            ),
+          ],
+        ),
       ),
       const SizedBox(height: 12),
       SectionBlock(
@@ -1061,18 +1096,21 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         ],
       ),
       const SizedBox(height: 12),
-      SectionBlock(
-        title: 'CONTACT',
-        child: _CustomerProviderContact(
-          providerName: booking.providerName,
-          maskedPhone: _emptyFallback(
-            booking.providerPhoneMasked,
-            fallback: 'Provider phone not available yet',
+      _withProviderIdentity(
+        booking,
+        (provider) => SectionBlock(
+          title: 'CONTACT',
+          child: _CustomerProviderContact(
+            providerName: provider.displayName,
+            maskedPhone: _emptyFallback(
+              booking.providerPhoneMasked,
+              fallback: 'Provider phone not available yet',
+            ),
+            canCall: false,
+            isLoading: false,
+            onCall: () {},
+            onMessage: () => _openBookingChat(booking),
           ),
-          canCall: false,
-          isLoading: false,
-          onCall: () {},
-          onMessage: () => _openBookingChat(booking),
         ),
       ),
       const SizedBox(height: 12),
@@ -1127,115 +1165,123 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
       ),
       const SizedBox(height: 12),
       ..._bookingPolicySections(booking),
-      SectionBlock(
-        title: 'REVIEW ${booking.providerName.toUpperCase()}',
-        child: hasSubmittedReview
-            ? const _ReviewSubmittedState()
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'How was your experience?',
-                    style: TextStyle(color: AppColors.textGrey, fontSize: 13),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(5, (index) {
-                      final isLit = index < _starRating;
-                      return IconButton(
-                        onPressed: _isSubmittingReview
-                            ? null
-                            : () => setState(() => _starRating = index + 1),
-                        icon: Icon(
-                          Icons.star_rounded,
-                          color: isLit
-                              ? const Color(0xFFF59E0B)
-                              : const Color(0xFFD1D5DB),
-                          size: 30,
+      _withProviderIdentity(
+        booking,
+        (provider) => SectionBlock(
+          title: 'REVIEW ${provider.displayName.toUpperCase()}',
+          child: hasSubmittedReview
+              ? const _ReviewSubmittedState()
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'How was your experience?',
+                      style: TextStyle(color: AppColors.textGrey, fontSize: 13),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(5, (index) {
+                        final isLit = index < _starRating;
+                        return IconButton(
+                          onPressed: _isSubmittingReview
+                              ? null
+                              : () => setState(() => _starRating = index + 1),
+                          icon: Icon(
+                            Icons.star_rounded,
+                            color: isLit
+                                ? const Color(0xFFF59E0B)
+                                : const Color(0xFFD1D5DB),
+                            size: 30,
+                          ),
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _reviewQuickTags.map((tag) {
+                        final selected = _selectedReviewTags.contains(tag);
+                        return FilterChip(
+                          label: Text(tag),
+                          selected: selected,
+                          onSelected: _isSubmittingReview
+                              ? null
+                              : (value) {
+                                  setState(() {
+                                    if (value) {
+                                      _selectedReviewTags.add(tag);
+                                    } else {
+                                      _selectedReviewTags.remove(tag);
+                                    }
+                                  });
+                                },
+                          backgroundColor: Colors.white,
+                          selectedColor: const Color(0xFFFEF0EB),
+                          checkmarkColor: AppColors.primary,
+                          side: BorderSide(
+                            color: selected
+                                ? const Color(0xFFF7A07A)
+                                : const Color(0x1A000000),
+                          ),
+                          labelStyle: TextStyle(
+                            color: selected
+                                ? AppColors.primary
+                                : AppColors.textDark,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _reviewController,
+                      enabled: !_isSubmittingReview,
+                      maxLines: 4,
+                      decoration: InputDecoration(
+                        hintText: 'Tell others about your experience...',
+                        filled: true,
+                        fillColor: Colors.white,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(
+                            color: Color(0x1A000000),
+                          ),
                         ),
-                      );
-                    }),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: _reviewQuickTags.map((tag) {
-                      final selected = _selectedReviewTags.contains(tag);
-                      return FilterChip(
-                        label: Text(tag),
-                        selected: selected,
-                        onSelected: _isSubmittingReview
-                            ? null
-                            : (value) {
-                                setState(() {
-                                  if (value) {
-                                    _selectedReviewTags.add(tag);
-                                  } else {
-                                    _selectedReviewTags.remove(tag);
-                                  }
-                                });
-                              },
-                        backgroundColor: Colors.white,
-                        selectedColor: const Color(0xFFFEF0EB),
-                        checkmarkColor: AppColors.primary,
-                        side: BorderSide(
-                          color: selected
-                              ? const Color(0xFFF7A07A)
-                              : const Color(0x1A000000),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(
+                            color: Color(0x1A000000),
+                          ),
                         ),
-                        labelStyle: TextStyle(
-                          color: selected
-                              ? AppColors.primary
-                              : AppColors.textDark,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
-                      );
-                    }).toList(),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _reviewController,
-                    enabled: !_isSubmittingReview,
-                    maxLines: 4,
-                    decoration: InputDecoration(
-                      hintText: 'Tell others about your experience...',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0x1A000000)),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0x1A000000)),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  _DualActionRow(
-                    primaryLabel: _isSubmittingReview
-                        ? 'Submitting...'
-                        : 'Submit review',
-                    primaryStyle: BookingActionStyle.primary,
-                    secondaryLabel: 'Skip',
-                    secondaryStyle: BookingActionStyle.secondary,
-                    onPrimaryTap: _starRating > 0 && !_isSubmittingReview
-                        ? () => _submitReview(booking)
-                        : null,
-                    onSecondaryTap: _isSubmittingReview
-                        ? null
-                        : () => Navigator.of(context).maybePop(),
-                  ),
-                ],
-              ),
+                    const SizedBox(height: 10),
+                    _DualActionRow(
+                      primaryLabel: _isSubmittingReview
+                          ? 'Submitting...'
+                          : 'Submit review',
+                      primaryStyle: BookingActionStyle.primary,
+                      secondaryLabel: 'Skip',
+                      secondaryStyle: BookingActionStyle.secondary,
+                      onPrimaryTap: _starRating > 0 && !_isSubmittingReview
+                          ? () => _submitReview(booking)
+                          : null,
+                      onSecondaryTap: _isSubmittingReview
+                          ? null
+                          : () => Navigator.of(context).maybePop(),
+                    ),
+                  ],
+                ),
+        ),
       ),
       const SizedBox(height: 12),
       SectionBlock(
@@ -1274,15 +1320,18 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             'Respond within ${_formatRemainingUntil(booking.requestExpiresAt)} · Auto-cancels when the timer ends',
       ),
       ..._bookingPolicySections(booking),
-      SectionBlock(
-        title: 'PET PARENT',
-        child: _IdentityRow(
-          initials: _initials(booking.customerName),
-          name: booking.customerName,
-          handle: _handleFor(booking.customerUsername),
-          avatarUrl: booking.customerPhotoUrl,
-          initialsBackground: const Color(0xFFEFF6FF),
-          initialsForeground: const Color(0xFF1D4ED8),
+      _withCustomerIdentity(
+        booking,
+        (customer) => SectionBlock(
+          title: 'PET PARENT',
+          child: _IdentityRow(
+            initials: _initials(customer.displayName),
+            name: customer.displayName,
+            handle: _handleFor(customer.username),
+            avatarUrl: customer.imageUrl,
+            initialsBackground: const Color(0xFFEFF6FF),
+            initialsForeground: const Color(0xFF1D4ED8),
+          ),
         ),
       ),
       const SizedBox(height: 12),
@@ -1358,15 +1407,18 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   ) {
     return [
       ..._bookingPolicySections(booking),
-      SectionBlock(
-        title: 'PET PARENT',
-        child: _IdentityRow(
-          initials: _initials(booking.customerName),
-          name: booking.customerName,
-          handle: _handleFor(booking.customerUsername),
-          avatarUrl: booking.customerPhotoUrl,
-          initialsBackground: const Color(0xFFFEF0EB),
-          initialsForeground: const Color(0xFF9A3412),
+      _withCustomerIdentity(
+        booking,
+        (customer) => SectionBlock(
+          title: 'PET PARENT',
+          child: _IdentityRow(
+            initials: _initials(customer.displayName),
+            name: customer.displayName,
+            handle: _handleFor(customer.username),
+            avatarUrl: customer.imageUrl,
+            initialsBackground: const Color(0xFFFEF0EB),
+            initialsForeground: const Color(0xFF9A3412),
+          ),
         ),
       ),
       const SizedBox(height: 12),
@@ -1444,47 +1496,88 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
 
   Widget _buildGenericDetails(BookingModel booking, BookingRecord record) {
     final isDelivering = widget.contextMode == BookingContextMode.delivering;
+    final identityWidget = isDelivering
+        ? _withCustomerIdentity(
+            booking,
+            (customer) => SectionBlock(
+              title: 'BOOKING',
+              rows: [
+                DetailRowData(label: 'Service', value: booking.serviceName),
+                DetailRowData(
+                  label: 'Animal',
+                  value: _emptyFallback(booking.animalType),
+                ),
+                DetailRowData(label: 'Pet parent', value: customer.displayName),
+                DetailRowData(
+                  label: 'Date',
+                  value: _dateLabel(booking.scheduledStartAt),
+                ),
+                DetailRowData(
+                  label: 'Time',
+                  value: _timeLabel(booking.scheduledStartAt),
+                ),
+                DetailRowData(
+                  label: 'Duration',
+                  value: '${booking.durationMinutes} min',
+                ),
+                DetailRowData(
+                  label: 'Status',
+                  value: '',
+                  trailing: StatusChip(
+                    label: record.statusLabel,
+                    tone: record.statusTone,
+                  ),
+                ),
+                DetailRowData(
+                  label: 'Paid',
+                  value: _moneyFromPaise(booking.grossAmountPaise),
+                ),
+              ],
+            ),
+          )
+        : _withProviderIdentity(
+            booking,
+            (provider) => SectionBlock(
+              title: 'BOOKING',
+              rows: [
+                DetailRowData(label: 'Service', value: booking.serviceName),
+                DetailRowData(
+                  label: 'Animal',
+                  value: _emptyFallback(booking.animalType),
+                ),
+                DetailRowData(label: 'Provider', value: provider.displayName),
+                DetailRowData(
+                  label: 'Date',
+                  value: _dateLabel(booking.scheduledStartAt),
+                ),
+                DetailRowData(
+                  label: 'Time',
+                  value: _timeLabel(booking.scheduledStartAt),
+                ),
+                DetailRowData(
+                  label: 'Duration',
+                  value: '${booking.durationMinutes} min',
+                ),
+                DetailRowData(
+                  label: 'Status',
+                  value: '',
+                  trailing: StatusChip(
+                    label: record.statusLabel,
+                    tone: record.statusTone,
+                  ),
+                ),
+                DetailRowData(
+                  label: 'Paid',
+                  value: _moneyFromPaise(booking.grossAmountPaise),
+                ),
+              ],
+            ),
+          );
+
     return Column(
       children: [
         ..._bookingPolicySections(booking),
-        SectionBlock(
-          title: 'BOOKING',
-          rows: [
-            DetailRowData(label: 'Service', value: booking.serviceName),
-            DetailRowData(
-              label: 'Animal',
-              value: _emptyFallback(booking.animalType),
-            ),
-            DetailRowData(
-              label: isDelivering ? 'Pet parent' : 'Provider',
-              value: isDelivering ? booking.customerName : booking.providerName,
-            ),
-            DetailRowData(
-              label: 'Date',
-              value: _dateLabel(booking.scheduledStartAt),
-            ),
-            DetailRowData(
-              label: 'Time',
-              value: _timeLabel(booking.scheduledStartAt),
-            ),
-            DetailRowData(
-              label: 'Duration',
-              value: '${booking.durationMinutes} min',
-            ),
-            DetailRowData(
-              label: 'Status',
-              value: '',
-              trailing: StatusChip(
-                label: record.statusLabel,
-                tone: record.statusTone,
-              ),
-            ),
-            DetailRowData(
-              label: 'Paid',
-              value: _moneyFromPaise(booking.grossAmountPaise),
-            ),
-          ],
-        ),
+        identityWidget,
         if (booking.isPostConfirmation) ...[
           const SizedBox(height: 12),
           ..._postConfirmationActionSections(booking),
@@ -1531,31 +1624,37 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               ),
               const SizedBox(height: 12),
               if (isCustomer)
-                SectionBlock(
-                  title: 'PROVIDER CONTACT',
-                  child: _CustomerProviderContact(
-                    providerName: booking.providerName,
-                    maskedPhone: maskedPhone.isEmpty
-                        ? _emptyFallback(
-                            booking.providerPhoneMasked,
-                            fallback: 'Provider phone not available yet',
-                          )
-                        : maskedPhone,
-                    canCall: providerPhone.trim().isNotEmpty,
-                    isLoading:
-                        snapshot.connectionState == ConnectionState.waiting &&
-                        !snapshot.hasData,
-                    onCall: () => _launchPhoneDialer(providerPhone),
-                    onMessage: () => _openBookingChat(booking),
+                _withProviderIdentity(
+                  booking,
+                  (provider) => SectionBlock(
+                    title: 'PROVIDER CONTACT',
+                    child: _CustomerProviderContact(
+                      providerName: provider.displayName,
+                      maskedPhone: maskedPhone.isEmpty
+                          ? _emptyFallback(
+                              booking.providerPhoneMasked,
+                              fallback: 'Provider phone not available yet',
+                            )
+                          : maskedPhone,
+                      canCall: providerPhone.trim().isNotEmpty,
+                      isLoading:
+                          snapshot.connectionState == ConnectionState.waiting &&
+                          !snapshot.hasData,
+                      onCall: () => _launchPhoneDialer(providerPhone),
+                      onMessage: () => _openBookingChat(booking),
+                    ),
                   ),
                 )
               else if (isProvider)
-                SectionBlock(
-                  title: 'CONTACT',
-                  child: _ProviderMessagingOnly(
-                    customerName: booking.customerName,
-                    isLoading: _isOpeningBookingChat,
-                    onMessage: () => _openBookingChat(booking),
+                _withCustomerIdentity(
+                  booking,
+                  (customer) => SectionBlock(
+                    title: 'CONTACT',
+                    child: _ProviderMessagingOnly(
+                      customerName: customer.displayName,
+                      isLoading: _isOpeningBookingChat,
+                      onMessage: () => _openBookingChat(booking),
+                    ),
                   ),
                 ),
             ],

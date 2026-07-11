@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../../domain/models/chat_model.dart';
@@ -111,155 +112,172 @@ class MessagesScreen extends StatelessWidget {
                                 const SizedBox(height: 12),
                             itemBuilder: (context, index) {
                               final chat = chats[index];
-                              final otherName = chat.otherParticipantNameFor(
+                              final otherUserId = chat.otherParticipantIdFor(
                                 currentUid,
                               );
                               final unreadCount = chat.unreadCountFor(
                                 currentUid,
                               );
 
-                              return InkWell(
-                                borderRadius: BorderRadius.circular(22),
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) =>
-                                          ChatDetailScreen(chatId: chat.id),
-                                    ),
-                                  );
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 18,
-                                    vertical: 16,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.94),
+                              return LiveUserIdentityResolver(
+                                userId: otherUserId,
+                                fallbackName: chat.otherParticipantNameFor(
+                                  currentUid,
+                                ),
+                                fallbackUsername: '',
+                                fallbackImageUrl: chat
+                                    .otherParticipantPhotoUrlFor(currentUid),
+                                builder: (context, identity) {
+                                  return InkWell(
                                     borderRadius: BorderRadius.circular(22),
-                                    border: Border.all(
-                                      color: AppColors.textGrey.withValues(
-                                        alpha: 0.16,
-                                      ),
-                                    ),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withValues(
-                                          alpha: 0.03,
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              ChatDetailScreen(chatId: chat.id),
                                         ),
-                                        blurRadius: 16,
-                                        offset: const Offset(0, 8),
+                                      );
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 18,
+                                        vertical: 16,
                                       ),
-                                    ],
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      _ChatAvatar(
-                                        name: otherName,
-                                        photoUrl: chat
-                                            .otherParticipantPhotoUrlFor(
-                                              currentUid,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.94,
+                                        ),
+                                        borderRadius: BorderRadius.circular(22),
+                                        border: Border.all(
+                                          color: AppColors.textGrey.withValues(
+                                            alpha: 0.16,
+                                          ),
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withValues(
+                                              alpha: 0.03,
                                             ),
+                                            blurRadius: 16,
+                                            offset: const Offset(0, 8),
+                                          ),
+                                        ],
                                       ),
-                                      const SizedBox(width: 16),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Row(
+                                      child: Row(
+                                        children: [
+                                          _ChatAvatar(
+                                            name: identity.displayName,
+                                            photoUrl: identity.imageUrl,
+                                          ),
+                                          const SizedBox(width: 16),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
                                               children: [
-                                                Expanded(
-                                                  child: Text(
-                                                    otherName,
+                                                Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: Text(
+                                                        identity.displayName,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: const TextStyle(
+                                                          fontSize: 16,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                          color: AppColors
+                                                              .textDark,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Text(
+                                                      _relativeTime(
+                                                        chat.lastMessageAt,
+                                                      ),
+                                                      style: const TextStyle(
+                                                        fontSize: 12.5,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        color:
+                                                            AppColors.textGrey,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 6),
+                                                if (chat
+                                                    .lastServiceTitle
+                                                    .isNotEmpty)
+                                                  Text(
+                                                    chat.lastServiceTitle,
                                                     maxLines: 1,
                                                     overflow:
                                                         TextOverflow.ellipsis,
                                                     style: const TextStyle(
-                                                      fontSize: 16,
+                                                      fontSize: 12.5,
                                                       fontWeight:
                                                           FontWeight.w700,
-                                                      color: AppColors.textDark,
+                                                      color: AppColors.primary,
                                                     ),
                                                   ),
-                                                ),
-                                                const SizedBox(width: 10),
+                                                if (chat
+                                                    .lastServiceTitle
+                                                    .isNotEmpty)
+                                                  const SizedBox(height: 4),
                                                 Text(
-                                                  _relativeTime(
-                                                    chat.lastMessageAt,
-                                                  ),
+                                                  chat.lastMessage.isEmpty
+                                                      ? 'Start the conversation'
+                                                      : chat.lastMessage,
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                   style: const TextStyle(
-                                                    fontSize: 12.5,
-                                                    fontWeight: FontWeight.w600,
+                                                    fontSize: 14,
+                                                    height: 1.4,
                                                     color: AppColors.textGrey,
+                                                    fontWeight: FontWeight.w500,
                                                   ),
                                                 ),
                                               ],
                                             ),
-                                            const SizedBox(height: 6),
-                                            if (chat
-                                                .lastServiceTitle
-                                                .isNotEmpty)
-                                              Text(
-                                                chat.lastServiceTitle,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
+                                          ),
+                                          if (unreadCount > 0) ...[
+                                            const SizedBox(width: 12),
+                                            Container(
+                                              constraints: const BoxConstraints(
+                                                minWidth: 28,
+                                                minHeight: 28,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                  ),
+                                              alignment: Alignment.center,
+                                              decoration: const BoxDecoration(
+                                                color: AppColors.primary,
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: Text(
+                                                unreadCount > 99
+                                                    ? '99+'
+                                                    : '$unreadCount',
                                                 style: const TextStyle(
+                                                  color: Colors.white,
                                                   fontSize: 12.5,
                                                   fontWeight: FontWeight.w700,
-                                                  color: AppColors.primary,
                                                 ),
-                                              ),
-                                            if (chat
-                                                .lastServiceTitle
-                                                .isNotEmpty)
-                                              const SizedBox(height: 4),
-                                            Text(
-                                              chat.lastMessage.isEmpty
-                                                  ? 'Start the conversation'
-                                                  : chat.lastMessage,
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                fontSize: 14,
-                                                height: 1.4,
-                                                color: AppColors.textGrey,
-                                                fontWeight: FontWeight.w500,
                                               ),
                                             ),
                                           ],
-                                        ),
+                                        ],
                                       ),
-                                      if (unreadCount > 0) ...[
-                                        const SizedBox(width: 12),
-                                        Container(
-                                          constraints: const BoxConstraints(
-                                            minWidth: 28,
-                                            minHeight: 28,
-                                          ),
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                          ),
-                                          alignment: Alignment.center,
-                                          decoration: const BoxDecoration(
-                                            color: AppColors.primary,
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: Text(
-                                            unreadCount > 99
-                                                ? '99+'
-                                                : '$unreadCount',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
+                                    ),
+                                  );
+                                },
                               );
                             },
                           );

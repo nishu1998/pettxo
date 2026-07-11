@@ -6,6 +6,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_model.dart';
@@ -210,19 +211,31 @@ class _SummaryCard extends StatelessWidget {
       ),
       child: booking == null
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _row('Service', booking!.serviceName),
-                _row('Provider', booking!.providerName),
-                _row('Status', booking!._statusLabelForUi),
-                _row('Amount paid', _moneyFromPaise(booking!.grossAmountPaise)),
-                if (booking!.graceWindowEndsAt != null)
-                  _row(
-                    'Full-refund until',
-                    _dateTimeLabel(booking!.graceWindowEndsAt!),
-                  ),
-              ],
+          : LiveUserIdentityResolver(
+              userId: booking!.providerId,
+              fallbackName: booking!.providerName,
+              fallbackUsername: booking!.providerUsername,
+              fallbackImageUrl: booking!.providerPhotoUrl,
+              placeholderName: 'Provider',
+              builder: (context, identity) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _row('Service', booking!.serviceName),
+                    _row('Provider', identity.displayName),
+                    _row('Status', booking!._statusLabelForUi),
+                    _row(
+                      'Amount paid',
+                      _moneyFromPaise(booking!.grossAmountPaise),
+                    ),
+                    if (booking!.graceWindowEndsAt != null)
+                      _row(
+                        'Full-refund until',
+                        _dateTimeLabel(booking!.graceWindowEndsAt!),
+                      ),
+                  ],
+                );
+              },
             ),
     );
   }

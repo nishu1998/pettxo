@@ -515,6 +515,12 @@ class BookingModel {
       tab: tab,
       title: title,
       subtitle: subtitleParts.join(' · '),
+      serviceTitle: serviceName,
+      animalType: animalType.trim(),
+      counterpartyUserId: isDelivering ? customerId : providerId,
+      counterpartyName: isDelivering ? customerName : providerName,
+      counterpartyUsername: isDelivering ? customerUsername : providerUsername,
+      counterpartyPhotoUrl: isDelivering ? customerPhotoUrl : providerPhotoUrl,
       meta: _scheduleMeta,
       reviewSummary: normalizedStatus == 'completed'
           ? providerReviewSummary

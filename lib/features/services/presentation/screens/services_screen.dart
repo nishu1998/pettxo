@@ -8,6 +8,7 @@ import '../../../../core/services/network_status_service.dart';
 import '../../../../core/utils/service_ranking.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -521,7 +522,8 @@ class _ServicesScreenState extends State<ServicesScreen> {
                         padding: EdgeInsets.only(top: 48),
                         child: Center(child: CircularProgressIndicator()),
                       )
-                    else if (snapshot.connectionState == ConnectionState.waiting &&
+                    else if (snapshot.connectionState ==
+                            ConnectionState.waiting &&
                         NetworkStatusService.instance.isOffline)
                       const _ServicesEmptyState(
                         icon: Icons.wifi_off_rounded,
@@ -990,15 +992,24 @@ class _MarketplaceServiceCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 5),
-                      Text(
-                        'Provided by ${_providerLabel(service)}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textGrey,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
+                      LiveUserIdentityResolver(
+                        userId: service.ownerUserId,
+                        fallbackName: service.ownerName,
+                        fallbackUsername: service.ownerUsername,
+                        fallbackImageUrl: service.ownerPhotoUrl,
+                        placeholderName: 'Service provider',
+                        builder: (context, identity) {
+                          return Text(
+                            'Provided by ${identity.displayName}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textGrey,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          );
+                        },
                       ),
                       if (service.isSponsorActive) ...[
                         const SizedBox(height: 6),
@@ -1110,14 +1121,6 @@ class _MarketplaceServiceCard extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  String _providerLabel(ServiceModel service) {
-    final ownerName = service.ownerName.trim();
-    if (ownerName.isNotEmpty) return ownerName;
-    final ownerUsername = service.ownerUsername.trim().replaceFirst('@', '');
-    if (ownerUsername.isNotEmpty) return ownerUsername;
-    return 'Service provider';
   }
 }
 

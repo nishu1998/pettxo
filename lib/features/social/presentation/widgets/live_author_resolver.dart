@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../../profile/data/repositories/profile_repository.dart';
-import '../../../profile/domain/models/user_profile.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 
 class ResolvedAuthorData {
   final String displayName;
@@ -40,57 +39,21 @@ class LiveAuthorResolver extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final trimmedAuthorId = authorId.trim();
-    final fallback = _buildResolvedAuthorData(null);
-    if (trimmedAuthorId.isEmpty) {
-      return builder(context, fallback);
-    }
-
-    return StreamBuilder<UserProfile>(
-      initialData: _LiveAuthorProfileCache.latest(trimmedAuthorId),
-      stream: _LiveAuthorProfileCache.watch(trimmedAuthorId),
+    return LiveUserIdentityResolver(
+      userId: authorId,
+      fallbackName: fallbackName,
+      fallbackUsername: fallbackUsername,
+      fallbackImageUrl: fallbackImageUrl,
       builder: (context, snapshot) {
-        final resolved = _buildResolvedAuthorData(snapshot.data);
-        return builder(context, resolved);
+        return builder(
+          context,
+          ResolvedAuthorData(
+            displayName: snapshot.displayName,
+            username: snapshot.username,
+            imageUrl: snapshot.imageUrl,
+          ),
+        );
       },
     );
-  }
-
-  ResolvedAuthorData _buildResolvedAuthorData(UserProfile? profile) {
-    final liveName = profile?.name.trim() ?? '';
-    final liveUsername = profile?.displayUsername.trim() ?? '';
-    final liveImageUrl = profile?.profileImageUrl.trim() ?? '';
-
-    return ResolvedAuthorData(
-      displayName: liveName.isEmpty
-          ? (fallbackName.trim().isEmpty ? 'Pettxo user' : fallbackName.trim())
-          : liveName,
-      username: liveUsername.isEmpty ? fallbackUsername.trim() : liveUsername,
-      imageUrl: liveImageUrl.isEmpty ? fallbackImageUrl.trim() : liveImageUrl,
-    );
-  }
-}
-
-class _LiveAuthorProfileCache {
-  static final ProfileRepository _profileRepository = ProfileRepository();
-  static final Map<String, Stream<UserProfile>> _streamCache =
-      <String, Stream<UserProfile>>{};
-  static final Map<String, UserProfile> _latestProfileCache =
-      <String, UserProfile>{};
-
-  static Stream<UserProfile> watch(String authorId) {
-    final trimmedAuthorId = authorId.trim();
-    return _streamCache.putIfAbsent(trimmedAuthorId, () {
-      return _profileRepository.watchUserProfile(trimmedAuthorId).map((
-        profile,
-      ) {
-        _latestProfileCache[trimmedAuthorId] = profile;
-        return profile;
-      }).asBroadcastStream();
-    });
-  }
-
-  static UserProfile? latest(String authorId) {
-    return _latestProfileCache[authorId.trim()];
   }
 }

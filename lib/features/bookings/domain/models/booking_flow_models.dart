@@ -44,6 +44,12 @@ class BookingRecord {
   final BookingTab tab;
   final String title;
   final String subtitle;
+  final String serviceTitle;
+  final String animalType;
+  final String counterpartyUserId;
+  final String counterpartyName;
+  final String counterpartyUsername;
+  final String counterpartyPhotoUrl;
   final String meta;
   final String reviewSummary;
   final String providerUserId;
@@ -68,6 +74,12 @@ class BookingRecord {
     required this.tab,
     required this.title,
     required this.subtitle,
+    this.serviceTitle = '',
+    this.animalType = '',
+    this.counterpartyUserId = '',
+    this.counterpartyName = '',
+    this.counterpartyUsername = '',
+    this.counterpartyPhotoUrl = '',
     required this.meta,
     this.reviewSummary = '',
     this.providerUserId = '',

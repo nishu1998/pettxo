@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../../domain/models/chat_model.dart';
 import '../../domain/models/message_model.dart';
@@ -145,42 +146,52 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             titleSpacing: 0,
             title: chat == null
                 ? const Text('Chat')
-                : Row(
-                    children: [
-                      _HeaderAvatar(
-                        name: chat.otherParticipantNameFor(_currentUid),
-                        photoUrl: chat.otherParticipantPhotoUrlFor(_currentUid),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              chat.otherParticipantNameFor(_currentUid),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.textDark,
-                              ),
-                            ),
-                            if (chat.lastServiceTitle.isNotEmpty)
-                              Text(
-                                chat.lastServiceTitle,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.textGrey,
+                : LiveUserIdentityResolver(
+                    userId: chat.otherParticipantIdFor(_currentUid),
+                    fallbackName: chat.otherParticipantNameFor(_currentUid),
+                    fallbackUsername: '',
+                    fallbackImageUrl: chat.otherParticipantPhotoUrlFor(
+                      _currentUid,
+                    ),
+                    builder: (context, identity) {
+                      return Row(
+                        children: [
+                          _HeaderAvatar(
+                            name: identity.displayName,
+                            photoUrl: identity.imageUrl,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  identity.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textDark,
+                                  ),
                                 ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
+                                if (chat.lastServiceTitle.isNotEmpty)
+                                  Text(
+                                    chat.lastServiceTitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textGrey,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
           ),
           body: Column(

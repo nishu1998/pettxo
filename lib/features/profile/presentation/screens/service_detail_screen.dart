@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +9,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../bookings/data/repositories/booking_review_repository.dart';
 import '../../../bookings/domain/models/booking_review_model.dart';
 import '../../../bookings/presentation/screens/slot_selection_screen.dart';
@@ -753,64 +753,10 @@ class _InsightStrip extends StatelessWidget {
   }
 }
 
-class _ProviderIdentityRow extends StatefulWidget {
+class _ProviderIdentityRow extends StatelessWidget {
   final ProfileServiceListing service;
 
   const _ProviderIdentityRow({required this.service});
-
-  @override
-  State<_ProviderIdentityRow> createState() => _ProviderIdentityRowState();
-}
-
-class _ProviderIdentityRowState extends State<_ProviderIdentityRow> {
-  String? _resolvedProviderName;
-
-  @override
-  void initState() {
-    super.initState();
-    _resolvedProviderName = _snapshotProviderLabel;
-    if (_resolvedProviderName == 'Service provider') {
-      _loadProviderNameFallback();
-    }
-  }
-
-  String get _snapshotProviderLabel {
-    final ownerName = widget.service.ownerName.trim();
-    if (ownerName.isNotEmpty) return ownerName;
-    final ownerUsername = widget.service.ownerUsername.trim().replaceFirst(
-      '@',
-      '',
-    );
-    if (ownerUsername.isNotEmpty) return ownerUsername;
-    return 'Service provider';
-  }
-
-  Future<void> _loadProviderNameFallback() async {
-    final ownerUserId = widget.service.ownerUserId.trim();
-    if (ownerUserId.isEmpty) return;
-
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(ownerUserId)
-          .get();
-      final data = snapshot.data();
-      if (data == null || !mounted) return;
-      final name = (data['name'] as String? ?? '').trim();
-      final username = (data['username'] as String? ?? '').trim().replaceFirst(
-        '@',
-        '',
-      );
-      final resolved = name.isNotEmpty
-          ? name
-          : username.isNotEmpty
-          ? username
-          : 'Service provider';
-      setState(() => _resolvedProviderName = resolved);
-    } catch (_) {
-      // Detail UI can gracefully keep the generic provider fallback.
-    }
-  }
 
   // TODO(nishant): Add a real "Report user" entry point when Pettxo has a
   // public provider profile screen. The current profile screen is the owner's
@@ -818,28 +764,36 @@ class _ProviderIdentityRowState extends State<_ProviderIdentityRow> {
 
   @override
   Widget build(BuildContext context) {
-    final providerName = _resolvedProviderName ?? 'Service provider';
-    return Row(
-      children: [
-        const Icon(
-          Icons.person_outline_rounded,
-          color: AppColors.textGrey,
-          size: 18,
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            'Provided by $providerName',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+    return LiveUserIdentityResolver(
+      userId: service.ownerUserId,
+      fallbackName: service.ownerName,
+      fallbackUsername: service.ownerUsername,
+      fallbackImageUrl: '',
+      placeholderName: 'Service provider',
+      builder: (context, identity) {
+        return Row(
+          children: [
+            const Icon(
+              Icons.person_outline_rounded,
               color: AppColors.textGrey,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
+              size: 18,
             ),
-          ),
-        ),
-      ],
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Provided by ${identity.displayName}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

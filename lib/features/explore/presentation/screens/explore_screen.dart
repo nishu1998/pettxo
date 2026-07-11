@@ -9,6 +9,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -1995,17 +1996,24 @@ class _CompactServiceCard extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          service.ownerName.isEmpty
-                              ? 'Pettxo provider'
-                              : service.ownerName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: AppColors.textGrey,
-                            fontSize: compact ? 12 : 13,
-                            fontWeight: FontWeight.w500,
-                          ),
+                        LiveUserIdentityResolver(
+                          userId: service.ownerUserId,
+                          fallbackName: service.ownerName,
+                          fallbackUsername: service.ownerUsername,
+                          fallbackImageUrl: service.ownerPhotoUrl,
+                          placeholderName: 'Pettxo provider',
+                          builder: (context, identity) {
+                            return Text(
+                              identity.displayName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: AppColors.textGrey,
+                                fontSize: compact ? 12 : 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            );
+                          },
                         ),
                         const SizedBox(height: 4),
                         Text(

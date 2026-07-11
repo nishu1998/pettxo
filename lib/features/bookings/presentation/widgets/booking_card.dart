@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../domain/models/booking_flow_models.dart';
 import 'status_chip.dart';
 
@@ -61,27 +62,50 @@ class BookingCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        booking.title,
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        booking.subtitle,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF8E8479),
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+                  child: LiveUserIdentityResolver(
+                    userId: booking.counterpartyUserId,
+                    fallbackName: booking.counterpartyName,
+                    fallbackUsername: booking.counterpartyUsername,
+                    fallbackImageUrl: booking.counterpartyPhotoUrl,
+                    placeholderName:
+                        booking.context == BookingContextMode.delivering
+                        ? 'Pet parent'
+                        : 'Service provider',
+                    builder: (context, identity) {
+                      final title =
+                          booking.context == BookingContextMode.delivering
+                          ? identity.displayName
+                          : booking.serviceTitle;
+                      final subtitleParts = <String>[
+                        if (booking.animalType.trim().isNotEmpty)
+                          booking.animalType.trim(),
+                        booking.context == BookingContextMode.delivering
+                            ? booking.serviceTitle
+                            : identity.displayName,
+                      ];
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            subtitleParts.join(' · '),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF8E8479),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
                 const SizedBox(width: 12),
