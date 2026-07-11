@@ -21,6 +21,7 @@ import '../../domain/models/booking_model.dart';
 import '../../domain/models/booking_flow_models.dart';
 import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
+import '../../../profile/presentation/screens/profile_screen.dart';
 import '../widgets/section_block.dart';
 import '../widgets/status_chip.dart';
 
@@ -144,6 +145,21 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
 
   bool _isProvider(BookingModel booking) {
     return FirebaseAuth.instance.currentUser?.uid == booking.providerId;
+  }
+
+  void _openUserProfile(String userId) {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) return;
+
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => trimmedUserId == currentUserId
+            ? const ProfileScreen()
+            : ProfileScreen(userId: trimmedUserId),
+      ),
+    );
   }
 
   Widget _withProviderIdentity(
@@ -957,6 +973,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               label: 'Provider',
               value: '${provider.displayName} ↗',
               valueColor: AppColors.primary,
+              onTap: () => _openUserProfile(booking.providerId),
             ),
           ],
         ),
@@ -1055,6 +1072,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
               label: 'Provider',
               value: '${provider.displayName} ↗',
               valueColor: AppColors.primary,
+              onTap: () => _openUserProfile(booking.providerId),
             ),
           ],
         ),
@@ -1331,6 +1349,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             avatarUrl: customer.imageUrl,
             initialsBackground: const Color(0xFFEFF6FF),
             initialsForeground: const Color(0xFF1D4ED8),
+            onTap: () => _openUserProfile(booking.customerId),
           ),
         ),
       ),
@@ -1418,6 +1437,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
             avatarUrl: customer.imageUrl,
             initialsBackground: const Color(0xFFFEF0EB),
             initialsForeground: const Color(0xFF9A3412),
+            onTap: () => _openUserProfile(booking.customerId),
           ),
         ),
       ),
@@ -1507,7 +1527,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                   label: 'Animal',
                   value: _emptyFallback(booking.animalType),
                 ),
-                DetailRowData(label: 'Pet parent', value: customer.displayName),
+                DetailRowData(
+                  label: 'Pet parent',
+                  value: customer.displayName,
+                  onTap: () => _openUserProfile(booking.customerId),
+                ),
                 DetailRowData(
                   label: 'Date',
                   value: _dateLabel(booking.scheduledStartAt),
@@ -1545,7 +1569,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
                   label: 'Animal',
                   value: _emptyFallback(booking.animalType),
                 ),
-                DetailRowData(label: 'Provider', value: provider.displayName),
+                DetailRowData(
+                  label: 'Provider',
+                  value: provider.displayName,
+                  onTap: () => _openUserProfile(booking.providerId),
+                ),
                 DetailRowData(
                   label: 'Date',
                   value: _dateLabel(booking.scheduledStartAt),
@@ -2366,6 +2394,7 @@ class _IdentityRow extends StatelessWidget {
   final String avatarUrl;
   final Color initialsBackground;
   final Color initialsForeground;
+  final VoidCallback? onTap;
 
   const _IdentityRow({
     required this.initials,
@@ -2374,53 +2403,73 @@ class _IdentityRow extends StatelessWidget {
     this.avatarUrl = '',
     required this.initialsBackground,
     required this.initialsForeground,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        CircleAvatar(
-          radius: 18,
-          backgroundColor: initialsBackground,
-          backgroundImage: avatarUrl.trim().isEmpty
-              ? null
-              : NetworkImage(avatarUrl.trim()),
-          child: avatarUrl.trim().isNotEmpty
-              ? null
-              : Text(
-                  initials,
-                  style: TextStyle(
-                    color: initialsForeground,
+    final row = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 18,
+            backgroundColor: initialsBackground,
+            backgroundImage: avatarUrl.trim().isEmpty
+                ? null
+                : NetworkImage(avatarUrl.trim()),
+            child: avatarUrl.trim().isNotEmpty
+                ? null
+                : Text(
+                    initials,
+                    style: TextStyle(
+                      color: initialsForeground,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14,
                     fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
                   ),
                 ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textDark,
+                Text(
+                  handle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textGrey,
+                  ),
                 ),
-              ),
-              Text(
-                handle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: AppColors.textGrey),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
+    );
+
+    if (onTap == null) {
+      return row;
+    }
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: row,
+      ),
     );
   }
 }

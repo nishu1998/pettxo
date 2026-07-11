@@ -8,6 +8,7 @@ class DetailRowData {
   final Color? valueColor;
   final FontWeight? valueWeight;
   final Widget? trailing;
+  final VoidCallback? onTap;
 
   const DetailRowData({
     required this.label,
@@ -15,6 +16,7 @@ class DetailRowData {
     this.valueColor,
     this.valueWeight,
     this.trailing,
+    this.onTap,
   });
 }
 
@@ -71,8 +73,8 @@ class SectionBlock extends StatelessWidget {
             const SizedBox(height: 12),
           if (rows != null)
             ...rows!.map((row) {
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
+              final rowContent = Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -100,6 +102,25 @@ class SectionBlock extends StatelessWidget {
                           ),
                         ),
                   ],
+                ),
+              );
+
+              if (row.onTap == null) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: rowContent,
+                );
+              }
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: row.onTap,
+                    child: rowContent,
+                  ),
                 ),
               );
             }),

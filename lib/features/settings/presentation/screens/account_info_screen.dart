@@ -100,18 +100,29 @@ class AccountInfoScreen extends StatelessWidget {
                     label: 'Username',
                     value: accountInfo.username,
                   ),
-                  const SizedBox(height: 14),
-                  _ReadOnlyField(
-                    icon: Icons.email_outlined,
-                    label: 'Email',
-                    value: accountInfo.email,
-                  ),
-                  const SizedBox(height: 14),
-                  _ReadOnlyField(
-                    icon: Icons.phone_outlined,
-                    label: 'Phone number',
-                    value: accountInfo.phoneNumber,
-                  ),
+                  if (accountInfo.hasAnyContactInfo) ...[
+                    if (accountInfo.hasEmail) ...[
+                      const SizedBox(height: 14),
+                      _ReadOnlyField(
+                        icon: Icons.email_outlined,
+                        label: 'Email',
+                        value: accountInfo.email,
+                      ),
+                    ],
+                    if (accountInfo.hasPhoneNumber) ...[
+                      const SizedBox(height: 14),
+                      _ReadOnlyField(
+                        icon: Icons.phone_outlined,
+                        label: 'Phone number',
+                        value: accountInfo.phoneNumber,
+                      ),
+                    ],
+                  ] else ...[
+                    const SizedBox(height: 14),
+                    _AccountInfoEmptyState(
+                      message: 'No account contact information is available.',
+                    ),
+                  ],
                   const SizedBox(height: 14),
                   _ReadOnlyField(
                     icon: Icons.verified_user_outlined,
@@ -143,13 +154,17 @@ class AccountInfoViewData {
     required this.providersLabel,
   });
 
+  bool get hasEmail => hasValue(email);
+  bool get hasPhoneNumber => hasValue(phoneNumber);
+  bool get hasAnyContactInfo => hasEmail || hasPhoneNumber;
+
   factory AccountInfoViewData.fromUser({
     required UserProfile profile,
     required User? user,
   }) {
     final providerIds = <String>{};
-    String email = (user?.email ?? '').trim();
-    String phoneNumber = (user?.phoneNumber ?? '').trim();
+    String email = _cleanValue(user?.email);
+    String phoneNumber = _cleanValue(user?.phoneNumber);
 
     for (final provider in user?.providerData ?? const <UserInfo>[]) {
       final providerId = provider.providerId.trim();
@@ -157,11 +172,18 @@ class AccountInfoViewData {
         providerIds.add(providerId);
       }
       if (email.isEmpty) {
-        email = (provider.email ?? '').trim();
+        email = _cleanValue(provider.email);
       }
       if (phoneNumber.isEmpty) {
-        phoneNumber = (provider.phoneNumber ?? '').trim();
+        phoneNumber = _cleanValue(provider.phoneNumber);
       }
+    }
+
+    if (email.isEmpty) {
+      email = _cleanValue(profile.email);
+    }
+    if (phoneNumber.isEmpty) {
+      phoneNumber = _cleanValue(profile.phone);
     }
 
     return AccountInfoViewData(
@@ -169,13 +191,19 @@ class AccountInfoViewData {
       username: profile.displayUsername.isEmpty
           ? 'Username unavailable'
           : profile.displayUsername,
-      email: email.isEmpty ? 'No email linked' : email,
-      phoneNumber: phoneNumber.isEmpty ? 'No phone number linked' : phoneNumber,
+      email: email,
+      phoneNumber: phoneNumber,
       providersLabel: providerIds.isEmpty
           ? 'Account provider unavailable'
           : providerIds.map(_providerLabel).join(', '),
     );
   }
+
+  static bool hasValue(String? value) {
+    return value != null && value.trim().isNotEmpty;
+  }
+
+  static String _cleanValue(String? value) => value?.trim() ?? '';
 
   static String _providerLabel(String providerId) {
     return switch (providerId) {
@@ -185,6 +213,33 @@ class AccountInfoViewData {
       'apple.com' => 'Apple',
       _ => providerId,
     };
+  }
+}
+
+class _AccountInfoEmptyState extends StatelessWidget {
+  final String message;
+
+  const _AccountInfoEmptyState({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFCFBFA),
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Text(
+        message,
+        style: const TextStyle(
+          color: AppColors.textGrey,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          height: 1.45,
+        ),
+      ),
+    );
   }
 }
 

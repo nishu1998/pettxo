@@ -18,6 +18,7 @@ import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../../moderation/presentation/widgets/report_sheet.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/profile_service_listing.dart';
+import 'profile_screen.dart';
 
 class ServiceDetailScreen extends StatelessWidget {
   final ProfileServiceListing service;
@@ -758,40 +759,99 @@ class _ProviderIdentityRow extends StatelessWidget {
 
   const _ProviderIdentityRow({required this.service});
 
+  void _openProviderProfile(BuildContext context) {
+    final userId = service.ownerUserId.trim();
+    if (userId.isEmpty) return;
+
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => userId == currentUserId
+            ? const ProfileScreen()
+            : ProfileScreen(userId: userId),
+      ),
+    );
+  }
+
   // TODO(nishant): Add a real "Report user" entry point when Pettxo has a
   // public provider profile screen. The current profile screen is the owner's
   // private area, so reporting from there would be the wrong UX.
 
   @override
   Widget build(BuildContext context) {
+    final providerUserId = service.ownerUserId.trim();
     return LiveUserIdentityResolver(
-      userId: service.ownerUserId,
+      userId: providerUserId,
       fallbackName: service.ownerName,
       fallbackUsername: service.ownerUsername,
       fallbackImageUrl: '',
       placeholderName: 'Service provider',
       builder: (context, identity) {
-        return Row(
-          children: [
-            const Icon(
-              Icons.person_outline_rounded,
-              color: AppColors.textGrey,
-              size: 18,
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Provided by ${identity.displayName}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
+        final row = Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            children: [
+              const Text(
+                'Provided by',
+                style: TextStyle(
                   color: AppColors.textGrey,
                   fontSize: 14,
                   fontWeight: FontWeight.w700,
                 ),
               ),
-            ),
-          ],
+              const SizedBox(width: 8),
+              Expanded(
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.person_outline_rounded,
+                      color: providerUserId.isEmpty
+                          ? AppColors.textGrey
+                          : AppColors.primary,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        identity.displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: providerUserId.isEmpty
+                              ? AppColors.textDark
+                              : AppColors.primary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (providerUserId.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  color: AppColors.textGrey,
+                  size: 18,
+                ),
+              ],
+            ],
+          ),
+        );
+
+        if (providerUserId.isEmpty) {
+          return row;
+        }
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => _openProviderProfile(context),
+            child: row,
+          ),
         );
       },
     );
