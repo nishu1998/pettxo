@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../data/repositories/chat_repository.dart';
@@ -495,16 +496,14 @@ class _HeaderAvatar extends StatelessWidget {
         ? 'P'
         : name.trim().substring(0, 1).toUpperCase();
 
-    if (photoUrl.isNotEmpty) {
-      return CircleAvatar(radius: 20, backgroundImage: NetworkImage(photoUrl));
-    }
-
-    return CircleAvatar(
-      radius: 20,
-      backgroundColor: const Color(0xFFF4EFEA),
-      child: Text(
-        initials,
-        style: const TextStyle(
+    return AppUserAvatar(
+      size: 40,
+      imageUrl: photoUrl,
+      useCachedImage: false,
+      fallback: AppUserAvatarFallback(
+        initials: initials,
+        backgroundColor: const Color(0xFFF4EFEA),
+        textStyle: const TextStyle(
           color: AppColors.textDark,
           fontWeight: FontWeight.w700,
         ),

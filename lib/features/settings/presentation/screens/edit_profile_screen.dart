@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/presentation/widgets/common_phone_field.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
@@ -498,48 +499,23 @@ class _ProfileAvatar extends StatelessWidget {
     final size = radius * 2;
 
     Widget fallback() {
-      return Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          gradient: AppColors.brandGradientDiagonal,
-          shape: BoxShape.circle,
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          fallbackInitials,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: radius * 0.8,
-            fontWeight: FontWeight.w800,
-          ),
+      return AppUserAvatarFallback(
+        initials: fallbackInitials,
+        gradient: AppColors.brandGradientDiagonal,
+        textStyle: TextStyle(
+          color: Colors.white,
+          fontSize: radius * 0.8,
+          fontWeight: FontWeight.w800,
         ),
       );
     }
 
-    if (selectedImage != null) {
-      return ClipOval(
-        child: Image.file(
-          selectedImage!,
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-        ),
-      );
-    }
-
-    if (imageUrl.isEmpty) {
-      return fallback();
-    }
-
-    return ClipOval(
-      child: Image.network(
-        imageUrl,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => fallback(),
-      ),
+    return AppUserAvatar(
+      size: size,
+      imageFile: selectedImage,
+      imageUrl: imageUrl,
+      useCachedImage: false,
+      fallback: fallback(),
     );
   }
 }

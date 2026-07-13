@@ -10,6 +10,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
@@ -2412,21 +2413,18 @@ class _IdentityRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       child: Row(
         children: [
-          CircleAvatar(
-            radius: 18,
-            backgroundColor: initialsBackground,
-            backgroundImage: avatarUrl.trim().isEmpty
-                ? null
-                : NetworkImage(avatarUrl.trim()),
-            child: avatarUrl.trim().isNotEmpty
-                ? null
-                : Text(
-                    initials,
-                    style: TextStyle(
-                      color: initialsForeground,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
+          AppUserAvatar(
+            size: 36,
+            imageUrl: avatarUrl,
+            useCachedImage: false,
+            fallback: AppUserAvatarFallback(
+              initials: initials,
+              backgroundColor: initialsBackground,
+              textStyle: TextStyle(
+                color: initialsForeground,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(

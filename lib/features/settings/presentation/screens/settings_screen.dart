@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/data/services/auth_service.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
@@ -568,37 +569,22 @@ class _SettingsAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (profile.profileImageUrl.isNotEmpty) {
-      return ClipOval(
-        child: Image.network(
-          profile.profileImageUrl,
-          width: 60,
-          height: 60,
-          fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => _fallback(),
-        ),
-      );
-    }
-
-    return _fallback();
+    return AppUserAvatar(
+      size: 60,
+      imageUrl: profile.profileImageUrl,
+      useCachedImage: false,
+      fallback: _fallback(),
+    );
   }
 
   Widget _fallback() {
-    return Container(
-      width: 60,
-      height: 60,
-      decoration: const BoxDecoration(
-        gradient: AppColors.brandGradientDiagonal,
-        shape: BoxShape.circle,
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        profile.initials,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 24,
-          fontWeight: FontWeight.w800,
-        ),
+    return AppUserAvatarFallback(
+      initials: profile.initials,
+      gradient: AppColors.brandGradientDiagonal,
+      textStyle: const TextStyle(
+        color: Colors.white,
+        fontSize: 24,
+        fontWeight: FontWeight.w800,
       ),
     );
   }

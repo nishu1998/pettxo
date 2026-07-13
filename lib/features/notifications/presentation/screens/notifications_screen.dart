@@ -1,9 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../bookings/domain/models/booking_flow_models.dart';
 import '../../../bookings/presentation/screens/booking_detail_screen.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
@@ -87,7 +87,8 @@ class NotificationsScreen extends StatelessWidget {
                                 .map(
                                   (doc) => _NotificationTile(
                                     doc: doc,
-                                    onTap: () => _openNotification(context, doc),
+                                    onTap: () =>
+                                        _openNotification(context, doc),
                                   ),
                                 )
                                 .toList(growable: false),
@@ -368,21 +369,15 @@ class _NotificationTile extends StatelessWidget {
               ),
             ] else
               const SizedBox(width: 20),
-            CircleAvatar(
-              radius: 26,
-              backgroundColor: AppColors.background,
-              child: _avatarContent(
-                senderId: senderId,
-                senderDisplayName: senderDisplayName,
-                senderPhotoUrl: senderPhotoUrl,
-                type: type,
-                category: category,
-              ),
+            _avatarContent(
+              senderId: senderId,
+              senderDisplayName: senderDisplayName,
+              senderPhotoUrl: senderPhotoUrl,
+              type: type,
+              category: category,
             ),
             const SizedBox(width: 16),
-            Expanded(
-              child: _buildStyledText(title, body),
-            ),
+            Expanded(child: _buildStyledText(title, body)),
             const SizedBox(width: 12),
             Text(
               _relativeTime(createdDate),
@@ -415,7 +410,15 @@ class _NotificationTile extends StatelessWidget {
       );
     }
 
-    return Icon(_iconFor(type, category), color: AppColors.primary);
+    return Container(
+      width: 52,
+      height: 52,
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.all(Radius.circular(12)),
+      ),
+      child: Icon(_iconFor(type, category), color: AppColors.primary),
+    );
   }
 
   Color _badgeColorFor(String type, String category) {
@@ -450,9 +453,7 @@ class _NotificationTile extends StatelessWidget {
   Widget _buildStyledText(String title, String body) {
     final cleanedTitle = title.trim();
     final cleanedBody = body.trim();
-    final combined = cleanedTitle.isEmpty
-        ? 'Pettxo update'
-        : cleanedTitle;
+    final combined = cleanedTitle.isEmpty ? 'Pettxo update' : cleanedTitle;
     final subjectLength = _subjectLengthFor(combined);
     final safeSubjectLength = subjectLength.clamp(0, combined.length);
     final subject = combined.substring(0, safeSubjectLength).trim();
@@ -570,8 +571,8 @@ class _SocialNotificationAvatar extends StatelessWidget {
           .doc(senderId.trim())
           .snapshots(),
       builder: (context, snapshot) {
-        final livePhotoUrl =
-            '${snapshot.data?.data()?['profileImage'] ?? ''}'.trim();
+        final livePhotoUrl = '${snapshot.data?.data()?['profileImage'] ?? ''}'
+            .trim();
         final resolvedPhotoUrl = livePhotoUrl.isNotEmpty
             ? livePhotoUrl
             : fallbackPhotoUrl.trim();
@@ -582,25 +583,15 @@ class _SocialNotificationAvatar extends StatelessWidget {
 
   Widget _buildAvatarStack(String photoUrl) {
     return SizedBox(
-      width: 56,
-      height: 56,
+      width: 52,
+      height: 52,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          ClipOval(
-            child: SizedBox(
-              width: 56,
-              height: 56,
-              child: photoUrl.isNotEmpty
-                  ? CachedNetworkImage(
-                      imageUrl: photoUrl,
-                      fit: BoxFit.cover,
-                      placeholder: (context, imageUrl) => _fallbackAvatar(),
-                      errorWidget: (context, imageUrl, error) =>
-                          _fallbackAvatar(),
-                    )
-                  : _fallbackAvatar(),
-            ),
+          AppUserAvatar(
+            size: 52,
+            imageUrl: photoUrl,
+            fallback: _fallbackAvatar(),
           ),
           Positioned(
             right: -1,
@@ -622,16 +613,13 @@ class _SocialNotificationAvatar extends StatelessWidget {
   }
 
   Widget _fallbackAvatar() {
-    return CircleAvatar(
-      radius: 28,
+    return AppUserAvatarFallback(
+      initials: _initialsFromName(senderDisplayName),
       backgroundColor: AppColors.background,
-      child: Text(
-        _initialsFromName(senderDisplayName),
-        style: const TextStyle(
-          color: AppColors.textDark,
-          fontSize: 18,
-          fontWeight: FontWeight.w700,
-        ),
+      textStyle: const TextStyle(
+        color: AppColors.textDark,
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
       ),
     );
   }
