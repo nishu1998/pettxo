@@ -1,9 +1,9 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
@@ -830,41 +830,14 @@ class _ProfileAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (imageUrl.isNotEmpty) {
-      return ClipOval(
-        child: SizedBox(
-          width: 40,
-          height: 40,
-          child: CachedNetworkImage(
-            imageUrl: imageUrl,
-            fit: BoxFit.cover,
-            fadeInDuration: const Duration(milliseconds: 180),
-            placeholder: (context, imageUrl) => const CircleAvatar(
-              radius: 20,
-              backgroundColor: AppColors.background,
-            ),
-            errorWidget: (context, imageUrl, error) => CircleAvatar(
-              radius: 20,
-              backgroundColor: AppColors.background,
-              child: Text(
-                initials,
-                style: const TextStyle(
-                  color: AppColors.textDark,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return CircleAvatar(
-      radius: 20,
-      backgroundColor: AppColors.background,
-      child: Text(
-        initials,
-        style: const TextStyle(
+    return AppUserAvatar(
+      size: 40,
+      imageUrl: imageUrl,
+      fadeInDuration: const Duration(milliseconds: 180),
+      fallback: AppUserAvatarFallback(
+        initials: initials,
+        backgroundColor: AppColors.background,
+        textStyle: const TextStyle(
           color: AppColors.textDark,
           fontWeight: FontWeight.w700,
         ),

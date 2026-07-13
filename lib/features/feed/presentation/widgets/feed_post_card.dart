@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/feed_post.dart';
@@ -37,12 +38,12 @@ class FeedPostCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 16, 12, 12),
             child: Row(
               children: [
-                CircleAvatar(
-                  radius: 20,
-                  backgroundColor: AppColors.background,
-                  child: Text(
-                    initials,
-                    style: const TextStyle(
+                AppUserAvatar(
+                  size: 40,
+                  fallback: AppUserAvatarFallback(
+                    initials: initials,
+                    backgroundColor: AppColors.background,
+                    textStyle: const TextStyle(
                       color: AppColors.textDark,
                       fontWeight: FontWeight.w700,
                     ),

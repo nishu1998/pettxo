@@ -1,9 +1,9 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -439,34 +439,20 @@ class _UserAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (imageUrl.isNotEmpty) {
-      return ClipOval(
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: CachedNetworkImage(
-            imageUrl: imageUrl,
-            fit: BoxFit.cover,
-            placeholder: (context, imageUrl) => _fallbackAvatar(),
-            errorWidget: (context, imageUrl, error) => _fallbackAvatar(),
-          ),
-        ),
-      );
-    }
-
-    return _fallbackAvatar();
+    return AppUserAvatar(
+      size: 44,
+      imageUrl: imageUrl,
+      fallback: _fallbackAvatar(),
+    );
   }
 
   Widget _fallbackAvatar() {
-    return CircleAvatar(
-      radius: 22,
+    return AppUserAvatarFallback(
+      initials: initials,
       backgroundColor: AppColors.background,
-      child: Text(
-        initials,
-        style: const TextStyle(
-          color: AppColors.textDark,
-          fontWeight: FontWeight.w700,
-        ),
+      textStyle: const TextStyle(
+        color: AppColors.textDark,
+        fontWeight: FontWeight.w700,
       ),
     );
   }

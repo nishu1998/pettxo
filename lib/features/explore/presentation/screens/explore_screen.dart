@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
@@ -2095,34 +2096,20 @@ class _ProfileAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (imageUrl.isNotEmpty) {
-      return ClipOval(
-        child: SizedBox(
-          width: 52,
-          height: 52,
-          child: CachedNetworkImage(
-            imageUrl: imageUrl,
-            fit: BoxFit.cover,
-            placeholder: (_, _) => _fallbackAvatar(),
-            errorWidget: (_, _, _) => _fallbackAvatar(),
-          ),
-        ),
-      );
-    }
-
-    return _fallbackAvatar();
+    return AppUserAvatar(
+      size: 52,
+      imageUrl: imageUrl,
+      fallback: _fallbackAvatar(),
+    );
   }
 
   Widget _fallbackAvatar() {
-    return CircleAvatar(
-      radius: 26,
+    return AppUserAvatarFallback(
+      initials: initials,
       backgroundColor: AppColors.background,
-      child: Text(
-        initials,
-        style: const TextStyle(
-          color: AppColors.textDark,
-          fontWeight: FontWeight.w700,
-        ),
+      textStyle: const TextStyle(
+        color: AppColors.textDark,
+        fontWeight: FontWeight.w700,
       ),
     );
   }

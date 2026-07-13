@@ -1,10 +1,10 @@
 import 'dart:math' as math;
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
@@ -717,34 +717,20 @@ class _CommentAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (imageUrl.isNotEmpty) {
-      return ClipOval(
-        child: SizedBox(
-          width: 36,
-          height: 36,
-          child: CachedNetworkImage(
-            imageUrl: imageUrl,
-            fit: BoxFit.cover,
-            errorWidget: (context, imageUrl, error) => _fallbackAvatar(),
-            placeholder: (context, imageUrl) => _fallbackAvatar(),
-          ),
-        ),
-      );
-    }
-
-    return _fallbackAvatar();
+    return AppUserAvatar(
+      size: 36,
+      imageUrl: imageUrl,
+      fallback: _fallbackAvatar(),
+    );
   }
 
   Widget _fallbackAvatar() {
-    return CircleAvatar(
-      radius: 18,
+    return AppUserAvatarFallback(
+      initials: initials,
       backgroundColor: AppColors.background,
-      child: Text(
-        initials,
-        style: const TextStyle(
-          color: AppColors.textDark,
-          fontWeight: FontWeight.w700,
-        ),
+      textStyle: const TextStyle(
+        color: AppColors.textDark,
+        fontWeight: FontWeight.w700,
       ),
     );
   }
