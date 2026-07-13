@@ -10,14 +10,10 @@ import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
-import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
-import '../../../profile/presentation/screens/service_detail_screen.dart';
-import '../../../services/data/repositories/services_repository.dart';
-import '../../../services/domain/models/service_model.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
@@ -25,8 +21,6 @@ import '../../../social/presentation/widgets/live_author_resolver.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 
 const bool _debugExploreRanking = false;
-
-enum _DiscoverContentTab { posts, services }
 
 class ExploreScreen extends StatefulWidget {
   const ExploreScreen({super.key});
@@ -40,7 +34,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   final SocialPostRepository _socialPostRepository = SocialPostRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
-  final ServicesRepository _servicesRepository = ServicesRepository();
   final FollowRepository _followRepository = FollowRepository();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final TextEditingController _searchController = TextEditingController();
@@ -61,7 +54,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
   List<SocialPostModel> _prefetchedTrendingPosts = const <SocialPostModel>[];
   List<SocialPostModel> _popularPosts = const <SocialPostModel>[];
   List<SocialPostModel> _prefetchedPopularPosts = const <SocialPostModel>[];
-  List<ServiceModel> _nearbyServices = const <ServiceModel>[];
   List<ExploreHashtagSummary> _trendingHashtags =
       const <ExploreHashtagSummary>[];
   List<UserProfile> _profileResults = const <UserProfile>[];
@@ -69,7 +61,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
       const <ExploreHashtagSummary>[];
   List<SocialPostModel> _hashtagResults = const <SocialPostModel>[];
   Set<String> _followingIds = <String>{};
-  _DiscoverContentTab _selectedDiscoverTab = _DiscoverContentTab.posts;
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
 
@@ -111,7 +102,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
     _prefetchedTrendingPosts = cache.prefetchedTrendingPosts;
     _popularPosts = cache.popularPosts;
     _prefetchedPopularPosts = cache.prefetchedPopularPosts;
-    _nearbyServices = cache.nearbyServices;
     _trendingHashtags = cache.trendingHashtags;
     _followingIds = cache.followingIds;
     _sectionsError = null;
@@ -129,7 +119,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
       prefetchedPopularPosts: List<SocialPostModel>.from(
         _prefetchedPopularPosts,
       ),
-      nearbyServices: List<ServiceModel>.from(_nearbyServices),
       trendingHashtags: List<ExploreHashtagSummary>.from(_trendingHashtags),
       followingIds: Set<String>.from(_followingIds),
     );
@@ -190,7 +179,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
       final recentPosts = results[2] as List<SocialPostModel>;
       var popularPosts = results[3] as List<SocialPostModel>;
       final trendingHashtags = results[4] as List<ExploreHashtagSummary>;
-      final nearbyServices = await _loadNearbyServices(currentProfile);
       final rankingContext = _ExploreRankingContext(
         followingIds: followingIds,
         userCity: currentProfile?.city ?? '',
@@ -218,7 +206,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
             .skip(10)
             .take(10)
             .toList(growable: false);
-        _nearbyServices = nearbyServices;
         _trendingHashtags = trendingHashtags;
       });
       _saveCache();
@@ -261,7 +248,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
         final recentPosts = fallbackResults[2] as List<SocialPostModel>;
         final trendingHashtags =
             fallbackResults[3] as List<ExploreHashtagSummary>;
-        final nearbyServices = await _loadNearbyServices(currentProfile);
         final rankingContext = _ExploreRankingContext(
           followingIds: followingIds,
           userCity: currentProfile?.city ?? '',
@@ -295,7 +281,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
               .skip(10)
               .take(10)
               .toList(growable: false);
-          _nearbyServices = nearbyServices;
           _trendingHashtags = trendingHashtags;
           _sectionsError = null;
         });
@@ -322,48 +307,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
       if (mounted) {
         setState(() => _isLoadingSections = false);
       }
-    }
-  }
-
-  Future<List<ServiceModel>> _loadNearbyServices(UserProfile? profile) async {
-    try {
-      final city = profile?.city.trim() ?? '';
-      final page = await _servicesRepository.fetchActiveServicesPage(
-        limit: 20,
-        city: city.isEmpty ? null : city,
-      );
-
-      final state = profile?.state.trim().toLowerCase() ?? '';
-      final ranked = page.services.toList(growable: false)
-        ..sort((a, b) {
-          final aSameCity =
-              city.isNotEmpty &&
-              a.city.trim().toLowerCase() == city.toLowerCase();
-          final bSameCity =
-              city.isNotEmpty &&
-              b.city.trim().toLowerCase() == city.toLowerCase();
-          if (aSameCity != bSameCity) return aSameCity ? -1 : 1;
-
-          final aSameState =
-              state.isNotEmpty && a.state.trim().toLowerCase() == state;
-          final bSameState =
-              state.isNotEmpty && b.state.trim().toLowerCase() == state;
-          if (aSameState != bSameState) return aSameState ? -1 : 1;
-
-          final ratingCompare = b.ratingAverage.compareTo(a.ratingAverage);
-          if (ratingCompare != 0) return ratingCompare;
-
-          final completedCompare = b.completedBookingCount.compareTo(
-            a.completedBookingCount,
-          );
-          if (completedCompare != 0) return completedCompare;
-
-          return b.trustScore.compareTo(a.trustScore);
-        });
-
-      return ranked.take(10).toList(growable: false);
-    } catch (_) {
-      return const <ServiceModel>[];
     }
   }
 
@@ -666,16 +609,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
     );
   }
 
-  void _openService(ServiceModel service) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) =>
-            ServiceDetailScreen(service: service.toProfileListing()),
-      ),
-    );
-  }
-
   Future<void> _openPostDetail(SocialPostModel post) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -910,24 +843,15 @@ class _ExploreScreenState extends State<ExploreScreen> {
           delay: const Duration(milliseconds: 40),
           child: _DiscoverSection(
             title: 'Discover',
-            selectedTab: _selectedDiscoverTab,
             posts: discoverPosts,
-            services: _nearbyServices,
-            onSelectTab: (tab) {
-              if (_selectedDiscoverTab == tab) return;
-              setState(() => _selectedDiscoverTab = tab);
-            },
             onOpenPost: _openPostDetail,
-            onOpenService: _openService,
           ),
         ),
-        if (discoverPosts.isEmpty &&
-            _nearbyServices.isEmpty &&
-            _trendingHashtags.isEmpty)
+        if (discoverPosts.isEmpty && _trendingHashtags.isEmpty)
           const _ExploreEmptyState(
             title: 'Nothing to explore yet',
             message:
-                'Follow more pet parents and try again later. Trending posts, nearby services, and hashtags will show up here as Pettxo activity grows.',
+                'Follow more pet parents and try again later. Trending posts and hashtags will show up here as Pettxo activity grows.',
           ),
       ],
     );
@@ -1026,7 +950,6 @@ class _ExploreCache {
   final List<SocialPostModel> prefetchedTrendingPosts;
   final List<SocialPostModel> popularPosts;
   final List<SocialPostModel> prefetchedPopularPosts;
-  final List<ServiceModel> nearbyServices;
   final List<ExploreHashtagSummary> trendingHashtags;
   final Set<String> followingIds;
 
@@ -1037,7 +960,6 @@ class _ExploreCache {
     required this.prefetchedTrendingPosts,
     required this.popularPosts,
     required this.prefetchedPopularPosts,
-    required this.nearbyServices,
     required this.trendingHashtags,
     required this.followingIds,
   });
@@ -1045,7 +967,6 @@ class _ExploreCache {
   bool get hasDiscoveryData =>
       trendingPosts.isNotEmpty ||
       popularPosts.isNotEmpty ||
-      nearbyServices.isNotEmpty ||
       trendingHashtags.isNotEmpty;
 }
 
@@ -1245,7 +1166,7 @@ class _HashtagSection extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         SizedBox(
-          height: 68,
+          height: 44,
           child: ListView.separated(
             cacheExtent: 420,
             scrollDirection: Axis.horizontal,
@@ -1255,7 +1176,6 @@ class _HashtagSection extends StatelessWidget {
               final hashtag = hashtags[index];
               return _HashtagPill(
                 label: '#${hashtag.tag}',
-                countLabel: '${hashtag.postCount} posts',
                 onTap: () => onTapHashtag(hashtag.tag),
               );
             },
@@ -1284,7 +1204,6 @@ class _HashtagSuggestionWrap extends StatelessWidget {
           .map((hashtag) {
             return _HashtagPill(
               label: '#${hashtag.tag}',
-              countLabel: '${hashtag.postCount} posts',
               onTap: () => onTapHashtag(hashtag.tag),
             );
           })
@@ -1295,14 +1214,9 @@ class _HashtagSuggestionWrap extends StatelessWidget {
 
 class _HashtagPill extends StatelessWidget {
   final String label;
-  final String countLabel;
   final VoidCallback onTap;
 
-  const _HashtagPill({
-    required this.label,
-    required this.countLabel,
-    required this.onTap,
-  });
+  const _HashtagPill({required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1310,45 +1224,38 @@ class _HashtagPill extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(999),
-        child: Ink(
-          width: 108,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.035),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
+        borderRadius: BorderRadius.circular(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 40),
+          child: Ink(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.08),
               ),
-            ],
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.035),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Center(
+              child: Text(
                 label,
                 maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.primary,
                   fontWeight: FontWeight.w800,
                   fontSize: 13,
+                  height: 1.0,
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                countLabel,
-                maxLines: 1,
-                style: const TextStyle(
-                  color: AppColors.textGrey,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -1358,79 +1265,32 @@ class _HashtagPill extends StatelessWidget {
 
 class _DiscoverSection extends StatelessWidget {
   final String title;
-  final _DiscoverContentTab selectedTab;
   final List<SocialPostModel> posts;
-  final List<ServiceModel> services;
-  final ValueChanged<_DiscoverContentTab> onSelectTab;
   final ValueChanged<SocialPostModel> onOpenPost;
-  final ValueChanged<ServiceModel> onOpenService;
 
   const _DiscoverSection({
     required this.title,
-    required this.selectedTab,
     required this.posts,
-    required this.services,
-    required this.onSelectTab,
     required this.onOpenPost,
-    required this.onOpenService,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isPostsSelected = selectedTab == _DiscoverContentTab.posts;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final titleWidget = Text(
-              title,
-              style: const TextStyle(
-                color: AppColors.textDark,
-                fontSize: 22,
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.3,
-              ),
-            );
-
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Expanded(child: titleWidget),
-                const SizedBox(width: 10),
-                Flexible(
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerRight,
-                      child: _DiscoverTabSwitcher(
-                        selectedTab: selectedTab,
-                        onSelectTab: onSelectTab,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-        if (!isPostsSelected) ...[
-          const SizedBox(height: 8),
-          const Text(
-            'Popular services ranked by trust, reviews, and demand.',
-            style: TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w500,
-            ),
+        Text(
+          title,
+          style: const TextStyle(
+            color: AppColors.textDark,
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.3,
           ),
-        ],
+        ),
         const SizedBox(height: 14),
-        if (isPostsSelected && posts.isEmpty)
+        if (posts.isEmpty)
           const _InlineEmptyState(message: 'No posts available right now.')
-        else if (!isPostsSelected && services.isEmpty)
-          const _InlineEmptyState(message: 'No popular services found yet.')
         else
           GridView.builder(
             shrinkWrap: true,
@@ -1441,123 +1301,20 @@ class _DiscoverSection extends StatelessWidget {
               crossAxisSpacing: 12,
               mainAxisExtent: 292,
             ),
-            itemCount: isPostsSelected ? posts.length : services.length,
+            itemCount: posts.length,
             itemBuilder: (context, index) {
-              if (isPostsSelected) {
-                final post = posts[index];
-                return _CompactPostCard(
-                  post: post,
-                  onTap: () => onOpenPost(post),
-                  expandToAvailableWidth: true,
-                  showUsername: false,
-                  showShareStat: false,
-                  imageHeightOverride: 196,
-                );
-              }
-
-              final service = services[index];
-              return _CompactServiceCard(
-                service: service,
-                onTap: () => onOpenService(service),
+              final post = posts[index];
+              return _CompactPostCard(
+                post: post,
+                onTap: () => onOpenPost(post),
                 expandToAvailableWidth: true,
+                showUsername: false,
+                showShareStat: false,
+                imageHeightOverride: 196,
               );
             },
           ),
       ],
-    );
-  }
-}
-
-class _DiscoverTabSwitcher extends StatelessWidget {
-  final _DiscoverContentTab selectedTab;
-  final ValueChanged<_DiscoverContentTab> onSelectTab;
-
-  const _DiscoverTabSwitcher({
-    required this.selectedTab,
-    required this.onSelectTab,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFF5EE),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.12)),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.06),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _DiscoverTabChip(
-            label: 'Posts',
-            selected: selectedTab == _DiscoverContentTab.posts,
-            onTap: () => onSelectTab(_DiscoverContentTab.posts),
-          ),
-          const SizedBox(width: 4),
-          _DiscoverTabChip(
-            label: 'Services',
-            selected: selectedTab == _DiscoverContentTab.services,
-            onTap: () => onSelectTab(_DiscoverContentTab.services),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DiscoverTabChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _DiscoverTabChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(999),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: selected ? Colors.white : Colors.transparent,
-            borderRadius: BorderRadius.circular(999),
-            boxShadow: selected
-                ? [
-                    BoxShadow(
-                      color: AppColors.primary.withValues(alpha: 0.16),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4),
-                    ),
-                  ]
-                : const [],
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? AppColors.primary : AppColors.textGrey,
-              fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
-              fontSize: 12.5,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -1926,166 +1683,6 @@ class _CompactPostCard extends StatelessWidget {
       },
     );
   }
-}
-
-class _CompactServiceCard extends StatelessWidget {
-  final ServiceModel service;
-  final VoidCallback onTap;
-  final bool expandToAvailableWidth;
-
-  const _CompactServiceCard({
-    required this.service,
-    required this.onTap,
-    this.expandToAvailableWidth = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 190;
-        final imageHeight = compact ? 104.0 : 122.0;
-
-        return Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(22),
-            child: Container(
-              width: expandToAvailableWidth ? double.infinity : 220,
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFFBF8),
-                borderRadius: BorderRadius.circular(22),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(22),
-                    ),
-                    child: SizedBox(
-                      height: imageHeight,
-                      width: double.infinity,
-                      child: _RemoteImage(
-                        url: service.primaryPhotoUrl.isNotEmpty
-                            ? service.primaryPhotoUrl
-                            : (service.photoUrls.isNotEmpty
-                                  ? service.photoUrls.first
-                                  : ''),
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      compact ? 10 : 12,
-                      10,
-                      compact ? 10 : 12,
-                      12,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          service.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: AppColors.textDark,
-                            fontSize: compact ? 14 : 16,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        LiveUserIdentityResolver(
-                          userId: service.ownerUserId,
-                          fallbackName: service.ownerName,
-                          fallbackUsername: service.ownerUsername,
-                          fallbackImageUrl: service.ownerPhotoUrl,
-                          placeholderName: 'Pettxo provider',
-                          builder: (context, identity) {
-                            return Text(
-                              identity.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: AppColors.textGrey,
-                                fontSize: compact ? 12 : 13,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          service.ratingCount > 0
-                              ? '⭐ ${service.ratingAverage.toStringAsFixed(1)} · ${service.ratingCount} reviews'
-                              : 'New service listing',
-                          maxLines: compact ? 2 : 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: AppColors.textDark,
-                            fontSize: compact ? 12 : 12.5,
-                            fontWeight: FontWeight.w600,
-                            height: 1.3,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          service.displayAddress.isEmpty
-                              ? _serviceLocationLabel(service)
-                              : service.displayAddress,
-                          maxLines: compact ? 2 : 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: AppColors.textGrey,
-                            fontSize: compact ? 12 : 12.5,
-                            height: 1.3,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: compact ? 8 : 10,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFF2EA),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(
-                            '₹${service.pricePerSession}/session',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontSize: compact ? 12 : 13,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-String _serviceLocationLabel(ServiceModel service) {
-  final city = service.city.trim();
-  final state = service.state.trim();
-  if (city.isNotEmpty && state.isNotEmpty) {
-    return '$city, $state';
-  }
-  if (city.isNotEmpty) return city;
-  if (state.isNotEmpty) return state;
-  return 'Location available on service details';
 }
 
 class _ProfileAvatar extends StatelessWidget {
