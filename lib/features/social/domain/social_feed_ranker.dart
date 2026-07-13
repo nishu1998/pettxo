@@ -13,11 +13,7 @@ class RankedPost {
     required this.reason,
   });
 
-  RankedPost copyWith({
-    SocialPostModel? post,
-    double? score,
-    String? reason,
-  }) {
+  RankedPost copyWith({SocialPostModel? post, double? score, String? reason}) {
     return RankedPost(
       post: post ?? this.post,
       score: score ?? this.score,
@@ -43,16 +39,18 @@ List<RankedPost> rankPosts({
       .toSet();
   final nowEpoch = DateTime.now().millisecondsSinceEpoch;
 
-  final ranked = posts.map((post) {
-    return scorePost(
-      post: post,
-      nowEpoch: nowEpoch,
-      userCity: normalizedUserCity,
-      userState: normalizedUserState,
-      followingIds: normalizedFollowingIds,
-      userInterestTags: normalizedInterestTags,
-    );
-  }).toList(growable: false);
+  final ranked = posts
+      .map((post) {
+        return scorePost(
+          post: post,
+          nowEpoch: nowEpoch,
+          userCity: normalizedUserCity,
+          userState: normalizedUserState,
+          followingIds: normalizedFollowingIds,
+          userInterestTags: normalizedInterestTags,
+        );
+      })
+      .toList(growable: false);
 
   sortRankedPostsInPlace(ranked);
 

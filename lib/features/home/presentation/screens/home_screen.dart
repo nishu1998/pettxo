@@ -600,14 +600,9 @@ class _HomeScreenState extends State<HomeScreen> {
               child: GlassSurface(
                 padding: EdgeInsets.only(top: topInset),
                 borderRadius: BorderRadius.zero,
-                backgroundColor: AppColors.background.withValues(
-                  alpha: 0.72,
-                ),
+                backgroundColor: AppColors.background.withValues(alpha: 0.72),
                 blurSigma: 24,
-                border: Border.all(
-                  color: Colors.transparent,
-                  width: 0,
-                ),
+                border: Border.all(color: Colors.transparent, width: 0),
                 boxShadow: const [],
                 child: const SizedBox(height: 4),
               ),
@@ -620,9 +615,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: AnimatedSlide(
               duration: const Duration(milliseconds: 300),
               curve: Curves.easeInOutCubic,
-              offset: _isTopBarVisible
-                  ? Offset.zero
-                  : const Offset(0, -1.15),
+              offset: _isTopBarVisible ? Offset.zero : const Offset(0, -1.15),
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 280),
                 curve: Curves.easeInOutCubic,
@@ -643,10 +636,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         alpha: 0.56,
                       ),
                       blurSigma: 20,
-                      border: Border.all(
-                        color: Colors.transparent,
-                        width: 0,
-                      ),
+                      border: Border.all(color: Colors.transparent, width: 0),
                       boxShadow: const [],
                       child: Align(
                         child: FractionallySizedBox(

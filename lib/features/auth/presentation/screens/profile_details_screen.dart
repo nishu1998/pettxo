@@ -119,7 +119,8 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       stateError = stateValidationError;
       cityError = cityValidationError;
       _providerConsentError =
-          widget.type == ProfileType.serviceProvider && !_acceptedProviderAgreement
+          widget.type == ProfileType.serviceProvider &&
+              !_acceptedProviderAgreement
           ? 'You must agree to the Service Provider Agreement.'
           : null;
     });

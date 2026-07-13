@@ -50,8 +50,7 @@ class BookingCancellationPreview {
       pettxoAmountPaise:
           (data['pettxoAmountPaise'] as num?)?.round() ??
           ((data['pettxoAmount'] as num?)?.round() ?? 0) * 100,
-      totalAmountPaise:
-          (data['totalAmountPaise'] as num?)?.round() ?? 0,
+      totalAmountPaise: (data['totalAmountPaise'] as num?)?.round() ?? 0,
       refundPercent: (data['refundPercent'] as num?)?.round() ?? 0,
       providerPercent: (data['providerPercent'] as num?)?.round() ?? 0,
       pettxoPercent: (data['pettxoPercent'] as num?)?.round() ?? 0,

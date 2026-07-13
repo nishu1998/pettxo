@@ -183,10 +183,11 @@ class UserService {
 
       final publicData = publicSnapshot.data() ?? const <String, dynamic>{};
       final email = (publicData['email'] as String? ?? user.email ?? '').trim();
-      final phone = (publicData['phone'] as String? ??
-              publicData['mobileNumber'] as String? ??
-              '')
-          .trim();
+      final phone =
+          (publicData['phone'] as String? ??
+                  publicData['mobileNumber'] as String? ??
+                  '')
+              .trim();
       final hasSensitivePublicFields =
           publicData.containsKey('email') ||
           publicData.containsKey('phone') ||

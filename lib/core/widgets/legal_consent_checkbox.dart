@@ -6,10 +6,7 @@ class LegalConsentSegment {
   final String text;
   final VoidCallback? onTap;
 
-  const LegalConsentSegment({
-    required this.text,
-    this.onTap,
-  });
+  const LegalConsentSegment({required this.text, this.onTap});
 }
 
 class LegalConsentCheckbox extends StatelessWidget {

@@ -21,7 +21,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(context)) {
+      if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(
+        context,
+      )) {
         Navigator.pushReplacementNamed(context, "/home");
       }
     });

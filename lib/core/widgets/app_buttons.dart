@@ -5,17 +5,14 @@ import '../constants/app_colors.dart';
 enum AppButtonSize { regular, compact }
 
 class AppButtonTokens {
-  static double height(AppButtonSize size) => size == AppButtonSize.compact
-      ? 42
-      : 54;
+  static double height(AppButtonSize size) =>
+      size == AppButtonSize.compact ? 42 : 54;
 
-  static double radius(AppButtonSize size) => size == AppButtonSize.compact
-      ? 13
-      : 16;
+  static double radius(AppButtonSize size) =>
+      size == AppButtonSize.compact ? 13 : 16;
 
-  static double iconSize(AppButtonSize size) => size == AppButtonSize.compact
-      ? 16
-      : 18;
+  static double iconSize(AppButtonSize size) =>
+      size == AppButtonSize.compact ? 16 : 18;
 
   static double horizontalPadding(AppButtonSize size) =>
       size == AppButtonSize.compact ? 14 : 18;
@@ -23,9 +20,8 @@ class AppButtonTokens {
   static double verticalPadding(AppButtonSize size) =>
       size == AppButtonSize.compact ? 9 : 14;
 
-  static double fontSize(AppButtonSize size) => size == AppButtonSize.compact
-      ? 13
-      : 15;
+  static double fontSize(AppButtonSize size) =>
+      size == AppButtonSize.compact ? 13 : 15;
 
   static TextStyle labelStyle(AppButtonSize size) => TextStyle(
     color: Colors.white,
@@ -267,7 +263,9 @@ class _ButtonLabel extends StatelessWidget {
       children: [
         Icon(icon, size: iconSize, color: iconColor),
         const SizedBox(width: 8),
-        Flexible(child: Text(label, textAlign: TextAlign.center, style: style)),
+        Flexible(
+          child: Text(label, textAlign: TextAlign.center, style: style),
+        ),
       ],
     );
   }

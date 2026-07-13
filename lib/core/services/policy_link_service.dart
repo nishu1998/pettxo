@@ -5,7 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 class PolicyLinkService {
   const PolicyLinkService._();
 
-  static final FirebaseRemoteConfig _remoteConfig = FirebaseRemoteConfig.instance;
+  static final FirebaseRemoteConfig _remoteConfig =
+      FirebaseRemoteConfig.instance;
   static bool _initialized = false;
 
   static const String cancellationPolicyKey = 'cancellation_policy_url';

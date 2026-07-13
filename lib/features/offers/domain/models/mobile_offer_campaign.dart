@@ -88,7 +88,8 @@ class MobileOfferCampaign {
     return switch (claimValidityType) {
       OfferClaimValidityType.lifelong => 'Claim once, keep it until used',
       OfferClaimValidityType.fixedDate => 'Limited-time claim window',
-      OfferClaimValidityType.daysAfterClaim => 'Valid for a limited time after claim',
+      OfferClaimValidityType.daysAfterClaim =>
+        'Valid for a limited time after claim',
     };
   }
 }
@@ -113,7 +114,9 @@ class EligibleOffersResult {
   factory EligibleOffersResult.fromMap(Map<String, dynamic> data) {
     final offers = (data['offers'] as List<dynamic>? ?? const [])
         .whereType<Map>()
-        .map((raw) => MobileOfferCampaign.fromMap(Map<String, dynamic>.from(raw)))
+        .map(
+          (raw) => MobileOfferCampaign.fromMap(Map<String, dynamic>.from(raw)),
+        )
         .toList();
 
     MobileOfferCampaign? readOffer(String key) {

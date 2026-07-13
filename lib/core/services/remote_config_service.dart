@@ -50,8 +50,7 @@ class RemoteConfigService {
   String get onboardingVariantId =>
       getString('onboarding_variant_id', 'control');
 
-  int get onboardingDisplayVersion =>
-      _readInt('onboarding_display_version', 1);
+  int get onboardingDisplayVersion => _readInt('onboarding_display_version', 1);
 
   bool get onboardingForceShow => _readBool('onboarding_force_show', false);
 

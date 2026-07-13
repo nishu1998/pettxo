@@ -11,7 +11,9 @@ class FirestoreCacheService {
     Duration serverTimeout = const Duration(seconds: 4),
   }) async {
     try {
-      final cacheSnapshot = await reference.get(const GetOptions(source: Source.cache));
+      final cacheSnapshot = await reference.get(
+        const GetOptions(source: Source.cache),
+      );
       if (cacheSnapshot.exists) {
         debugPrint(
           'FirestoreCacheService debug -> cache hit for doc=${reference.path}',
@@ -43,7 +45,9 @@ class FirestoreCacheService {
     Duration serverTimeout = const Duration(seconds: 4),
   }) async {
     try {
-      final cacheSnapshot = await query.get(const GetOptions(source: Source.cache));
+      final cacheSnapshot = await query.get(
+        const GetOptions(source: Source.cache),
+      );
       if (cacheSnapshot.docs.isNotEmpty) {
         debugPrint(
           'FirestoreCacheService debug -> cache hit for query=${query.runtimeType}',

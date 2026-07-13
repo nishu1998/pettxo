@@ -164,7 +164,7 @@ class _ProfilePostGridItem extends StatelessWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-            builder: (_) => _ProfilePostDetailScreen(
+              builder: (_) => _ProfilePostDetailScreen(
                 posts: posts,
                 initialIndex: initialIndex < 0 ? 0 : initialIndex,
                 currentUserId: currentUserId,
@@ -364,7 +364,8 @@ class _ProfilePostLoaderScreen extends StatelessWidget {
           if (posts.isEmpty) {
             return const _ProfilePostDetailStateMessage(
               title: 'Post unavailable',
-              message: 'This post may have been removed or is no longer visible.',
+              message:
+                  'This post may have been removed or is no longer visible.',
             );
           }
 

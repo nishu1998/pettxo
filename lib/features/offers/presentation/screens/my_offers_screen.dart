@@ -82,7 +82,9 @@ class MyOffersScreen extends StatelessWidget {
                     );
                   }
 
-                  final available = offers.where((offer) => offer.isAvailable).toList();
+                  final available = offers
+                      .where((offer) => offer.isAvailable)
+                      .toList();
                   final used = offers.where((offer) => offer.isUsed).toList();
                   final expired = offers
                       .where((offer) => !offer.isUsed && offer.isExpired)

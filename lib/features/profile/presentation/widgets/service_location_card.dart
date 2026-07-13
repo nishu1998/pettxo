@@ -75,7 +75,7 @@ class ServiceLocationCard extends StatelessWidget {
                       hasLocation
                           ? location!.displayAddress
                           : (statusMessage ??
-                              'Location access required. Please enable location or select manually.'),
+                                'Location access required. Please enable location or select manually.'),
                       style: TextStyle(
                         color: hasLocation
                             ? AppColors.textDark
@@ -187,10 +187,7 @@ class ServiceLocationCard extends StatelessWidget {
                     child: const Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(
-                          Icons.touch_app_rounded,
-                          color: AppColors.primary,
-                        ),
+                        Icon(Icons.touch_app_rounded, color: AppColors.primary),
                         SizedBox(height: 8),
                         Text(
                           'Tap the map area to choose a location.',
@@ -235,8 +232,7 @@ class ServiceLocationCard extends StatelessWidget {
                           : AppColors.textGrey.withValues(alpha: 0.7),
                       fontSize: 13.5,
                       fontWeight: FontWeight.w700,
-                      decoration:
-                          hasLocation ? TextDecoration.underline : null,
+                      decoration: hasLocation ? TextDecoration.underline : null,
                       decorationColor: AppColors.primary,
                     ),
                   ),

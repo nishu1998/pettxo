@@ -323,9 +323,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                                             begin: Alignment.centerLeft,
                                             end: Alignment.centerRight,
                                             colors: [
-                                              Colors.white.withValues(
-                                                alpha: 0,
-                                              ),
+                                              Colors.white.withValues(alpha: 0),
                                               _screenBackground.withValues(
                                                 alpha: 0.96,
                                               ),

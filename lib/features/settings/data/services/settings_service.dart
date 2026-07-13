@@ -22,8 +22,7 @@ class SettingsService {
       hasListedServices: prefs.getBool(_hasListedServicesKey) ?? false,
       showManageServicesOnProfile:
           prefs.getBool(_showManageServicesKey) ?? false,
-      hasSeenProfileSpotlight:
-          prefs.getBool(_profileSpotlightSeenKey) ?? false,
+      hasSeenProfileSpotlight: prefs.getBool(_profileSpotlightSeenKey) ?? false,
     );
   }
 

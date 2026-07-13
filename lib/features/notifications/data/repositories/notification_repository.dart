@@ -7,9 +7,7 @@ class NotificationRepository {
 
   final FirebaseFunctions _functions;
 
-  Future<void> createFollowNotification({
-    required String recipientId,
-  }) async {
+  Future<void> createFollowNotification({required String recipientId}) async {
     await _createSocialNotification(
       type: 'socialFollow',
       recipientId: recipientId,

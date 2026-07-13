@@ -69,7 +69,9 @@ class SocialPostModel {
     required this.updatedAt,
   });
 
-  factory SocialPostModel.fromDocument(DocumentSnapshot<Map<String, dynamic>> doc) {
+  factory SocialPostModel.fromDocument(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
     final data = doc.data() ?? <String, dynamic>{};
     return SocialPostModel.fromMap(data, fallbackId: doc.id);
   }
@@ -85,7 +87,8 @@ class SocialPostModel {
       authorDisplayName: (data['authorDisplayName'] as String? ?? '').trim(),
       authorUsername: (data['authorUsername'] as String? ?? '').trim(),
       authorPhotoUrl: (data['authorPhotoUrl'] as String? ?? '').trim(),
-      authorCategoryLabel: (data['authorCategoryLabel'] as String? ?? '').trim(),
+      authorCategoryLabel: (data['authorCategoryLabel'] as String? ?? '')
+          .trim(),
       authorCity: (data['authorCity'] as String? ?? '').trim(),
       authorState: (data['authorState'] as String? ?? '').trim(),
       isAdminPost: data['isAdminPost'] == true,
@@ -104,13 +107,16 @@ class SocialPostModel {
       shareCount: (data['shareCount'] as num?)?.toInt() ?? 0,
       saveCount: (data['saveCount'] as num?)?.toInt() ?? 0,
       reportCount: (data['reportCount'] as num?)?.toInt() ?? 0,
-      visibilityStatus: (data['visibilityStatus'] as String? ?? 'visible').trim(),
-      moderationStatus: (data['moderationStatus'] as String? ?? 'approved').trim(),
+      visibilityStatus: (data['visibilityStatus'] as String? ?? 'visible')
+          .trim(),
+      moderationStatus: (data['moderationStatus'] as String? ?? 'approved')
+          .trim(),
       moderationReason: (data['moderationReason'] as String? ?? '').trim(),
       moderatedBy: (data['moderatedBy'] as String? ?? '').trim(),
       moderatedAt: data['moderatedAt'] as Timestamp?,
       lastReportedAt: data['lastReportedAt'] as Timestamp?,
-      createdAtEpoch: (data['createdAtEpoch'] as num?)?.toInt() ??
+      createdAtEpoch:
+          (data['createdAtEpoch'] as num?)?.toInt() ??
           (data['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ??
           0,
       createdAt: data['createdAt'] as Timestamp?,

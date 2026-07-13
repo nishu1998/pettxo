@@ -5,10 +5,7 @@ import '../services/network_status_service.dart';
 class NetworkStatusBannerHost extends StatelessWidget {
   final Widget child;
 
-  const NetworkStatusBannerHost({
-    super.key,
-    required this.child,
-  });
+  const NetworkStatusBannerHost({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) {
@@ -42,9 +39,9 @@ class NetworkStatusBannerHost extends StatelessWidget {
                             vertical: 14,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF252525).withValues(
-                              alpha: 0.96,
-                            ),
+                            color: const Color(
+                              0xFF252525,
+                            ).withValues(alpha: 0.96),
                             borderRadius: BorderRadius.circular(20),
                             border: Border(
                               top: BorderSide(

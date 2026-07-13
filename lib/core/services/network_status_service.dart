@@ -48,8 +48,13 @@ class NetworkStatusService {
     _initialized = false;
   }
 
-  void _updateStatus(List<ConnectivityResult> results, {required String reason}) {
-    final nextOnline = results.any((result) => result != ConnectivityResult.none);
+  void _updateStatus(
+    List<ConnectivityResult> results, {
+    required String reason,
+  }) {
+    final nextOnline = results.any(
+      (result) => result != ConnectivityResult.none,
+    );
     final previousOnline = _isOnlineNotifier.value;
     _isOnlineNotifier.value = nextOnline;
 

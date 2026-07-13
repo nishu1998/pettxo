@@ -103,7 +103,8 @@ class ClaimedOfferCard extends StatelessWidget {
               ),
               _OfferMetaPill(
                 icon: Icons.repeat_rounded,
-                label: '${offer.remainingUses} use${offer.remainingUses == 1 ? '' : 's'} left',
+                label:
+                    '${offer.remainingUses} use${offer.remainingUses == 1 ? '' : 's'} left',
               ),
               _OfferMetaPill(
                 icon: Icons.schedule_rounded,

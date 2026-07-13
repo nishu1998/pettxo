@@ -30,10 +30,7 @@ class GlassSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     final Border effectiveBorder =
         border ??
-        Border.all(
-          color: Colors.white.withValues(alpha: 0.30),
-          width: 1,
-        );
+        Border.all(color: Colors.white.withValues(alpha: 0.30), width: 1);
 
     final List<BoxShadow> effectiveBoxShadow =
         boxShadow ??
@@ -53,10 +50,7 @@ class GlassSurface extends StatelessWidget {
       child: ClipRRect(
         borderRadius: borderRadius,
         child: BackdropFilter(
-          filter: ImageFilter.blur(
-            sigmaX: blurSigma,
-            sigmaY: blurSigma,
-          ),
+          filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
           child: Container(
             padding: padding,
             decoration: BoxDecoration(

@@ -107,7 +107,8 @@ class ServiceRanking {
   }
 
   static double calculateCompletedBookingScore(int completedBookingCount) {
-    final normalized = (completedBookingCount.clamp(0, _completedBookingCap) /
+    final normalized =
+        (completedBookingCount.clamp(0, _completedBookingCap) /
             _completedBookingCap) *
         100;
     return _round2(normalized);

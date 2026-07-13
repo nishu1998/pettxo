@@ -2,10 +2,7 @@ class RestrictionFlag {
   final bool isBanned;
   final String reason;
 
-  const RestrictionFlag({
-    required this.isBanned,
-    required this.reason,
-  });
+  const RestrictionFlag({required this.isBanned, required this.reason});
 
   factory RestrictionFlag.fromMap(Map<String, dynamic>? data) {
     final source = data ?? const <String, dynamic>{};

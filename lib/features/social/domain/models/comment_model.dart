@@ -43,7 +43,9 @@ class CommentModel {
     required this.updatedAt,
   });
 
-  factory CommentModel.fromDocument(DocumentSnapshot<Map<String, dynamic>> doc) {
+  factory CommentModel.fromDocument(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
     final data = doc.data() ?? <String, dynamic>{};
     return CommentModel(
       id: (data['id'] as String? ?? doc.id).trim(),
@@ -57,8 +59,10 @@ class CommentModel {
       text: (data['text'] as String? ?? '').trim(),
       likeCount: (data['likeCount'] as num?)?.toInt() ?? 0,
       reportCount: (data['reportCount'] as num?)?.toInt() ?? 0,
-      visibilityStatus: (data['visibilityStatus'] as String? ?? 'visible').trim(),
-      moderationStatus: (data['moderationStatus'] as String? ?? 'approved').trim(),
+      visibilityStatus: (data['visibilityStatus'] as String? ?? 'visible')
+          .trim(),
+      moderationStatus: (data['moderationStatus'] as String? ?? 'approved')
+          .trim(),
       moderationReason: (data['moderationReason'] as String? ?? '').trim(),
       moderatedBy: (data['moderatedBy'] as String? ?? '').trim(),
       moderatedAt: data['moderatedAt'] as Timestamp?,

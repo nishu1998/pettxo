@@ -135,7 +135,10 @@ class BookingReviewRepository {
     final id = bookingId.trim();
     if (id.isEmpty) return null;
 
-    final bookingSnapshot = await _firestore.collection('bookings').doc(id).get();
+    final bookingSnapshot = await _firestore
+        .collection('bookings')
+        .doc(id)
+        .get();
     if (!bookingSnapshot.exists) return null;
 
     final bookingData = bookingSnapshot.data() ?? const <String, dynamic>{};
@@ -168,10 +171,7 @@ class BookingReviewRepository {
     return BookingReviewModel.fromDocument(reviewSnapshot);
   }
 
-  String _readFirstString(
-    List<Object?> values, {
-    String fallback = '',
-  }) {
+  String _readFirstString(List<Object?> values, {String fallback = ''}) {
     for (final value in values) {
       final text = value?.toString().trim() ?? '';
       if (text.isNotEmpty) return text;

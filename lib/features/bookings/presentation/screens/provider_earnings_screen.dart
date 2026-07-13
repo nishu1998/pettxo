@@ -46,8 +46,10 @@ class ProviderEarningsScreen extends StatelessWidget {
           final eligible = _sumByStatus(earnings, const {'payoutEligible'});
           final paid = _sumByStatus(earnings, const {'paid'});
           final disputed = _sumByStatus(earnings, const {'disputed'});
-          final total =
-              earnings.fold<int>(0, (sum, item) => sum + item.amountPaise);
+          final total = earnings.fold<int>(
+            0,
+            (sum, item) => sum + item.amountPaise,
+          );
 
           return ListView(
             padding: const EdgeInsets.all(18),
@@ -57,19 +59,13 @@ class ProviderEarningsScreen extends StatelessWidget {
                 runSpacing: 12,
                 children: [
                   _StatCard(label: 'Total', value: _moneyFromPaise(total)),
-                  _StatCard(
-                    label: 'Pending',
-                    value: _moneyFromPaise(pending),
-                  ),
+                  _StatCard(label: 'Pending', value: _moneyFromPaise(pending)),
                   _StatCard(
                     label: 'Eligible',
                     value: _moneyFromPaise(eligible),
                   ),
                   _StatCard(label: 'Paid', value: _moneyFromPaise(paid)),
-                  _StatCard(
-                    label: 'On Hold',
-                    value: _moneyFromPaise(disputed),
-                  ),
+                  _StatCard(label: 'On Hold', value: _moneyFromPaise(disputed)),
                 ],
               ),
               const SizedBox(height: 18),
@@ -156,10 +152,7 @@ class _StatCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: const TextStyle(color: AppColors.textGrey),
-          ),
+          Text(label, style: const TextStyle(color: AppColors.textGrey)),
           const SizedBox(height: 8),
           Text(
             value,

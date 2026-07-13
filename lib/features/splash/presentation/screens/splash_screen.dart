@@ -99,16 +99,18 @@ class _CinematicSplashState extends State<CinematicSplash>
 
     unawaited(_warmRemoteConfigAndAnalytics());
 
-    final shouldShowOnboarding = await onboardingState.shouldShowOnboarding(
-      currentVersion: remote.onboardingDisplayVersion,
-      forceShow: remote.onboardingForceShow,
-    ).timeout(
-      const Duration(seconds: 2),
-      onTimeout: () {
-        debugPrint('Splash startup debug -> onboarding state timed out');
-        return false;
-      },
-    );
+    final shouldShowOnboarding = await onboardingState
+        .shouldShowOnboarding(
+          currentVersion: remote.onboardingDisplayVersion,
+          forceShow: remote.onboardingForceShow,
+        )
+        .timeout(
+          const Duration(seconds: 2),
+          onTimeout: () {
+            debugPrint('Splash startup debug -> onboarding state timed out');
+            return false;
+          },
+        );
     debugPrint(
       'Splash startup debug -> unauthenticated launch resolved from local state, showOnboarding=$shouldShowOnboarding',
     );
@@ -122,7 +124,9 @@ class _CinematicSplashState extends State<CinematicSplash>
       await remote.init().timeout(const Duration(seconds: 2));
       debugPrint('Splash startup debug -> remote config warmup completed');
     } catch (error) {
-      debugPrint('Splash startup debug -> remote config warmup skipped: $error');
+      debugPrint(
+        'Splash startup debug -> remote config warmup skipped: $error',
+      );
     }
 
     try {

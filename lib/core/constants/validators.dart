@@ -1,13 +1,10 @@
 class Validators {
-
   static String? validateEmail(String email) {
-
     if (email.isEmpty) {
       return "Email cannot be empty";
     }
 
-    final emailRegex =
-        RegExp(r'^[\w\.-]+@([\w-]+\.)+[\w-]{2,4}$');
+    final emailRegex = RegExp(r'^[\w\.-]+@([\w-]+\.)+[\w-]{2,4}$');
 
     if (!emailRegex.hasMatch(email)) {
       return "Invalid email format";
@@ -17,7 +14,6 @@ class Validators {
   }
 
   static String? validatePassword(String password) {
-
     if (password.isEmpty) {
       return "Password cannot be empty";
     }

@@ -82,8 +82,9 @@ class _OfferWallScreenState extends State<OfferWallScreen> {
                   children: [
                     const Spacer(),
                     IconButton(
-                      onPressed:
-                          _isClaiming ? null : () => Navigator.pop(context, false),
+                      onPressed: _isClaiming
+                          ? null
+                          : () => Navigator.pop(context, false),
                       icon: const Icon(Icons.close_rounded),
                     ),
                   ],
@@ -198,8 +199,9 @@ class _OfferWallScreenState extends State<OfferWallScreen> {
                 const SizedBox(height: 12),
                 SecondaryButton(
                   label: 'Maybe Later',
-                  onPressed:
-                      _isClaiming ? null : () => Navigator.pop(context, false),
+                  onPressed: _isClaiming
+                      ? null
+                      : () => Navigator.pop(context, false),
                 ),
               ],
             ),
