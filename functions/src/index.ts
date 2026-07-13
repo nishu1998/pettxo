@@ -7605,9 +7605,9 @@ export const sendChatMessage = onCall({invoker: "public"}, async (request) => {
     throw new HttpsError("failed-precondition", "Chat receiver is missing.");
   }
 
-  let sourceServiceId = requestedSourceServiceId || asTrimmedString(chat.lastServiceId);
-  let sourceServiceTitle = requestedSourceServiceId ? "" : asTrimmedString(chat.lastServiceTitle);
-  let lastServiceImageUrl = requestedSourceServiceId ? "" : asTrimmedString(chat.lastServiceImageUrl);
+  let sourceServiceId = "";
+  let sourceServiceTitle = "";
+  let lastServiceImageUrl = "";
 
   if (requestedSourceServiceId) {
     const serviceSnapshot = await db.collection("services").doc(requestedSourceServiceId).get();
@@ -7686,12 +7686,12 @@ export const sendChatMessage = onCall({invoker: "public"}, async (request) => {
       lastMessageAt: now,
       lastSenderId: senderId,
       updatedAt: now,
-      lastServiceId: sourceServiceId,
-      lastServiceTitle: sourceServiceTitle,
-      lastServiceImageUrl,
     };
     if (sourceServiceId) {
       chatUpdate.sourceServiceIds = FieldValue.arrayUnion(sourceServiceId);
+      chatUpdate.lastServiceId = sourceServiceId;
+      chatUpdate.lastServiceTitle = sourceServiceTitle;
+      chatUpdate.lastServiceImageUrl = lastServiceImageUrl;
     }
     if (receiverId === customerId) {
       chatUpdate.unreadCountCustomer = FieldValue.increment(1);
@@ -7795,9 +7795,13 @@ export const markChatDelivered = onCall({invoker: "public"}, async (request) => 
   return {updated};
 });
 
-export const markChatRead = onCall({invoker: "public"}, async (request) => {
+export const markChatRead = onCall({
+  invoker: "public",
+  region: ["asia-south1", "us-central1"],
+}, async (request) => {
   const uid = requireUid(request.auth);
   const chatId = asTrimmedString(request.data?.chatId);
+  const openedChatId = asTrimmedString(request.data?.openedChatId);
   if (!chatId) {
     throw new HttpsError("invalid-argument", "chatId is required.");
   }
@@ -7819,37 +7823,130 @@ export const markChatRead = onCall({invoker: "public"}, async (request) => {
     throw new HttpsError("failed-precondition", "Chat participant is missing.");
   }
 
-  const recentMessages = await chatRef
-    .collection("messages")
-    .where("senderId", "==", otherUid)
-    .orderBy("createdAt", "desc")
-    .limit(30)
-    .get();
+  const expectedPairKey = [customerId, providerId].sort().join("_");
+  const clearTargets: Array<{
+    id: string;
+    ref: DocumentReference<DocumentData>;
+    unreadField: "unreadCountCustomer" | "unreadCountProvider";
+    lastReadField: "customerLastReadAt" | "providerLastReadAt";
+    unreadCount: number;
+    lastReadAt: unknown;
+  }> = [];
 
-  const batch = db.batch();
-  let updated = 0;
-  for (const doc of recentMessages.docs) {
-    const readBy = Array.isArray(doc.data().readBy) ?
-      doc.data().readBy.map((value: unknown) => String(value)) :
-      [];
-    if (readBy.includes(uid)) continue;
-    batch.set(doc.ref, {
-      readBy: FieldValue.arrayUnion(uid),
-      deliveredTo: FieldValue.arrayUnion(uid),
-    }, {merge: true});
-    updated += 1;
+  const addClearTarget = (
+    id: string,
+    ref: DocumentReference<DocumentData>,
+    data: DocumentData,
+  ) => {
+    const targetCustomerId = asTrimmedString(data.customerId);
+    const targetProviderId = asTrimmedString(data.providerId);
+    const targetPairKey = [targetCustomerId, targetProviderId].sort().join("_");
+    if (targetPairKey !== expectedPairKey) return;
+
+    if (uid === targetCustomerId) {
+      clearTargets.push({
+        id,
+        ref,
+        unreadField: "unreadCountCustomer",
+        lastReadField: "customerLastReadAt",
+        unreadCount: toInt(data.unreadCountCustomer, 0),
+        lastReadAt: data.customerLastReadAt,
+      });
+    } else if (uid === targetProviderId) {
+      clearTargets.push({
+        id,
+        ref,
+        unreadField: "unreadCountProvider",
+        lastReadField: "providerLastReadAt",
+        unreadCount: toInt(data.unreadCountProvider, 0),
+        lastReadAt: data.providerLastReadAt,
+      });
+    }
+  };
+
+  addClearTarget(chatId, chatRef, chat);
+  if (openedChatId && openedChatId !== chatId) {
+    const openedChatRef = db.collection("chats").doc(openedChatId);
+    const openedChatSnapshot = await openedChatRef.get();
+    if (openedChatSnapshot.exists) {
+      addClearTarget(openedChatId, openedChatRef, openedChatSnapshot.data() ?? {});
+    }
   }
 
-  batch.set(chatRef, uid === customerId ? {
-    customerLastReadAt: FieldValue.serverTimestamp(),
-    unreadCountCustomer: 0,
-  } : {
-    providerLastReadAt: FieldValue.serverTimestamp(),
-    unreadCountProvider: 0,
-  }, {merge: true});
+  const currentUnreadCount = uid === customerId ?
+    toInt(chat.unreadCountCustomer, 0) :
+    toInt(chat.unreadCountProvider, 0);
+  const targetsToUpdate = clearTargets.filter((target) =>
+    target.unreadCount > 0 || target.lastReadAt == null,
+  );
 
-  await batch.commit();
-  return {updated};
+  console.info("markChatRead request", {
+    uid,
+    chatId,
+    openedChatId,
+    customerId,
+    providerId,
+    currentUnreadCount,
+    clearTargets: clearTargets.map((target) => ({
+      id: target.id,
+      unreadField: target.unreadField,
+      unreadCount: target.unreadCount,
+    })),
+  });
+
+  const chatStateBatch = db.batch();
+  for (const target of targetsToUpdate) {
+    chatStateBatch.set(target.ref, {
+      [target.lastReadField]: FieldValue.serverTimestamp(),
+      [target.unreadField]: 0,
+    }, {merge: true});
+
+    chatStateBatch.set(db.collection("notifications").doc(`chat_${uid}_${target.id}`), {
+      read: true,
+      isRead: true,
+      unreadCount: 0,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+  }
+
+  if (targetsToUpdate.length > 0) {
+    await chatStateBatch.commit();
+  }
+
+  let updated = 0;
+  try {
+    const recentMessages = await chatRef
+      .collection("messages")
+      .where("senderId", "==", otherUid)
+      .orderBy("createdAt", "desc")
+      .limit(30)
+      .get();
+
+    const messageBatch = db.batch();
+    for (const doc of recentMessages.docs) {
+      const readBy = Array.isArray(doc.data().readBy) ?
+        doc.data().readBy.map((value: unknown) => String(value)) :
+        [];
+      if (readBy.includes(uid)) continue;
+      messageBatch.set(doc.ref, {
+        readBy: FieldValue.arrayUnion(uid),
+        deliveredTo: FieldValue.arrayUnion(uid),
+      }, {merge: true});
+      updated += 1;
+    }
+
+    if (updated > 0) {
+      await messageBatch.commit();
+    }
+  } catch (error) {
+    console.error("markChatRead message acknowledgement failed", {
+      uid,
+      chatId,
+      openedChatId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return {updated, clearedChatIds: targetsToUpdate.map((target) => target.id)};
 });
 
 export const closeChat = onCall(async (request) => {

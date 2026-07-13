@@ -11,13 +11,25 @@ import '../../data/repositories/chat_repository.dart';
 import '../../domain/models/chat_model.dart';
 import 'chat_detail_screen.dart';
 
-class MessagesScreen extends StatelessWidget {
+class MessagesScreen extends StatefulWidget {
   const MessagesScreen({super.key});
+
+  @override
+  State<MessagesScreen> createState() => _MessagesScreenState();
+}
+
+class _MessagesScreenState extends State<MessagesScreen> {
+  final ChatRepository _repository = ChatRepository();
+
+  Future<void> _refreshMessages() async {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (currentUid.isEmpty) return;
+    await _repository.refreshChatsFor(currentUid);
+  }
 
   @override
   Widget build(BuildContext context) {
     final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
-    final repository = ChatRepository();
     if (kDebugMode) {
       debugPrint(
         'Messages tab debug -> currentUserId=$currentUid, '
@@ -64,226 +76,233 @@ class MessagesScreen extends StatelessWidget {
                 ),
               ),
               Expanded(
-                child: currentUid.isEmpty
-                    ? const _MessagesStateMessage(
-                        title: 'Sign in to view messages',
-                        message:
-                            'Your conversations will appear here once you are signed in.',
-                      )
-                    : StreamBuilder<List<ChatModel>>(
-                        stream: repository.watchChatsFor(currentUid),
-                        builder: (context, snapshot) {
-                          if (snapshot.hasError) {
-                            if (kDebugMode) {
-                              debugPrint(
-                                'Messages tab debug -> stream exception=${snapshot.error}',
+                child: RefreshIndicator(
+                  onRefresh: _refreshMessages,
+                  child: currentUid.isEmpty
+                      ? const _MessagesStateMessage(
+                          title: 'Sign in to view messages',
+                          message:
+                              'Your conversations will appear here once you are signed in.',
+                        )
+                      : StreamBuilder<List<ChatModel>>(
+                          stream: _repository.watchChatsFor(currentUid),
+                          builder: (context, snapshot) {
+                            if (snapshot.hasError) {
+                              if (kDebugMode) {
+                                debugPrint(
+                                  'Messages tab debug -> stream exception=${snapshot.error}',
+                                );
+                              }
+                              return const _MessagesStateMessage(
+                                title: 'Unable to load messages',
+                                message: 'Please try again in a moment.',
                               );
                             }
-                            return const _MessagesStateMessage(
-                              title: 'Unable to load messages',
-                              message: 'Please try again in a moment.',
-                            );
-                          }
-                          if (!snapshot.hasData) {
-                            return const Center(
-                              child: CircularProgressIndicator(
-                                color: AppColors.primary,
-                              ),
-                            );
-                          }
-
-                          final chats = snapshot.data!;
-                          if (chats.isEmpty) {
-                            return const _MessagesStateMessage(
-                              title: 'No conversations yet',
-                              message:
-                                  'Tap "Message Provider" on a service to start chatting.',
-                            );
-                          }
-
-                          return ListView.separated(
-                            padding: EdgeInsets.fromLTRB(
-                              20,
-                              10,
-                              20,
-                              SocialBottomNav.contentBottomPadding(context),
-                            ),
-                            itemCount: chats.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(height: 12),
-                            itemBuilder: (context, index) {
-                              final chat = chats[index];
-                              final otherUserId = chat.otherParticipantIdFor(
-                                currentUid,
-                              );
-                              final unreadCount = chat.unreadCountFor(
-                                currentUid,
-                              );
-
-                              return LiveUserIdentityResolver(
-                                userId: otherUserId,
-                                fallbackName: chat.otherParticipantNameFor(
-                                  currentUid,
+                            if (!snapshot.hasData) {
+                              return ListView(
+                                physics: const BouncingScrollPhysics(
+                                  parent: AlwaysScrollableScrollPhysics(),
                                 ),
-                                fallbackUsername: '',
-                                fallbackImageUrl: chat
-                                    .otherParticipantPhotoUrlFor(currentUid),
-                                builder: (context, identity) {
-                                  return InkWell(
-                                    borderRadius: BorderRadius.circular(22),
-                                    onTap: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) =>
-                                              ChatDetailScreen(chatId: chat.id),
-                                        ),
-                                      );
-                                    },
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 18,
-                                        vertical: 16,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withValues(
-                                          alpha: 0.94,
-                                        ),
-                                        borderRadius: BorderRadius.circular(22),
-                                        border: Border.all(
-                                          color: AppColors.textGrey.withValues(
-                                            alpha: 0.16,
-                                          ),
-                                        ),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: Colors.black.withValues(
-                                              alpha: 0.03,
+                                padding: EdgeInsets.fromLTRB(
+                                  20,
+                                  10,
+                                  20,
+                                  SocialBottomNav.contentBottomPadding(context),
+                                ),
+                                children: const [
+                                  SizedBox(height: 160),
+                                  Center(
+                                    child: CircularProgressIndicator(
+                                      color: AppColors.primary,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            }
+
+                            final chats = snapshot.data!;
+                            if (chats.isEmpty) {
+                              return const _MessagesStateMessage(
+                                title: 'No conversations yet',
+                                message:
+                                    'Tap "Message Provider" on a service to start chatting.',
+                              );
+                            }
+
+                            return ListView.separated(
+                              physics: const BouncingScrollPhysics(
+                                parent: AlwaysScrollableScrollPhysics(),
+                              ),
+                              padding: EdgeInsets.fromLTRB(
+                                20,
+                                10,
+                                20,
+                                SocialBottomNav.contentBottomPadding(context),
+                              ),
+                              itemCount: chats.length,
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(height: 12),
+                              itemBuilder: (context, index) {
+                                final chat = chats[index];
+                                final otherUserId = chat.otherParticipantIdFor(
+                                  currentUid,
+                                );
+                                final unreadCount = chat.unreadCountFor(
+                                  currentUid,
+                                );
+
+                                return LiveUserIdentityResolver(
+                                  userId: otherUserId,
+                                  fallbackName: chat.otherParticipantNameFor(
+                                    currentUid,
+                                  ),
+                                  fallbackUsername: '',
+                                  fallbackImageUrl: chat
+                                      .otherParticipantPhotoUrlFor(currentUid),
+                                  builder: (context, identity) {
+                                    return InkWell(
+                                      borderRadius: BorderRadius.circular(22),
+                                      onTap: () {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) => ChatDetailScreen(
+                                              chatId: chat.id,
                                             ),
-                                            blurRadius: 16,
-                                            offset: const Offset(0, 8),
                                           ),
-                                        ],
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          _ChatAvatar(
-                                            name: identity.displayName,
-                                            photoUrl: identity.imageUrl,
+                                        );
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 18,
+                                          vertical: 16,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.94,
                                           ),
-                                          const SizedBox(width: 16),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Row(
-                                                  children: [
-                                                    Expanded(
-                                                      child: Text(
-                                                        identity.displayName,
-                                                        maxLines: 1,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                        style: const TextStyle(
-                                                          fontSize: 16,
-                                                          fontWeight:
-                                                              FontWeight.w700,
-                                                          color: AppColors
-                                                              .textDark,
+                                          borderRadius: BorderRadius.circular(
+                                            22,
+                                          ),
+                                          border: Border.all(
+                                            color: AppColors.textGrey
+                                                .withValues(alpha: 0.16),
+                                          ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black.withValues(
+                                                alpha: 0.03,
+                                              ),
+                                              blurRadius: 16,
+                                              offset: const Offset(0, 8),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            _ChatAvatar(
+                                              name: identity.displayName,
+                                              photoUrl: identity.imageUrl,
+                                            ),
+                                            const SizedBox(width: 16),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          identity.displayName,
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 16,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w700,
+                                                                color: AppColors
+                                                                    .textDark,
+                                                              ),
                                                         ),
                                                       ),
-                                                    ),
-                                                    const SizedBox(width: 10),
-                                                    Text(
-                                                      _relativeTime(
-                                                        chat.lastMessageAt,
+                                                      const SizedBox(width: 10),
+                                                      Text(
+                                                        _relativeTime(
+                                                          chat.lastMessageAt,
+                                                        ),
+                                                        style: const TextStyle(
+                                                          fontSize: 12.5,
+                                                          fontWeight:
+                                                              FontWeight.w600,
+                                                          color: AppColors
+                                                              .textGrey,
+                                                        ),
                                                       ),
-                                                      style: const TextStyle(
-                                                        fontSize: 12.5,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color:
-                                                            AppColors.textGrey,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                                const SizedBox(height: 6),
-                                                if (chat
-                                                    .lastServiceTitle
-                                                    .isNotEmpty)
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 6),
                                                   Text(
-                                                    chat.lastServiceTitle,
-                                                    maxLines: 1,
+                                                    chat.lastMessage.isEmpty
+                                                        ? 'Start the conversation'
+                                                        : chat.lastMessage,
+                                                    maxLines: 2,
                                                     overflow:
                                                         TextOverflow.ellipsis,
                                                     style: const TextStyle(
-                                                      fontSize: 12.5,
+                                                      fontSize: 14,
+                                                      height: 1.4,
+                                                      color: AppColors.textGrey,
                                                       fontWeight:
-                                                          FontWeight.w700,
-                                                      color: AppColors.primary,
+                                                          FontWeight.w500,
                                                     ),
                                                   ),
-                                                if (chat
-                                                    .lastServiceTitle
-                                                    .isNotEmpty)
-                                                  const SizedBox(height: 4),
-                                                Text(
-                                                  chat.lastMessage.isEmpty
-                                                      ? 'Start the conversation'
-                                                      : chat.lastMessage,
-                                                  maxLines: 2,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
+                                                ],
+                                              ),
+                                            ),
+                                            if (unreadCount > 0) ...[
+                                              const SizedBox(width: 12),
+                                              Container(
+                                                constraints:
+                                                    const BoxConstraints(
+                                                      minWidth: 28,
+                                                      minHeight: 28,
+                                                    ),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                    ),
+                                                alignment: Alignment.center,
+                                                decoration: const BoxDecoration(
+                                                  color: AppColors.primary,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: Text(
+                                                  unreadCount > 99
+                                                      ? '99+'
+                                                      : '$unreadCount',
                                                   style: const TextStyle(
-                                                    fontSize: 14,
-                                                    height: 1.4,
-                                                    color: AppColors.textGrey,
-                                                    fontWeight: FontWeight.w500,
+                                                    color: Colors.white,
+                                                    fontSize: 12.5,
+                                                    fontWeight: FontWeight.w700,
                                                   ),
                                                 ),
-                                              ],
-                                            ),
-                                          ),
-                                          if (unreadCount > 0) ...[
-                                            const SizedBox(width: 12),
-                                            Container(
-                                              constraints: const BoxConstraints(
-                                                minWidth: 28,
-                                                minHeight: 28,
                                               ),
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 8,
-                                                  ),
-                                              alignment: Alignment.center,
-                                              decoration: const BoxDecoration(
-                                                color: AppColors.primary,
-                                                shape: BoxShape.circle,
-                                              ),
-                                              child: Text(
-                                                unreadCount > 99
-                                                    ? '99+'
-                                                    : '$unreadCount',
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 12.5,
-                                                  fontWeight: FontWeight.w700,
-                                                ),
-                                              ),
-                                            ),
+                                            ],
                                           ],
-                                        ],
+                                        ),
                                       ),
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          );
-                        },
-                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            );
+                          },
+                        ),
+                ),
               ),
             ],
           ),
@@ -294,16 +313,16 @@ class MessagesScreen extends StatelessWidget {
       ),
     );
   }
+}
 
-  static String _relativeTime(DateTime? date) {
-    if (date == null) return 'Now';
-    final diff = DateTime.now().difference(date);
-    if (diff.inMinutes < 1) return 'Now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes} min';
-    if (diff.inHours < 24) return '${diff.inHours} hr';
-    if (diff.inDays < 7) return '${diff.inDays} d';
-    return '${date.day}/${date.month}/${date.year}';
-  }
+String _relativeTime(DateTime? date) {
+  if (date == null) return 'Now';
+  final diff = DateTime.now().difference(date);
+  if (diff.inMinutes < 1) return 'Now';
+  if (diff.inMinutes < 60) return '${diff.inMinutes} min';
+  if (diff.inHours < 24) return '${diff.inHours} hr';
+  if (diff.inDays < 7) return '${diff.inDays} d';
+  return '${date.day}/${date.month}/${date.year}';
 }
 
 class _ChatAvatar extends StatelessWidget {
@@ -344,6 +363,9 @@ class _MessagesStateMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView(
+      physics: const BouncingScrollPhysics(
+        parent: AlwaysScrollableScrollPhysics(),
+      ),
       padding: EdgeInsets.fromLTRB(
         20,
         12,

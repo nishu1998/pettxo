@@ -60,19 +60,6 @@ class ChatBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (message.sourceServiceTitle.isNotEmpty) ...[
-                Text(
-                  message.sourceServiceTitle,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w700,
-                    color: isMine
-                        ? Colors.white.withValues(alpha: 0.82)
-                        : AppColors.primary,
-                  ),
-                ),
-                const SizedBox(height: 6),
-              ],
               Text(
                 message.text,
                 style: TextStyle(

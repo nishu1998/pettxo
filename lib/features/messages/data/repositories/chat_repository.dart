@@ -97,6 +97,44 @@ class ChatRepository {
         });
   }
 
+  Future<void> refreshChatsFor(String currentUid, {int limit = 40}) async {
+    final uid = currentUid.trim();
+    if (uid.isEmpty) return;
+
+    await _firestore
+        .collection('chats')
+        .where('participantIds', arrayContains: uid)
+        .orderBy('lastMessageAt', descending: true)
+        .limit(limit)
+        .get(const GetOptions(source: Source.server));
+  }
+
+  Future<String> resolveNavigationChatId(String chatId) async {
+    final id = chatId.trim();
+    if (id.isEmpty) return id;
+
+    final snapshot = await _firestore.collection('chats').doc(id).get();
+    if (!snapshot.exists) return id;
+
+    final chat = ChatModel.fromDocument(snapshot);
+    final participants = <String>{
+      ...chat.participantIds.where((value) => value.isNotEmpty),
+      if (chat.customerId.isNotEmpty) chat.customerId,
+      if (chat.providerId.isNotEmpty) chat.providerId,
+    }.toList(growable: false)..sort();
+
+    if (participants.length < 2) return id;
+
+    final canonicalChatId = 'chat_${participants.join('_')}';
+    if (canonicalChatId == id) return id;
+
+    final canonicalSnapshot = await _firestore
+        .collection('chats')
+        .doc(canonicalChatId)
+        .get();
+    return canonicalSnapshot.exists ? canonicalChatId : id;
+  }
+
   Stream<ChatModel?> watchChat(String chatId) {
     final id = chatId.trim();
     if (id.isEmpty) return Stream.value(null);
@@ -240,14 +278,11 @@ class ChatRepository {
   Future<void> sendChatMessage({
     required String chatId,
     required String text,
-    String? sourceServiceId,
   }) async {
     final callable = _functions.httpsCallable('sendChatMessage');
     await callable.call<Map<String, dynamic>>({
       'chatId': chatId.trim(),
       'text': text.trim(),
-      if (sourceServiceId != null && sourceServiceId.trim().isNotEmpty)
-        'sourceServiceId': sourceServiceId.trim(),
     });
   }
 
@@ -256,8 +291,15 @@ class ChatRepository {
     await callable.call<Map<String, dynamic>>({'chatId': chatId.trim()});
   }
 
-  Future<void> markChatRead({required String chatId}) async {
+  Future<void> markChatRead({
+    required String chatId,
+    String? openedChatId,
+  }) async {
     final callable = _functions.httpsCallable('markChatRead');
-    await callable.call<Map<String, dynamic>>({'chatId': chatId.trim()});
+    await callable.call<Map<String, dynamic>>({
+      'chatId': chatId.trim(),
+      if (openedChatId != null && openedChatId.trim().isNotEmpty)
+        'openedChatId': openedChatId.trim(),
+    });
   }
 }

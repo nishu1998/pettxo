@@ -33,14 +33,20 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   bool _isLoadingOlder = false;
   bool _hasMoreOlder = true;
   bool _isSending = false;
+  bool _isResolvingChatId = true;
+  bool _isAcknowledgingChatState = false;
+  String _resolvedChatId = '';
 
   String get _currentUid => FirebaseAuth.instance.currentUser?.uid ?? '';
+  String get _activeChatId =>
+      _resolvedChatId.isEmpty ? widget.chatId : _resolvedChatId;
 
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_handleScroll);
-    unawaited(_markDeliveredAndRead());
+    _resolvedChatId = widget.chatId;
+    unawaited(_resolveChatId());
   }
 
   @override
@@ -70,7 +76,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     setState(() => _isLoadingOlder = true);
     try {
       final page = await _repository.fetchOlderMessages(
-        widget.chatId,
+        _activeChatId,
         startAfter: cursor,
       );
       for (final message in page.messages) {
@@ -94,14 +100,60 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
   }
 
-  Future<void> _markDeliveredAndRead() async {
-    if (_currentUid.isEmpty) return;
+  Future<void> _resolveChatId() async {
     try {
-      await _repository.markChatDelivered(chatId: widget.chatId);
-      await _repository.markChatRead(chatId: widget.chatId);
+      final resolved = await _repository.resolveNavigationChatId(widget.chatId);
+      if (!mounted) return;
+      setState(() {
+        _resolvedChatId = resolved;
+        _olderMessages.clear();
+        _olderMessageIds.clear();
+        _paginationCursor = null;
+        _hasMoreOlder = true;
+        _isResolvingChatId = false;
+      });
+      unawaited(_markDeliveredAndRead());
     } catch (_) {
-      // Best-effort acknowledgement should not block the screen.
+      if (!mounted) return;
+      setState(() => _isResolvingChatId = false);
     }
+  }
+
+  Future<void> _markDeliveredAndRead({ChatModel? chat}) async {
+    if (_currentUid.isEmpty || _isAcknowledgingChatState) return;
+    final chatId = _activeChatId.trim();
+    if (chatId.isEmpty) return;
+
+    final shouldMarkRead = chat != null && chat.unreadCountFor(_currentUid) > 0;
+
+    _isAcknowledgingChatState = true;
+    try {
+      if (shouldMarkRead || chat == null) {
+        await _repository.markChatRead(
+          chatId: chatId,
+          openedChatId: widget.chatId,
+        );
+      }
+    } catch (_) {
+      // Best-effort read acknowledgement should not block the screen.
+    }
+
+    try {
+      await _repository.markChatDelivered(chatId: chatId);
+    } catch (_) {
+      // Best-effort delivery acknowledgement should not block read clearing.
+    } finally {
+      _isAcknowledgingChatState = false;
+    }
+  }
+
+  bool _hasPendingAcknowledgement(List<MessageModel> messages, ChatModel chat) {
+    for (final message in messages) {
+      if (message.isSentBy(_currentUid)) continue;
+      if (!message.deliveredTo.contains(_currentUid)) return true;
+      if (!message.readBy.contains(_currentUid)) return true;
+    }
+    return chat.unreadCountFor(_currentUid) > 0;
   }
 
   Future<void> _sendMessage(ChatModel? chat) async {
@@ -110,13 +162,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
     setState(() => _isSending = true);
     try {
-      await _repository.sendChatMessage(
-        chatId: widget.chatId,
-        text: text,
-        sourceServiceId: chat.lastServiceId.isEmpty ? null : chat.lastServiceId,
-      );
+      await _repository.sendChatMessage(chatId: _activeChatId, text: text);
       _messageController.clear();
-      unawaited(_markDeliveredAndRead());
+      unawaited(_markDeliveredAndRead(chat: chat));
     } catch (error) {
       if (!mounted) return;
       AppFeedback.show(
@@ -133,10 +181,29 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isResolvingChatId) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          backgroundColor: AppColors.background,
+          foregroundColor: AppColors.textDark,
+          elevation: 0,
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(color: AppColors.primary),
+        ),
+      );
+    }
+
     return StreamBuilder<ChatModel?>(
-      stream: _repository.watchChat(widget.chatId),
+      stream: _repository.watchChat(_activeChatId),
       builder: (context, chatSnapshot) {
         final chat = chatSnapshot.data;
+        if (chat != null && chat.unreadCountFor(_currentUid) > 0) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            unawaited(_markDeliveredAndRead(chat: chat));
+          });
+        }
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -176,17 +243,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                                     color: AppColors.textDark,
                                   ),
                                 ),
-                                if (chat.lastServiceTitle.isNotEmpty)
-                                  Text(
-                                    chat.lastServiceTitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppColors.textGrey,
-                                    ),
-                                  ),
                               ],
                             ),
                           ),
@@ -247,7 +303,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       Expanded(
                         child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                           stream: _repository.watchRecentMessageSnapshots(
-                            widget.chatId,
+                            _activeChatId,
                           ),
                           builder: (context, snapshot) {
                             if (snapshot.hasError) {
@@ -277,9 +333,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             if (docs.length < 30) {
                               _hasMoreOlder = false;
                             }
-                            if (latestMessages.isNotEmpty) {
+                            if (latestMessages.isNotEmpty &&
+                                _hasPendingAcknowledgement(
+                                  latestMessages,
+                                  chat,
+                                )) {
                               WidgetsBinding.instance.addPostFrameCallback((_) {
-                                unawaited(_markDeliveredAndRead());
+                                unawaited(_markDeliveredAndRead(chat: chat));
                               });
                             }
 
