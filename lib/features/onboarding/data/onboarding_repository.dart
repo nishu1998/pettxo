@@ -15,19 +15,19 @@ class OnboardingRepository {
         tagLine: remote.getString("tagline_1", local[0].tagLine),
         title: remote.getString("title_1", local[0].title),
         subtitle: remote.getString("subtitle_1", local[0].subtitle),
-        lottie: local[0].lottie,
+        backgroundImage: local[0].backgroundImage,
       ),
       OnboardingModel(
         tagLine: remote.getString("tagline_2", local[1].tagLine),
         title: remote.getString("title_2", local[1].title),
         subtitle: remote.getString("subtitle_2", local[1].subtitle),
-        lottie: local[1].lottie,
+        backgroundImage: local[1].backgroundImage,
       ),
       OnboardingModel(
         tagLine: remote.getString("tagline_3", local[2].tagLine),
         title: remote.getString("title_3", local[2].title),
         subtitle: remote.getString("subtitle_3", local[2].subtitle),
-        lottie: local[2].lottie,
+        backgroundImage: local[2].backgroundImage,
       ),
     ];
   }

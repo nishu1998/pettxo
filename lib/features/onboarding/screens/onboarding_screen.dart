@@ -29,6 +29,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   final remote = RemoteConfigService(); // ✅ Remote config
   late OnboardingRepository repository; // ✅ Repository
+  bool _didPrecacheBackgrounds = false;
 
   @override
   void initState() {
@@ -46,6 +47,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       );
       _trackStepView(0);
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didPrecacheBackgrounds) return;
+    _didPrecacheBackgrounds = true;
+    for (final item in onboardingList) {
+      precacheImage(AssetImage(item.backgroundImage), context);
+    }
   }
 
   Future<void> nextPage() async {
@@ -94,122 +105,166 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 2),
-              child: Row(
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: _OnboardingBackground(
+              imagePath: onboardingList[currentIndex].backgroundImage,
+            ),
+          ),
+          SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 2),
+                  child: Row(
                     children: [
-                      SizedBox(
-                        width: 26,
-                        height: 26,
-                        child: SvgPicture.asset(
-                          'assets/brand/pettxo_logo.svg',
-                          fit: BoxFit.cover,
-                        ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 26,
+                            height: 26,
+                            child: SvgPicture.asset(
+                              'assets/brand/pettxo_logo.svg',
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'Pettxo',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Pettxo',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.primary,
+                      const Spacer(),
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: AppColors.brandGradient,
+                          borderRadius: BorderRadius.circular(999),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primary.withValues(alpha: 0.18),
+                              blurRadius: 18,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                        child: TextButton(
+                          onPressed: skip,
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            textStyle: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("Skip"),
+                              SizedBox(width: 6),
+                              Icon(Icons.arrow_forward_rounded, size: 16),
+                            ],
+                          ),
                         ),
                       ),
                     ],
                   ),
-                  const Spacer(),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: AppColors.brandGradient,
-                      borderRadius: BorderRadius.circular(999),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.primary.withValues(alpha: 0.18),
-                          blurRadius: 18,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    child: TextButton(
-                      onPressed: skip,
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text("Skip"),
-                          SizedBox(width: 6),
-                          Icon(Icons.arrow_forward_rounded, size: 16),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            OnboardingProgress(index: currentIndex),
-            Expanded(
-              child: PageView.builder(
-                controller: controller,
-                itemCount: onboardingList.length,
-                onPageChanged: (index) {
-                  setState(() => currentIndex = index);
-                  _trackStepView(index);
-                },
-                itemBuilder: (_, index) {
-                  return AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 400),
-                    transitionBuilder: (child, animation) {
-                      return FadeTransition(
-                        opacity: animation,
-                        child: ScaleTransition(
-                          scale: Tween(
-                            begin: 0.98,
-                            end: 1.0,
-                          ).animate(animation),
-                          child: child,
+                ),
+                OnboardingProgress(index: currentIndex),
+                Expanded(
+                  child: PageView.builder(
+                    controller: controller,
+                    itemCount: onboardingList.length,
+                    onPageChanged: (index) {
+                      setState(() => currentIndex = index);
+                      _trackStepView(index);
+                    },
+                    itemBuilder: (_, index) {
+                      return AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 400),
+                        transitionBuilder: (child, animation) {
+                          return FadeTransition(
+                            opacity: animation,
+                            child: ScaleTransition(
+                              scale: Tween(
+                                begin: 0.98,
+                                end: 1.0,
+                              ).animate(animation),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: OnboardingPage(
+                          key: ValueKey(index),
+                          data: onboardingList[index],
                         ),
                       );
                     },
-                    child: OnboardingPage(
-                      key: ValueKey(index),
-                      data: onboardingList[index],
-                    ),
-                  );
-                },
-              ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                  child: OnboardingButton(
+                    text: currentIndex == onboardingList.length - 1
+                        ? "Get Started"
+                        : "Next",
+                    onTap: nextPage,
+                  ),
+                ),
+              ],
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-              child: OnboardingButton(
-                text: currentIndex == onboardingList.length - 1
-                    ? "Get Started"
-                    : "Next",
-                onTap: nextPage,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
+    );
+  }
+}
+
+class _OnboardingBackground extends StatelessWidget {
+  const _OnboardingBackground({required this.imagePath});
+
+  final String imagePath;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.asset(
+          imagePath,
+          fit: BoxFit.cover,
+          alignment: Alignment.center,
+          filterQuality: FilterQuality.high,
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.black.withValues(alpha: 0),
+                Colors.black.withValues(alpha: 0.18),
+                Colors.black.withValues(alpha: 0.68),
+              ],
+              stops: const [0, 0.48, 1],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

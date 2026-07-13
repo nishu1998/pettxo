@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:lottie/lottie.dart';
 
-import '../../../core/constants/app_colors.dart';
 import '../models/onboarding_model.dart';
 
 class OnboardingPage extends StatelessWidget {
@@ -11,8 +9,6 @@ class OnboardingPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final illustrationHeight = MediaQuery.sizeOf(context).height * 0.28;
-
     return TweenAnimationBuilder<double>(
       duration: const Duration(milliseconds: 700),
       curve: Curves.easeOutCubic,
@@ -20,18 +16,7 @@ class OnboardingPage extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
-              child: Center(
-                child: Lottie.asset(
-                  data.lottie,
-                  height: illustrationHeight.clamp(260.0, 320.0),
-                  fit: BoxFit.contain,
-                ),
-              ),
-            ),
-          ),
+          Expanded(child: const SizedBox.expand()),
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
             child: Column(
@@ -40,7 +25,7 @@ class OnboardingPage extends StatelessWidget {
                   data.tagLine,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    color: AppColors.primary,
+                    color: Colors.white,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.5,
@@ -55,7 +40,7 @@ class OnboardingPage extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                     height: 1.12,
                     letterSpacing: -0.6,
-                    color: Colors.black,
+                    color: Colors.white,
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -64,7 +49,7 @@ class OnboardingPage extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     height: 1.6,
-                    color: const Color(0xFF4A4A4A),
+                    color: Colors.white.withValues(alpha: 0.86),
                   ),
                 ),
                 const SizedBox(height: 8),

@@ -32,6 +32,7 @@ class _SearchableSelectionFieldState extends State<SearchableSelectionField> {
 
   Future<void> _openSelector() async {
     if (!widget.enabled) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
       _isFocused = true;
     });

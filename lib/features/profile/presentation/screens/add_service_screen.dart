@@ -498,15 +498,6 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
                       noResultsText:
                           'Not listed? Select Other and type your animal below.',
                       onSelected: _onAnimalSelected,
-                      onChanged: () {
-                        setState(() {
-                          _animalError = null;
-                          if (_highlightedField ==
-                              _ServiceDetailsField.animal) {
-                            _clearHighlight();
-                          }
-                        });
-                      },
                     ),
                     if (_isOtherAnimal) ...[
                       const SizedBox(height: 14),
@@ -545,15 +536,6 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
                         isHighlighted:
                             _highlightedField == _ServiceDetailsField.category,
                         onSelected: _onCategorySelected,
-                        onChanged: () {
-                          setState(() {
-                            _categoryError = null;
-                            if (_highlightedField ==
-                                _ServiceDetailsField.category) {
-                              _clearHighlight();
-                            }
-                          });
-                        },
                       ),
                     if (_isOtherCategory) ...[
                       const SizedBox(height: 14),
@@ -917,7 +899,6 @@ class _SearchableDropdownField extends StatefulWidget {
   final bool isHighlighted;
   final String? noResultsText;
   final ValueChanged<String> onSelected;
-  final VoidCallback? onChanged;
 
   const _SearchableDropdownField({
     this.fieldKey,
@@ -930,7 +911,6 @@ class _SearchableDropdownField extends StatefulWidget {
     this.errorText,
     this.isHighlighted = false,
     this.noResultsText,
-    this.onChanged,
   });
 
   @override
@@ -943,25 +923,14 @@ class _SearchableDropdownFieldState extends State<_SearchableDropdownField> {
   late final bool _ownsFocusNode;
   bool _isExpanded = false;
 
-  List<String> get _filteredOptions {
-    final query = widget.controller.text.trim().toLowerCase();
-    if (query.isEmpty) return widget.options;
-    return widget.options
-        .where((option) => option.toLowerCase().contains(query))
-        .toList();
-  }
+  List<String> get _filteredOptions => widget.options;
 
   @override
   void initState() {
     super.initState();
     _ownsFocusNode = widget.focusNode == null;
     _focusNode = widget.focusNode ?? FocusNode();
-    _focusNode.addListener(() {
-      if (!_focusNode.hasFocus) return;
-      setState(() {
-        _isExpanded = true;
-      });
-    });
+    _focusNode.canRequestFocus = false;
   }
 
   @override
@@ -980,6 +949,13 @@ class _SearchableDropdownFieldState extends State<_SearchableDropdownField> {
       _isExpanded = false;
     });
     FocusScope.of(context).unfocus();
+  }
+
+  void _toggleDropdown() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _isExpanded = !_isExpanded;
+    });
   }
 
   @override
@@ -1002,11 +978,11 @@ class _SearchableDropdownFieldState extends State<_SearchableDropdownField> {
         TextField(
           controller: widget.controller,
           focusNode: _focusNode,
-          onTap: () => setState(() => _isExpanded = true),
-          onChanged: (_) {
-            setState(() => _isExpanded = true);
-            widget.onChanged?.call();
-          },
+          readOnly: true,
+          showCursor: false,
+          enableInteractiveSelection: false,
+          keyboardType: TextInputType.none,
+          onTap: _toggleDropdown,
           decoration: InputDecoration(
             hintText: widget.hintText,
             errorText: widget.errorText,

@@ -7,19 +7,19 @@ class OnboardingLocalData {
         tagLine: "Premium pet experience",
         title: "Connect & Explore Pets",
         subtitle: "Join a community of pet lovers and share moments.",
-        lottie: "assets/lottie/social.json",
+        backgroundImage: "assets/onboarding/community_background.png",
       ),
       OnboardingModel(
         tagLine: "Trusted care, easier",
         title: "Book Trusted Services",
         subtitle: "Find vets, groomers and trainers easily.",
-        lottie: "assets/lottie/services.json",
+        backgroundImage: "assets/onboarding/services_background.png",
       ),
       OnboardingModel(
         tagLine: "Discover what’s nearby",
         title: "Everything Nearby",
         subtitle: "Discover pet-friendly places around you.",
-        lottie: "assets/lottie/location.json",
+        backgroundImage: "assets/onboarding/trust_background.png",
       ),
     ];
   }

@@ -458,6 +458,7 @@ class _DocumentTypePicker extends StatelessWidget {
       onTap: !enabled
           ? null
           : () async {
+              FocusManager.instance.primaryFocus?.unfocus();
               final nextValue = await showModalBottomSheet<String>(
                 context: context,
                 backgroundColor: Colors.transparent,

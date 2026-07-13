@@ -55,6 +55,7 @@ flutter:
 
   assets:
     - assets/lottie/
+    - assets/onboarding/
     - assets/brand/
     - assets/data/
     - assets/splash_bg.png

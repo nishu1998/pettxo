@@ -106,6 +106,7 @@ class _PaymentReviewScreenState extends State<PaymentReviewScreen> {
   }
 
   Future<void> _selectOffer() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final picked = await showModalBottomSheet<ClaimedOffer>(
       context: context,
       backgroundColor: Colors.transparent,

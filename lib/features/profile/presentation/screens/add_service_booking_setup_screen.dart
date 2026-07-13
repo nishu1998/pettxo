@@ -1073,6 +1073,7 @@ class _DropdownField extends StatelessWidget {
         InkWell(
           onTap: enabled
               ? () async {
+                  FocusManager.instance.primaryFocus?.unfocus();
                   final selected = await showModalBottomSheet<String>(
                     context: context,
                     backgroundColor: Colors.transparent,
@@ -1258,7 +1259,10 @@ class _TimePickerField extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         InkWell(
-          onTap: onTap,
+          onTap: () {
+            FocusManager.instance.primaryFocus?.unfocus();
+            onTap();
+          },
           borderRadius: BorderRadius.circular(18),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),

@@ -114,6 +114,7 @@ class _PhoneNumberInputState extends State<PhoneNumberInput> {
                     value: widget.selectedDialCode,
                     dropdownColor: Colors.white,
                     borderRadius: BorderRadius.circular(12),
+                    onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
                     icon: const Icon(
                       Icons.keyboard_arrow_down_rounded,
                       color: AppColors.textGrey,

@@ -2,12 +2,12 @@ class OnboardingModel {
   final String tagLine;
   final String title;
   final String subtitle;
-  final String lottie;
+  final String backgroundImage;
 
   OnboardingModel({
     required this.tagLine,
     required this.title,
     required this.subtitle,
-    required this.lottie,
+    required this.backgroundImage,
   });
 }

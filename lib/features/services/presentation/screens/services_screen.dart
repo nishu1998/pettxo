@@ -112,6 +112,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
   }
 
   void _showFiltersSheet() {
+    FocusManager.instance.primaryFocus?.unfocus();
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
