@@ -82,7 +82,7 @@ class NotificationsScreen extends StatelessWidget {
                           }
 
                           return ListView(
-                            padding: const EdgeInsets.fromLTRB(18, 4, 18, 24),
+                            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
                             children: docs
                                 .map(
                                   (doc) => _NotificationTile(
@@ -342,52 +342,62 @@ class _NotificationTile extends StatelessWidget {
     final senderPhotoUrl =
         '${data['senderPhotoUrl'] ?? data['data']?['senderPhotoUrl'] ?? ''}';
 
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
         decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: Colors.white.withValues(alpha: 0.95),
-              width: 1.2,
-            ),
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (isUnread) ...[
-              Container(
-                width: 10,
-                height: 10,
-                margin: const EdgeInsets.only(top: 18, right: 10),
-                decoration: const BoxDecoration(
-                  color: AppColors.primary,
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ] else
-              const SizedBox(width: 20),
-            _avatarContent(
-              senderId: senderId,
-              senderDisplayName: senderDisplayName,
-              senderPhotoUrl: senderPhotoUrl,
-              type: type,
-              category: category,
-            ),
-            const SizedBox(width: 16),
-            Expanded(child: _buildStyledText(title, body)),
-            const SizedBox(width: 12),
-            Text(
-              _relativeTime(createdDate),
-              style: const TextStyle(
-                color: AppColors.textGrey,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-              ),
+          borderRadius: BorderRadius.circular(22),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isUnread ? 0.08 : 0.045),
+              blurRadius: isUnread ? 24 : 18,
+              offset: const Offset(0, 10),
             ),
           ],
+        ),
+        child: Material(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(22),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(12, 14, 14, 14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(
+                  color: isUnread
+                      ? AppColors.primary
+                      : AppColors.textGrey.withValues(alpha: 0.08),
+                  width: isUnread ? 2 : 1,
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _avatarContent(
+                    senderId: senderId,
+                    senderDisplayName: senderDisplayName,
+                    senderPhotoUrl: senderPhotoUrl,
+                    type: type,
+                    category: category,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildStyledText(title, body)),
+                  const SizedBox(width: 12),
+                  Text(
+                    _relativeTime(createdDate),
+                    style: const TextStyle(
+                      color: AppColors.textGrey,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
