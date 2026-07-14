@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -402,6 +403,19 @@ class _CommentSheetState extends State<CommentSheet> {
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.sizeOf(context);
     final viewInsets = MediaQuery.viewInsetsOf(context);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final sheetSurface = isDark
+        ? theme.colorScheme.surface.withValues(alpha: 0.66)
+        : Colors.white.withValues(alpha: 0.7);
+    final borderColor = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : Colors.white.withValues(alpha: 0.72);
+    final shadowColor = isDark
+        ? Colors.black.withValues(alpha: 0.28)
+        : Colors.black.withValues(alpha: 0.1);
+    final foregroundColor = theme.colorScheme.onSurface;
+    final mutedColor = foregroundColor.withValues(alpha: 0.58);
     final sheetHeight = math
         .min(
           screenSize.height * 0.82,
@@ -414,103 +428,172 @@ class _CommentSheetState extends State<CommentSheet> {
       child: AnimatedPadding(
         duration: const Duration(milliseconds: 180),
         padding: EdgeInsets.only(bottom: viewInsets.bottom),
-        child: Container(
-          height: sheetHeight,
-          margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFCF8F5),
-            borderRadius: BorderRadius.circular(30),
-          ),
-          child: Column(
-            children: [
-              const SizedBox(height: 12),
-              Container(
-                width: 44,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: AppColors.textGrey.withValues(alpha: 0.28),
-                  borderRadius: BorderRadius.circular(999),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(32),
+              boxShadow: [
+                BoxShadow(
+                  color: shadowColor,
+                  blurRadius: 34,
+                  offset: const Offset(0, 18),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Comments',
-                        style: TextStyle(
-                          color: AppColors.textDark,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(32),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: Container(
+                  height: sheetHeight,
+                  decoration: BoxDecoration(
+                    color: sheetSurface,
+                    borderRadius: BorderRadius.circular(32),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 38,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: mutedColor.withValues(alpha: 0.32),
+                          borderRadius: BorderRadius.circular(999),
                         ),
                       ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(child: _buildCommentsList()),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _commentController,
-                        minLines: 1,
-                        maxLines: 5,
-                        maxLength: 500,
-                        decoration: InputDecoration(
-                          hintText: 'Write a comment...',
-                          counterText: '',
-                          filled: true,
-                          fillColor: Colors.white,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 14,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(20),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      height: 48,
-                      child: FilledButton(
-                        onPressed:
-                            _commentController.text.trim().isEmpty || _isSending
-                            ? null
-                            : _sendComment,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                        ),
-                        child: _isSending
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(22, 18, 18, 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Comments',
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  color: foregroundColor,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: -0.2,
                                 ),
-                              )
-                            : const Icon(Icons.send_rounded),
+                              ),
+                            ),
+                            Semantics(
+                              button: true,
+                              label: 'Close comments',
+                              child: Material(
+                                color: Colors.white.withValues(
+                                  alpha: isDark ? 0.08 : 0.36,
+                                ),
+                                borderRadius: BorderRadius.circular(14),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(14),
+                                  onTap: () => Navigator.pop(context),
+                                  child: SizedBox(
+                                    width: 42,
+                                    height: 42,
+                                    child: Icon(
+                                      Icons.close_rounded,
+                                      color: foregroundColor.withValues(
+                                        alpha: 0.76,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                      Expanded(child: _buildCommentsList()),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _commentController,
+                                minLines: 1,
+                                maxLines: 5,
+                                maxLength: 500,
+                                style: TextStyle(
+                                  color: foregroundColor,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Write a comment...',
+                                  hintStyle: TextStyle(color: mutedColor),
+                                  counterText: '',
+                                  filled: true,
+                                  fillColor: isDark
+                                      ? Colors.white.withValues(alpha: 0.08)
+                                      : Colors.white.withValues(alpha: 0.48),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                    vertical: 14,
+                                  ),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(24),
+                                    borderSide: BorderSide(color: borderColor),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(24),
+                                    borderSide: BorderSide(color: borderColor),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(24),
+                                    borderSide: BorderSide(
+                                      color: AppColors.primary.withValues(
+                                        alpha: 0.72,
+                                      ),
+                                      width: 1.4,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            SizedBox(
+                              width: 50,
+                              height: 50,
+                              child: FilledButton(
+                                onPressed:
+                                    _commentController.text.trim().isEmpty ||
+                                        _isSending
+                                    ? null
+                                    : _sendComment,
+                                style: FilledButton.styleFrom(
+                                  padding: EdgeInsets.zero,
+                                  backgroundColor: AppColors.primary,
+                                  disabledBackgroundColor: isDark
+                                      ? Colors.white.withValues(alpha: 0.1)
+                                      : Colors.black.withValues(alpha: 0.08),
+                                  foregroundColor: Colors.white,
+                                  disabledForegroundColor: mutedColor,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(17),
+                                  ),
+                                ),
+                                child: _isSending
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.send_rounded, size: 21),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -570,9 +653,9 @@ class _CommentSheetState extends State<CommentSheet> {
 
     return ListView.separated(
       controller: _scrollController,
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 12),
       itemCount: _comments.length + (_hasMore || _isLoadingMore ? 1 : 0),
-      separatorBuilder: (_, _) => const SizedBox(height: 12),
+      separatorBuilder: (_, _) => const SizedBox(height: 20),
       itemBuilder: (context, index) {
         if (index >= _comments.length) {
           return Padding(
@@ -636,73 +719,81 @@ class _CommentTile extends StatelessWidget {
       fallbackUsername: comment.authorUsername,
       fallbackImageUrl: comment.authorPhotoUrl,
       builder: (context, author) {
-        return Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(22),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              GestureDetector(
-                onTap: () => _openAuthorProfile(context),
-                child: _CommentAvatar(
-                  imageUrl: author.imageUrl,
-                  initials: author.initials,
-                ),
+        final theme = Theme.of(context);
+        final foregroundColor = theme.colorScheme.onSurface;
+        final mutedColor = foregroundColor.withValues(alpha: 0.58);
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GestureDetector(
+              onTap: () => _openAuthorProfile(context),
+              child: _CommentAvatar(
+                imageUrl: author.imageUrl,
+                initials: author.initials,
               ),
-              const SizedBox(width: 12),
-              Expanded(
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 1),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        GestureDetector(
-                          onTap: () => _openAuthorProfile(context),
-                          child: Text(
-                            author.displayName,
-                            style: const TextStyle(
-                              color: AppColors.textDark,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                    GestureDetector(
+                      onTap: () => _openAuthorProfile(context),
+                      child: Text(
+                        author.displayName,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: foregroundColor,
+                          fontWeight: FontWeight.w800,
+                          height: 1.15,
                         ),
-                        if (author.username.isNotEmpty)
-                          Text(
-                            author.username,
-                            style: const TextStyle(
-                              color: AppColors.textGrey,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        if (timestamp.isNotEmpty)
-                          Text(
-                            timestamp,
-                            style: const TextStyle(
-                              color: AppColors.textGrey,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                      ],
+                      ),
                     ),
-                    const SizedBox(height: 6),
+                    if (author.username.isNotEmpty || timestamp.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 2,
+                        children: [
+                          if (author.username.isNotEmpty)
+                            Text(
+                              author.username,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: mutedColor,
+                                fontWeight: FontWeight.w600,
+                                height: 1.2,
+                              ),
+                            ),
+                          if (timestamp.isNotEmpty)
+                            Text(
+                              timestamp,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: mutedColor,
+                                fontWeight: FontWeight.w600,
+                                height: 1.2,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 7),
                     Text(
                       bodyText,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        height: 1.45,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: foregroundColor.withValues(alpha: 0.88),
+                        height: 1.38,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         );
       },
     );
@@ -718,18 +809,19 @@ class _CommentAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AppUserAvatar(
-      size: 36,
+      size: 44,
       imageUrl: imageUrl,
-      fallback: _fallbackAvatar(),
+      fallback: _fallbackAvatar(context),
     );
   }
 
-  Widget _fallbackAvatar() {
+  Widget _fallbackAvatar(BuildContext context) {
+    final theme = Theme.of(context);
     return AppUserAvatarFallback(
       initials: initials,
-      backgroundColor: AppColors.background,
-      textStyle: const TextStyle(
-        color: AppColors.textDark,
+      backgroundColor: theme.colorScheme.surface.withValues(alpha: 0.72),
+      textStyle: TextStyle(
+        color: theme.colorScheme.onSurface,
         fontWeight: FontWeight.w700,
       ),
     );
