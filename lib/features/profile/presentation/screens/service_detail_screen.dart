@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -17,10 +19,11 @@ import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../../moderation/presentation/widgets/report_sheet.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
+import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../domain/models/profile_service_listing.dart';
 import 'profile_screen.dart';
 
-class ServiceDetailScreen extends StatelessWidget {
+class ServiceDetailScreen extends StatefulWidget {
   final ProfileServiceListing service;
   final bool showRebookHint;
   final DateTime? suggestedSlotStartAt;
@@ -31,6 +34,76 @@ class ServiceDetailScreen extends StatelessWidget {
     this.showRebookHint = false,
     this.suggestedSlotStartAt,
   });
+
+  @override
+  State<ServiceDetailScreen> createState() => _ServiceDetailScreenState();
+}
+
+class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
+  static const double _topBarHideThreshold = 18;
+  static const double _topBarShowThreshold = 12;
+  static const double _topBarTopResetOffset = 8;
+
+  final ScrollController _scrollController = ScrollController();
+  bool _isTopBarVisible = true;
+  double _lastScrollOffset = 0;
+  double _scrollDeltaAccumulator = 0;
+
+  ProfileServiceListing get service => widget.service;
+  bool get showRebookHint => widget.showRebookHint;
+  DateTime? get suggestedSlotStartAt => widget.suggestedSlotStartAt;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_handleScroll);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final direction = position.userScrollDirection;
+    final pixels = position.pixels;
+    final delta = pixels - _lastScrollOffset;
+    _lastScrollOffset = pixels;
+
+    if (pixels <= _topBarTopResetOffset) {
+      _scrollDeltaAccumulator = 0;
+      if (!_isTopBarVisible && mounted) {
+        setState(() => _isTopBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.reverse && delta > 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        0.0,
+        _topBarHideThreshold,
+      );
+      if (_isTopBarVisible &&
+          _scrollDeltaAccumulator >= _topBarHideThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isTopBarVisible = false);
+      }
+    } else if (direction == ScrollDirection.forward && delta < 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        -_topBarShowThreshold,
+        0.0,
+      );
+      if (!_isTopBarVisible &&
+          _scrollDeltaAccumulator <= -_topBarShowThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isTopBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.idle) {
+      _scrollDeltaAccumulator = 0;
+    }
+  }
 
   void _openBookingFlow(BuildContext context) {
     if (service.isPausedByVerification) {
@@ -56,6 +129,10 @@ class ServiceDetailScreen extends StatelessWidget {
           durationMinutes: _resolvedDurationMinutes,
           providerId: service.ownerUserId,
           suggestedSlotStartAt: suggestedSlotStartAt,
+          providerName: service.providerDisplayName,
+          serviceImageUrl: service.galleryImages.isNotEmpty
+              ? service.galleryImages.first
+              : service.imageUrl,
         ),
       ),
     );
@@ -78,7 +155,8 @@ class ServiceDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final topContentPadding = topInset + 108;
+    const topBarHeight = 68.0;
+    final topContentPadding = topInset + topBarHeight + 10;
     final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
     final isOwner =
         currentUserId.isNotEmpty && currentUserId == service.ownerUserId;
@@ -88,46 +166,33 @@ class ServiceDetailScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: const Color(0xFFFCF8F5),
+      extendBody: true,
       body: Stack(
         children: [
           ListView(
+            controller: _scrollController,
+            physics: const BouncingScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
               18,
               topContentPadding,
               18,
-              bottomInset + 28,
+              bottomInset + (canBook ? 132 : 28),
             ),
             children: [
               _ServiceHero(
                 service: service,
-                canBook: canRequestBooking,
                 isOwner: isOwner,
+                canOpenMenu: currentUserId.isNotEmpty && !isOwner,
+              ),
+              const SizedBox(height: 18),
+              _ServiceSummaryCard(
+                service: service,
                 showRebookHint: showRebookHint,
-                onBookNow: () => _openBookingFlow(context),
-              ),
-              const SizedBox(height: 18),
-              _InsightStrip(service: service),
-              const SizedBox(height: 18),
-              _DetailCard(
-                title: 'Service Overview',
-                children: [
-                  _DetailRow(label: 'Category', value: service.category),
-                  _DetailRow(label: 'Animal', value: service.animalType),
-                  _DetailRow(
-                    label: 'Service type',
-                    value: service.bookingServiceType,
-                  ),
-                  _DetailRow(label: 'Price', value: service.rate),
-                  _DetailRow(label: 'Duration', value: service.duration),
-                  _DetailRow(
-                    label: 'Availability',
-                    value: service.availability,
-                  ),
-                ],
               ),
               const SizedBox(height: 18),
               _DetailCard(
-                title: 'Description',
+                title: 'About This Service',
+                showDisplayTitle: false,
                 children: [
                   Text(
                     service.description,
@@ -138,6 +203,19 @@ class ServiceDetailScreen extends StatelessWidget {
                       fontWeight: FontWeight.w500,
                     ),
                   ),
+                  const SizedBox(height: 18),
+                  _DetailRow(
+                    label: 'Availability',
+                    value: service.availability,
+                    valueBold: true,
+                    showBottomDivider: true,
+                  ),
+                  _DetailRow(
+                    label: 'Location',
+                    value: service.location,
+                    valueBold: true,
+                  ),
+                  const _CancellationPolicyRow(),
                 ],
               ),
               if (service.notes.trim().isNotEmpty) ...[
@@ -160,84 +238,7 @@ class ServiceDetailScreen extends StatelessWidget {
               const SizedBox(height: 18),
               _ServiceReviewsSection(service: service),
               const SizedBox(height: 18),
-              _DetailCard(
-                title: 'Location',
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFFAF7),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: AppColors.primary.withValues(alpha: 0.08),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Padding(
-                              padding: EdgeInsets.only(top: 2),
-                              child: Icon(
-                                Icons.location_on_outlined,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                service.location,
-                                style: const TextStyle(
-                                  color: AppColors.textDark,
-                                  fontSize: 15,
-                                  height: 1.5,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        SecondaryButton(
-                          label: 'Open in Google Maps',
-                          icon: Icons.map_outlined,
-                          onPressed:
-                              service.latitude == 0 && service.longitude == 0
-                              ? null
-                              : () async {
-                                  final uri = Uri.parse(
-                                    'https://www.google.com/maps/search/?api=1&query=${service.latitude},${service.longitude}',
-                                  );
-                                  await launchUrl(
-                                    uri,
-                                    mode: LaunchMode.externalApplication,
-                                  );
-                                },
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Align(
-                alignment: Alignment.centerRight,
-                child: SecondaryButton(
-                  label: 'Report service',
-                  icon: Icons.flag_outlined,
-                  size: AppButtonSize.compact,
-                  expand: false,
-                  onPressed: currentUserId.isEmpty || isOwner
-                      ? null
-                      : () => ReportSheet.show(
-                          context: context,
-                          type: 'service',
-                          targetId: service.id,
-                        ),
-                ),
-              ),
+              _ServiceLocationCard(service: service),
               const SizedBox(height: 22),
               if (canBook && isVerificationPaused)
                 Container(
@@ -259,85 +260,73 @@ class ServiceDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (canBook)
-                Column(
-                  children: [
-                    GradientButton(
-                      label: isVerificationPaused
-                          ? 'Temporarily Unavailable'
-                          : 'Book Now',
-                      icon: Icons.calendar_month_rounded,
-                      onPressed: canRequestBooking
-                          ? () => _openBookingFlow(context)
-                          : null,
-                    ),
-                    const SizedBox(height: 12),
-                    _MessageProviderButton(
-                      service: service,
-                      enabled: canRequestBooking,
-                    ),
-                  ],
-                ),
             ],
           ),
           Positioned(
             left: 0,
             right: 0,
-            top: topInset + 10,
-            child: Align(
-              child: FractionallySizedBox(
-                widthFactor: 0.85,
-                child: GlassSurface(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 11,
-                  ),
-                  borderRadius: BorderRadius.circular(24),
-                  backgroundColor: Colors.white.withValues(alpha: 0.72),
-                  blurSigma: 20,
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.62),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withValues(alpha: 0.06),
-                      blurRadius: 22,
-                      offset: const Offset(0, 10),
-                    ),
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.56),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.arrow_back_rounded),
+            top: 0,
+            child: AnimatedSlide(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOutCubic,
+              offset: _isTopBarVisible ? Offset.zero : const Offset(0, -1.12),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeInOutCubic,
+                opacity: _isTopBarVisible ? 1 : 0,
+                child: AnimatedScale(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOutCubic,
+                  scale: _isTopBarVisible ? 1 : 0.97,
+                  child: IgnorePointer(
+                    ignoring: !_isTopBarVisible,
+                    child: GlassSurface(
+                      padding: EdgeInsets.only(top: topInset),
+                      borderRadius: BorderRadius.zero,
+                      backgroundColor: const Color(
+                        0xFFFCF8F5,
+                      ).withValues(alpha: 0.72),
+                      blurSigma: 22,
+                      border: Border(
+                        bottom: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.58),
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          service.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: AppColors.textDark,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.035),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                      child: SizedBox(
+                        height: topBarHeight,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          child: Row(
+                            children: [
+                              _HeaderIconButton(
+                                icon: Icons.arrow_back_rounded,
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  service.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900,
+                                    color: AppColors.textDark,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -345,21 +334,34 @@ class ServiceDetailScreen extends StatelessWidget {
           ),
         ],
       ),
+      bottomNavigationBar: canBook
+          ? _ServiceBottomActionBar(
+              service: service,
+              enabled: canRequestBooking,
+              isVerificationPaused: isVerificationPaused,
+              onBookNow: () => _openBookingFlow(context),
+            )
+          : null,
     );
   }
 }
 
-class _MessageProviderButton extends StatefulWidget {
-  const _MessageProviderButton({required this.service, required this.enabled});
+class _MessageProviderIconButton extends StatefulWidget {
+  const _MessageProviderIconButton({
+    required this.service,
+    required this.enabled,
+  });
 
   final ProfileServiceListing service;
   final bool enabled;
 
   @override
-  State<_MessageProviderButton> createState() => _MessageProviderButtonState();
+  State<_MessageProviderIconButton> createState() =>
+      _MessageProviderIconButtonState();
 }
 
-class _MessageProviderButtonState extends State<_MessageProviderButton> {
+class _MessageProviderIconButtonState
+    extends State<_MessageProviderIconButton> {
   final ChatRepository _chatRepository = ChatRepository();
   bool _isOpening = false;
 
@@ -420,286 +422,556 @@ class _MessageProviderButtonState extends State<_MessageProviderButton> {
 
   @override
   Widget build(BuildContext context) {
-    return SecondaryButton(
-      label: _isOpening ? 'Opening chat...' : 'Message Provider',
-      icon: Icons.chat_bubble_outline_rounded,
-      onPressed: widget.enabled && !_isOpening ? _openChat : null,
+    final disabled = !widget.enabled || _isOpening;
+    return Semantics(
+      button: true,
+      label: _isOpening ? 'Opening chat' : 'Message provider',
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 160),
+        opacity: disabled ? 0.5 : 1,
+        child: Material(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          child: InkWell(
+            onTap: disabled ? null : _openChat,
+            borderRadius: BorderRadius.circular(18),
+            child: Container(
+              width: 50,
+              height: 50,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.28),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.035),
+                    blurRadius: 14,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: _isOpening
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(
+                      Icons.chat_bubble_outline_rounded,
+                      color: AppColors.primary,
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ServiceBottomActionBar extends StatelessWidget {
+  final ProfileServiceListing service;
+  final bool enabled;
+  final bool isVerificationPaused;
+  final VoidCallback onBookNow;
+
+  const _ServiceBottomActionBar({
+    required this.service,
+    required this.enabled,
+    required this.isVerificationPaused,
+    required this.onBookNow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final priceText = service.rate
+        .replaceAll(RegExp(r'\s*/\s*session', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+per\s+session', caseSensitive: false), '')
+        .trim();
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+        child: SizedBox(
+          height: 68,
+          child: GlassSurface(
+            borderRadius: BorderRadius.circular(24),
+            backgroundColor: Colors.white.withValues(alpha: 0.88),
+            blurSigma: 20,
+            border: Border.all(color: Colors.white.withValues(alpha: 0.76)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 30,
+                offset: const Offset(0, 14),
+              ),
+            ],
+            padding: const EdgeInsets.fromLTRB(18, 7, 10, 7),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 96,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        priceText.isEmpty ? service.rate : priceText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textDark,
+                          fontSize: 23,
+                          fontWeight: FontWeight.w900,
+                          height: 1,
+                          letterSpacing: -0.4,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      const Text(
+                        'per session',
+                        style: TextStyle(
+                          color: Color(0xFF8A8581),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                _MessageProviderIconButton(service: service, enabled: enabled),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SizedBox(
+                    height: 50,
+                    child: _BottomBookButton(
+                      label: isVerificationPaused ? 'Unavailable' : 'Book Now',
+                      onPressed: enabled ? onBookNow : null,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
 
 class _ServiceHero extends StatelessWidget {
   final ProfileServiceListing service;
-  final bool canBook;
   final bool isOwner;
-  final bool showRebookHint;
-  final VoidCallback onBookNow;
+  final bool canOpenMenu;
 
   const _ServiceHero({
     required this.service,
-    required this.canBook,
     required this.isOwner,
-    required this.showRebookHint,
-    required this.onBookNow,
+    required this.canOpenMenu,
   });
 
   @override
   Widget build(BuildContext context) {
-    final showVerificationPauseMessage =
-        !isOwner && service.isPausedByVerification;
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFFFFDFC), Colors.white],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+    final serviceMode = service.bookingServiceType.isEmpty
+        ? service.serviceType
+        : service.bookingServiceType;
+    final distanceLabel = service.distanceKm > 0
+        ? '${service.distanceKm.toStringAsFixed(service.distanceKm < 10 ? 1 : 0)} km away'
+        : '';
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(32),
+      child: AspectRatio(
+        aspectRatio: 0.92,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _ServiceImageCarousel(service: service),
+            IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.black.withValues(alpha: 0.06),
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.28),
+                    ],
+                    stops: const [0, 0.48, 1],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 16,
+              top: 16,
+              child: _HeroInfoPill(
+                icon: distanceLabel.isEmpty
+                    ? Icons.design_services_rounded
+                    : Icons.near_me_rounded,
+                label: distanceLabel.isEmpty
+                    ? serviceMode
+                    : '$distanceLabel · $serviceMode',
+              ),
+            ),
+            if (service.isSponsorActive)
+              const Positioned(
+                left: 16,
+                bottom: 16,
+                child: _HeroInfoPill(
+                  icon: Icons.local_fire_department_rounded,
+                  label: 'Sponsored',
+                ),
+              ),
+            if (isOwner)
+              const Positioned(
+                right: 16,
+                top: 16,
+                child: _HeroInfoPill(
+                  icon: Icons.verified_user_outlined,
+                  label: 'Your service',
+                ),
+              )
+            else if (canOpenMenu)
+              Positioned(
+                right: 14,
+                top: 14,
+                child: _ServiceOverflowMenuButton(service: service),
+              ),
+          ],
         ),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 18,
-            offset: const Offset(0, 10),
+      ),
+    );
+  }
+}
+
+class _BottomBookButton extends StatelessWidget {
+  final String label;
+  final VoidCallback? onPressed;
+
+  const _BottomBookButton({required this.label, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onPressed == null;
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 120),
+      opacity: disabled ? 0.5 : 1,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: AppColors.brandGradient,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primary.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 7),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(18),
+            splashColor: Colors.white.withValues(alpha: 0.14),
+            highlightColor: Colors.white.withValues(alpha: 0.06),
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.calendar_month_rounded,
+                      color: Colors.white,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 9),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderIconButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  const _HeaderIconButton({required this.icon, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.72)),
+      ),
+      child: IconButton(
+        onPressed: onPressed,
+        icon: Icon(icon, color: AppColors.textDark),
+      ),
+    );
+  }
+}
+
+class _HeroInfoPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _HeroInfoPill({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassSurface(
+      borderRadius: BorderRadius.circular(999),
+      backgroundColor: Colors.white.withValues(alpha: 0.74),
+      blurSigma: 16,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: AppColors.primary),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ServiceSummaryCard extends StatelessWidget {
+  final ProfileServiceListing service;
+  final bool showRebookHint;
+
+  const _ServiceSummaryCard({
+    required this.service,
+    required this.showRebookHint,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final counts = <String>[
+      service.hasReviews
+          ? '${service.ratingCount} ${service.ratingCount == 1 ? 'review' : 'reviews'}'
+          : 'No reviews yet',
+      if (service.completedBookingCount > 0)
+        '${service.completedBookingCount} bookings completed',
+    ].join(' · ');
+
+    return Padding(
+      padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-            child: AspectRatio(
-              aspectRatio: 1.25,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _ServiceImageCarousel(service: service),
-                  IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.transparent,
-                            Colors.black.withValues(alpha: 0.18),
-                          ],
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    left: 16,
-                    top: 16,
-                    child: IgnorePointer(
-                      child: GlassSurface(
-                        borderRadius: BorderRadius.circular(999),
-                        backgroundColor: Colors.white.withValues(alpha: 0.78),
-                        blurSigma: 14,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.design_services_rounded,
-                              size: 16,
-                              color: AppColors.primary,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              service.bookingServiceType.isEmpty
-                                  ? service.serviceType
-                                  : service.bookingServiceType,
-                              style: const TextStyle(
-                                color: AppColors.textDark,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            if (service.isSponsorActive) ...[
-                              const SizedBox(width: 8),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFFFF2EA),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: const Text(
-                                  'Sponsored',
-                                  style: TextStyle(
-                                    color: AppColors.primary,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              _SummaryPill(label: service.animalType),
+              _SummaryPill(label: service.category),
+              if (service.hasReviews)
+                _SummaryPill(
+                  icon: Icons.star_rounded,
+                  label: service.ratingAverage.toStringAsFixed(1),
+                  isRating: true,
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            service.title,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              height: 1.08,
             ),
           ),
-          if (canBook)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
-              child: GradientButton(
-                label: 'Book Now',
-                icon: Icons.calendar_month_rounded,
-                onPressed: onBookNow,
-              ),
-            )
-          else if (isOwner)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 13),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.14),
-                  ),
-                ),
-                child: const Text(
-                  'Your service',
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
+          const SizedBox(height: 8),
+          Text(
+            counts,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF8A8581),
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              height: 1.25,
             ),
-          if (showVerificationPauseMessage)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 13,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF5F0),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.14),
-                  ),
-                ),
-                child: const Text(
-                  'This service is temporarily unavailable while provider verification is pending.',
-                  style: TextStyle(
-                    color: AppColors.textDark,
-                    fontWeight: FontWeight.w700,
-                    height: 1.4,
-                  ),
+          ),
+          if (showRebookHint) ...[
+            const SizedBox(height: 18),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF4EC),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.12),
                 ),
               ),
-            ),
-          Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  service.title,
-                  style: const TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  service.serviceType,
-                  style: const TextStyle(
+              child: const Row(
+                children: [
+                  Icon(
+                    Icons.refresh_rounded,
                     color: AppColors.primary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
+                    size: 16,
                   ),
-                ),
-                if (showRebookHint) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF4EC),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: AppColors.primary.withValues(alpha: 0.12),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Booking again with this provider',
+                      style: TextStyle(
+                        color: AppColors.textDark,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w700,
                       ),
-                    ),
-                    child: const Row(
-                      children: [
-                        Icon(
-                          Icons.refresh_rounded,
-                          color: AppColors.primary,
-                          size: 16,
-                        ),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Booking again with this provider',
-                            style: TextStyle(
-                              color: AppColors.textDark,
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
                     ),
                   ),
                 ],
-                const SizedBox(height: 10),
-                _ProviderIdentityRow(service: service),
-                const SizedBox(height: 10),
-                Text(
-                  service.description,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textGrey,
-                    height: 1.45,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
+              ),
+            ),
+          ],
+          const SizedBox(height: 18),
+          _ProviderCompactCard(service: service),
+          const SizedBox(height: 18),
+          _InsightStrip(service: service),
+        ],
+      ),
+    );
+  }
+}
+
+class _SummaryPill extends StatelessWidget {
+  final IconData? icon;
+  final String label;
+  final bool isRating;
+
+  const _SummaryPill({this.icon, required this.label, this.isRating = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedLabel = label.trim().isEmpty ? 'Not specified' : label.trim();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: isRating ? const Color(0xFFFFF4C7) : const Color(0xFFFFEFEA),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(
+              icon,
+              color: isRating ? const Color(0xFF9B6B00) : AppColors.primary,
+              size: 14,
+            ),
+            const SizedBox(width: 5),
+          ],
+          Text(
+            resolvedLabel,
+            style: TextStyle(
+              color: isRating ? const Color(0xFF9B6B00) : AppColors.primary,
+              fontSize: 13,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompactCard extends StatelessWidget {
+  final ProfileServiceListing service;
+
+  const _ProviderCompactCard({required this.service});
+
+  void _openProviderProfile(BuildContext context) {
+    final userId = service.ownerUserId.trim();
+    if (userId.isEmpty) return;
+
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => userId == currentUserId
+            ? const ProfileScreen()
+            : ProfileScreen(userId: userId),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final providerUserId = service.ownerUserId.trim();
+    return LiveUserIdentityResolver(
+      userId: providerUserId,
+      fallbackName: service.ownerName,
+      fallbackUsername: service.ownerUsername,
+      fallbackImageUrl: '',
+      placeholderName: 'Service provider',
+      builder: (context, identity) {
+        final card = Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.98),
+            borderRadius: BorderRadius.circular(22),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.035),
+                blurRadius: 18,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              _ProviderAvatar(identity: identity),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        service.bookingServiceType.isEmpty
-                            ? service.serviceType
-                            : service.bookingServiceType,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textGrey,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
                     Text(
-                      service.rate,
+                      identity.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppColors.textDark,
                         fontSize: 17,
@@ -708,10 +980,305 @@ class _ServiceHero extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+              if (providerUserId.isNotEmpty) ...[
+                const SizedBox(width: 10),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  color: Color(0xFF9A928D),
+                  size: 24,
+                ),
               ],
+            ],
+          ),
+        );
+
+        if (providerUserId.isEmpty) return card;
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _openProviderProfile(context),
+            borderRadius: BorderRadius.circular(22),
+            child: card,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ProviderAvatar extends StatelessWidget {
+  final ResolvedUserIdentity identity;
+
+  const _ProviderAvatar({required this.identity});
+
+  @override
+  Widget build(BuildContext context) {
+    final imageUrl = identity.imageUrl.trim();
+    final fallback = Container(
+      color: const Color(0xFFFFE7DE),
+      alignment: Alignment.center,
+      child: Text(
+        identity.initials,
+        style: const TextStyle(
+          color: AppColors.primary,
+          fontSize: 18,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: SizedBox(
+        width: 50,
+        height: 50,
+        child: imageUrl.isEmpty
+            ? fallback
+            : Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => fallback,
+              ),
+      ),
+    );
+  }
+}
+
+class _ServiceLocationCard extends StatelessWidget {
+  final ProfileServiceListing service;
+
+  const _ServiceLocationCard({required this.service});
+
+  @override
+  Widget build(BuildContext context) {
+    return _DetailCard(
+      title: 'Location',
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFFBF9), Color(0xFFFFF3EC)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: AppColors.primary.withValues(alpha: 0.08),
             ),
           ),
-        ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.78),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Icon(
+                      Icons.location_on_outlined,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      service.location,
+                      style: const TextStyle(
+                        color: AppColors.textDark,
+                        fontSize: 15,
+                        height: 1.45,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              SecondaryButton(
+                label: 'Open in Google Maps',
+                icon: Icons.map_outlined,
+                onPressed: service.latitude == 0 && service.longitude == 0
+                    ? null
+                    : () async {
+                        final uri = Uri.parse(
+                          'https://www.google.com/maps/search/?api=1&query=${service.latitude},${service.longitude}',
+                        );
+                        await launchUrl(
+                          uri,
+                          mode: LaunchMode.externalApplication,
+                        );
+                      },
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ServiceOverflowMenuButton extends StatelessWidget {
+  final ProfileServiceListing service;
+
+  const _ServiceOverflowMenuButton({required this.service});
+
+  void _openProviderProfile(BuildContext context) {
+    final userId = service.ownerUserId.trim();
+    if (userId.isEmpty) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId)),
+    );
+  }
+
+  void _showActions(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(30),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.76),
+                    borderRadius: BorderRadius.circular(30),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.68),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 28,
+                        offset: const Offset(0, 14),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (service.ownerUserId.trim().isNotEmpty) ...[
+                        _ServiceActionRow(
+                          icon: Icons.person_outline_rounded,
+                          label: 'View provider profile',
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _openProviderProfile(context);
+                          },
+                        ),
+                        Divider(
+                          height: 1,
+                          indent: 20,
+                          endIndent: 20,
+                          color: AppColors.textGrey.withValues(alpha: 0.12),
+                        ),
+                      ],
+                      _ServiceActionRow(
+                        icon: Icons.flag_outlined,
+                        label: 'Report service',
+                        destructive: true,
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          ReportSheet.show(
+                            context: context,
+                            type: 'service',
+                            targetId: service.id,
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Service actions',
+      child: GlassSurface(
+        borderRadius: BorderRadius.circular(18),
+        backgroundColor: Colors.white.withValues(alpha: 0.78),
+        blurSigma: 16,
+        padding: EdgeInsets.zero,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _showActions(context),
+            borderRadius: BorderRadius.circular(18),
+            child: const SizedBox(
+              width: 46,
+              height: 46,
+              child: Icon(Icons.more_horiz_rounded, color: AppColors.textDark),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ServiceActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool destructive;
+
+  const _ServiceActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.destructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = destructive
+        ? Theme.of(context).colorScheme.error
+        : AppColors.textDark;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 64),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: Row(
+            children: [
+              Icon(icon, color: color),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -724,6 +1291,10 @@ class _InsightStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final distanceLabel = service.distanceKm > 0
+        ? '${service.distanceKm.toStringAsFixed(service.distanceKm < 10 ? 1 : 0)} km'
+        : (service.distance.trim().isEmpty ? 'Not set' : service.distance);
+
     return Row(
       children: [
         Expanded(
@@ -744,116 +1315,12 @@ class _InsightStrip extends StatelessWidget {
         const SizedBox(width: 10),
         Expanded(
           child: _InsightTile(
-            icon: Icons.category_rounded,
-            label: 'Category',
-            value: service.category,
+            icon: Icons.location_on_outlined,
+            label: 'Distance',
+            value: distanceLabel,
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ProviderIdentityRow extends StatelessWidget {
-  final ProfileServiceListing service;
-
-  const _ProviderIdentityRow({required this.service});
-
-  void _openProviderProfile(BuildContext context) {
-    final userId = service.ownerUserId.trim();
-    if (userId.isEmpty) return;
-
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => userId == currentUserId
-            ? const ProfileScreen()
-            : ProfileScreen(userId: userId),
-      ),
-    );
-  }
-
-  // TODO(nishant): Add a real "Report user" entry point when Pettxo has a
-  // public provider profile screen. The current profile screen is the owner's
-  // private area, so reporting from there would be the wrong UX.
-
-  @override
-  Widget build(BuildContext context) {
-    final providerUserId = service.ownerUserId.trim();
-    return LiveUserIdentityResolver(
-      userId: providerUserId,
-      fallbackName: service.ownerName,
-      fallbackUsername: service.ownerUsername,
-      fallbackImageUrl: '',
-      placeholderName: 'Service provider',
-      builder: (context, identity) {
-        final row = Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            children: [
-              const Text(
-                'Provided by',
-                style: TextStyle(
-                  color: AppColors.textGrey,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.person_outline_rounded,
-                      color: providerUserId.isEmpty
-                          ? AppColors.textGrey
-                          : AppColors.primary,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        identity.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: providerUserId.isEmpty
-                              ? AppColors.textDark
-                              : AppColors.primary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (providerUserId.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppColors.textGrey,
-                  size: 18,
-                ),
-              ],
-            ],
-          ),
-        );
-
-        if (providerUserId.isEmpty) {
-          return row;
-        }
-
-        return Material(
-          color: Colors.transparent,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(14),
-            onTap: () => _openProviderProfile(context),
-            child: row,
-          ),
-        );
-      },
     );
   }
 }
@@ -879,6 +1346,7 @@ class _ServiceReviewsSection extends StatelessWidget {
 
         return _DetailCard(
           title: 'Reviews',
+          showDisplayTitle: false,
           children: [
             Text(
               service.hasReviews
@@ -1191,10 +1659,10 @@ class _InsightTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
         boxShadow: [
           BoxShadow(
@@ -1205,16 +1673,17 @@ class _InsightTile extends StatelessWidget {
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(icon, color: AppColors.primary, size: 18),
-          const SizedBox(height: 12),
+          Icon(icon, color: AppColors.primary, size: 20),
+          const SizedBox(height: 10),
           Text(
             label,
+            textAlign: TextAlign.center,
             style: const TextStyle(
               color: AppColors.textGrey,
               fontSize: 12,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 4),
@@ -1222,11 +1691,12 @@ class _InsightTile extends StatelessWidget {
             value,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
             style: const TextStyle(
               color: AppColors.textDark,
-              fontSize: 13.5,
-              fontWeight: FontWeight.w800,
-              height: 1.35,
+              fontSize: 15,
+              fontWeight: FontWeight.w900,
+              height: 1.25,
             ),
           ),
         ],
@@ -1393,8 +1863,13 @@ class _ServiceImageFrame extends StatelessWidget {
 class _DetailCard extends StatelessWidget {
   final String title;
   final List<Widget> children;
+  final bool showDisplayTitle;
 
-  const _DetailCard({required this.title, required this.children});
+  const _DetailCard({
+    required this.title,
+    required this.children,
+    this.showDisplayTitle = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1419,20 +1894,22 @@ class _DetailCard extends StatelessWidget {
             title.toUpperCase(),
             style: const TextStyle(
               color: AppColors.primary,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.6,
+              fontSize: 14,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.3,
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            title,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
+          if (showDisplayTitle) ...[
+            const SizedBox(height: 6),
+            Text(
+              title,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
             ),
-          ),
+          ],
           const SizedBox(height: 14),
           ...children,
         ],
@@ -1441,39 +1918,100 @@ class _DetailCard extends StatelessWidget {
   }
 }
 
+class _CancellationPolicyRow extends StatelessWidget {
+  const _CancellationPolicyRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Divider(height: 24, color: AppColors.textGrey.withValues(alpha: 0.14)),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Cancellation',
+                style: TextStyle(
+                  color: Color(0xFF8A8581),
+                  fontSize: 16,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pushNamed(
+                context,
+                LegalPoliciesCatalog.cancellationPolicy.routeName,
+              ),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 44),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text(
+                'View policy',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 class _DetailRow extends StatelessWidget {
   final String label;
   final String value;
+  final bool valueBold;
+  final bool showBottomDivider;
 
-  const _DetailRow({required this.label, required this.value});
+  const _DetailRow({
+    required this.label,
+    required this.value,
+    this.valueBold = false,
+    this.showBottomDivider = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
         children: [
-          SizedBox(
-            width: 110,
-            child: Text(
-              label,
-              style: const TextStyle(
-                color: AppColors.textGrey,
-                fontWeight: FontWeight.w700,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 110,
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: AppColors.textDark,
-                fontWeight: FontWeight.w600,
-                height: 1.45,
+              Expanded(
+                child: Text(
+                  value,
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: valueBold ? FontWeight.w900 : FontWeight.w600,
+                    height: 1.45,
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
+          if (showBottomDivider)
+            Divider(
+              height: 24,
+              color: AppColors.textGrey.withValues(alpha: 0.14),
+            )
+          else
+            const SizedBox(height: 12),
         ],
       ),
     );

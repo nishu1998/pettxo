@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
@@ -16,6 +15,8 @@ class SlotSelectionScreen extends StatefulWidget {
   final int durationMinutes;
   final String providerId;
   final DateTime? suggestedSlotStartAt;
+  final String providerName;
+  final String serviceImageUrl;
 
   const SlotSelectionScreen({
     super.key,
@@ -25,6 +26,8 @@ class SlotSelectionScreen extends StatefulWidget {
     required this.durationMinutes,
     required this.providerId,
     this.suggestedSlotStartAt,
+    this.providerName = '',
+    this.serviceImageUrl = '',
   });
 
   @override
@@ -48,7 +51,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     final normalizedSuggested = suggestedDate == null
         ? null
         : DateTime(suggestedDate.year, suggestedDate.month, suggestedDate.day);
-    final lastSelectableDate = normalizedToday.add(const Duration(days: 29));
+    final lastSelectableDate = normalizedToday.add(const Duration(days: 30));
     final canUseSuggestedDate =
         normalizedSuggested != null &&
         !normalizedSuggested.isBefore(normalizedToday) &&
@@ -70,7 +73,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     return DateTime(now.year, now.month, now.day);
   }
 
-  DateTime get _lastSelectableDate => _today.add(const Duration(days: 29));
+  DateTime get _lastSelectableDate => _today.add(const Duration(days: 30));
 
   bool get _canGoToPreviousMonth {
     final currentMonth = DateTime(_today.year, _today.month);
@@ -97,7 +100,17 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       _lastSelectableDate.month,
     );
     if (next.isBefore(earliest) || next.isAfter(latest)) return;
-    setState(() => _focusedMonth = next);
+    var nextSelectedDate = next;
+    if (nextSelectedDate.isBefore(_today)) nextSelectedDate = _today;
+    if (nextSelectedDate.isAfter(_lastSelectableDate)) {
+      nextSelectedDate = _lastSelectableDate;
+    }
+    setState(() {
+      _focusedMonth = next;
+      _selectedDate = nextSelectedDate;
+      _selectedSlot = null;
+      _slotError = null;
+    });
   }
 
   void _continue() {
@@ -140,284 +153,191 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
         children: [
           ListView(
             padding: EdgeInsets.fromLTRB(
-              18,
-              topInset + 108,
-              18,
-              bottomInset + 24,
+              16,
+              topInset + 76,
+              16,
+              bottomInset + 112,
             ),
             children: [
-              _IntroCard(
+              _ServiceSummaryCard(
                 title: widget.serviceName,
-                subtitle: 'Choose a date and time.',
+                providerName: widget.providerName,
+                durationLabel: _formatDuration(widget.durationMinutes),
+                price: widget.price,
+                imageUrl: widget.serviceImageUrl,
               ),
               const SizedBox(height: 18),
-              _SectionCard(
-                title: 'Select date',
-                child: _CalendarMonthSection(
-                  focusedMonth: _focusedMonth,
-                  selectedDate: _selectedDate,
-                  canGoPrevious: _canGoToPreviousMonth,
-                  canGoNext: _canGoToNextMonth,
-                  onPrevious: () => _moveMonth(-1),
-                  onNext: () => _moveMonth(1),
-                  onDateSelected: (date) {
-                    if (!_isSelectableDate(date)) return;
-                    setState(() {
-                      _selectedDate = date;
-                      _selectedSlot = null;
-                      _slotError = null;
-                    });
-                  },
-                  isSelectable: _isSelectableDate,
-                  isSameDay: _isSameDay,
-                ),
-              ),
-              const SizedBox(height: 18),
-              _SectionCard(
-                title: 'Available slots',
-                child: StreamBuilder<List<ServiceSlotModel>>(
-                  stream: _bookingRepository.watchServiceSlotsForDate(
-                    serviceId: widget.serviceId,
-                    date: _selectedDate,
-                  ),
-                  builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return _SlotStateMessage(
-                        icon: Icons.cloud_off_rounded,
-                        title: 'Could not load slots',
-                        subtitle: 'Please go back and try again in a moment.',
-                      );
-                    }
-
-                    if (snapshot.connectionState == ConnectionState.waiting &&
-                        !snapshot.hasData) {
-                      return const _SlotLoadingState();
-                    }
-
-                    final slots = snapshot.data ?? const <ServiceSlotModel>[];
-                    if (_selectedSlot == null &&
-                        widget.suggestedSlotStartAt != null &&
-                        _isSameDay(
-                          widget.suggestedSlotStartAt!,
-                          _selectedDate,
-                        )) {
-                      final suggestedSlot = slots
-                          .where(
-                            (slot) =>
-                                slot.canRequest &&
-                                slot.startAt.toLocal().year ==
-                                    widget.suggestedSlotStartAt!
-                                        .toLocal()
-                                        .year &&
-                                slot.startAt.toLocal().month ==
-                                    widget.suggestedSlotStartAt!
-                                        .toLocal()
-                                        .month &&
-                                slot.startAt.toLocal().day ==
-                                    widget.suggestedSlotStartAt!
-                                        .toLocal()
-                                        .day &&
-                                slot.startAt.toLocal().hour ==
-                                    widget.suggestedSlotStartAt!
-                                        .toLocal()
-                                        .hour &&
-                                slot.startAt.toLocal().minute ==
-                                    widget.suggestedSlotStartAt!
-                                        .toLocal()
-                                        .minute,
-                          )
-                          .cast<ServiceSlotModel?>()
-                          .firstWhere(
-                            (slot) => slot != null,
-                            orElse: () => null,
-                          );
-                      if (suggestedSlot != null) {
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (!mounted ||
-                              _selectedSlot?.id == suggestedSlot.id) {
-                            return;
-                          }
-                          setState(() {
-                            _selectedSlot = suggestedSlot;
-                            _slotError = null;
-                          });
-                        });
-                      }
-                    }
-                    if (slots.isEmpty) {
-                      return const _SlotStateMessage(
-                        icon: Icons.event_busy_outlined,
-                        title: 'No slots for this date',
-                        subtitle:
-                            'Try another day from the date selector above.',
-                      );
-                    }
-
-                    return LayoutBuilder(
-                      builder: (context, constraints) {
-                        final tileWidth = (constraints.maxWidth * 0.46).clamp(
-                          136.0,
-                          180.0,
-                        );
-
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Row(
-                              children: [
-                                Icon(
-                                  Icons.swipe_left_rounded,
-                                  size: 16,
-                                  color: AppColors.textGrey,
-                                ),
-                                SizedBox(width: 6),
-                                Text(
-                                  'Swipe to see more slots',
-                                  style: TextStyle(
-                                    color: AppColors.textGrey,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            SizedBox(
-                              height: 88,
-                              child: Stack(
-                                children: [
-                                  ListView.separated(
-                                    scrollDirection: Axis.horizontal,
-                                    itemCount: slots.length,
-                                    separatorBuilder: (_, _) =>
-                                        const SizedBox(width: 10),
-                                    itemBuilder: (context, index) {
-                                      final slot = slots[index];
-                                      return SizedBox(
-                                        width: tileWidth,
-                                        child: _SlotTile(
-                                          slot: slot,
-                                          isSelected:
-                                              _selectedSlot?.id == slot.id,
-                                          onTap: slot.canRequest
-                                              ? () {
-                                                  setState(() {
-                                                    _selectedSlot = slot;
-                                                    _slotError = null;
-                                                  });
-                                                }
-                                              : null,
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                  Positioned(
-                                    right: 0,
-                                    top: 0,
-                                    bottom: 0,
-                                    child: IgnorePointer(
-                                      child: Container(
-                                        width: 34,
-                                        decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                            begin: Alignment.centerLeft,
-                                            end: Alignment.centerRight,
-                                            colors: [
-                                              Colors.white.withValues(alpha: 0),
-                                              _screenBackground.withValues(
-                                                alpha: 0.96,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        alignment: Alignment.centerRight,
-                                        child: const Icon(
-                                          Icons.chevron_right_rounded,
-                                          color: AppColors.textGrey,
-                                          size: 20,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (_slotError != null) ...[
-                              const SizedBox(height: 10),
-                              Text(
-                                _slotError!,
-                                style: const TextStyle(
-                                  color: Colors.redAccent,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ],
-                          ],
-                        );
-                      },
-                    );
-                  },
-                ),
+              _CalendarMonthSection(
+                today: _today,
+                lastSelectableDate: _lastSelectableDate,
+                displayedMonth: _focusedMonth,
+                selectedDate: _selectedDate,
+                canGoPrevious: _canGoToPreviousMonth,
+                canGoNext: _canGoToNextMonth,
+                onPrevious: () => _moveMonth(-1),
+                onNext: () => _moveMonth(1),
+                onMiddleDateChanged: (date) {
+                  final month = DateTime(date.year, date.month);
+                  if (_focusedMonth == month) return;
+                  setState(() => _focusedMonth = month);
+                },
+                onDateSelected: (date) {
+                  if (!_isSelectableDate(date)) return;
+                  setState(() {
+                    _selectedDate = date;
+                    _focusedMonth = DateTime(date.year, date.month);
+                    _selectedSlot = null;
+                    _slotError = null;
+                  });
+                },
+                isSelectable: _isSelectableDate,
+                isSameDay: _isSameDay,
               ),
               const SizedBox(height: 22),
-              GradientButton(
-                label: 'Continue',
-                onPressed: _selectedSlot == null ? null : _continue,
-              ),
-            ],
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            top: topInset + 10,
-            child: Align(
-              child: FractionallySizedBox(
-                widthFactor: 0.85,
-                child: GlassSurface(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 11,
-                  ),
-                  borderRadius: BorderRadius.circular(24),
-                  backgroundColor: Colors.white.withValues(alpha: 0.72),
-                  blurSigma: 20,
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.62),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.56),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.arrow_back_rounded),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Text(
-                          'Select Slot',
-                          style: TextStyle(
-                            color: AppColors.textDark,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+              const Text(
+                'Available slots',
+                style: TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
-            ),
+              const SizedBox(height: 12),
+              StreamBuilder<List<ServiceSlotModel>>(
+                stream: _bookingRepository.watchServiceSlotsForDate(
+                  serviceId: widget.serviceId,
+                  date: _selectedDate,
+                ),
+                builder: (context, snapshot) =>
+                    _buildSlotSelector(context, snapshot),
+              ),
+              const SizedBox(height: 14),
+              const _CancellationInfoBanner(),
+            ],
+          ),
+          _SlotTopBar(topInset: topInset, onBack: () => Navigator.pop(context)),
+          _SlotBottomBar(
+            bottomInset: bottomInset,
+            isReady: _selectedSlot != null,
+            onContinue: _continue,
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildSlotSelector(
+    BuildContext context,
+    AsyncSnapshot<List<ServiceSlotModel>> snapshot,
+  ) {
+    if (snapshot.hasError) {
+      return const _SlotStateMessage(
+        icon: Icons.cloud_off_rounded,
+        title: 'Could not load slots',
+        subtitle: 'Please go back and try again in a moment.',
+      );
+    }
+
+    if (snapshot.connectionState == ConnectionState.waiting &&
+        !snapshot.hasData) {
+      return const _SlotLoadingState();
+    }
+
+    final slots = snapshot.data ?? const <ServiceSlotModel>[];
+    _selectSuggestedSlotIfNeeded(slots);
+
+    if (slots.isEmpty) {
+      return const _SlotStateMessage(
+        icon: Icons.event_busy_outlined,
+        title: 'No slots for this date',
+        subtitle: 'Try another day from the date selector above.',
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SlotRail(
+          slots: slots,
+          selectedSlotId: _selectedSlot?.id,
+          onSlotSelected: (slot) {
+            setState(() {
+              _selectedSlot = slot;
+              _slotError = null;
+            });
+          },
+        ),
+        const SizedBox(height: 12),
+        const Row(
+          children: [
+            Icon(
+              Icons.arrow_forward_rounded,
+              size: 16,
+              color: AppColors.textGrey,
+            ),
+            SizedBox(width: 7),
+            Text(
+              'Swipe for more slots',
+              style: TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+        if (_slotError != null) ...[
+          const SizedBox(height: 10),
+          Text(
+            _slotError!,
+            style: const TextStyle(
+              color: Colors.redAccent,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _selectSuggestedSlotIfNeeded(List<ServiceSlotModel> slots) {
+    if (_selectedSlot != null ||
+        widget.suggestedSlotStartAt == null ||
+        !_isSameDay(widget.suggestedSlotStartAt!, _selectedDate)) {
+      return;
+    }
+
+    final suggestedLocal = widget.suggestedSlotStartAt!.toLocal();
+    final suggestedSlot = slots
+        .where((slot) {
+          final slotLocal = slot.startAt.toLocal();
+          return slot.canRequest &&
+              slotLocal.year == suggestedLocal.year &&
+              slotLocal.month == suggestedLocal.month &&
+              slotLocal.day == suggestedLocal.day &&
+              slotLocal.hour == suggestedLocal.hour &&
+              slotLocal.minute == suggestedLocal.minute;
+        })
+        .cast<ServiceSlotModel?>()
+        .firstWhere((slot) => slot != null, orElse: () => null);
+    if (suggestedSlot == null) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _selectedSlot?.id == suggestedSlot.id) return;
+      setState(() {
+        _selectedSlot = suggestedSlot;
+        _slotError = null;
+      });
+    });
+  }
+
+  String _formatDuration(int minutes) {
+    if (minutes <= 0) return 'Duration varies';
+    if (minutes % 60 == 0 && minutes >= 60) {
+      final hours = minutes ~/ 60;
+      return '$hours hr${hours == 1 ? '' : 's'}';
+    }
+    return '$minutes min';
   }
 
   bool _isSameDay(DateTime a, DateTime b) {
@@ -425,199 +345,347 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 }
 
-class _IntroCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
+class _SlotTopBar extends StatelessWidget {
+  final double topInset;
+  final VoidCallback onBack;
 
-  const _IntroCard({required this.title, required this.subtitle});
+  const _SlotTopBar({required this.topInset, required this.onBack});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
+    return Positioned(
+      left: 0,
+      right: 0,
+      top: 0,
+      child: GlassSurface(
+        padding: EdgeInsets.fromLTRB(20, topInset + 8, 20, 10),
+        borderRadius: BorderRadius.zero,
+        backgroundColor: const Color(0xFFFCF8F5).withValues(alpha: 0.82),
+        blurSigma: 18,
+        border: Border(
+          bottom: BorderSide(color: AppColors.primary.withValues(alpha: 0.06)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: IconButton(
+                onPressed: onBack,
+                icon: const Icon(Icons.arrow_back_rounded, size: 24),
+                color: AppColors.textDark,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            subtitle,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              height: 1.45,
-              fontWeight: FontWeight.w600,
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Text(
+                'Choose a slot',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.8,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-class _SectionCard extends StatelessWidget {
+class _ServiceSummaryCard extends StatelessWidget {
   final String title;
-  final Widget child;
+  final String providerName;
+  final String durationLabel;
+  final int price;
+  final String imageUrl;
 
-  const _SectionCard({required this.title, required this.child});
+  const _ServiceSummaryCard({
+    required this.title,
+    required this.providerName,
+    required this.durationLabel,
+    required this.price,
+    required this.imageUrl,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final provider = providerName.trim().isEmpty
+        ? 'Service provider'
+        : providerName.trim();
+
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.05),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 18,
-              fontWeight: FontWeight.w900,
+          ClipRRect(
+            borderRadius: BorderRadius.circular(15),
+            child: SizedBox(
+              width: 58,
+              height: 58,
+              child: imageUrl.trim().isEmpty
+                  ? Container(
+                      color: const Color(0xFFFFEFE7),
+                      child: const Icon(
+                        Icons.pets_rounded,
+                        color: AppColors.primary,
+                        size: 28,
+                      ),
+                    )
+                  : Image.network(
+                      imageUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Container(
+                        color: const Color(0xFFFFEFE7),
+                        child: const Icon(
+                          Icons.pets_rounded,
+                          color: AppColors.primary,
+                          size: 28,
+                        ),
+                      ),
+                    ),
             ),
           ),
-          const SizedBox(height: 14),
-          child,
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.2,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '$provider · $durationLabel · ₹$price',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _CalendarMonthSection extends StatelessWidget {
-  final DateTime focusedMonth;
+class _CalendarMonthSection extends StatefulWidget {
+  final DateTime today;
+  final DateTime lastSelectableDate;
+  final DateTime displayedMonth;
   final DateTime selectedDate;
   final bool canGoPrevious;
   final bool canGoNext;
   final VoidCallback onPrevious;
   final VoidCallback onNext;
+  final ValueChanged<DateTime> onMiddleDateChanged;
   final ValueChanged<DateTime> onDateSelected;
   final bool Function(DateTime date) isSelectable;
   final bool Function(DateTime a, DateTime b) isSameDay;
 
   const _CalendarMonthSection({
-    required this.focusedMonth,
+    required this.today,
+    required this.lastSelectableDate,
+    required this.displayedMonth,
     required this.selectedDate,
     required this.canGoPrevious,
     required this.canGoNext,
     required this.onPrevious,
     required this.onNext,
+    required this.onMiddleDateChanged,
     required this.onDateSelected,
     required this.isSelectable,
     required this.isSameDay,
   });
 
   @override
-  Widget build(BuildContext context) {
-    const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    final firstDate = DateTime(focusedMonth.year, focusedMonth.month, 1);
-    final daysInMonth = DateTime(
-      focusedMonth.year,
-      focusedMonth.month + 1,
-      0,
-    ).day;
-    final leadingEmptySlots = firstDate.weekday - 1;
-    final totalCells = ((leadingEmptySlots + daysInMonth + 6) ~/ 7) * 7;
+  State<_CalendarMonthSection> createState() => _CalendarMonthSectionState();
+}
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: Row(
+class _CalendarMonthSectionState extends State<_CalendarMonthSection> {
+  static const double _dateChipWidth = 58;
+  static const double _dateGap = 9;
+  late final ScrollController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = ScrollController();
+    _controller.addListener(_handleScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _jumpToDate(widget.selectedDate);
+      _handleScroll();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _CalendarMonthSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.isSameDay(oldWidget.selectedDate, widget.selectedDate)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _jumpToDate(widget.selectedDate);
+        _handleScroll();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleScroll)
+      ..dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final days = _visibleDates();
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.05),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              _MonthArrowButton(
-                icon: Icons.chevron_left_rounded,
-                enabled: canGoPrevious,
-                onTap: onPrevious,
-              ),
               Expanded(
                 child: Text(
-                  '${_monthLabel(focusedMonth.month)} ${focusedMonth.year}',
-                  textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: AppColors.textDark,
-                    fontSize: 16,
+                    fontSize: 20,
                     fontWeight: FontWeight.w900,
+                    letterSpacing: -0.4,
                   ),
+                  '${_monthLabel(widget.displayedMonth.month)} ${widget.displayedMonth.year}',
                 ),
               ),
               _MonthArrowButton(
+                icon: Icons.arrow_back_rounded,
+                enabled: widget.canGoPrevious,
+                onTap: widget.onPrevious,
+              ),
+              const SizedBox(width: 8),
+              _MonthArrowButton(
                 icon: Icons.chevron_right_rounded,
-                enabled: canGoNext,
-                onTap: onNext,
+                enabled: widget.canGoNext,
+                onTap: widget.onNext,
               ),
             ],
           ),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: weekdayLabels.map((label) {
-            return Expanded(
-              child: Center(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: AppColors.textGrey,
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 70,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(17),
+              child: ListView.separated(
+                controller: _controller,
+                scrollDirection: Axis.horizontal,
+                padding: EdgeInsets.zero,
+                clipBehavior: Clip.hardEdge,
+                itemCount: days.length,
+                separatorBuilder: (_, _) => const SizedBox(width: _dateGap),
+                itemBuilder: (context, index) {
+                  final date = days[index];
+                  return _DateChip(
+                    date: date,
+                    isSelected: widget.isSameDay(date, widget.selectedDate),
+                    isEnabled: widget.isSelectable(date),
+                    onTap: () => widget.onDateSelected(date),
+                  );
+                },
               ),
-            );
-          }).toList(),
-        ),
-        const SizedBox(height: 10),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: totalCells,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 7,
-            mainAxisSpacing: 8,
-            crossAxisSpacing: 8,
-            mainAxisExtent: 54,
+            ),
           ),
-          itemBuilder: (context, index) {
-            if (index < leadingEmptySlots) {
-              return const SizedBox.shrink();
-            }
-
-            final dayNumber = index - leadingEmptySlots + 1;
-            if (dayNumber > daysInMonth) {
-              return const SizedBox.shrink();
-            }
-            final date = DateTime(
-              focusedMonth.year,
-              focusedMonth.month,
-              dayNumber,
-            );
-            return _DateChip(
-              date: date,
-              isSelected: isSameDay(date, selectedDate),
-              isEnabled: isSelectable(date),
-              onTap: () => onDateSelected(date),
-            );
-          },
-        ),
-      ],
+        ],
+      ),
     );
+  }
+
+  List<DateTime> _visibleDates() {
+    final dates = <DateTime>[];
+    for (
+      var date = widget.today;
+      !date.isAfter(widget.lastSelectableDate);
+      date = date.add(const Duration(days: 1))
+    ) {
+      dates.add(date);
+    }
+    return dates;
+  }
+
+  void _jumpToDate(DateTime date) {
+    if (!_controller.hasClients) return;
+    final index = date
+        .difference(widget.today)
+        .inDays
+        .clamp(0, _visibleDates().length - 1);
+    final viewport = _controller.position.viewportDimension;
+    final target =
+        (index * (_dateChipWidth + _dateGap)) - (viewport - _dateChipWidth) / 2;
+    _controller.jumpTo(
+      target.clamp(0.0, _controller.position.maxScrollExtent).toDouble(),
+    );
+  }
+
+  void _handleScroll() {
+    if (!_controller.hasClients) return;
+    final viewport = _controller.position.viewportDimension;
+    final centerOffset = _controller.offset + viewport / 2;
+    final index = (centerOffset / (_dateChipWidth + _dateGap)).round().clamp(
+      0,
+      _visibleDates().length - 1,
+    );
+    widget.onMiddleDateChanged(_visibleDates()[index]);
   }
 
   String _monthLabel(int month) {
@@ -654,21 +722,21 @@ class _MonthArrowButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: enabled ? onTap : null,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        width: 34,
-        height: 34,
+        width: 42,
+        height: 42,
         decoration: BoxDecoration(
-          color: enabled ? const Color(0xFFFFF8F2) : const Color(0xFFF4EFEB),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: AppColors.primary.withValues(alpha: enabled ? 0.10 : 0.04),
-          ),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFEDE8E4), width: 1.4),
         ),
         child: Icon(
           icon,
-          color: enabled ? AppColors.primary : AppColors.textGrey,
-          size: 20,
+          color: enabled
+              ? AppColors.textDark
+              : AppColors.textGrey.withValues(alpha: 0.45),
+          size: 21,
         ),
       ),
     );
@@ -690,31 +758,38 @@ class _DateChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final weekday = _weekdayLabel(date.weekday);
+
     return GestureDetector(
       onTap: isEnabled ? onTap : null,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+        width: 58,
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
         decoration: BoxDecoration(
           gradient: isSelected && isEnabled ? AppColors.brandGradient : null,
-          color: isSelected && isEnabled
-              ? null
-              : isEnabled
-              ? const Color(0xFFFFF8F2)
-              : const Color(0xFFF5F0EC),
-          borderRadius: BorderRadius.circular(14),
+          color: isSelected && isEnabled ? null : Colors.white,
+          borderRadius: BorderRadius.circular(17),
           border: Border.all(
-            color: AppColors.primary.withValues(
-              alpha: isSelected && isEnabled
-                  ? 0
-                  : isEnabled
-                  ? 0.10
-                  : 0.05,
-            ),
+            color: isSelected && isEnabled
+                ? Colors.transparent
+                : const Color(0xFFEDE8E4),
+            width: 1.5,
           ),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            Text(
+              weekday,
+              style: TextStyle(
+                color: isSelected && isEnabled
+                    ? Colors.white
+                    : AppColors.textGrey,
+                fontWeight: FontWeight.w900,
+                fontSize: 11.5,
+              ),
+            ),
+            const SizedBox(height: 6),
             Text(
               '${date.day}',
               style: TextStyle(
@@ -724,12 +799,100 @@ class _DateChip extends StatelessWidget {
                     ? AppColors.textDark
                     : AppColors.textGrey.withValues(alpha: 0.65),
                 fontWeight: FontWeight.w900,
-                fontSize: 17,
+                fontSize: 18,
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  String _weekdayLabel(int weekday) {
+    const labels = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    return labels[(weekday - 1).clamp(0, 6)];
+  }
+}
+
+class _SlotRail extends StatefulWidget {
+  final List<ServiceSlotModel> slots;
+  final String? selectedSlotId;
+  final ValueChanged<ServiceSlotModel> onSlotSelected;
+
+  const _SlotRail({
+    required this.slots,
+    required this.selectedSlotId,
+    required this.onSlotSelected,
+  });
+
+  @override
+  State<_SlotRail> createState() => _SlotRailState();
+}
+
+class _SlotRailState extends State<_SlotRail> {
+  static const double _slotWidth = 164;
+  static const double _slotGap = 10;
+  late final ScrollController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = ScrollController();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToNextAvailable());
+  }
+
+  @override
+  void didUpdateWidget(covariant _SlotRail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.slots != widget.slots ||
+        oldWidget.selectedSlotId != widget.selectedSlotId) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _jumpToNextAvailable(),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 78,
+      child: ListView.separated(
+        controller: _controller,
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.zero,
+        clipBehavior: Clip.hardEdge,
+        itemCount: widget.slots.length,
+        separatorBuilder: (_, _) => const SizedBox(width: _slotGap),
+        itemBuilder: (context, index) {
+          final slot = widget.slots[index];
+          return SizedBox(
+            width: _slotWidth,
+            child: _SlotTile(
+              slot: slot,
+              isSelected: widget.selectedSlotId == slot.id,
+              onTap: slot.canRequest ? () => widget.onSlotSelected(slot) : null,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _jumpToNextAvailable() {
+    if (!_controller.hasClients || widget.slots.isEmpty) return;
+    final preferredIndex = widget.selectedSlotId == null
+        ? widget.slots.indexWhere((slot) => slot.canRequest)
+        : widget.slots.indexWhere((slot) => slot.id == widget.selectedSlotId);
+    final index = preferredIndex < 0 ? 0 : preferredIndex;
+    final target = index * (_slotWidth + _slotGap);
+    _controller.jumpTo(
+      target.clamp(0.0, _controller.position.maxScrollExtent).toDouble(),
     );
   }
 }
@@ -749,72 +912,87 @@ class _SlotTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDisabled = onTap == null;
     final label = slot.isTooSoon
-        ? 'Starts in under\n1 hour'
+        ? 'Starts in under 1 hour'
         : slot.isFull
-        ? 'Full'
+        ? '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}'
         : !slot.isOpen
-        ? 'Unavailable'
-        : '${_formatTime(slot.startAt)} -\n${_formatTime(slot.endAt)}';
+        ? '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}'
+        : '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}';
     final helper = slot.canRequest
         ? '${slot.remainingCapacity} spot${slot.remainingCapacity == 1 ? '' : 's'} left'
-        : null;
+        : slot.isFull
+        ? 'Fully booked'
+        : 'Unavailable';
 
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: EdgeInsets.zero,
         decoration: BoxDecoration(
           gradient: isSelected ? AppColors.brandGradient : null,
           color: isSelected
               ? null
               : isDisabled
-              ? const Color(0xFFF1ECE8)
-              : const Color(0xFFFFFAF7),
-          borderRadius: BorderRadius.circular(16),
+              ? const Color(0xFFF8F1EC)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(17),
           border: Border.all(
             color: isSelected
                 ? Colors.transparent
-                : AppColors.primary.withValues(alpha: 0.10),
+                : isDisabled
+                ? const Color(0xFFECE3DD)
+                : const Color(0xFFE8E4E1),
+            width: 1.4,
           ),
+          boxShadow: isSelected || isDisabled
+              ? null
+              : [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.035),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
         ),
-        alignment: Alignment.center,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              label,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              softWrap: true,
-              overflow: TextOverflow.visible,
-              style: TextStyle(
-                color: isSelected
-                    ? Colors.white
-                    : isDisabled
-                    ? AppColors.textGrey
-                    : AppColors.textDark,
-                fontWeight: FontWeight.w800,
-                fontSize: slot.isTooSoon ? 11 : 12,
-                height: 1.2,
+        alignment: Alignment.centerLeft,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: isSelected
+                      ? Colors.white
+                      : isDisabled
+                      ? AppColors.textGrey
+                      : AppColors.textDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13.5,
+                  height: 1.2,
+                ),
               ),
-            ),
-            if (helper != null) ...[
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               Text(
                 helper,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
                 style: TextStyle(
                   color: isSelected
                       ? Colors.white.withValues(alpha: 0.86)
                       : AppColors.textGrey,
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -826,6 +1004,104 @@ class _SlotTile extends StatelessWidget {
     final suffix = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
     return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
+  }
+}
+
+class _CancellationInfoBanner extends StatelessWidget {
+  const _CancellationInfoBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE4EEFF),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline_rounded, color: Color(0xFF1E5ED8), size: 20),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Cancellation charges apply based on timing. You will see the exact refund window before you pay.',
+              style: TextStyle(
+                color: Color(0xFF1E5ED8),
+                fontSize: 14.5,
+                fontWeight: FontWeight.w900,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SlotBottomBar extends StatelessWidget {
+  final double bottomInset;
+  final bool isReady;
+  final VoidCallback onContinue;
+
+  const _SlotBottomBar({
+    required this.bottomInset,
+    required this.isReady,
+    required this.onContinue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: 20,
+      right: 20,
+      bottom: bottomInset + 6,
+      child: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(25),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: SizedBox(
+          height: 54,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: isReady
+                  ? AppColors.brandGradient
+                  : const LinearGradient(
+                      colors: [Color(0xFFFFB5A5), Color(0xFFFFA895)],
+                    ),
+              borderRadius: BorderRadius.circular(19),
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onContinue,
+                borderRadius: BorderRadius.circular(19),
+                child: const Center(
+                  child: Text(
+                    'Continue',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

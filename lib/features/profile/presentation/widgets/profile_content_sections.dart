@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/widgets/app_buttons.dart';
 import '../../data/repositories/profile_content_repository.dart';
 import '../../domain/models/pet_profile.dart';
 import '../../domain/models/profile_service_listing.dart';
@@ -36,10 +35,11 @@ class ProfileSectionTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(3),
+      padding: const EdgeInsets.all(5),
       decoration: BoxDecoration(
         color: _profileSectionSurfaceColor,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: const Color(0xFFE9E0DA), width: 1),
       ),
       child: Row(
         children: [
@@ -82,19 +82,21 @@ class _ProfileTabButton extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: 9),
         decoration: BoxDecoration(
-          gradient: isActive ? AppColors.brandGradient : null,
-          color: isActive ? null : _profileSectionSurfaceColor,
-          borderRadius: BorderRadius.circular(16),
+          color: _profileSectionSurfaceColor,
+          borderRadius: BorderRadius.circular(22),
+          border: isActive
+              ? Border.all(color: AppColors.primary, width: 1.6)
+              : null,
         ),
         child: Text(
           label,
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: isActive ? Colors.white : AppColors.textDark,
+            color: isActive ? AppColors.primary : AppColors.textGrey,
             fontWeight: FontWeight.w800,
-            fontSize: 16,
+            fontSize: 15,
           ),
         ),
       ),
@@ -964,14 +966,14 @@ class ProfileServicesSection extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: GradientButton(
-                  label: 'Add Service',
+                child: _ProfileOutlineActionButton(
+                  label: 'Add service',
                   icon: Icons.add_rounded,
                   onPressed: onAdd,
                 ),
               ),
               if (services.isNotEmpty) ...[
-                const SizedBox(width: 10),
+                const SizedBox(width: 12),
                 Expanded(
                   child: _ServicesGlobalToggle(
                     state: globalState,
@@ -986,7 +988,7 @@ class ProfileServicesSection extends StatelessWidget {
               ],
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
         ],
         if (services.isEmpty)
           EmptyProfileSection(
@@ -1016,6 +1018,55 @@ class ProfileServicesSection extends StatelessWidget {
   }
 }
 
+class _ProfileOutlineActionButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  const _ProfileOutlineActionButton({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(21),
+        splashColor: AppColors.primary.withValues(alpha: 0.08),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 44),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(21),
+            border: Border.all(color: AppColors.primary, width: 2),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: AppColors.primary, size: 20),
+              const SizedBox(width: 7),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 14.5,
+                  letterSpacing: -0.2,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ServicesGlobalToggle extends StatelessWidget {
   final _ServicesGlobalState state;
   final bool isLoading;
@@ -1029,63 +1080,90 @@ class _ServicesGlobalToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isActive = state == _ServicesGlobalState.active;
     final isMixed = state == _ServicesGlobalState.mixed;
+    final isPaused = state == _ServicesGlobalState.paused;
+    final isDisabled = onTap == null || isLoading;
     final label = switch (state) {
-      _ServicesGlobalState.active => 'Services active',
-      _ServicesGlobalState.paused => 'Services paused',
-      _ServicesGlobalState.mixed => 'Some paused',
+      _ServicesGlobalState.active => 'Pause all',
+      _ServicesGlobalState.paused => 'Resume all',
+      _ServicesGlobalState.mixed => 'Pause all',
       _ServicesGlobalState.empty => 'No services',
     };
-    final icon = switch (state) {
-      _ServicesGlobalState.active => Icons.toggle_on_rounded,
-      _ServicesGlobalState.paused => Icons.toggle_off_rounded,
-      _ServicesGlobalState.mixed => Icons.swap_horiz_rounded,
-      _ServicesGlobalState.empty => Icons.toggle_off_rounded,
-    };
-    final color = isActive || isMixed ? AppColors.primary : AppColors.textGrey;
+    final switchOn = isPaused || isMixed;
 
     return Semantics(
       button: true,
-      enabled: onTap != null && !isLoading,
+      enabled: !isDisabled,
       label: label,
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: isLoading ? null : onTap,
-          borderRadius: BorderRadius.circular(18),
+          onTap: isDisabled ? null : onTap,
+          borderRadius: BorderRadius.circular(21),
           child: Container(
-            constraints: const BoxConstraints(minHeight: 48),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: isActive ? 0.12 : 0.08),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: color.withValues(alpha: 0.18)),
-            ),
+            constraints: const BoxConstraints(minHeight: 44),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                if (isLoading)
-                  SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: color,
-                    ),
-                  )
-                else
-                  Icon(icon, color: color, size: 22),
-                const SizedBox(width: 7),
                 Flexible(
                   child: Text(
                     label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
                     style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 13,
+                      color: isDisabled
+                          ? AppColors.textGrey.withValues(alpha: 0.55)
+                          : AppColors.textGrey,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 14.5,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  width: 50,
+                  height: 32,
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: switchOn
+                        ? AppColors.primary.withValues(alpha: 0.22)
+                        : const Color(0xFFD8D2CC),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: AnimatedAlign(
+                    duration: const Duration(milliseconds: 180),
+                    alignment: switchOn
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: isLoading
+                            ? Colors.white.withValues(alpha: 0.75)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.08),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: isLoading
+                          ? const Padding(
+                              padding: EdgeInsets.all(6),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppColors.primary,
+                              ),
+                            )
+                          : null,
                     ),
                   ),
                 ),
@@ -1144,244 +1222,251 @@ class _ProfileServiceCard extends StatelessWidget {
               ),
             ],
           ),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: const BorderRadius.horizontal(
-                  left: Radius.circular(26),
-                ),
-                child: SizedBox(
-                  width: 116,
-                  height: 158,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (service.imageUrl.isEmpty)
-                        _ServiceImageFallback(service: service)
-                      else if (service.imageUrl.startsWith('http'))
-                        Image.network(
-                          service.imageUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return _ServiceImageFallback(service: service);
-                          },
-                        )
-                      else
-                        Image.file(
-                          File(service.imageUrl),
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return _ServiceImageFallback(service: service);
-                          },
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final imageSize = (constraints.maxWidth * 0.4).clamp(
+                122.0,
+                160.0,
+              );
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(22),
+                      child: SizedBox(
+                        width: imageSize,
+                        height: imageSize,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            if (service.imageUrl.isEmpty)
+                              _ServiceImageFallback(service: service)
+                            else if (service.imageUrl.startsWith('http'))
+                              Image.network(
+                                service.imageUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) {
+                                  return _ServiceImageFallback(
+                                    service: service,
+                                  );
+                                },
+                              )
+                            else
+                              Image.file(
+                                File(service.imageUrl),
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) {
+                                  return _ServiceImageFallback(
+                                    service: service,
+                                  );
+                                },
+                              ),
+                            if (service.isPaused)
+                              Container(
+                                color: Colors.black.withValues(alpha: 0.36),
+                              ),
+                          ],
                         ),
-                      if (service.isPaused)
-                        Container(color: Colors.black.withValues(alpha: 0.36)),
-                    ],
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 14, 14, 14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  service.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.textDark,
+                                  ),
+                                ),
+                              ),
+                              if (service.isSponsorActive) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFFF2EA),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: const Text(
+                                    'Sponsored',
+                                    style: TextStyle(
+                                      color: AppColors.primary,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (service.isPaused) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.textGrey.withValues(
+                                      alpha: 0.12,
+                                    ),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: const Text(
+                                    'Paused',
+                                    style: TextStyle(
+                                      color: AppColors.textGrey,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (canManage) ...[
+                                const SizedBox(width: 4),
+                                _ServiceActionMenuButton(
+                                  service: service,
+                                  isLoading: isActionRunning,
+                                  onPause: onPause,
+                                  onResume: onResume,
+                                  onDelete: onDelete,
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            service.serviceType,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            service.reviewSummary,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: service.hasReviews
+                                  ? const Color(0xFF9A3412)
+                                  : AppColors.textGrey,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Align(
+                            alignment: Alignment.centerLeft,
                             child: Text(
-                              service.title,
+                              service.rate,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w800,
+                                fontWeight: FontWeight.w900,
                                 color: AppColors.textDark,
+                                fontSize: 14,
                               ),
                             ),
                           ),
-                          if (service.isSponsorActive) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.location_on_outlined,
+                                color: AppColors.primary,
+                                size: 16,
                               ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFFFF2EA),
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: const Text(
-                                'Sponsored',
-                                style: TextStyle(
-                                  color: AppColors.primary,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w800,
+                              const SizedBox(width: 5),
+                              Expanded(
+                                child: GestureDetector(
+                                  onTap:
+                                      service.latitude == 0 &&
+                                          service.longitude == 0
+                                      ? null
+                                      : () async {
+                                          final uri = Uri.parse(
+                                            'https://www.google.com/maps/search/?api=1&query=${service.latitude},${service.longitude}',
+                                          );
+                                          await launchUrl(
+                                            uri,
+                                            mode:
+                                                LaunchMode.externalApplication,
+                                          );
+                                        },
+                                  child: Text(
+                                    service.location.isEmpty
+                                        ? 'Location shared after booking'
+                                        : service.location,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: AppColors.primary,
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w700,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
-                          if (service.isPaused) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
+                              const SizedBox(width: 4),
+                              const Icon(
+                                Icons.open_in_new_rounded,
+                                color: AppColors.primary,
+                                size: 14,
                               ),
-                              decoration: BoxDecoration(
-                                color: AppColors.textGrey.withValues(
-                                  alpha: 0.12,
-                                ),
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: const Text(
-                                'Paused',
-                                style: TextStyle(
-                                  color: AppColors.textGrey,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                          ],
-                          if (canManage) ...[
-                            const SizedBox(width: 4),
-                            _ServiceActionMenuButton(
-                              service: service,
-                              isLoading: isActionRunning,
-                              onPause: onPause,
-                              onResume: onResume,
-                              onDelete: onDelete,
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        service.serviceType,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.primary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        service.description,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textGrey,
-                          height: 1.35,
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        service.reviewSummary,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: service.hasReviews
-                              ? const Color(0xFF9A3412)
-                              : AppColors.textGrey,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          service.rate,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w900,
-                            color: AppColors.textDark,
-                            fontSize: 14,
+                            ],
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.location_on_outlined,
-                            color: AppColors.primary,
-                            size: 16,
-                          ),
-                          const SizedBox(width: 5),
-                          Expanded(
-                            child: GestureDetector(
-                              onTap:
-                                  service.latitude == 0 &&
-                                      service.longitude == 0
-                                  ? null
-                                  : () async {
-                                      final uri = Uri.parse(
-                                        'https://www.google.com/maps/search/?api=1&query=${service.latitude},${service.longitude}',
-                                      );
-                                      await launchUrl(
-                                        uri,
-                                        mode: LaunchMode.externalApplication,
-                                      );
-                                    },
-                              child: Text(
-                                service.location.isEmpty
-                                    ? 'Location shared after booking'
-                                    : service.location,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: AppColors.primary,
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w700,
-                                  decoration: TextDecoration.underline,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          const Icon(
-                            Icons.open_in_new_rounded,
-                            color: AppColors.primary,
-                            size: 14,
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.schedule_rounded,
-                            color: AppColors.textGrey,
-                            size: 16,
-                          ),
-                          const SizedBox(width: 5),
-                          Expanded(
-                            child: Text(
-                              service.duration.isEmpty
-                                  ? service.availability
-                                  : '${service.duration} - ${service.petSize}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.schedule_rounded,
                                 color: AppColors.textGrey,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
+                                size: 16,
                               ),
-                            ),
+                              const SizedBox(width: 5),
+                              Expanded(
+                                child: Text(
+                                  service.duration.isEmpty
+                                      ? service.availability
+                                      : '${service.duration} - ${service.petSize}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: AppColors.textGrey,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
       ),

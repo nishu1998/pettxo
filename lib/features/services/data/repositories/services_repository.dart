@@ -55,6 +55,23 @@ class ServicesRepository {
         );
   }
 
+  Stream<List<ServiceModel>> watchActiveServicesFiltered({
+    String? category,
+    int limit = 30,
+  }) {
+    Query<Map<String, dynamic>> query = _activeServicesQuery(limit: limit);
+
+    final normalizedCategory = category?.trim().toLowerCase() ?? '';
+
+    if (normalizedCategory.isNotEmpty) {
+      query = query.where('categoryLowercase', isEqualTo: normalizedCategory);
+    }
+
+    return query.snapshots().asyncMap(
+      (snapshot) => _filterServicesByVisibleOwners(_mapSnapshot(snapshot)),
+    );
+  }
+
   Stream<List<ServiceModel>> watchActiveServicesByCity(
     String city, {
     int limit = 30,

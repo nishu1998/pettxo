@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -27,41 +28,118 @@ class _ServicesScreenState extends State<ServicesScreen> {
   final ServicesRepository _servicesRepository = ServicesRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
   final TextEditingController _searchController = TextEditingController();
-  String _selectedCategory = 'All Services';
+  final ScrollController _scrollController = ScrollController();
+  late Stream<List<ServiceModel>> _activeServicesStream;
+  String _selectedAnimal = 'All';
+  String _selectedCategory = 'All';
   String _searchQuery = '';
   _DiscoveryRadiusFilter _selectedRadius = _DiscoveryRadiusFilter.smart;
   double? _userLatitude;
   double? _userLongitude;
   UserProfile? _currentUserProfile;
+  bool _isTopBarVisible = true;
+  double _lastScrollOffset = 0;
+  double _scrollDeltaAccumulator = 0;
 
-  static const _categories = [
-    'All Services',
-    'Grooming',
-    'Sitting',
-    'Boarding',
-    'Walking',
-    'Vet Visit',
+  static const double _topBarHideThreshold = 18;
+  static const double _topBarShowThreshold = 12;
+  static const double _topBarTopResetOffset = 8;
+
+  static const _animals = [
+    'All',
+    'Dog',
+    'Cat',
+    'Bird',
+    'Rabbit',
+    'Fish',
+    'Guinea Pig',
+    'Hamster',
+    'Turtle / Tortoise',
+    'Lizard / Reptile',
+    'Other',
   ];
 
-  Stream<List<ServiceModel>> get _servicesStream {
-    if (_selectedCategory == 'All Services') {
-      return _servicesRepository.watchActiveServices();
-    }
+  static const _categories = [
+    'All',
+    'Walking',
+    'Grooming',
+    'Training',
+    'Boarding',
+    'Sitting',
+    'Vet Visit',
+    'Nail Trimming',
+    'Bath & Brush',
+    'Wing Clipping',
+    'Tank Cleaning',
+    'Feeding Care',
+    'General Care',
+    'Other',
+  ];
 
-    return _servicesRepository.watchActiveServicesByCategory(_selectedCategory);
+  Stream<List<ServiceModel>> _buildServicesStream() {
+    return _servicesRepository.watchActiveServicesFiltered(
+      category: _selectedCategory == 'All' ? null : _selectedCategory,
+    );
+  }
+
+  void _refreshServicesStream() {
+    _activeServicesStream = _buildServicesStream();
   }
 
   @override
   void initState() {
     super.initState();
+    _refreshServicesStream();
+    _scrollController.addListener(_handleScroll);
     _primeUserLocation();
     _primeCurrentUserProfile();
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final direction = position.userScrollDirection;
+    final pixels = position.pixels;
+    final delta = pixels - _lastScrollOffset;
+    _lastScrollOffset = pixels;
+
+    if (pixels <= _topBarTopResetOffset) {
+      _scrollDeltaAccumulator = 0;
+      if (!_isTopBarVisible && mounted) {
+        setState(() => _isTopBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.reverse && delta > 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        0.0,
+        _topBarHideThreshold,
+      );
+      if (_isTopBarVisible &&
+          _scrollDeltaAccumulator >= _topBarHideThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isTopBarVisible = false);
+      }
+    } else if (direction == ScrollDirection.forward && delta < 0) {
+      _scrollDeltaAccumulator = (_scrollDeltaAccumulator + delta).clamp(
+        -_topBarShowThreshold,
+        0.0,
+      );
+      if (!_isTopBarVisible &&
+          _scrollDeltaAccumulator <= -_topBarShowThreshold &&
+          mounted) {
+        _scrollDeltaAccumulator = 0;
+        setState(() => _isTopBarVisible = true);
+      }
+    } else if (direction == ScrollDirection.idle) {
+      _scrollDeltaAccumulator = 0;
+    }
   }
 
   Future<void> _primeUserLocation() async {
@@ -290,10 +368,25 @@ class _ServicesScreenState extends State<ServicesScreen> {
     final normalizedState =
         _currentUserProfile?.state.trim().toLowerCase() ?? '';
 
-    final searchedServices = normalizedQuery.isEmpty
+    final normalizedAnimal = _selectedAnimal.trim().toLowerCase();
+    final animalFilteredServices = normalizedAnimal == 'all'
         ? services
         : services
+              .where(
+                (service) =>
+                    service.animalType.trim().toLowerCase() == normalizedAnimal,
+              )
+              .toList(growable: false);
+
+    final searchedServices = normalizedQuery.isEmpty
+        ? animalFilteredServices
+        : services
               .where((service) => _matchesSearch(service, normalizedQuery))
+              .where(
+                (service) =>
+                    normalizedAnimal == 'all' ||
+                    service.animalType.trim().toLowerCase() == normalizedAnimal,
+              )
               .toList(growable: false);
 
     // Discovery ranking is intentionally client-side for now so we can tune
@@ -464,11 +557,26 @@ class _ServicesScreenState extends State<ServicesScreen> {
     return cityMatches || stateMatches;
   }
 
+  bool get _hasActiveDiscoveryFilters {
+    return _selectedAnimal != 'All' ||
+        _selectedCategory != 'All' ||
+        _searchQuery.trim().isNotEmpty ||
+        _selectedRadius != _DiscoveryRadiusFilter.smart;
+  }
+
+  String _emptySearchMessage(_DiscoveryPresentation presentation) {
+    final query = presentation.searchQuery;
+    if (query.isNotEmpty) {
+      return "No services found for '$query' with the selected filters.";
+    }
+    return 'Try changing the animal, service, or radius filters.';
+  }
+
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
-    const topBarHeight = 84.0;
-    final topContentPadding = topInset + topBarHeight + 26;
+    const topBarHeight = 126.0;
+    final topContentPadding = topInset + (_isTopBarVisible ? topBarHeight : 12);
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
 
     return SocialTabBackScope(
@@ -482,7 +590,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
             // glass overlays. Internal padding preserves access to the first and
             // last interactive elements.
             StreamBuilder<List<ServiceModel>>(
-              stream: _servicesStream,
+              stream: _activeServicesStream,
               builder: (context, snapshot) {
                 final services = snapshot.data ?? const <ServiceModel>[];
                 final discoveryPresentation = _buildDiscoveryPresentation(
@@ -498,6 +606,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                 }
 
                 return ListView(
+                  controller: _scrollController,
                   padding: EdgeInsets.fromLTRB(
                     18,
                     topContentPadding,
@@ -505,15 +614,21 @@ class _ServicesScreenState extends State<ServicesScreen> {
                     bottomContentPadding,
                   ),
                   children: [
-                    _ServiceSearchAndFilters(
-                      searchController: _searchController,
-                      onSearchChanged: (value) {
-                        setState(() => _searchQuery = value);
+                    _ServiceFilterSections(
+                      selectedAnimal: _selectedAnimal,
+                      animals: _animals,
+                      onAnimalSelected: (animal) {
+                        if (_selectedAnimal == animal) return;
+                        setState(() => _selectedAnimal = animal);
                       },
                       selectedCategory: _selectedCategory,
                       categories: _categories,
                       onCategorySelected: (category) {
-                        setState(() => _selectedCategory = category);
+                        if (_selectedCategory == category) return;
+                        setState(() {
+                          _selectedCategory = category;
+                          _refreshServicesStream();
+                        });
                       },
                     ),
                     const SizedBox(height: 18),
@@ -542,6 +657,12 @@ class _ServicesScreenState extends State<ServicesScreen> {
                             ? 'Connect to the internet to load latest content.'
                             : 'Please check your connection and try again in a moment.',
                       )
+                    else if (services.isEmpty && _hasActiveDiscoveryFilters)
+                      _ServicesEmptyState(
+                        icon: Icons.search_off_rounded,
+                        title: 'No services match these filters',
+                        message: _emptySearchMessage(discoveryPresentation),
+                      )
                     else if (services.isEmpty)
                       _ServicesEmptyState(
                         icon: NetworkStatusService.instance.isOffline
@@ -557,9 +678,10 @@ class _ServicesScreenState extends State<ServicesScreen> {
                     else if (discoveryPresentation.allMatchedCount == 0)
                       _ServicesEmptyState(
                         icon: Icons.search_off_rounded,
-                        title: 'No services found',
-                        message:
-                            "No services found for '${discoveryPresentation.searchQuery}'.",
+                        title: _hasActiveDiscoveryFilters
+                            ? 'No services match these filters'
+                            : 'No services found',
+                        message: _emptySearchMessage(discoveryPresentation),
                       )
                     else if (discoveryPresentation.primaryServices.isEmpty &&
                         discoveryPresentation.secondaryServices.isEmpty)
@@ -615,69 +737,41 @@ class _ServicesScreenState extends State<ServicesScreen> {
               },
             ),
             Positioned(
-              left: 18,
-              right: 18,
-              top: topInset + 14,
-              child: GlassSurface(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 14,
-                ),
-                borderRadius: BorderRadius.circular(28),
-                backgroundColor: Colors.white.withValues(alpha: 0.72),
-                blurSigma: 20,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.06),
-                    blurRadius: 24,
-                    offset: const Offset(0, 10),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 18,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-                child: Row(
-                  children: [
-                    Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.56),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: IconButton(
-                        onPressed: () =>
+              left: 0,
+              right: 0,
+              top: 0,
+              child: AnimatedSlide(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOutCubic,
+                offset: _isTopBarVisible ? Offset.zero : const Offset(0, -1.1),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeInOutCubic,
+                  opacity: _isTopBarVisible ? 1 : 0,
+                  child: AnimatedScale(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOutCubic,
+                    scale: _isTopBarVisible ? 1 : 0.97,
+                    child: IgnorePointer(
+                      ignoring: !_isTopBarVisible,
+                      child: _ServicesCollapsibleHeader(
+                        topInset: topInset,
+                        searchController: _searchController,
+                        onSearchChanged: (value) {
+                          setState(() => _searchQuery = value);
+                        },
+                        onClearSearch: _searchQuery.isEmpty
+                            ? null
+                            : () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                        onBackPressed: () =>
                             Navigator.pushReplacementNamed(context, "/home"),
-                        icon: const Icon(Icons.arrow_back_rounded),
+                        onFilterPressed: _showFiltersSheet,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        "Services",
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
-                        ),
-                      ),
-                    ),
-                    Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.56),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: IconButton(
-                        onPressed: _showFiltersSheet,
-                        icon: const Icon(Icons.tune_rounded),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -740,37 +834,76 @@ class _DiscoveryPresentation {
   });
 }
 
-class _ServiceSearchAndFilters extends StatelessWidget {
+class _ServicesCollapsibleHeader extends StatelessWidget {
+  final double topInset;
   final TextEditingController searchController;
   final ValueChanged<String> onSearchChanged;
-  final String selectedCategory;
-  final List<String> categories;
-  final ValueChanged<String> onCategorySelected;
+  final VoidCallback? onClearSearch;
+  final VoidCallback onBackPressed;
+  final VoidCallback onFilterPressed;
 
-  const _ServiceSearchAndFilters({
+  const _ServicesCollapsibleHeader({
+    required this.topInset,
     required this.searchController,
     required this.onSearchChanged,
-    required this.selectedCategory,
-    required this.categories,
-    required this.onCategorySelected,
+    required this.onClearSearch,
+    required this.onBackPressed,
+    required this.onFilterPressed,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+    return GlassSurface(
+      padding: EdgeInsets.fromLTRB(18, topInset + 8, 18, 9),
+      borderRadius: BorderRadius.zero,
+      backgroundColor: AppColors.background.withValues(alpha: 0.74),
+      blurSigma: 22,
+      border: Border(
+        bottom: BorderSide(color: Colors.white.withValues(alpha: 0.58)),
       ),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.035),
+          blurRadius: 18,
+          offset: const Offset(0, 8),
+        ),
+      ],
       child: Column(
         children: [
+          Row(
+            children: [
+              _HeaderIconButton(
+                icon: Icons.arrow_back_rounded,
+                onPressed: onBackPressed,
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Services',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+              ),
+              _HeaderIconButton(
+                icon: Icons.tune_rounded,
+                onPressed: onFilterPressed,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
             decoration: BoxDecoration(
-              color: const Color(0xFFFFFCFA),
-              borderRadius: BorderRadius.circular(18),
+              color: Colors.white.withValues(alpha: 0.96),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.08),
+              ),
             ),
             child: Row(
               children: [
@@ -783,41 +916,149 @@ class _ServiceSearchAndFilters extends StatelessWidget {
                     textInputAction: TextInputAction.search,
                     style: const TextStyle(
                       color: AppColors.textDark,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
                     ),
                     decoration: const InputDecoration(
-                      hintText: 'Search services, sitters or nearby care...',
+                      hintText: 'Search services, providers or areas',
                       hintStyle: TextStyle(
                         color: AppColors.textGrey,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                       ),
                       border: InputBorder.none,
                     ),
                   ),
                 ),
+                if (onClearSearch != null)
+                  IconButton(
+                    onPressed: onClearSearch,
+                    icon: const Icon(
+                      Icons.close_rounded,
+                      color: AppColors.textGrey,
+                    ),
+                  ),
               ],
             ),
           ),
-          const SizedBox(height: 18),
-          SizedBox(
-            height: 40,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: categories.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                final category = categories[index];
-                return _CategoryChip(
-                  label: category,
-                  isActive: selectedCategory == category,
-                  onTap: () => onCategorySelected(category),
-                );
-              },
-            ),
-          ),
         ],
+      ),
+    );
+  }
+}
+
+class _HeaderIconButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  const _HeaderIconButton({required this.icon, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.72)),
+      ),
+      child: IconButton(
+        onPressed: onPressed,
+        icon: Icon(icon, color: AppColors.textDark),
+      ),
+    );
+  }
+}
+
+class _ServiceFilterSections extends StatelessWidget {
+  final String selectedAnimal;
+  final List<String> animals;
+  final ValueChanged<String> onAnimalSelected;
+  final String selectedCategory;
+  final List<String> categories;
+  final ValueChanged<String> onCategorySelected;
+
+  const _ServiceFilterSections({
+    required this.selectedAnimal,
+    required this.animals,
+    required this.onAnimalSelected,
+    required this.selectedCategory,
+    required this.categories,
+    required this.onCategorySelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FilterSectionLabel(label: 'ANIMAL'),
+        const SizedBox(height: 6),
+        _FilterChipScroller(
+          values: animals,
+          selectedValue: selectedAnimal,
+          onSelected: onAnimalSelected,
+        ),
+        const SizedBox(height: 12),
+        _FilterSectionLabel(label: 'SERVICE'),
+        const SizedBox(height: 6),
+        _FilterChipScroller(
+          values: categories,
+          selectedValue: selectedCategory,
+          onSelected: onCategorySelected,
+        ),
+      ],
+    );
+  }
+}
+
+class _FilterSectionLabel extends StatelessWidget {
+  final String label;
+
+  const _FilterSectionLabel({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      label,
+      style: const TextStyle(
+        color: AppColors.textGrey,
+        fontSize: 13,
+        fontWeight: FontWeight.w900,
+        letterSpacing: 1.0,
+      ),
+    );
+  }
+}
+
+class _FilterChipScroller extends StatelessWidget {
+  final List<String> values;
+  final String selectedValue;
+  final ValueChanged<String> onSelected;
+
+  const _FilterChipScroller({
+    required this.values,
+    required this.selectedValue,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: values.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final value = values[index];
+          return _CategoryChip(
+            label: value,
+            isActive: selectedValue == value,
+            onTap: () => onSelected(value),
+          );
+        },
       ),
     );
   }
@@ -879,21 +1120,47 @@ class _CategoryChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-        decoration: BoxDecoration(
-          gradient: isActive ? AppColors.brandGradient : null,
-          color: isActive ? null : const Color(0xFFFFF4E8),
+    return Semantics(
+      button: true,
+      selected: isActive,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
           borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: isActive ? Colors.white : AppColors.textDark,
-            fontWeight: FontWeight.w700,
-            fontSize: 13,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 38),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 7),
+            decoration: BoxDecoration(
+              color: isActive ? const Color(0xFFFFF3EC) : Colors.white,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: isActive
+                    ? AppColors.primary
+                    : AppColors.textGrey.withValues(alpha: 0.18),
+                width: isActive ? 1.8 : 1.2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(
+                    alpha: isActive ? 0.035 : 0.02,
+                  ),
+                  blurRadius: 10,
+                  offset: const Offset(0, 5),
+                ),
+              ],
+            ),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: isActive ? AppColors.primary : AppColors.textDark,
+                fontWeight: isActive ? FontWeight.w900 : FontWeight.w700,
+                fontSize: 13,
+              ),
+            ),
           ),
         ),
       ),
@@ -936,188 +1203,188 @@ class _MarketplaceServiceCard extends StatelessWidget {
               ),
             ],
           ),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: const BorderRadius.horizontal(
-                  left: Radius.circular(26),
-                ),
-                child: SizedBox(
-                  width: 132,
-                  height: 152,
-                  child: service.primaryPhotoUrl.isEmpty
-                      ? const DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: AppColors.brandGradientDiagonal,
-                          ),
-                          child: Center(
-                            child: Icon(
-                              Icons.pets_rounded,
-                              color: Colors.white,
-                              size: 42,
-                            ),
-                          ),
-                        )
-                      : Image.network(
-                          service.primaryPhotoUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const DecoratedBox(
-                            decoration: BoxDecoration(
-                              gradient: AppColors.brandGradientDiagonal,
-                            ),
-                            child: Center(
-                              child: Icon(
-                                Icons.pets_rounded,
-                                color: Colors.white,
-                                size: 42,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final imageSize = (constraints.maxWidth * 0.37).clamp(
+                112.0,
+                150.0,
+              );
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(18),
+                      child: SizedBox(
+                        width: imageSize,
+                        height: imageSize,
+                        child: service.primaryPhotoUrl.isEmpty
+                            ? const DecoratedBox(
+                                decoration: BoxDecoration(
+                                  gradient: AppColors.brandGradientDiagonal,
+                                ),
+                                child: Center(
+                                  child: Icon(
+                                    Icons.pets_rounded,
+                                    color: Colors.white,
+                                    size: 42,
+                                  ),
+                                ),
+                              )
+                            : Image.network(
+                                service.primaryPhotoUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    gradient: AppColors.brandGradientDiagonal,
+                                  ),
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.pets_rounded,
+                                      color: Colors.white,
+                                      size: 42,
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        service.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
-                        ),
                       ),
-                      const SizedBox(height: 5),
-                      LiveUserIdentityResolver(
-                        userId: service.ownerUserId,
-                        fallbackName: service.ownerName,
-                        fallbackUsername: service.ownerUsername,
-                        fallbackImageUrl: service.ownerPhotoUrl,
-                        placeholderName: 'Service provider',
-                        builder: (context, identity) {
-                          return Text(
-                            'Provided by ${identity.displayName}',
+                    ),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 10, 10, 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            service.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: AppColors.textGrey,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          );
-                        },
-                      ),
-                      if (service.isSponsorActive) ...[
-                        const SizedBox(height: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 5,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFF2EA),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: const Text(
-                            'Sponsored',
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 11.5,
+                              fontSize: 18,
                               fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 8),
-                      Text(
-                        service.description,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textGrey,
-                          height: 1.35,
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        service.ratingCount > 0
-                            ? '⭐ ${service.ratingAverage.toStringAsFixed(1)} · ${service.ratingCount} ${service.ratingCount == 1 ? 'review' : 'reviews'}'
-                            : 'No reviews yet',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: service.ratingCount > 0
-                              ? const Color(0xFF9A3412)
-                              : AppColors.textGrey,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.pets_rounded,
-                            color: AppColors.primary,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              '${service.animalType} · ${service.category}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.location_on_outlined,
-                            color: AppColors.textGrey,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              service.displayAddress.isEmpty
-                                  ? 'Location shared after booking'
-                                  : service.displayAddress,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textGrey,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ),
-                          Text(
-                            '₹${service.pricePerSession}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 15,
                               color: AppColors.textDark,
                             ),
                           ),
+                          const SizedBox(height: 3),
+                          LiveUserIdentityResolver(
+                            userId: service.ownerUserId,
+                            fallbackName: service.ownerName,
+                            fallbackUsername: service.ownerUsername,
+                            fallbackImageUrl: service.ownerPhotoUrl,
+                            placeholderName: 'Service provider',
+                            builder: (context, identity) {
+                              return Text(
+                                'By ${identity.displayName}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppColors.textGrey,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              );
+                            },
+                          ),
+                          if (service.isSponsorActive) ...[
+                            const SizedBox(height: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFF2EA),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: const Text(
+                                'Sponsored',
+                                style: TextStyle(
+                                  color: AppColors.primary,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 7),
+                          Text(
+                            service.ratingCount > 0
+                                ? '⭐ ${service.ratingAverage.toStringAsFixed(1)} · ${service.ratingCount} ${service.ratingCount == 1 ? 'review' : 'reviews'}'
+                                : 'No reviews yet',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: service.ratingCount > 0
+                                  ? const Color(0xFF9A3412)
+                                  : AppColors.textGrey,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.pets_rounded,
+                                color: AppColors.primary,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  '${service.animalType} · ${service.category}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13.5,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 7),
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.location_on_outlined,
+                                color: AppColors.textGrey,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  service.displayAddress.isEmpty
+                                      ? 'Location shared after booking'
+                                      : service.displayAddress,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: AppColors.textGrey,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                '₹${service.pricePerSession}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 15,
+                                  color: AppColors.textDark,
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
       ),

@@ -652,9 +652,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                               const Icon(
                                                 Icons.location_on_outlined,
                                                 color: AppColors.textGrey,
-                                                size: 22,
+                                                size: 18,
                                               ),
-                                              const SizedBox(width: 10),
+                                              const SizedBox(width: 7),
                                               Expanded(
                                                 child: Text(
                                                   profile.location.isEmpty
@@ -662,9 +662,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                       : profile.location,
                                                   style: const TextStyle(
                                                     color: AppColors.textGrey,
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w500,
+                                                    fontSize: 13.5,
+                                                    fontWeight: FontWeight.w600,
+                                                    height: 1.15,
                                                   ),
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                 ),
                                               ),
                                             ],
@@ -1357,48 +1361,39 @@ class _ProfileActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = AppButtonTokens.radius(AppButtonSize.compact);
     final disabled = onPressed == null;
-    const secondaryButtonColor = Colors.white;
+    const radius = 18.0;
 
     return Opacity(
       opacity: disabled ? 0.5 : 1,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          gradient: isPrimary ? AppColors.brandGradient : null,
-          color: isPrimary ? null : secondaryButtonColor,
+          color: Colors.white,
           borderRadius: BorderRadius.circular(radius),
+          border: Border.all(color: AppColors.primary, width: 1.8),
         ),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: onPressed,
             borderRadius: BorderRadius.circular(radius),
-            splashColor: isPrimary
-                ? Colors.white.withValues(alpha: 0.12)
-                : AppColors.textDark.withValues(alpha: 0.05),
+            splashColor: AppColors.primary.withValues(alpha: 0.08),
             highlightColor: Colors.transparent,
             child: ConstrainedBox(
-              constraints: BoxConstraints(
-                minHeight: AppButtonTokens.height(AppButtonSize.compact),
-              ),
+              constraints: const BoxConstraints(minHeight: 46),
               child: Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: AppButtonTokens.horizontalPadding(
-                    AppButtonSize.compact,
-                  ),
-                  vertical: AppButtonTokens.verticalPadding(
-                    AppButtonSize.compact,
-                  ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
                 ),
                 child: Center(
                   child: Text(
                     label,
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: isPrimary ? Colors.white : AppColors.textDark,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
+                    style: const TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
                       letterSpacing: -0.1,
                     ),
                   ),
