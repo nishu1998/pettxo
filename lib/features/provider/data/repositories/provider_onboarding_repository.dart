@@ -59,6 +59,26 @@ class ProviderOnboardingRepository {
     return ProviderVerificationRecord.fromMap(uid, snapshot.data() ?? {});
   }
 
+  Future<ProviderVerificationRecord> fetchVerificationForUser(
+    String userId, {
+    bool forceServer = false,
+  }) async {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) {
+      return ProviderVerificationRecord.empty(trimmedUserId);
+    }
+    final snapshot = await _verificationDoc(
+      trimmedUserId,
+    ).get(forceServer ? const GetOptions(source: Source.server) : null);
+    if (!snapshot.exists) {
+      return ProviderVerificationRecord.empty(trimmedUserId);
+    }
+    return ProviderVerificationRecord.fromMap(
+      trimmedUserId,
+      snapshot.data() ?? {},
+    );
+  }
+
   Future<ProviderBankDetailsRecord> fetchCurrentBankDetails({
     bool forceServer = false,
   }) async {

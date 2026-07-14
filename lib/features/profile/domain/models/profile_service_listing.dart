@@ -45,6 +45,7 @@ class ProfileServiceListing {
   final List<String> photoPaths;
   final bool isPaused;
   final bool isPausedByVerification;
+  final String providerVerificationStatus;
   final String pauseReason;
 
   const ProfileServiceListing({
@@ -90,6 +91,7 @@ class ProfileServiceListing {
     this.photoPaths = const [],
     this.isPaused = false,
     this.isPausedByVerification = false,
+    this.providerVerificationStatus = '',
     this.pauseReason = '',
   });
 
@@ -142,6 +144,7 @@ class ProfileServiceListing {
       isPaused: isPaused ?? this.isPaused,
       isPausedByVerification:
           isPausedByVerification ?? this.isPausedByVerification,
+      providerVerificationStatus: providerVerificationStatus,
       pauseReason: pauseReason ?? this.pauseReason,
     );
   }
@@ -254,6 +257,8 @@ class ProfileServiceListing {
           .toList(),
       isPaused: data['isPaused'] as bool? ?? false,
       isPausedByVerification: data['isPausedByVerification'] as bool? ?? false,
+      providerVerificationStatus:
+          (data['providerVerificationStatus'] as String? ?? '').trim(),
       pauseReason: (data['pauseReason'] as String? ?? '').trim(),
     );
   }
@@ -300,6 +305,7 @@ class ProfileServiceListing {
       'photoPaths': photoPaths,
       'isPaused': isPaused,
       'isPausedByVerification': isPausedByVerification,
+      'providerVerificationStatus': providerVerificationStatus,
       'pauseReason': pauseReason,
     };
   }

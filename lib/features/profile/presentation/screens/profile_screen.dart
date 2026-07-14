@@ -10,6 +10,8 @@ import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
+import '../../../provider/data/repositories/provider_onboarding_repository.dart';
+import '../../../provider/domain/models/provider_onboarding_models.dart';
 import '../../../profile/data/repositories/pet_repository.dart';
 import '../../../profile/data/repositories/profile_content_repository.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
@@ -44,6 +46,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final ProfileContentRepository _contentRepository =
       ProfileContentRepository();
   final ServicesRepository _servicesRepository = ServicesRepository();
+  final ProviderOnboardingRepository _providerOnboardingRepository =
+      ProviderOnboardingRepository();
   final SettingsService _settingsService = SettingsService();
   final FollowRepository _followRepository = FollowRepository();
   final ChatRepository _chatRepository = ChatRepository();
@@ -59,6 +63,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _runningServiceActionId = '';
   final Map<String, Future<ProfileFollowCounts>> _followCountRequests =
       <String, Future<ProfileFollowCounts>>{};
+  final Map<String, Future<bool>> _providerVerificationRequests =
+      <String, Future<bool>>{};
 
   @override
   void initState() {
@@ -93,6 +99,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
       trimmedUserId,
       () => _followRepository.fetchProfileFollowCounts(trimmedUserId),
     );
+  }
+
+  Future<bool> _requestProviderVerified(String userId) {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) return Future<bool>.value(false);
+
+    return _providerVerificationRequests.putIfAbsent(trimmedUserId, () async {
+      try {
+        final verification = await _providerOnboardingRepository
+            .fetchVerificationForUser(trimmedUserId, forceServer: true);
+        return verification.status == providerVerificationApproved;
+      } catch (_) {
+        return false;
+      }
+    });
   }
 
   void _ensureFollowCountsLoaded(String userId, {bool forceRefresh = false}) {
@@ -486,6 +507,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           .map((services) => services.toProfileListings()),
                   builder: (context, servicesSnapshot) {
                     final services = servicesSnapshot.data ?? const [];
+                    final hasApprovedProviderVerification = services.any(
+                      (service) =>
+                          service.providerVerificationStatus ==
+                          providerVerificationApproved,
+                    );
                     final selectedSectionIndex = _selectedSectionIndex;
 
                     return StreamBuilder<List<PetProfile>>(
@@ -577,28 +603,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                             ),
                                           ),
                                           const SizedBox(height: 6),
-                                          Row(
-                                            children: [
-                                              Container(
-                                                width: 10,
-                                                height: 10,
-                                                decoration: const BoxDecoration(
-                                                  color: AppColors.primary,
-                                                  shape: BoxShape.circle,
+                                          _ProfileBadges(
+                                            roleLabel: profile.roleLabel,
+                                            isServiceProvider:
+                                                profile.isServiceProvider,
+                                            isVerifiedFallback:
+                                                hasApprovedProviderVerification,
+                                            verifiedFuture:
+                                                _requestProviderVerified(
+                                                  profile.uid,
                                                 ),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Expanded(
-                                                child: Text(
-                                                  profile.roleLabel,
-                                                  style: const TextStyle(
-                                                    color: AppColors.textGrey,
-                                                    fontSize: 15,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
                                           ),
                                           if (profile.isServiceProvider) ...[
                                             const SizedBox(height: 6),
@@ -1175,6 +1189,157 @@ class _ProfileUnavailableState extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ProfileBadges extends StatelessWidget {
+  final String roleLabel;
+  final bool isServiceProvider;
+  final bool isVerifiedFallback;
+  final Future<bool>? verifiedFuture;
+
+  const _ProfileBadges({
+    required this.roleLabel,
+    required this.isServiceProvider,
+    required this.isVerifiedFallback,
+    required this.verifiedFuture,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (verifiedFuture == null) {
+      return Wrap(
+        spacing: 7,
+        runSpacing: 5,
+        children: [
+          _ProfileRoleBadge(
+            label: roleLabel,
+            isServiceProvider: isServiceProvider,
+          ),
+        ],
+      );
+    }
+
+    return FutureBuilder<bool>(
+      future: verifiedFuture,
+      builder: (context, snapshot) {
+        final isVerified = isVerifiedFallback || snapshot.data == true;
+        return Wrap(
+          spacing: 7,
+          runSpacing: 5,
+          children: [
+            _ProfileRoleBadge(
+              label: roleLabel,
+              isServiceProvider: isServiceProvider,
+            ),
+            if (isVerified) const _ProfileVerifiedBadge(),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ProfileRoleBadge extends StatelessWidget {
+  final String label;
+  final bool isServiceProvider;
+
+  const _ProfileRoleBadge({
+    required this.label,
+    required this.isServiceProvider,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final backgroundColor = isServiceProvider
+        ? const Color(0xFFFFF2EA)
+        : const Color(0xFFFFF7ED);
+    final foregroundColor = isServiceProvider
+        ? AppColors.primary
+        : const Color(0xFF9A3412);
+
+    return _ProfilePill(
+      backgroundColor: backgroundColor,
+      foregroundColor: foregroundColor,
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: foregroundColor,
+          fontSize: 12,
+          height: 1,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.1,
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileVerifiedBadge extends StatelessWidget {
+  const _ProfileVerifiedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    const foregroundColor = Color(0xFF047857);
+
+    return Semantics(
+      label: 'Verified service provider',
+      child: _ProfilePill(
+        backgroundColor: const Color(0xFFE9F9F0),
+        foregroundColor: foregroundColor,
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.verified_user_outlined,
+              size: 15,
+              color: foregroundColor,
+            ),
+            SizedBox(width: 4),
+            Text(
+              'Verified',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: foregroundColor,
+                fontSize: 12,
+                height: 1,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.1,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfilePill extends StatelessWidget {
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final Widget child;
+
+  const _ProfilePill({
+    required this.backgroundColor,
+    required this.foregroundColor,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 28),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: foregroundColor.withValues(alpha: 0.12)),
+      ),
+      child: child,
     );
   }
 }

@@ -333,6 +333,7 @@ class ServiceModel {
       isPaused:
           isPaused || status == 'paused' || isEffectivelyPausedByVerification,
       isPausedByVerification: isEffectivelyPausedByVerification,
+      providerVerificationStatus: providerVerificationStatus,
       pauseReason: pauseReason,
       ratingAverage: ratingAverage,
       ratingCount: ratingCount,

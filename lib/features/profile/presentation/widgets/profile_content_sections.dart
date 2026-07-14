@@ -164,7 +164,10 @@ class ProfilePetsSection extends StatelessWidget {
     if (pets.isEmpty && !canAddPet) return const SizedBox.shrink();
 
     final screenWidth = MediaQuery.sizeOf(context).width;
-    final cardSize = (screenWidth * 0.23).clamp(82.0, 96.0);
+    final cardSize = (screenWidth * 0.184).clamp(66.0, 77.0);
+    final textScaler = MediaQuery.textScalerOf(context);
+    final labelGap = 8.0;
+    final labelHeight = textScaler.scale(20).clamp(20.0, 30.0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -182,7 +185,7 @@ class ProfilePetsSection extends StatelessWidget {
           ),
         ),
         SizedBox(
-          height: cardSize + 32,
+          height: cardSize + labelGap + labelHeight,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 2),
@@ -190,13 +193,20 @@ class ProfilePetsSection extends StatelessWidget {
             separatorBuilder: (_, _) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               if (index >= pets.length) {
-                return _AddPetTile(size: cardSize, onTap: onAddPet);
+                return _AddPetTile(
+                  size: cardSize,
+                  labelGap: labelGap,
+                  labelHeight: labelHeight,
+                  onTap: onAddPet,
+                );
               }
               final pet = pets[index];
               return _ProfilePetTile(
                 key: ValueKey<String>('profile_pet_${pet.id}'),
                 pet: pet,
                 size: cardSize,
+                labelGap: labelGap,
+                labelHeight: labelHeight,
               );
             },
           ),
@@ -209,8 +219,16 @@ class ProfilePetsSection extends StatelessWidget {
 class _ProfilePetTile extends StatelessWidget {
   final PetProfile pet;
   final double size;
+  final double labelGap;
+  final double labelHeight;
 
-  const _ProfilePetTile({super.key, required this.pet, required this.size});
+  const _ProfilePetTile({
+    super.key,
+    required this.pet,
+    required this.size,
+    required this.labelGap,
+    required this.labelHeight,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -247,16 +265,21 @@ class _ProfilePetTile extends StatelessWidget {
                         ),
                 ),
               ),
-              const SizedBox(height: 10),
-              Text(
-                pet.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: AppColors.textDark,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
+              SizedBox(height: labelGap),
+              SizedBox(
+                height: labelHeight,
+                child: Center(
+                  child: Text(
+                    pet.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: AppColors.textDark,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -269,9 +292,16 @@ class _ProfilePetTile extends StatelessWidget {
 
 class _AddPetTile extends StatelessWidget {
   final double size;
+  final double labelGap;
+  final double labelHeight;
   final VoidCallback onTap;
 
-  const _AddPetTile({required this.size, required this.onTap});
+  const _AddPetTile({
+    required this.size,
+    required this.labelGap,
+    required this.labelHeight,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -298,19 +328,25 @@ class _AddPetTile extends StatelessWidget {
                     child: Icon(
                       Icons.add_rounded,
                       color: AppColors.primary,
-                      size: 32,
+                      size: 26,
                     ),
                   ),
                 ),
               ),
-              const SizedBox(height: 10),
-              const Text(
-                'Add',
-                maxLines: 1,
-                style: TextStyle(
-                  color: AppColors.primary,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w900,
+              SizedBox(height: labelGap),
+              SizedBox(
+                height: labelHeight,
+                child: const Center(
+                  child: Text(
+                    'Add',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -330,7 +366,7 @@ class _PetTilePlaceholder extends StatelessWidget {
       decoration: const BoxDecoration(
         gradient: AppColors.brandGradientDiagonal,
       ),
-      child: const Icon(Icons.pets_rounded, color: Colors.white, size: 34),
+      child: const Icon(Icons.pets_rounded, color: Colors.white, size: 28),
     );
   }
 }
