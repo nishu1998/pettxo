@@ -455,9 +455,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
                                                     horizontal: 8,
                                                   ),
                                               alignment: Alignment.center,
-                                              decoration: const BoxDecoration(
+                                              decoration: BoxDecoration(
                                                 color: AppColors.primary,
-                                                shape: BoxShape.circle,
+                                                borderRadius:
+                                                    BorderRadius.circular(9),
                                               ),
                                               child: Text(
                                                 unreadCount > 99
