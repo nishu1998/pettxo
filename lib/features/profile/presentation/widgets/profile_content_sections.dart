@@ -6,7 +6,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../data/repositories/profile_content_repository.dart';
+import '../../domain/models/pet_profile.dart';
 import '../../domain/models/profile_service_listing.dart';
+import '../screens/pet_detail_screen.dart';
 import '../screens/service_detail_screen.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/social_post_repository.dart';
@@ -14,6 +16,8 @@ import '../../../social/domain/models/social_post_model.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 
 const _profileSectionSurfaceColor = Colors.white;
+
+enum _ServicesGlobalState { empty, active, paused, mixed }
 
 class ProfileSectionTabs extends StatelessWidget {
   final int selectedIndex;
@@ -141,6 +145,225 @@ class ProfilePostsSection extends StatelessWidget {
       },
     );
   }
+}
+
+class ProfilePetsSection extends StatelessWidget {
+  final List<PetProfile> pets;
+  final bool canAddPet;
+  final VoidCallback onAddPet;
+
+  const ProfilePetsSection({
+    super.key,
+    required this.pets,
+    required this.canAddPet,
+    required this.onAddPet,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (pets.isEmpty && !canAddPet) return const SizedBox.shrink();
+
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final cardSize = (screenWidth * 0.23).clamp(82.0, 96.0);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 2, bottom: 12),
+          child: Text(
+            'MY PETS',
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 13,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.1,
+            ),
+          ),
+        ),
+        SizedBox(
+          height: cardSize + 32,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            itemCount: pets.length + (canAddPet ? 1 : 0),
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              if (index >= pets.length) {
+                return _AddPetTile(size: cardSize, onTap: onAddPet);
+              }
+              final pet = pets[index];
+              return _ProfilePetTile(
+                key: ValueKey<String>('profile_pet_${pet.id}'),
+                pet: pet,
+                size: cardSize,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProfilePetTile extends StatelessWidget {
+  final PetProfile pet;
+  final double size;
+
+  const _ProfilePetTile({super.key, required this.pet, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      child: Semantics(
+        button: true,
+        label: 'Open ${pet.name} pet profile',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(24),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    PetDetailScreen(ownerUserId: pet.ownerId, petId: pet.id),
+              ),
+            );
+          },
+          child: Column(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(24),
+                child: SizedBox(
+                  width: size,
+                  height: size,
+                  child: pet.photoUrl.isEmpty
+                      ? const _PetTilePlaceholder()
+                      : Image.network(
+                          pet.photoUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) =>
+                              const _PetTilePlaceholder(),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                pet.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddPetTile extends StatelessWidget {
+  final double size;
+  final VoidCallback onTap;
+
+  const _AddPetTile({required this.size, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      child: Semantics(
+        button: true,
+        label: 'Add pet',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(24),
+          onTap: onTap,
+          child: Column(
+            children: [
+              CustomPaint(
+                painter: _DashedRoundedBorderPainter(),
+                child: Container(
+                  width: size,
+                  height: size,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: const Center(
+                    child: Icon(
+                      Icons.add_rounded,
+                      color: AppColors.primary,
+                      size: 32,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Add',
+                maxLines: 1,
+                style: TextStyle(
+                  color: AppColors.primary,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PetTilePlaceholder extends StatelessWidget {
+  const _PetTilePlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: AppColors.brandGradientDiagonal,
+      ),
+      child: const Icon(Icons.pets_rounded, color: Colors.white, size: 34),
+    );
+  }
+}
+
+class _DashedRoundedBorderPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = AppColors.primary
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(24)),
+      );
+
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      const dashLength = 9.0;
+      const gapLength = 7.0;
+      while (distance < metric.length) {
+        canvas.drawPath(
+          metric.extractPath(distance, distance + dashLength),
+          paint,
+        );
+        distance += dashLength + gapLength;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _ProfilePostGridItem extends StatelessWidget {
@@ -659,18 +882,45 @@ class ProfileServicesSection extends StatelessWidget {
   final List<ProfileServiceListing> services;
   final bool canManage;
   final VoidCallback onAdd;
-  final VoidCallback onManage;
+  final bool isGlobalActionRunning;
+  final String runningServiceActionId;
+  final ValueChanged<bool> onToggleAll;
+  final ValueChanged<ProfileServiceListing> onPauseService;
+  final ValueChanged<ProfileServiceListing> onResumeService;
+  final ValueChanged<ProfileServiceListing> onDeleteService;
 
   const ProfileServicesSection({
     super.key,
     required this.services,
     required this.canManage,
     required this.onAdd,
-    required this.onManage,
+    required this.isGlobalActionRunning,
+    required this.runningServiceActionId,
+    required this.onToggleAll,
+    required this.onPauseService,
+    required this.onResumeService,
+    required this.onDeleteService,
   });
+
+  _ServicesGlobalState get _globalState {
+    final eligibleServices = services
+        .where((service) => !service.isPausedByVerification)
+        .toList(growable: false);
+    if (eligibleServices.isEmpty) return _ServicesGlobalState.empty;
+
+    final pausedCount = eligibleServices
+        .where((service) => service.isPaused)
+        .length;
+    if (pausedCount == 0) return _ServicesGlobalState.active;
+    if (pausedCount == eligibleServices.length) {
+      return _ServicesGlobalState.paused;
+    }
+    return _ServicesGlobalState.mixed;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final globalState = _globalState;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -684,14 +934,20 @@ class ProfileServicesSection extends StatelessWidget {
                   onPressed: onAdd,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: SecondaryButton(
-                  label: 'Manage',
-                  icon: Icons.tune_rounded,
-                  onPressed: onManage,
+              if (services.isNotEmpty) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ServicesGlobalToggle(
+                    state: globalState,
+                    isLoading: isGlobalActionRunning,
+                    onTap: globalState == _ServicesGlobalState.empty
+                        ? null
+                        : () => onToggleAll(
+                            globalState == _ServicesGlobalState.active,
+                          ),
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
           const SizedBox(height: 14),
@@ -707,8 +963,16 @@ class ProfileServicesSection extends StatelessWidget {
         else
           ...services.map((service) {
             return Padding(
+              key: ValueKey<String>('profile_service_${service.id}'),
               padding: const EdgeInsets.only(bottom: 14),
-              child: _ProfileServiceCard(service: service),
+              child: _ProfileServiceCard(
+                service: service,
+                canManage: canManage,
+                isActionRunning: runningServiceActionId == service.id,
+                onPause: () => onPauseService(service),
+                onResume: () => onResumeService(service),
+                onDelete: () => onDeleteService(service),
+              ),
             );
           }),
       ],
@@ -716,10 +980,104 @@ class ProfileServicesSection extends StatelessWidget {
   }
 }
 
+class _ServicesGlobalToggle extends StatelessWidget {
+  final _ServicesGlobalState state;
+  final bool isLoading;
+  final VoidCallback? onTap;
+
+  const _ServicesGlobalToggle({
+    required this.state,
+    required this.isLoading,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isActive = state == _ServicesGlobalState.active;
+    final isMixed = state == _ServicesGlobalState.mixed;
+    final label = switch (state) {
+      _ServicesGlobalState.active => 'Services active',
+      _ServicesGlobalState.paused => 'Services paused',
+      _ServicesGlobalState.mixed => 'Some paused',
+      _ServicesGlobalState.empty => 'No services',
+    };
+    final icon = switch (state) {
+      _ServicesGlobalState.active => Icons.toggle_on_rounded,
+      _ServicesGlobalState.paused => Icons.toggle_off_rounded,
+      _ServicesGlobalState.mixed => Icons.swap_horiz_rounded,
+      _ServicesGlobalState.empty => Icons.toggle_off_rounded,
+    };
+    final color = isActive || isMixed ? AppColors.primary : AppColors.textGrey;
+
+    return Semantics(
+      button: true,
+      enabled: onTap != null && !isLoading,
+      label: label,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: isLoading ? null : onTap,
+          borderRadius: BorderRadius.circular(18),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: isActive ? 0.12 : 0.08),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: color.withValues(alpha: 0.18)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (isLoading)
+                  SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: color,
+                    ),
+                  )
+                else
+                  Icon(icon, color: color, size: 22),
+                const SizedBox(width: 7),
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ProfileServiceCard extends StatelessWidget {
   final ProfileServiceListing service;
+  final bool canManage;
+  final bool isActionRunning;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final VoidCallback onDelete;
 
-  const _ProfileServiceCard({required this.service});
+  const _ProfileServiceCard({
+    required this.service,
+    required this.canManage,
+    required this.isActionRunning,
+    required this.onPause,
+    required this.onResume,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -850,6 +1208,16 @@ class _ProfileServiceCard extends StatelessWidget {
                               ),
                             ),
                           ],
+                          if (canManage) ...[
+                            const SizedBox(width: 4),
+                            _ServiceActionMenuButton(
+                              service: service,
+                              isLoading: isActionRunning,
+                              onPause: onPause,
+                              onResume: onResume,
+                              onDelete: onDelete,
+                            ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 8),
@@ -978,6 +1346,164 @@ class _ProfileServiceCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ServiceActionMenuButton extends StatelessWidget {
+  final ProfileServiceListing service;
+  final bool isLoading;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final VoidCallback onDelete;
+
+  const _ServiceActionMenuButton({
+    required this.service,
+    required this.isLoading,
+    required this.onPause,
+    required this.onResume,
+    required this.onDelete,
+  });
+
+  Future<void> _openMenu(BuildContext context) async {
+    if (isLoading) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final canResume = service.isPaused && !service.isPausedByVerification;
+        final canPause = !service.isPaused && !service.isPausedByVerification;
+
+        return SafeArea(
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.96),
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.72)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.12),
+                  blurRadius: 28,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (canPause)
+                    _ServiceActionRow(
+                      icon: Icons.pause_circle_outline_rounded,
+                      label: 'Pause service',
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        onPause();
+                      },
+                    ),
+                  if (canResume)
+                    _ServiceActionRow(
+                      icon: Icons.play_circle_outline_rounded,
+                      label: 'Resume service',
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        onResume();
+                      },
+                    ),
+                  if (canPause || canResume)
+                    Divider(
+                      height: 1,
+                      color: AppColors.textGrey.withValues(alpha: 0.12),
+                    ),
+                  _ServiceActionRow(
+                    icon: Icons.delete_outline_rounded,
+                    label: 'Delete service',
+                    isDestructive: true,
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      onDelete();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 48,
+      height: 48,
+      child: IconButton(
+        tooltip: 'Service actions',
+        onPressed: isLoading ? null : () => _openMenu(context),
+        icon: isLoading
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.primary,
+                ),
+              )
+            : const Icon(Icons.more_horiz_rounded),
+        color: AppColors.textDark,
+      ),
+    );
+  }
+}
+
+class _ServiceActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isDestructive;
+  final VoidCallback onTap;
+
+  const _ServiceActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isDestructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isDestructive ? Colors.redAccent : AppColors.textDark;
+
+    return Semantics(
+      button: true,
+      label: label,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: SizedBox(
+            height: 64,
+            child: Row(
+              children: [
+                Icon(icon, color: color, size: 24),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
