@@ -43,6 +43,13 @@ service firebase.storage {
         isMaxFiveMb();
     }
 
+    match /users/{userId}/pets/{petId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId) &&
+        isSupportedImage() &&
+        isMaxFiveMb();
+    }
+
     match /disputes/{disputeId}/{userId}/{fileName} {
       allow read: if signedIn();
       allow write: if isOwner(userId) &&

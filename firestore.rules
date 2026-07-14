@@ -814,6 +814,51 @@ service cloud.firestore {
       request.resource.data.updatedAt == request.time;
     }
 
+    function safePetKeys() {
+      return request.resource.data.keys().hasOnly([
+        'id',
+        'ownerId',
+        'name',
+        'animalType',
+        'sex',
+        'breed',
+        'dateOfBirth',
+        'weightKg',
+        'photoUrl',
+        'bio',
+        'isVaccinated',
+        'vaccinationDate',
+        'isDewormed',
+        'dewormingDate',
+        'knownAllergies',
+        'regularVet',
+        'createdAt',
+        'updatedAt',
+        'isDeleted',
+        'deletedAt'
+      ]);
+    }
+
+    function safePetCreate(userId, petId) {
+      return safePetKeys() &&
+        request.resource.data.id == petId &&
+        request.resource.data.ownerId == userId &&
+        request.resource.data.name is string &&
+        request.resource.data.animalType is string &&
+        request.resource.data.sex is string &&
+        request.resource.data.isDeleted == false &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.updatedAt == request.time;
+    }
+
+    function safePetUpdate(userId) {
+      return safePetKeys() &&
+        resource.data.ownerId == userId &&
+        request.resource.data.ownerId == resource.data.ownerId &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.updatedAt == request.time;
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create: if isOwner(userId) &&
@@ -825,6 +870,14 @@ service cloud.firestore {
       match /claimedOffers/{claimedOfferId} {
         allow read: if isOwner(userId);
         allow create, update, delete: if false;
+      }
+
+      match /pets/{petId} {
+        allow read: if signedIn() &&
+          (resource.data.isDeleted != true || isOwner(userId) || isAdmin());
+        allow create: if isOwner(userId) && safePetCreate(userId, petId);
+        allow update: if isOwner(userId) && safePetUpdate(userId);
+        allow delete: if false;
       }
 
       match /notificationTokens/{tokenId} {

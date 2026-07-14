@@ -23,6 +23,8 @@ import 'features/messages/presentation/screens/messages_screen.dart';
 import 'features/notifications/presentation/screens/notifications_screen.dart';
 import 'features/offers/presentation/screens/my_offers_screen.dart';
 import 'features/profile/presentation/screens/add_service_screen.dart';
+import 'features/profile/presentation/screens/add_edit_pet_screen.dart';
+import 'features/profile/presentation/screens/pet_detail_screen.dart';
 import 'features/profile/presentation/screens/profile_screen.dart';
 import 'features/restrictions/data/services/user_restriction_service.dart';
 import 'features/services/presentation/screens/services_screen.dart';
@@ -147,6 +149,27 @@ class PettexoApp extends StatelessWidget {
         "/messages": (context) => const MessagesScreen(),
         "/profile": (context) => const ProfileScreen(),
         "/profile/services/add": (context) => const AddServiceScreen(),
+        "/profile/pets/add": (context) {
+          final args = ModalRoute.of(context)?.settings.arguments;
+          final values = args is Map ? args : const <String, Object?>{};
+          return AddEditPetScreen(ownerId: '${values['ownerId'] ?? ''}');
+        },
+        "/profile/pets/edit": (context) {
+          final args = ModalRoute.of(context)?.settings.arguments;
+          final values = args is Map ? args : const <String, Object?>{};
+          return AddEditPetScreen(
+            ownerId: '${values['ownerId'] ?? ''}',
+            petId: '${values['petId'] ?? ''}',
+          );
+        },
+        "/profile/pets/detail": (context) {
+          final args = ModalRoute.of(context)?.settings.arguments;
+          final values = args is Map ? args : const <String, Object?>{};
+          return PetDetailScreen(
+            ownerUserId: '${values['ownerId'] ?? ''}',
+            petId: '${values['petId'] ?? ''}',
+          );
+        },
       },
     );
   }
