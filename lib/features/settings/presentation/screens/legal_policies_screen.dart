@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/policy_link_service.dart';
+import '../../../../core/widgets/app_snackbar.dart';
 
 class LegalPolicyDocument {
   final String title;
@@ -190,10 +191,9 @@ class LegalPolicyDetailScreen extends StatelessWidget {
       document.remoteConfigKey,
     );
     if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Unable to open policy link. Please try again later.'),
-        ),
+      AppSnackbar.error(
+        context,
+        message: 'Unable to open policy link. Please try again later.',
       );
     }
   }

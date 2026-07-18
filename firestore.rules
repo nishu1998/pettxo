@@ -10,6 +10,91 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
+    function requesterUserPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function requesterHasUserDoc() {
+      return signedIn() && exists(requesterUserPath());
+    }
+
+    function requesterAccountIsActive() {
+      return signedIn() &&
+        requesterHasUserDoc() &&
+        (
+          !get(requesterUserPath()).data.keys().hasAny(['accountStatus']) ||
+          get(requesterUserPath()).data.accountStatus == 'active'
+        );
+    }
+
+    function requesterAccountMissingOrActive() {
+      return signedIn() &&
+        (
+          !requesterHasUserDoc() ||
+          !get(requesterUserPath()).data.keys().hasAny(['accountStatus']) ||
+          get(requesterUserPath()).data.accountStatus == 'active'
+        );
+    }
+
+    function validNormalizedUsername(username) {
+      return username is string &&
+        username.matches('^[a-z0-9_.]{3,20}$') &&
+        !username.matches('^\\..*') &&
+        !username.matches('.*\\.$') &&
+        !username.matches('.*\\.\\..*') &&
+        !(username in [
+          'admin',
+          'administrator',
+          'api',
+          'auth',
+          'help',
+          'me',
+          'notifications',
+          'pettxo',
+          'root',
+          'security',
+          'settings',
+          'signin',
+          'signup',
+          'support',
+          'system',
+          'user',
+          'username'
+        ]);
+    }
+
+    function usernameReservationPath(normalizedUsername) {
+      return /databases/$(database)/documents/usernames/$(normalizedUsername);
+    }
+
+    function usernameFieldsConsistent(data) {
+      return data.username is string &&
+        data.usernameLowercase is string &&
+        data.username == data.usernameLowercase &&
+        validNormalizedUsername(data.usernameLowercase);
+    }
+
+    function usernameReservationMatchesUser(userId, normalizedUsername) {
+      return existsAfter(usernameReservationPath(normalizedUsername)) &&
+        getAfter(usernameReservationPath(normalizedUsername)).data.uid == userId &&
+        getAfter(usernameReservationPath(normalizedUsername)).data.username == normalizedUsername &&
+        getAfter(usernameReservationPath(normalizedUsername)).data.usernameLowercase == normalizedUsername;
+    }
+
+    function usernameReservationBackedByUserDoc(userId, normalizedUsername) {
+      return existsAfter(/databases/$(database)/documents/users/$(userId)) &&
+        getAfter(/databases/$(database)/documents/users/$(userId)).data.uid == userId &&
+        getAfter(/databases/$(database)/documents/users/$(userId)).data.username == normalizedUsername &&
+        getAfter(/databases/$(database)/documents/users/$(userId)).data.usernameLowercase == normalizedUsername;
+    }
+
+    function previousUsernameReleasedIfChanged(userId) {
+      return !resource.data.keys().hasAny(['usernameLowercase']) ||
+        request.resource.data.usernameLowercase == resource.data.usernameLowercase ||
+        !existsAfter(usernameReservationPath(resource.data.usernameLowercase)) ||
+        getAfter(usernameReservationPath(resource.data.usernameLowercase)).data.uid != userId;
+    }
+
     function isAdmin() {
       return request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -180,16 +265,74 @@ service cloud.firestore {
       return request.resource.data.diff({}).changedKeys().hasOnly([
         'uid',
         'role',
+        'displayName',
         'name',
         'username',
         'usernameLowercase',
+        'photoUrl',
         'state',
         'city',
         'profileImage',
         'bio',
-        'createdAt'
+        'createdAt',
+        'updatedAt'
       ]) &&
-      request.resource.data.createdAt == request.time;
+      request.resource.data.uid == request.auth.uid &&
+      request.resource.data.displayName is string &&
+      request.resource.data.name == request.resource.data.displayName &&
+      request.resource.data.photoUrl is string &&
+      request.resource.data.profileImage == request.resource.data.photoUrl &&
+      usernameFieldsConsistent(request.resource.data) &&
+      usernameReservationMatchesUser(
+        request.auth.uid,
+        request.resource.data.usernameLowercase
+      ) &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time;
+    }
+
+    function safeUserOwnerProfileBootstrapUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'role',
+        'displayName',
+        'name',
+        'username',
+        'usernameLowercase',
+        'photoUrl',
+        'state',
+        'city',
+        'profileImage',
+        'bio',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      request.resource.data.uid == resource.data.uid &&
+      request.resource.data.uid == request.auth.uid &&
+      request.resource.data.displayName is string &&
+      request.resource.data.name == request.resource.data.displayName &&
+      request.resource.data.photoUrl is string &&
+      request.resource.data.profileImage == request.resource.data.photoUrl &&
+      usernameFieldsConsistent(request.resource.data) &&
+      usernameReservationMatchesUser(
+        request.auth.uid,
+        request.resource.data.usernameLowercase
+      ) &&
+      (
+        !resource.data.keys().hasAny(['createdAt']) ||
+        request.resource.data.createdAt == resource.data.createdAt ||
+        request.resource.data.createdAt == request.time
+      ) &&
+      (
+        !resource.data.keys().hasAny(['usernameLowercase']) ||
+        resource.data.usernameLowercase == '' ||
+        request.resource.data.usernameLowercase == resource.data.usernameLowercase
+      ) &&
+      (
+        !resource.data.keys().hasAny(['role']) ||
+        resource.data.role == '' ||
+        request.resource.data.role == resource.data.role
+      ) &&
+      request.resource.data.updatedAt == request.time;
     }
 
     function safeServiceOwnerUpdate() {
@@ -313,34 +456,28 @@ service cloud.firestore {
 
     function safeUserOwnerUpdate() {
       return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'displayName',
         'name',
-        'username',
-        'usernameLowercase',
         'bio',
         'profileType',
+        'photoUrl',
         'profileImage',
         'city',
         'state',
         'country',
         'location',
         'address',
-        'email',
-        'phone',
-        'mobileNumber',
         'updatedAt'
       ]) &&
-      (
-        !request.resource.data.diff(resource.data).changedKeys().hasAny(['email']) ||
-        !request.resource.data.keys().hasAny(['email'])
-      ) &&
-      (
-        !request.resource.data.diff(resource.data).changedKeys().hasAny(['phone']) ||
-        !request.resource.data.keys().hasAny(['phone'])
-      ) &&
-      (
-        !request.resource.data.diff(resource.data).changedKeys().hasAny(['mobileNumber']) ||
-        !request.resource.data.keys().hasAny(['mobileNumber'])
-      ) &&
+      request.resource.data.uid == resource.data.uid &&
+      request.resource.data.uid == request.auth.uid &&
+      request.resource.data.createdAt == resource.data.createdAt &&
+      request.resource.data.username == resource.data.username &&
+      request.resource.data.usernameLowercase == resource.data.usernameLowercase &&
+      request.resource.data.displayName is string &&
+      request.resource.data.name == request.resource.data.displayName &&
+      request.resource.data.photoUrl is string &&
+      request.resource.data.profileImage == request.resource.data.photoUrl &&
       request.resource.data.updatedAt == request.time;
     }
 
@@ -348,8 +485,14 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly([
         'uid',
         'email',
+        'phoneNumber',
         'phone',
         'mobileNumber',
+        'emailVerified',
+        'phoneVerified',
+        'providers',
+        'accountStatus',
+        'scheduledDeletionAt',
         'acceptedTermsAt',
         'acceptedPrivacyAt',
         'acceptedProviderAgreementAt',
@@ -359,18 +502,6 @@ service cloud.firestore {
         'deletionRequestStatus'
       ]) &&
       request.resource.data.uid == userId &&
-      (
-        !request.resource.data.keys().hasAny(['email']) ||
-        request.resource.data.email is string
-      ) &&
-      (
-        !request.resource.data.keys().hasAny(['phone']) ||
-        request.resource.data.phone is string
-      ) &&
-      (
-        !request.resource.data.keys().hasAny(['mobileNumber']) ||
-        request.resource.data.mobileNumber is string
-      ) &&
       (
         !request.resource.data.keys().hasAny(['acceptedTermsAt']) ||
         request.resource.data.acceptedTermsAt is timestamp
@@ -382,6 +513,43 @@ service cloud.firestore {
       (
         !request.resource.data.keys().hasAny(['acceptedProviderAgreementAt']) ||
         request.resource.data.acceptedProviderAgreementAt is timestamp
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['email']) ||
+        request.resource.data.email is string
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['phoneNumber']) ||
+        request.resource.data.phoneNumber is string
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['phone']) ||
+        request.resource.data.phone is string
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['mobileNumber']) ||
+        request.resource.data.mobileNumber is string
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['emailVerified']) ||
+        request.resource.data.emailVerified is bool
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['phoneVerified']) ||
+        request.resource.data.phoneVerified is bool
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['providers']) ||
+        request.resource.data.providers is list
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['accountStatus']) ||
+        request.resource.data.accountStatus is string
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['scheduledDeletionAt']) ||
+        request.resource.data.scheduledDeletionAt == null ||
+        request.resource.data.scheduledDeletionAt is timestamp
       ) &&
       (
         !request.resource.data.keys().hasAny(['deletionRequestedAt']) ||
@@ -401,6 +569,12 @@ service cloud.firestore {
 
     function safeUserPrivateOwnerUpdate(userId) {
       return safeUserPrivateOwnerWrite(userId) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'acceptedTermsAt',
+          'acceptedPrivacyAt',
+          'acceptedProviderAgreementAt',
+          'updatedAt'
+        ]) &&
         request.resource.data.createdAt == resource.data.createdAt;
     }
 
@@ -859,12 +1033,50 @@ service cloud.firestore {
         request.resource.data.updatedAt == request.time;
     }
 
+    function safeUsernameReservationWrite(normalizedUsername) {
+      return request.resource.data.keys().hasOnly([
+        'uid',
+        'username',
+        'usernameLowercase',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      request.resource.data.uid == request.auth.uid &&
+      request.resource.data.username == normalizedUsername &&
+      request.resource.data.usernameLowercase == normalizedUsername &&
+      validNormalizedUsername(normalizedUsername) &&
+      request.resource.data.updatedAt == request.time;
+    }
+
+    match /usernames/{normalizedUsername} {
+      allow read: if signedIn();
+      allow create: if signedIn() &&
+        safeUsernameReservationWrite(normalizedUsername) &&
+        request.resource.data.createdAt == request.time;
+      allow update: if signedIn() &&
+        resource.data.uid == request.auth.uid &&
+        safeUsernameReservationWrite(normalizedUsername) &&
+        request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() &&
+        resource.data.uid == request.auth.uid &&
+        (
+          !existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.usernameLowercase != normalizedUsername
+        );
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create: if isOwner(userId) &&
+        requesterAccountMissingOrActive() &&
         request.resource.data.uid == userId &&
         safeUserOwnerCreate();
-      allow update: if isOwner(userId) && safeUserOwnerUpdate();
+      allow update: if isOwner(userId) &&
+        requesterAccountMissingOrActive() &&
+        (
+          safeUserOwnerUpdate() ||
+          safeUserOwnerProfileBootstrapUpdate()
+        );
       allow delete: if false;
 
       match /claimedOffers/{claimedOfferId} {
@@ -875,15 +1087,23 @@ service cloud.firestore {
       match /pets/{petId} {
         allow read: if signedIn() &&
           (resource.data.isDeleted != true || isOwner(userId) || isAdmin());
-        allow create: if isOwner(userId) && safePetCreate(userId, petId);
-        allow update: if isOwner(userId) && safePetUpdate(userId);
+        allow create: if isOwner(userId) &&
+          requesterAccountIsActive() &&
+          safePetCreate(userId, petId);
+        allow update: if isOwner(userId) &&
+          requesterAccountIsActive() &&
+          safePetUpdate(userId);
         allow delete: if false;
       }
 
       match /notificationTokens/{tokenId} {
         allow read: if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && safeNotificationTokenCreate();
-        allow update: if isOwner(userId) && safeNotificationTokenUpdate();
+        allow create: if isOwner(userId) &&
+          requesterAccountIsActive() &&
+          safeNotificationTokenCreate();
+        allow update: if isOwner(userId) &&
+          requesterAccountIsActive() &&
+          safeNotificationTokenUpdate();
         allow delete: if isOwner(userId) || isAdmin();
       }
 
@@ -893,10 +1113,15 @@ service cloud.firestore {
         allow read: if isOwner(userId) || canReviewProviderVerification();
         allow create: if docId == 'main' &&
           isOwner(userId) &&
+          requesterAccountIsActive() &&
           safeProviderVerificationOwnerCreate(userId);
         allow update: if docId == 'main' &&
           (
-            (isOwner(userId) && safeProviderVerificationOwnerUpdate(userId)) ||
+            (
+              isOwner(userId) &&
+              requesterAccountIsActive() &&
+              safeProviderVerificationOwnerUpdate(userId)
+            ) ||
             canReviewProviderVerification()
           );
         allow delete: if false;
@@ -906,10 +1131,12 @@ service cloud.firestore {
         allow read: if isOwner(userId) || isAdmin();
         allow create: if docId == 'main' &&
           isOwner(userId) &&
+          requesterAccountIsActive() &&
           safeProviderBankDetailsOwnerWrite(userId) &&
           request.resource.data.createdAt == request.time;
         allow update: if docId == 'main' &&
           isOwner(userId) &&
+          requesterAccountIsActive() &&
           safeProviderBankDetailsOwnerWrite(userId) &&
           request.resource.data.createdAt == resource.data.createdAt;
         allow delete: if false;
@@ -931,8 +1158,12 @@ service cloud.firestore {
 
     match /userPrivate/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) && safeUserPrivateOwnerCreate(userId);
-      allow update: if isOwner(userId) && safeUserPrivateOwnerUpdate(userId);
+      allow create: if isOwner(userId) &&
+        requesterAccountMissingOrActive() &&
+        safeUserPrivateOwnerCreate(userId);
+      allow update: if isOwner(userId) &&
+        requesterAccountMissingOrActive() &&
+        safeUserPrivateOwnerUpdate(userId);
       allow delete: if false;
     }
 
@@ -947,7 +1178,7 @@ service cloud.firestore {
           resource.data.followerId == request.auth.uid ||
           resource.data.followeeId == request.auth.uid
         );
-      allow create: if signedIn() &&
+      allow create: if requesterAccountIsActive() &&
         request.resource.data.diff({}).changedKeys().hasOnly([
           'followerId',
           'followeeId',
@@ -958,15 +1189,15 @@ service cloud.firestore {
         request.resource.data.followeeId != request.auth.uid &&
         request.resource.id == (request.resource.data.followerId + '_' + request.resource.data.followeeId) &&
         request.resource.data.createdAt == request.time;
-      allow delete: if signedIn() &&
+      allow delete: if requesterAccountIsActive() &&
         resource.data.followerId == request.auth.uid;
       allow update: if false;
     }
 
     match /hashtags/{tag} {
       allow read: if signedIn();
-      allow create: if signedIn() && safeHashtagCreate(tag);
-      allow update: if signedIn() && safeHashtagUpdate(tag);
+      allow create: if requesterAccountIsActive() && safeHashtagCreate(tag);
+      allow update: if requesterAccountIsActive() && safeHashtagUpdate(tag);
       allow delete: if false;
     }
 
@@ -981,8 +1212,8 @@ service cloud.firestore {
           resource.data.authorId == request.auth.uid
         )
       );
-      allow create: if signedIn() && safeSocialPostCreate();
-      allow update: if signedIn() &&
+      allow create: if requesterAccountIsActive() && safeSocialPostCreate();
+      allow update: if requesterAccountIsActive() &&
         (
           (canModerateSocialContent() && safeAdminSocialModerationUpdate()) ||
           safeSocialPostSoftDelete() ||
@@ -995,7 +1226,7 @@ service cloud.firestore {
 
       match /likes/{userId} {
         allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
-        allow create: if signedIn() &&
+        allow create: if requesterAccountIsActive() &&
           request.auth.uid == userId &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.visibilityStatus == 'visible' &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.moderationStatus == 'approved' &&
@@ -1005,7 +1236,7 @@ service cloud.firestore {
           ]) &&
           request.resource.data.userId == request.auth.uid &&
           request.resource.data.createdAt == request.time;
-        allow delete: if signedIn() &&
+        allow delete: if requesterAccountIsActive() &&
           request.auth.uid == userId &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.visibilityStatus == 'visible' &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.moderationStatus == 'approved';
@@ -1014,7 +1245,7 @@ service cloud.firestore {
 
       match /reports/{userId} {
         allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);
-        allow create: if signedIn() &&
+        allow create: if requesterAccountIsActive() &&
           request.auth.uid == userId &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.visibilityStatus == 'visible' &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.moderationStatus == 'approved' &&
@@ -1039,11 +1270,11 @@ service cloud.firestore {
             resource.data.authorId == request.auth.uid
           )
         );
-        allow create: if signedIn() &&
+        allow create: if requesterAccountIsActive() &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.visibilityStatus == 'visible' &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.moderationStatus == 'approved' &&
           safeCommentCreate(postId, commentId);
-        allow update: if signedIn() &&
+        allow update: if requesterAccountIsActive() &&
           (
             (canModerateSocialContent() && safeAdminSocialModerationUpdate()) ||
             safeCommentSoftDelete() ||
@@ -1053,7 +1284,7 @@ service cloud.firestore {
 
         match /reports/{userId} {
           allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);
-          allow create: if signedIn() &&
+          allow create: if requesterAccountIsActive() &&
             request.auth.uid == userId &&
             get(/databases/$(database)/documents/socialPosts/$(postId)/comments/$(commentId)).data.visibilityStatus == 'visible' &&
             get(/databases/$(database)/documents/socialPosts/$(postId)/comments/$(commentId)).data.moderationStatus == 'approved' &&
@@ -1086,13 +1317,13 @@ service cloud.firestore {
         )
       );
 
-      allow create: if signedIn() &&
+      allow create: if requesterAccountIsActive() &&
         request.resource.data.ownerUserId == request.auth.uid &&
         safeServiceVerificationCreate(request.auth.uid);
 
       allow update: if isAdmin() ||
         (
-          signedIn() &&
+          requesterAccountIsActive() &&
           existingOwnerId() == request.auth.uid &&
           request.resource.data.ownerUserId == resource.data.ownerUserId &&
           request.resource.data.moderationStatus == resource.data.moderationStatus &&
@@ -1103,7 +1334,8 @@ service cloud.firestore {
 
       match /reviews/{reviewId} {
         allow read: if signedIn();
-        allow create: if signedIn() && request.resource.data.reviewerId == request.auth.uid;
+        allow create: if requesterAccountIsActive() &&
+          request.resource.data.reviewerId == request.auth.uid;
         allow update, delete: if isAdmin();
       }
 
@@ -1245,13 +1477,17 @@ service cloud.firestore {
             resource.data.reportedBy == request.auth.uid
           )
         );
-      allow create: if signedIn() &&
+      allow create: if requesterAccountIsActive() &&
         request.resource.data.status == 'pending' &&
         (
           request.resource.data.reportedBy == request.auth.uid ||
           request.resource.data.reporterId == request.auth.uid
         );
       allow update, delete: if isAdmin();
+    }
+
+    match /accountDeletionJobs/{jobId} {
+      allow read, write: if false;
     }
 
     match /disputes/{disputeId} {

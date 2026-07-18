@@ -12,6 +12,7 @@ class CommonPhoneField extends StatefulWidget {
   final TextInputAction? textInputAction;
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
+  final bool enabled;
 
   const CommonPhoneField({
     super.key,
@@ -22,6 +23,7 @@ class CommonPhoneField extends StatefulWidget {
     this.textInputAction,
     this.onChanged,
     this.onSubmitted,
+    this.enabled = true,
   });
 
   @override
@@ -77,6 +79,7 @@ class _CommonPhoneFieldState extends State<CommonPhoneField> {
             : const [],
       ),
       child: IntlPhoneField(
+        enabled: widget.enabled,
         focusNode: _focusNode,
         initialCountryCode: 'IN',
         initialValue: widget.initialNumber,
@@ -117,6 +120,7 @@ class _CommonPhoneFieldState extends State<CommonPhoneField> {
         decoration: InputDecoration(
           labelText: widget.labelText,
           errorText: widget.errorText,
+          enabled: widget.enabled,
           counterText: '',
           filled: true,
           fillColor: Colors.white,

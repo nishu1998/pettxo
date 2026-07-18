@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/constants/app_colors.dart';
 import '../models/onboarding_model.dart';
 
 class OnboardingPage extends StatelessWidget {
@@ -25,8 +26,8 @@ class OnboardingPage extends StatelessWidget {
                   data.tagLine,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
+                    color: AppColors.primary,
+                    fontSize: 14,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.5,
                   ),

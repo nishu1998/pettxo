@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -11,12 +12,15 @@ import 'core/services/policy_link_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'core/widgets/network_status_banner.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
+import 'features/auth/presentation/screens/auth_gateway_screen.dart';
 import 'features/bookings/presentation/screens/bookings_screen.dart';
 import 'features/bookings/presentation/screens/provider_earnings_screen.dart';
 import 'features/auth/presentation/screens/signin_screen.dart';
 import 'features/auth/presentation/screens/signin_with_phone_screen.dart';
 import 'features/auth/presentation/screens/signup_screen.dart';
 import 'features/auth/presentation/screens/signup_with_phone_screen.dart';
+import 'features/auth/presentation/screens/email_verification_screen.dart';
+import 'features/auth/presentation/screens/link_phone_screen.dart';
 import 'features/explore/presentation/screens/explore_screen.dart';
 import 'features/home/presentation/screens/home_screen.dart';
 import 'features/messages/presentation/screens/messages_screen.dart';
@@ -43,6 +47,7 @@ void _debugStartupLog(String message) {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseMessaging.onBackgroundMessage(
@@ -114,6 +119,9 @@ class PettexoApp extends StatelessWidget {
         "/signin": (context) => const SigninScreen(),
         "/signup/phone": (context) => const SignUpWithPhoneScreen(),
         "/signin/phone": (context) => const SignInWithPhoneScreen(),
+        "/auth-gate": (context) => const AuthGatewayScreen(),
+        "/verify-email": (context) => const EmailVerificationScreen(),
+        "/link-phone": (context) => const LinkPhoneScreen(),
         "/profile-type": (context) => const ProfileTypeScreen(),
         "/home": (context) => const HomeScreen(),
         "/services": (context) => const ServicesScreen(),

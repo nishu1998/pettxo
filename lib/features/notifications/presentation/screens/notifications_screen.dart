@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../bookings/domain/models/booking_flow_models.dart';
 import '../../../bookings/presentation/screens/booking_detail_screen.dart';
@@ -198,9 +199,7 @@ class NotificationsScreen extends StatelessWidget {
 
         if (profileUserId.isEmpty) {
           Navigator.pushNamed(context, '/home');
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Profile unavailable.')));
+          AppSnackbar.warning(context, message: 'Profile unavailable.');
           return;
         }
 

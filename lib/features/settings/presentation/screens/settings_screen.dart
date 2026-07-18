@@ -12,7 +12,8 @@ import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../data/services/settings_service.dart';
 import '../../domain/models/app_settings.dart';
-import 'account_info_screen.dart';
+import 'account_security_screen.dart';
+import '../../../auth/presentation/screens/auth_gateway_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -32,7 +33,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ProviderOnboardingSnapshot? _providerOnboarding;
   bool _isLoading = true;
   bool _isSigningOut = false;
-  bool _isDeletingAccount = false;
   String? _loadError;
 
   @override
@@ -105,7 +105,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _authService.logout();
       if (!mounted) return;
 
-      Navigator.pushNamedAndRemoveUntil(context, "/signin", (route) => false);
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const AuthGatewayScreen()),
+        (route) => false,
+      );
     } catch (_) {
       if (!mounted) return;
 
@@ -113,60 +116,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       AppFeedback.show(
         context,
         message: 'Unable to sign out right now. Please try again.',
-        tone: AppFeedbackTone.error,
-      );
-    }
-  }
-
-  Future<void> _requestAccountDeletion() async {
-    if (_isDeletingAccount || _isSigningOut) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Delete account?'),
-          content: const Text(
-            'This submits an account deletion request. Pettxo will restrict your profile, services, bookings, and chats while payment, booking, KYC, and dispute records required for legal retention are preserved.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text(
-                'Delete account',
-                style: TextStyle(color: Color(0xFFE15656)),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true || !mounted) return;
-
-    setState(() => _isDeletingAccount = true);
-    try {
-      final message = await _authService.requestAccountDeletion();
-      if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: message,
-        tone: AppFeedbackTone.success,
-      );
-      await _authService.logout();
-      if (!mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, "/signin", (route) => false);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _isDeletingAccount = false);
-      AppFeedback.show(
-        context,
-        message:
-            'Unable to request account deletion right now. Please try again.',
         tone: AppFeedbackTone.error,
       );
     }
@@ -401,15 +350,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  _SectionLabel(title: 'ACCOUNT INFO'),
+                  _SectionLabel(title: 'ACCOUNT'),
                   _SettingsCard(
                     child: Column(
                       children: [
                         _NavTile(
-                          icon: Icons.manage_accounts_outlined,
-                          title: 'View account info',
+                          icon: Icons.security_outlined,
+                          title: 'Account & Security',
                           subtitle: const Text(
-                            'Name, username, email, phone and sign-in provider',
+                            'Linked methods, password, username, and account deletion',
                             style: TextStyle(
                               color: AppColors.textGrey,
                               height: 1.4,
@@ -419,8 +368,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (_) =>
-                                    AccountInfoScreen(profile: profile),
+                                builder: (_) => AccountSecurityScreen(
+                                  initialProfile: profile,
+                                ),
                               ),
                             );
                           },
@@ -464,62 +414,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  _SectionLabel(title: 'ACCOUNT'),
+                  _SectionLabel(title: 'SESSION'),
                   _SettingsCard(
-                    child: Column(
-                      children: [
-                        _NavTile(
-                          icon: Icons.delete_outline_rounded,
-                          title: 'Delete account',
-                          titleColor: const Color(0xFFE15656),
-                          iconColor: const Color(0xFFE15656),
-                          iconBackgroundColor: const Color(0xFFFFF1EF),
-                          subtitle: const Text(
-                            'Legal and payment records stay protected',
-                            style: TextStyle(
-                              color: AppColors.textGrey,
-                              height: 1.4,
+                    child: _NavTile(
+                      icon: Icons.logout_rounded,
+                      title: _isSigningOut ? 'Signing out...' : 'Sign out',
+                      titleColor: const Color(0xFFE15656),
+                      iconColor: const Color(0xFFE15656),
+                      iconBackgroundColor: const Color(0xFFFFF1EF),
+                      subtitle: null,
+                      trailing: _isSigningOut
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(
+                              Icons.chevron_right_rounded,
+                              color: Color(0xFFE15656),
                             ),
-                          ),
-                          trailing: _isDeletingAccount
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.chevron_right_rounded,
-                                  color: Color(0xFFE15656),
-                                ),
-                          onTap: _isDeletingAccount
-                              ? null
-                              : _requestAccountDeletion,
-                        ),
-                        const Divider(height: 1),
-                        _NavTile(
-                          icon: Icons.logout_rounded,
-                          title: _isSigningOut ? 'Signing out...' : 'Sign out',
-                          titleColor: const Color(0xFFE15656),
-                          iconColor: const Color(0xFFE15656),
-                          iconBackgroundColor: const Color(0xFFFFF1EF),
-                          subtitle: null,
-                          trailing: _isSigningOut
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.chevron_right_rounded,
-                                  color: Color(0xFFE15656),
-                                ),
-                          onTap: _isSigningOut ? null : _signOut,
-                        ),
-                      ],
+                      onTap: _isSigningOut ? null : _signOut,
                     ),
                   ),
                 ],

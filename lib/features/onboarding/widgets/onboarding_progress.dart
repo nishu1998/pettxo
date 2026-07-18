@@ -17,7 +17,7 @@ class OnboardingProgress extends StatelessWidget {
           return Container(
             height: 8,
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.9),
+              color: AppColors.primary.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(999),
               boxShadow: [
                 BoxShadow(
@@ -32,7 +32,9 @@ class OnboardingProgress extends StatelessWidget {
                 Positioned.fill(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(999),
-                    child: ColoredBox(color: Colors.grey.shade200),
+                    child: ColoredBox(
+                      color: AppColors.primary.withValues(alpha: 0.18),
+                    ),
                   ),
                 ),
                 FractionallySizedBox(

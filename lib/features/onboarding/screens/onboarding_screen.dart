@@ -103,6 +103,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final brandLogoSize = screenWidth < 360 ? 46.0 : 50.0;
+    final brandFontSize = screenWidth < 360 ? 20.0 : 22.0;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Stack(
@@ -123,18 +127,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           SizedBox(
-                            width: 26,
-                            height: 26,
+                            width: brandLogoSize,
+                            height: brandLogoSize,
                             child: SvgPicture.asset(
                               'assets/brand/pettxo_logo.svg',
                               fit: BoxFit.cover,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          const Text(
+                          Text(
                             'Pettxo',
                             style: TextStyle(
-                              fontSize: 17,
+                              fontSize: brandFontSize,
                               fontWeight: FontWeight.w700,
                               color: AppColors.primary,
                             ),
@@ -159,9 +162,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           style: TextButton.styleFrom(
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 10,
+                              horizontal: 14,
+                              vertical: 5,
                             ),
+                            minimumSize: const Size(0, 32),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(999),
                             ),

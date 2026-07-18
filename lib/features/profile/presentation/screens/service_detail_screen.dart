@@ -12,6 +12,7 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
+import '../../../../core/widgets/app_snackbar.dart';
 import '../../../bookings/data/repositories/booking_review_repository.dart';
 import '../../../bookings/domain/models/booking_review_model.dart';
 import '../../../bookings/presentation/screens/slot_selection_screen.dart';
@@ -107,12 +108,10 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
 
   void _openBookingFlow(BuildContext context) {
     if (service.isPausedByVerification) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
+      AppSnackbar.warning(
+        context,
+        message:
             'This service is temporarily unavailable while provider verification is pending.',
-          ),
-        ),
       );
       return;
     }

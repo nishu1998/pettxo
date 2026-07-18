@@ -4,8 +4,8 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:flutter/foundation.dart';
 
+import '../../../../core/identity/username_utils.dart' as username_utils;
 import '../../../../core/services/firestore_cache_service.dart';
 import '../../../restrictions/domain/models/user_restriction_state.dart';
 import '../../domain/models/user_profile.dart';
@@ -23,50 +23,8 @@ class ProfileRepository {
     return _firestore.collection('userPrivate').doc(userId);
   }
 
-  Future<void> _sanitizeCurrentUserPrivateFields(
-    Map<String, dynamic> publicData,
-    Map<String, dynamic> privateData,
-    bool privateExists,
-  ) async {
-    final email = (publicData['email'] as String? ?? '').trim();
-    final phone =
-        (publicData['phone'] as String? ??
-                publicData['mobileNumber'] as String? ??
-                '')
-            .trim();
-    final hasSensitivePublicFields =
-        publicData.containsKey('email') ||
-        publicData.containsKey('phone') ||
-        publicData.containsKey('mobileNumber');
-    if (!hasSensitivePublicFields) return;
-
-    try {
-      final batch = _firestore.batch();
-      if (email.isNotEmpty || phone.isNotEmpty) {
-        batch.set(_privateUserDoc(_uid), {
-          'uid': _uid,
-          if (email.isNotEmpty && !privateData.containsKey('email'))
-            'email': email,
-          if (phone.isNotEmpty && !privateData.containsKey('phone'))
-            'phone': phone,
-          if (phone.isNotEmpty && !privateData.containsKey('mobileNumber'))
-            'mobileNumber': phone,
-          if (!privateExists) 'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
-      batch.set(_publicUserDoc(_uid), {
-        'email': FieldValue.delete(),
-        'phone': FieldValue.delete(),
-        'mobileNumber': FieldValue.delete(),
-      }, SetOptions(merge: true));
-      await batch.commit();
-    } catch (error, stackTrace) {
-      debugPrint(
-        'ProfileRepository private field sanitize skipped for uid=$_uid: $error',
-      );
-      debugPrintStack(stackTrace: stackTrace);
-    }
+  DocumentReference<Map<String, dynamic>> _usernameDoc(String normalized) {
+    return _firestore.collection('usernames').doc(normalized);
   }
 
   String get _uid {
@@ -85,11 +43,6 @@ class ProfileRepository {
       }
       final privateSnapshot = await _privateUserDoc(_uid).get();
       final privateData = privateSnapshot.data() ?? const <String, dynamic>{};
-      await _sanitizeCurrentUserPrivateFields(
-        publicData,
-        privateData,
-        privateSnapshot.exists,
-      );
       return UserProfile.fromMap({...publicData, ...privateData});
     });
   }
@@ -104,11 +57,6 @@ class ProfileRepository {
       throw Exception('Profile not found');
     }
     final privateData = snapshots[1].data() ?? const <String, dynamic>{};
-    await _sanitizeCurrentUserPrivateFields(
-      publicData,
-      privateData,
-      snapshots[1].exists,
-    );
     return UserProfile.fromMap({...publicData, ...privateData});
   }
 
@@ -407,31 +355,21 @@ class ProfileRepository {
     String username, {
     String? excludeUid,
   }) async {
-    final normalized = _normalizeUsername(username);
+    final normalized = username_utils.normalizeUsername(username);
     if (normalized.isEmpty) return false;
 
-    final normalizedQuery = await _firestore
-        .collection('users')
-        .where('usernameLowercase', isEqualTo: normalized)
-        .limit(1)
-        .get();
+    final validationError = username_utils.validateNormalizedUsername(
+      normalized,
+    );
+    if (validationError != null) return false;
 
-    if (normalizedQuery.docs.isNotEmpty) {
-      final matchedUid = normalizedQuery.docs.first.id;
-      return excludeUid != null && matchedUid == excludeUid;
-    }
-
-    final legacyQuery = await _firestore
-        .collection('users')
-        .where('username', isEqualTo: normalized)
-        .limit(1)
-        .get();
-
-    if (legacyQuery.docs.isEmpty) {
+    final reservationSnapshot = await _usernameDoc(normalized).get();
+    if (!reservationSnapshot.exists) {
       return true;
     }
 
-    final matchedUid = legacyQuery.docs.first.id;
+    final matchedUid = (reservationSnapshot.data()?['uid'] as String? ?? '')
+        .trim();
     return excludeUid != null && matchedUid == excludeUid;
   }
 
@@ -447,36 +385,24 @@ class ProfileRepository {
   Future<void> updateCurrentUserProfile({
     required String name,
     required String location,
-    required String phone,
     required String bio,
     String? profileImageUrl,
   }) async {
-    final privateSnapshot = await _privateUserDoc(_uid).get();
     final normalizedLocationPayload = _buildNormalizedLocationPayload(location);
     final publicPayload = <String, dynamic>{
+      'displayName': name.trim(),
       'name': name.trim(),
       'bio': bio.trim(),
       'updatedAt': FieldValue.serverTimestamp(),
       ...normalizedLocationPayload,
     };
-    final privatePayload = <String, dynamic>{
-      'uid': _uid,
-      'phone': phone.trim(),
-      'mobileNumber': phone.trim(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-    if (!privateSnapshot.exists) {
-      privatePayload['createdAt'] = FieldValue.serverTimestamp();
-    }
 
     if (profileImageUrl != null && profileImageUrl.trim().isNotEmpty) {
+      publicPayload['photoUrl'] = profileImageUrl.trim();
       publicPayload['profileImage'] = profileImageUrl.trim();
     }
 
-    final batch = _firestore.batch();
-    batch.set(_publicUserDoc(_uid), publicPayload, SetOptions(merge: true));
-    batch.set(_privateUserDoc(_uid), privatePayload, SetOptions(merge: true));
-    await batch.commit();
+    await _publicUserDoc(_uid).set(publicPayload, SetOptions(merge: true));
   }
 
   Map<String, dynamic> _buildNormalizedLocationPayload(String location) {
@@ -524,9 +450,6 @@ class ProfileRepository {
     return payload;
   }
 
-  String normalizeUsername(String username) => _normalizeUsername(username);
-
-  String _normalizeUsername(String username) {
-    return username.trim().replaceAll('@', '').toLowerCase();
-  }
+  String normalizeUsername(String username) =>
+      username_utils.normalizeUsername(username);
 }

@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:intl_phone_field/country_picker_dialog.dart';
+import 'package:intl_phone_field/intl_phone_field.dart';
 
+import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
-import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
-import '../../data/services/user_service.dart';
 import '../../domain/models/phone_auth_flow.dart';
-import '../widgets/auth_shell.dart';
-import '../widgets/common_phone_field.dart';
+import '../widgets/phone_auth_verification_overlay.dart';
+import 'auth_gateway_screen.dart';
 import 'otp_verification_screen.dart';
 
 class SignInWithPhoneScreen extends StatefulWidget {
@@ -18,7 +20,6 @@ class SignInWithPhoneScreen extends StatefulWidget {
 
 class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
   final AuthService _authService = AuthService();
-  final UserService _userService = UserService();
   final FocusNode _phoneFocus = FocusNode();
 
   String? _phoneError;
@@ -63,16 +64,17 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
         _didNavigate = true;
         await _authService.signInWithCredential(credential);
         if (!mounted) return;
-        final route = await _userService.getPostAuthRoute();
-        if (!mounted) return;
-        Navigator.pushNamedAndRemoveUntil(context, route, (route) => false);
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(
+            builder: (_) =>
+                const AuthGatewayScreen(reloadUserBeforeResolve: true),
+          ),
+          (route) => false,
+        );
       },
       codeSent: (verificationId, resendToken) async {
         if (_didNavigate || !mounted) return;
         _didNavigate = true;
-        setState(() {
-          _isLoading = false;
-        });
         await Navigator.push(
           context,
           MaterialPageRoute(
@@ -84,6 +86,11 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
             ),
           ),
         );
+        if (!mounted) return;
+        setState(() {
+          _isLoading = false;
+          _didNavigate = false;
+        });
       },
       verificationFailed: (message) async {
         if (!mounted) return;
@@ -103,64 +110,422 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return AuthShell(
-      title: 'Welcome Back',
-      subtitle:
-          'Sign in to continue exploring pets, bookings, and your community.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final compact = screenWidth < 380;
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: Stack(
         children: [
-          CommonPhoneField(
-            focusNode: _phoneFocus,
-            textInputAction: TextInputAction.done,
-            labelText: 'Phone Number',
-            errorText: _phoneError,
-            onChanged: (value) {
-              setState(() {
-                _fullPhoneNumber = value.trim();
-                _phoneError = _validatePhone(_fullPhoneNumber);
-              });
-            },
-            onSubmitted: (_) => _continueWithPhone(),
-          ),
-          const SizedBox(height: 12),
-          CustomButton(
-            text: _isLoading ? 'Please wait...' : 'Continue',
-            onPressed: _isLoading ? null : _continueWithPhone,
-          ),
-          const SizedBox(height: 24),
-          Center(
-            child: TextButton(
-              onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFFF75927),
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(0, 0),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          DecoratedBox(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Color(0xFFFFFCF8),
+                  AppColors.background,
+                  Color(0xFFFDF4ED),
+                ],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
               ),
-              child: const Text(
-                'Continue with Email',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+            ),
+            child: SafeArea(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: compact ? 16 : 18,
+                      vertical: compact ? 12 : 16,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight - (compact ? 24 : 32),
+                      ),
+                      child: Column(
+                        children: [
+                          SizedBox(height: compact ? 60 : 68),
+                          SizedBox(
+                            width: compact ? 82 : 92,
+                            height: compact ? 70 : 76,
+                            child: SvgPicture.asset(
+                              'assets/brand/pettxo_logo.svg',
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                          Transform.translate(
+                            offset: const Offset(0, -8),
+                            child: Text(
+                              'Pettxo',
+                              style: TextStyle(
+                                color: AppColors.primary,
+                                fontSize: compact ? 28 : 30,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -0.8,
+                              ),
+                            ),
+                          ),
+                          SizedBox(height: compact ? 0 : 4),
+                          Text(
+                            'Welcome back',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontSize: compact ? 28 : 30,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: -1.2,
+                              height: 1.02,
+                            ),
+                          ),
+                          SizedBox(height: compact ? 12 : 14),
+                          Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: compact ? 6 : 8,
+                            ),
+                            child: Text(
+                              'Sign in with your phone number to continue.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: const Color(0xFF958E88),
+                                fontSize: compact ? 15 : 16,
+                                height: 1.4,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          SizedBox(height: compact ? 28 : 32),
+                          _PhoneSignInField(
+                            focusNode: _phoneFocus,
+                            errorText: _phoneError,
+                            textInputAction: TextInputAction.done,
+                            onChanged: (value) {
+                              setState(() {
+                                _fullPhoneNumber = value.trim();
+                                _phoneError = _validatePhone(_fullPhoneNumber);
+                              });
+                            },
+                            onSubmitted: (_) => _continueWithPhone(),
+                          ),
+                          SizedBox(height: compact ? 16 : 18),
+                          _PhoneAuthPrimaryButton(
+                            label: _isLoading ? 'Please wait...' : 'Continue',
+                            compact: compact,
+                            isLoading: _isLoading,
+                            onPressed: _isLoading ? null : _continueWithPhone,
+                          ),
+                          SizedBox(height: compact ? 10 : 12),
+                          _PhoneAuthSecondaryButton(
+                            label: 'Continue with email',
+                            compact: compact,
+                            onPressed: () => Navigator.pop(context),
+                          ),
+                          SizedBox(height: compact ? 20 : 22),
+                          Padding(
+                            padding: EdgeInsets.only(bottom: compact ? 6 : 8),
+                            child: Wrap(
+                              alignment: WrapAlignment.center,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                Text(
+                                  'New to Pettxo? ',
+                                  style: TextStyle(
+                                    color: const Color(0xFF958E88),
+                                    fontSize: compact ? 15 : 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () {
+                                    Navigator.pushReplacementNamed(
+                                      context,
+                                      '/signup',
+                                    );
+                                  },
+                                  child: Text(
+                                    'Create account',
+                                    style: TextStyle(
+                                      color: AppColors.primary,
+                                      fontSize: compact ? 15 : 16,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ),
-          const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'New to Pettxo?',
-                style: TextStyle(color: Theme.of(context).hintColor),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.pushReplacementNamed(context, '/signup');
-                },
-                child: const Text('Create account'),
+          if (_isLoading)
+            const PhoneAuthVerificationOverlay(
+              message: 'Verifying your number securely...',
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PhoneSignInField extends StatefulWidget {
+  const _PhoneSignInField({
+    this.focusNode,
+    this.errorText,
+    this.textInputAction,
+    this.onChanged,
+    this.onSubmitted,
+  });
+
+  final FocusNode? focusNode;
+  final String? errorText;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onChanged;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<_PhoneSignInField> createState() => _PhoneSignInFieldState();
+}
+
+class _PhoneSignInFieldState extends State<_PhoneSignInField> {
+  late final FocusNode _focusNode;
+  late final bool _ownsFocusNode;
+  bool _isFocused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ownsFocusNode = widget.focusNode == null;
+    _focusNode = widget.focusNode ?? FocusNode();
+    _isFocused = _focusNode.hasFocus;
+    _focusNode.addListener(_handleFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_handleFocusChange);
+    if (_ownsFocusNode) {
+      _focusNode.dispose();
+    }
+    super.dispose();
+  }
+
+  void _handleFocusChange() {
+    if (_isFocused == _focusNode.hasFocus) return;
+    setState(() {
+      _isFocused = _focusNode.hasFocus;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = widget.errorText != null
+        ? const Color(0xFFE16A6A)
+        : (_isFocused ? AppColors.primary : const Color(0xFFE7E1DB));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: borderColor,
+              width: _isFocused ? 1.5 : 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.primary.withValues(
+                  alpha: _isFocused ? 0.08 : 0.03,
+                ),
+                blurRadius: _isFocused ? 24 : 18,
+                offset: const Offset(0, 10),
               ),
             ],
           ),
-        ],
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16.5),
+            child: IntlPhoneField(
+              focusNode: _focusNode,
+              initialCountryCode: 'IN',
+              textInputAction: widget.textInputAction,
+              disableLengthCheck: true,
+              dropdownDecoration: const BoxDecoration(color: Colors.white),
+              dropdownIconPosition: IconPosition.trailing,
+              flagsButtonPadding: const EdgeInsets.only(left: 10),
+              showDropdownIcon: true,
+              invalidNumberMessage: 'Enter a valid phone number',
+              pickerDialogStyle: PickerDialogStyle(
+                backgroundColor: Colors.white,
+                searchFieldInputDecoration: InputDecoration(
+                  hintText: 'Search country',
+                  filled: true,
+                  fillColor: Colors.white,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    borderSide: const BorderSide(color: Color(0xFFDADADA)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    borderSide: const BorderSide(color: Color(0xFFDADADA)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    borderSide: const BorderSide(
+                      color: AppColors.primary,
+                      width: 1.4,
+                    ),
+                  ),
+                ),
+              ),
+              decoration: InputDecoration(
+                hintText: 'Phone number',
+                errorText: widget.errorText,
+                counterText: '',
+                filled: true,
+                fillColor: Colors.white,
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 16,
+                ),
+                hintStyle: const TextStyle(
+                  color: Color(0xFFAAA39C),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+                errorStyle: const TextStyle(
+                  color: Color(0xFFC94B4B),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+              dropdownTextStyle: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+              onChanged: (phone) =>
+                  widget.onChanged?.call(phone.completeNumber),
+              onSubmitted: widget.onSubmitted,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PhoneAuthPrimaryButton extends StatelessWidget {
+  const _PhoneAuthPrimaryButton({
+    required this.label,
+    required this.compact,
+    required this.isLoading,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool compact;
+  final bool isLoading;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: compact ? 62 : 66,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          gradient: AppColors.brandGradient,
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primary.withValues(alpha: 0.2),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: onPressed,
+            child: Center(
+              child: isLoading
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.6,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : Text(
+                      label,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: compact ? 16 : 17,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.4,
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PhoneAuthSecondaryButton extends StatelessWidget {
+  const _PhoneAuthSecondaryButton({
+    required this.label,
+    required this.compact,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool compact;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: compact ? 62 : 66,
+      child: OutlinedButton(
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          side: const BorderSide(color: AppColors.primary, width: 2),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          backgroundColor: Colors.white.withValues(alpha: 0.74),
+          padding: EdgeInsets.zero,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: AppColors.primary,
+            fontSize: compact ? 16 : 17,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.4,
+          ),
+        ),
       ),
     );
   }

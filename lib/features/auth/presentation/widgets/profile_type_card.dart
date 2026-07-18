@@ -20,43 +20,45 @@ class ProfileTypeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 380;
+
     return GestureDetector(
       onTap: onTap,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(compact ? 20 : 22),
           border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 22,
-              offset: const Offset(0, 10),
+              blurRadius: compact ? 18 : 20,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.all(18),
+          padding: EdgeInsets.all(compact ? 14 : 16),
           child: Row(
             children: [
               Container(
-                width: 58,
-                height: 58,
+                width: compact ? 50 : 54,
+                height: compact ? 50 : 54,
                 decoration: BoxDecoration(
                   gradient: AppColors.brandGradientDiagonal,
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(compact ? 15 : 16),
                 ),
-                child: Icon(icon, color: Colors.white, size: 28),
+                child: Icon(icon, color: Colors.white, size: compact ? 24 : 26),
               ),
-              const SizedBox(width: 16),
+              SizedBox(width: compact ? 12 : 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compact ? 9 : 10,
+                        vertical: compact ? 4 : 5,
                       ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFFFF4EE),
@@ -64,43 +66,47 @@ class ProfileTypeCard extends StatelessWidget {
                       ),
                       child: Text(
                         badge,
-                        style: const TextStyle(
-                          fontSize: 11,
+                        style: TextStyle(
+                          fontSize: compact ? 10 : 11,
                           fontWeight: FontWeight.w700,
                           color: AppColors.primary,
                           letterSpacing: 0.3,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 10),
+                    SizedBox(height: compact ? 7 : 8),
                     Text(
                       title,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w800,
-                        fontSize: 18,
+                        fontSize: compact ? 16.5 : 17,
                         color: AppColors.textDark,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    SizedBox(height: compact ? 4 : 5),
                     Text(
                       description,
-                      style: TextStyle(color: AppColors.textGrey, height: 1.45),
+                      style: TextStyle(
+                        color: AppColors.textGrey,
+                        height: 1.35,
+                        fontSize: compact ? 13 : 13.5,
+                      ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(width: 12),
+              SizedBox(width: compact ? 10 : 12),
               Container(
-                width: 38,
-                height: 38,
+                width: compact ? 34 : 36,
+                height: compact ? 34 : 36,
                 decoration: BoxDecoration(
                   color: AppColors.background,
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(compact ? 12 : 13),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.arrow_forward_rounded,
                   color: AppColors.textDark,
-                  size: 20,
+                  size: compact ? 18 : 19,
                 ),
               ),
             ],

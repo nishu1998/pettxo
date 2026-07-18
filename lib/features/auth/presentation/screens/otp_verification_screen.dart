@@ -8,8 +8,8 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
-import '../../data/services/user_service.dart';
 import '../../domain/models/phone_auth_flow.dart';
+import 'auth_gateway_screen.dart';
 
 class OtpVerificationScreen extends StatefulWidget {
   final String phoneNumber;
@@ -35,7 +35,6 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
   static const int _resendDelay = 30;
 
   final AuthService _authService = AuthService();
-  final UserService _userService = UserService();
   final List<TextEditingController> _controllers = List.generate(
     _otpLength,
     (_) => TextEditingController(),
@@ -117,14 +116,12 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
     if (_didNavigate || !mounted) return;
     _didNavigate = true;
 
-    if (widget.flow == PhoneAuthFlow.signUp) {
-      Navigator.pushNamedAndRemoveUntil(context, '/profile-type', (r) => false);
-      return;
-    }
-
-    final route = await _userService.getPostAuthRoute();
-    if (!mounted) return;
-    Navigator.pushNamedAndRemoveUntil(context, route, (r) => false);
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+        builder: (_) => const AuthGatewayScreen(reloadUserBeforeResolve: true),
+      ),
+      (route) => false,
+    );
   }
 
   Future<void> _submitOtp() async {
@@ -136,10 +133,21 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
 
     try {
       final smsCode = _currentOtpCode;
-      await _authService.signInWithPhoneCredential(
-        verificationId: _verificationId,
-        smsCode: smsCode,
-      );
+      switch (widget.flow) {
+        case PhoneAuthFlow.signIn:
+        case PhoneAuthFlow.signUp:
+          await _authService.signInWithPhoneCredential(
+            verificationId: _verificationId,
+            smsCode: smsCode,
+          );
+          break;
+        case PhoneAuthFlow.linkPhone:
+          await _authService.linkCurrentUserWithPhoneCredential(
+            verificationId: _verificationId,
+            smsCode: smsCode,
+          );
+          break;
+      }
       await _handleVerifiedUser();
     } catch (e) {
       if (!mounted) return;
@@ -164,7 +172,15 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
       forceResendingToken: _resendToken,
       verificationCompleted: (credential) async {
         if (_didNavigate) return;
-        await _authService.signInWithCredential(credential);
+        switch (widget.flow) {
+          case PhoneAuthFlow.signIn:
+          case PhoneAuthFlow.signUp:
+            await _authService.signInWithCredential(credential);
+            break;
+          case PhoneAuthFlow.linkPhone:
+            await _authService.linkCurrentUserWithCredential(credential);
+            break;
+        }
         await _handleVerifiedUser();
       },
       codeSent: (verificationId, resendToken) async {

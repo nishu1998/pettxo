@@ -1,1 +1,1 @@
-enum PhoneAuthFlow { signIn, signUp }
+enum PhoneAuthFlow { signIn, signUp, linkPhone }

@@ -58,6 +58,7 @@ class GradientButton extends StatefulWidget {
   final IconData? icon;
   final bool expand;
   final AppButtonSize size;
+  final double? labelFontSize;
 
   const GradientButton({
     super.key,
@@ -66,6 +67,7 @@ class GradientButton extends StatefulWidget {
     this.icon,
     this.expand = true,
     this.size = AppButtonSize.regular,
+    this.labelFontSize,
   });
 
   @override
@@ -120,7 +122,9 @@ class _GradientButtonState extends _BaseAnimatedButtonState<GradientButton> {
                     child: _ButtonLabel(
                       label: widget.label,
                       icon: widget.icon,
-                      style: AppButtonTokens.labelStyle(widget.size),
+                      style: AppButtonTokens.labelStyle(
+                        widget.size,
+                      ).copyWith(fontSize: widget.labelFontSize),
                       iconColor: Colors.white,
                       iconSize: AppButtonTokens.iconSize(widget.size),
                     ),

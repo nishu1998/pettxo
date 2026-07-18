@@ -2,10 +2,14 @@ import {createHash, createHmac, randomInt, timingSafeEqual} from "crypto";
 import {initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
 import {FieldValue, getFirestore, Timestamp} from "firebase-admin/firestore";
+import {getStorage} from "firebase-admin/storage";
 import type {
+  CollectionReference,
   DocumentData,
   DocumentReference,
   DocumentSnapshot,
+  Query,
+  QueryDocumentSnapshot,
   Transaction,
   WriteBatch,
 } from "firebase-admin/firestore";
@@ -15,6 +19,21 @@ import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {onDocumentCreated, onDocumentWritten} from "firebase-functions/v2/firestore";
 import {defineSecret} from "firebase-functions/params";
 import {onSchedule} from "firebase-functions/v2/scheduler";
+import {
+  anonymizeParticipantSnapshot,
+  isIgnorableAuthDeletionErrorCode,
+  calculateScheduledDeletionAtMillis,
+  evaluateRestoreEligibility,
+  evaluateSchedulerClaimDecision,
+  deriveServiceRestorationDecision,
+  usernameReservationBelongsToUid,
+} from "./accountDeletionUtils";
+import {normalizeUsername, validateNormalizedUsername} from "./identity/username";
+import {
+  evaluatePasswordResetEligibility,
+  normalizePasswordResetEmail,
+  validatePasswordResetEmail,
+} from "./passwordReset";
 
 setGlobalOptions({
   region: "asia-south1",
@@ -25,6 +44,7 @@ initializeApp();
 
 const db = getFirestore();
 const messaging = getMessaging();
+const storage = getStorage();
 const RAZORPAY_KEY_ID = defineSecret("RAZORPAY_KEY_ID");
 const RAZORPAY_KEY_SECRET = defineSecret("RAZORPAY_KEY_SECRET");
 const RAZORPAY_WEBHOOK_SECRET = defineSecret("RAZORPAY_WEBHOOK_SECRET");
@@ -42,6 +62,7 @@ const chatPushChannelId = "pettxo_chat_messages";
 const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
 const socialActivityPushChannelId = "pettxo_social_activity";
 const otherUpdatesPushChannelId = "pettxo_other_updates";
+const passwordResetRequestCooldownMs = 60 * 1000;
 
 type BookingStatus =
   | "paymentPending"
@@ -94,6 +115,7 @@ type OfferDiscountType = typeof offerDiscountTypes[number];
 type OfferClaimValidityType = typeof offerClaimValidityTypes[number];
 type SocialNotificationType = typeof socialNotificationTypes[number];
 type AccountStatus = "active" | "restricted" | "hardBanned";
+type PublicAccountStatus = AccountStatus | "pendingDeletion" | "deletionInProgress";
 type RestrictionState = {
   isBanned: boolean;
   reason: string;
@@ -143,6 +165,23 @@ type EligibleOfferResponse = {
   priority: number;
   startAt: string | null;
   endAt: string | null;
+};
+type AccountDeletionJobStatus = "scheduled" | "inProgress" | "completed" | "failed";
+type AccountDeletionStage =
+  | "scheduled"
+  | "claimed"
+  | "sessionsRevoked"
+  | "cleanupFirestore"
+  | "retainedDataAnonymized"
+  | "cleanupStorage"
+  | "authUserDeleted"
+  | "cleanupUsername"
+  | "identityDocumentsDeleted"
+  | "completed";
+type AccountDeletionStats = {
+  firestoreDeleted: Record<string, number>;
+  firestoreUpdated: Record<string, number>;
+  storageDeleted: Record<string, number>;
 };
 
 class OfferValidationError extends Error {
@@ -221,6 +260,25 @@ function maskIdentifier(value: string, visible = 4): string {
   if (!trimmed) return "";
   if (trimmed.length <= visible) return trimmed;
   return `${"*".repeat(Math.max(trimmed.length - visible, 0))}${trimmed.slice(-visible)}`;
+}
+
+function passwordResetRequestHash(email: string): string {
+  return createHash("sha256").update(email).digest("hex");
+}
+
+function passwordResetAppCodeForStatus(
+  status: ReturnType<typeof evaluatePasswordResetEligibility>,
+): string {
+  switch (status) {
+    case "accountDisabled":
+      return "account-disabled";
+    case "accountPendingDeletion":
+      return "account-pending-deletion";
+    case "phoneOnlyAccount":
+      return "phone-only-account";
+    default:
+      return "unknown";
+  }
 }
 
 function isRestrictionType(value: string): value is RestrictionType {
@@ -2216,11 +2274,24 @@ async function migrateLegacyChatsToCanonical(params: {
 }
 
 function displayNameFromUser(user: Record<string, unknown>, fallback: string): string {
-  return safeText(user.name ?? user.username, fallback);
+  return safeText(user.displayName ?? user.name ?? user.username, fallback);
 }
 
 function photoUrlFromUser(user: Record<string, unknown>): string {
-  return safeText(user.profileImage, "");
+  return safeText(user.photoUrl ?? user.profileImage, "");
+}
+
+function providerIdsFromAuthUser(user: {
+  providerData?: Array<{providerId?: string | null} | null> | null;
+}): string[] {
+  const providerIds = new Set<string>();
+  for (const provider of user.providerData ?? []) {
+    const providerId = asTrimmedString(provider?.providerId);
+    if (providerId) {
+      providerIds.add(providerId);
+    }
+  }
+  return Array.from(providerIds).sort();
 }
 
 function usernameFromUser(user: Record<string, unknown>): string {
@@ -2254,6 +2325,348 @@ function assertBookingRestrictions(
   if (restrictions.hard.isBanned || restrictions.booking.isBanned) {
     throw new HttpsError("failed-precondition", message);
   }
+}
+
+function asTimestamp(value: unknown): Timestamp | null {
+  return value instanceof Timestamp ? value : null;
+}
+
+function publicAccountStatusFromUser(user: Record<string, unknown>): PublicAccountStatus {
+  const explicitStatus = asTrimmedString(user.accountStatus);
+  if (
+    explicitStatus === "pendingDeletion" ||
+    explicitStatus === "deletionInProgress" ||
+    explicitStatus === "restricted" ||
+    explicitStatus === "hardBanned" ||
+    explicitStatus === "active"
+  ) {
+    return explicitStatus;
+  }
+  return computeAccountStatus(normalizeRestrictions(user.restrictions));
+}
+
+function isPendingDeletionStatus(status: string): boolean {
+  return status === "pendingDeletion";
+}
+
+function isDeletionProcessingStatus(status: string): boolean {
+  return status === "deletionInProgress";
+}
+
+function isAccountUnavailableForNormalUse(user: Record<string, unknown>): boolean {
+  const status = publicAccountStatusFromUser(user);
+  return isPendingDeletionStatus(status) || isDeletionProcessingStatus(status);
+}
+
+function assertAccountAvailable(
+  user: Record<string, unknown>,
+  message = "This account is unavailable right now.",
+): void {
+  if (isAccountUnavailableForNormalUse(user)) {
+    throw new HttpsError("failed-precondition", message, {
+      appCode: "account-pending-deletion",
+    });
+  }
+}
+
+function scheduledDeletionTimestampFromNow(now = Timestamp.now()): Timestamp {
+  return Timestamp.fromMillis(calculateScheduledDeletionAtMillis(now.toMillis()));
+}
+
+function createDeletionStats(): AccountDeletionStats {
+  return {
+    firestoreDeleted: {},
+    firestoreUpdated: {},
+    storageDeleted: {},
+  };
+}
+
+function incrementCounter(target: Record<string, number>, key: string, amount = 1): void {
+  target[key] = (target[key] ?? 0) + amount;
+}
+
+async function deleteDocumentTree(
+  docRef: DocumentReference,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  const subcollections = await docRef.listCollections();
+  for (const collectionRef of subcollections) {
+    await deleteCollectionTree(collectionRef, stats);
+  }
+  await docRef.delete();
+  incrementCounter(stats.firestoreDeleted, docRef.parent.id);
+}
+
+async function deleteCollectionTree(
+  collectionRef: CollectionReference,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  while (true) {
+    const snapshot = await collectionRef.limit(50).get();
+    if (snapshot.empty) return;
+    for (const doc of snapshot.docs) {
+      await deleteDocumentTree(doc.ref, stats);
+    }
+  }
+}
+
+async function deleteQueryDocumentTrees(
+  query: Query,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  while (true) {
+    const snapshot = await query.limit(50).get();
+    if (snapshot.empty) return;
+    for (const doc of snapshot.docs) {
+      await deleteDocumentTree(doc.ref, stats);
+    }
+  }
+}
+
+async function updateQueryDocuments(
+  query: Query<DocumentData>,
+  dataBuilder: (doc: QueryDocumentSnapshot<DocumentData>) => Record<string, unknown> | null,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  let lastDoc: QueryDocumentSnapshot<DocumentData> | null = null;
+  while (true) {
+    const page: Query<DocumentData> =
+      lastDoc == null ? query.limit(100) : query.startAfter(lastDoc).limit(100);
+    const snapshot = await page.get();
+    if (snapshot.empty) return;
+    const batch = db.batch();
+    let updates = 0;
+    for (const doc of snapshot.docs) {
+      const data = dataBuilder(doc);
+      if (data == null) continue;
+      batch.set(doc.ref, data, {merge: true});
+      updates += 1;
+      incrementCounter(stats.firestoreUpdated, doc.ref.parent.id);
+    }
+    if (updates === 0) return;
+    await batch.commit();
+    lastDoc = snapshot.docs[snapshot.docs.length - 1];
+  }
+}
+
+async function deleteStoragePrefix(
+  prefix: string,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  const [files] = await storage.bucket().getFiles({prefix});
+  if (files.length === 0) return;
+
+  for (const file of files) {
+    await file.delete({ignoreNotFound: true});
+    incrementCounter(stats.storageDeleted, prefix);
+  }
+}
+
+async function deleteUserOwnedStorageArtifacts(
+  uid: string,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  await deleteStoragePrefix(`users/${uid}/`, stats);
+  await deleteStoragePrefix(`socialPosts/${uid}/`, stats);
+  await deleteStoragePrefix(`providerVerification/${uid}/`, stats);
+  await deleteStoragePrefix(`disputes/${uid}/`, stats);
+}
+
+async function pauseServicesForPendingDeletion(
+  uid: string,
+  now: FieldValue,
+): Promise<number> {
+  const servicesSnapshot = await db
+    .collection("services")
+    .where("ownerUserId", "==", uid)
+    .where("isDeleted", "==", false)
+    .get();
+
+  if (servicesSnapshot.empty) return 0;
+
+  const batch = db.batch();
+  for (const serviceDoc of servicesSnapshot.docs) {
+    const service = serviceDoc.data();
+    batch.set(serviceDoc.ref, {
+      isActive: false,
+      isPaused: true,
+      isVisibleToMarketplace: false,
+      pauseReason: "Account deletion requested",
+      deletionHold: {
+        appliedAt: now,
+        previousIsActive: service.isActive !== false,
+        previousIsPaused: service.isPaused === true,
+        previousIsPausedByVerification: service.isPausedByVerification === true,
+        previousIsVisibleToMarketplace: service.isVisibleToMarketplace === true,
+        previousPauseReason: asTrimmedString(service.pauseReason),
+      },
+      updatedAt: now,
+    }, {merge: true});
+  }
+
+  await batch.commit();
+  return servicesSnapshot.docs.length;
+}
+
+async function restoreServicesAfterPendingDeletion(
+  uid: string,
+  now: FieldValue,
+): Promise<number> {
+  const servicesSnapshot = await db
+    .collection("services")
+    .where("ownerUserId", "==", uid)
+    .where("isDeleted", "==", false)
+    .get();
+
+  if (servicesSnapshot.empty) return 0;
+
+  const batch = db.batch();
+  let updatedCount = 0;
+  for (const serviceDoc of servicesSnapshot.docs) {
+    const service = serviceDoc.data();
+    const deletionHold = asRecord(service.deletionHold);
+    if (Object.keys(deletionHold).length === 0) continue;
+
+    const decision = deriveServiceRestorationDecision({
+      moderationStatus: asTrimmedString(service.moderationStatus),
+      isDeleted: service.isDeleted === true,
+      isPausedByVerification: service.isPausedByVerification === true,
+      deletionHold: {
+        previousIsActive: deletionHold.previousIsActive !== false,
+        previousIsPaused: deletionHold.previousIsPaused === true,
+        previousIsPausedByVerification: deletionHold.previousIsPausedByVerification === true,
+        previousPauseReason: asTrimmedString(deletionHold.previousPauseReason),
+      },
+    });
+    batch.set(serviceDoc.ref, {
+      isActive: decision.isActive,
+      isPaused: decision.isPaused,
+      isVisibleToMarketplace: decision.isVisibleToMarketplace &&
+        deletionHold.previousIsVisibleToMarketplace === true,
+      pauseReason: decision.pauseReason,
+      deletionHold: FieldValue.delete(),
+      updatedAt: now,
+    }, {merge: true});
+    updatedCount += 1;
+  }
+
+  if (updatedCount > 0) {
+    await batch.commit();
+  }
+  return updatedCount;
+}
+
+async function anonymizeRetainedBookingRecords(
+  uid: string,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  const anonymizeBookings = async (query: Query, role: "customer" | "provider") => {
+    await updateQueryDocuments(query, (doc) => {
+      const data = doc.data();
+      const payload: Record<string, unknown> = {
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+
+      if (role === "customer") {
+        payload.customerSnapshot = anonymizeParticipantSnapshot(
+          asRecord(data.customerSnapshot),
+        );
+      } else {
+        payload.providerSnapshot = anonymizeParticipantSnapshot(
+          asRecord(data.providerSnapshot),
+        );
+      }
+
+      return payload;
+    }, stats);
+  };
+
+  await anonymizeBookings(
+    db.collection("bookings").where("customerId", "==", uid),
+    "customer",
+  );
+  await anonymizeBookings(
+    db.collection("bookings").where("serviceOwnerId", "==", uid),
+    "provider",
+  );
+}
+
+async function closeChatsForDeletedAccount(
+  uid: string,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  await updateQueryDocuments(
+    db.collection("chats").where("participantIds", "array-contains", uid),
+    (doc) => {
+      const data = doc.data();
+      const snapshots = Array.isArray(data.participantSnapshots) ?
+        data.participantSnapshots.map((value) => {
+          const participant = asRecord(value);
+          if (asTrimmedString(participant.userId) !== uid) return participant;
+          return anonymizeParticipantSnapshot(participant);
+        }) :
+        [];
+
+      return {
+        participantSnapshots: snapshots,
+        status: "closed",
+        lastMessage: asTrimmedString(data.lastMessage),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+    },
+    stats,
+  );
+}
+
+async function cleanupAccountFirestoreData(
+  uid: string,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  const userRef = db.collection("users").doc(uid);
+
+  await deleteCollectionTree(userRef.collection("notificationTokens"), stats);
+  await deleteCollectionTree(userRef.collection("pets"), stats);
+  await deleteCollectionTree(userRef.collection("claimedOffers"), stats);
+  await deleteCollectionTree(userRef.collection("providerVerification"), stats);
+  await deleteCollectionTree(userRef.collection("providerBankDetails"), stats);
+
+  await deleteQueryDocumentTrees(
+    db.collection("follows").where("followerId", "==", uid),
+    stats,
+  );
+  await deleteQueryDocumentTrees(
+    db.collection("follows").where("followeeId", "==", uid),
+    stats,
+  );
+  await deleteQueryDocumentTrees(
+    db.collection("socialPosts").where("authorId", "==", uid),
+    stats,
+  );
+  await deleteQueryDocumentTrees(
+    db.collectionGroup("likes").where("userId", "==", uid),
+    stats,
+  );
+  await deleteQueryDocumentTrees(
+    db.collectionGroup("comments").where("authorId", "==", uid),
+    stats,
+  );
+  await deleteQueryDocumentTrees(
+    db.collection("services").where("ownerUserId", "==", uid),
+    stats,
+  );
+  await deleteQueryDocumentTrees(
+    db.collection("notifications").where("userId", "==", uid),
+    stats,
+  );
+
+}
+
+async function anonymizeRetainedAccountData(
+  uid: string,
+  stats: AccountDeletionStats,
+): Promise<void> {
+  await closeChatsForDeletedAccount(uid, stats);
+  await anonymizeRetainedBookingRecords(uid, stats);
 }
 
 async function deleteNotificationTokensForUser(userId: string): Promise<number> {
@@ -2370,6 +2783,11 @@ async function createSocialNotificationDoc(params: {
   commentId?: string;
 }): Promise<void> {
   if (!params.recipientId || params.recipientId === params.senderId) return;
+  const recipientSnapshot = await db.collection("users").doc(params.recipientId).get();
+  const recipientData = recipientSnapshot.data() ?? {};
+  if (isAccountUnavailableForNormalUse(recipientData)) {
+    return;
+  }
 
   await db.collection("notifications").add({
     userId: params.recipientId,
@@ -2572,6 +2990,8 @@ function userAllowsNotification(
   userData: Record<string, unknown>,
   category: string,
 ): boolean {
+  if (isAccountUnavailableForNormalUse(userData)) return false;
+
   const notificationsBlocked = notificationPreferenceValue(userData, "notificationsBlocked");
   if (notificationsBlocked === true) return false;
 
@@ -2894,15 +3314,10 @@ export const requestAccountDeletion = onCall({invoker: "public"}, async (request
   const uid = requireUid(request.auth);
   const userRef = db.collection("users").doc(uid);
   const privateUserRef = db.collection("userPrivate").doc(uid);
-  const servicesQuery = db
-    .collection("services")
-    .where("ownerUserId", "==", uid)
-    .where("isDeleted", "==", false);
-
-  const [userSnapshot, privateUserSnapshot, servicesSnapshot] = await Promise.all([
+  const [userSnapshot, privateUserSnapshot, authUser] = await Promise.all([
     userRef.get(),
     privateUserRef.get(),
-    servicesQuery.get(),
+    getAuth().getUser(uid),
   ]);
 
   if (!userSnapshot.exists) {
@@ -2910,86 +3325,880 @@ export const requestAccountDeletion = onCall({invoker: "public"}, async (request
   }
 
   const user = userSnapshot.data() ?? {};
-  if (user.deletionRequested === true) {
+  const privateUser = privateUserSnapshot.data() ?? {};
+  const publicStatus = publicAccountStatusFromUser(user);
+  const privateStatus = asTrimmedString(privateUser.accountStatus);
+
+  if (isDeletionProcessingStatus(publicStatus) || isDeletionProcessingStatus(privateStatus)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Permanent deletion has already started for this account.",
+      {appCode: "deletion-in-progress"},
+    );
+  }
+
+  if (isPendingDeletionStatus(publicStatus) || isPendingDeletionStatus(privateStatus)) {
+    const existingScheduledDeletionAt = asTimestamp(privateUser.scheduledDeletionAt);
     return {
-      ok: true,
-      message: "Your account deletion request is already in progress.",
+      status: "pendingDeletion",
+      scheduledDeletionAt: existingScheduledDeletionAt?.toDate().toISOString() ?? null,
     };
   }
 
-  const restrictions = normalizeRestrictions(user.restrictions);
-  const updatedRestrictions = nextRestrictions(
-    nextRestrictions(restrictions, "social", true, "Account deletion requested", uid),
-    "booking",
-    true,
-    "Account deletion requested",
-    uid,
-  );
-  const nextAccountStatus = computeAccountStatus(updatedRestrictions);
-  const anonymizedName = "Deleted user";
-  const anonymizedUsername = `deleted_${uid.slice(-8).toLowerCase()}`;
-  const now = FieldValue.serverTimestamp();
+  const now = Timestamp.now();
+  const scheduledDeletionAt = scheduledDeletionTimestampFromNow(now);
+  const nowFieldValue = FieldValue.serverTimestamp();
+  const serviceCount = await pauseServicesForPendingDeletion(uid, nowFieldValue);
 
   const batch = db.batch();
   batch.set(userRef, {
-    name: anonymizedName,
-    username: anonymizedUsername,
-    usernameLowercase: anonymizedUsername,
-    bio: "",
-    profileImage: "",
-    city: "",
-    state: "",
-    location: "",
-    accountStatus: nextAccountStatus,
-    restrictions: updatedRestrictions,
+    accountStatus: "pendingDeletion",
     deletionRequested: true,
-    deletionRequestedAt: now,
     profileVisibility: "hidden",
-    updatedAt: now,
+    updatedAt: nowFieldValue,
   }, {merge: true});
   batch.set(privateUserRef, {
     uid,
-    deletionRequestedAt: now,
-    deletionRequestStatus: "requested",
-    updatedAt: now,
+    accountStatus: "pendingDeletion",
+    deletionRequestedAt: nowFieldValue,
+    scheduledDeletionAt,
+    deletionReason: asTrimmedString(request.data?.reason),
+    deletionRequestVersion: 1,
+    restoredAt: FieldValue.delete(),
+    previousProfileVisibility: asTrimmedString(user.profileVisibility) || "public",
+    updatedAt: nowFieldValue,
   }, {merge: true});
-
-  for (const serviceDoc of servicesSnapshot.docs) {
-    batch.set(serviceDoc.ref, {
-      isActive: false,
-      isPaused: true,
-      isVisibleToMarketplace: false,
-      pauseReason: "Account deletion requested",
-      updatedAt: now,
-    }, {merge: true});
-  }
-
   batch.set(db.collection("adminAuditLogs").doc(), {
     eventType: "accountDeletionRequested",
     userId: uid,
-    emailPresent: asTrimmedString(privateUserSnapshot.data()?.email) !== "",
-    hadServices: servicesSnapshot.docs.length > 0,
-    serviceCount: servicesSnapshot.docs.length,
-    createdAt: now,
+    emailPresent: asTrimmedString(authUser.email) !== "",
+    hadServices: serviceCount > 0,
+    serviceCount,
+    createdAt: nowFieldValue,
     actorUserId: uid,
     source: "mobileApp",
+    status: "pendingDeletion",
+    scheduledDeletionAt,
   });
-
   await batch.commit();
-  const removedTokenCount = await deleteNotificationTokensForUser(uid);
+  let removedTokenCount = 0;
+  try {
+    removedTokenCount = await deleteNotificationTokensForUser(uid);
+  } catch (error) {
+    console.warn("Account deletion token cleanup failed", {
+      userId: uid,
+      stage: "notificationTokenCleanup",
+      status: "warning",
+      errorCode: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
+    await getAuth().revokeRefreshTokens(uid);
+  } catch (error) {
+    console.warn("Account deletion refresh-token revoke failed", {
+      userId: uid,
+      stage: "sessionsRevoked",
+      status: "warning",
+      errorCode: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   console.info("Account deletion requested", {
     userId: uid,
     removedTokenCount,
-    serviceCount: servicesSnapshot.docs.length,
+    serviceCount,
+    scheduledDeletionAt: scheduledDeletionAt.toDate().toISOString(),
+  });
+
+  return {
+    status: "pendingDeletion",
+    scheduledDeletionAt: scheduledDeletionAt.toDate().toISOString(),
+  };
+});
+
+export const restoreAccount = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const userRef = db.collection("users").doc(uid);
+  const privateUserRef = db.collection("userPrivate").doc(uid);
+  const [userSnapshot, privateUserSnapshot] = await Promise.all([
+    userRef.get(),
+    privateUserRef.get(),
+  ]);
+
+  if (!userSnapshot.exists) {
+    throw new HttpsError("not-found", "Profile not found.");
+  }
+
+  const user = userSnapshot.data() ?? {};
+  const privateUser = privateUserSnapshot.data() ?? {};
+  const publicStatus = publicAccountStatusFromUser(user);
+  const privateStatus = asTrimmedString(privateUser.accountStatus);
+
+  if (isDeletionProcessingStatus(publicStatus) || isDeletionProcessingStatus(privateStatus)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Permanent deletion has already started and can no longer be restored.",
+      {appCode: "deletion-in-progress"},
+    );
+  }
+
+  if (!isPendingDeletionStatus(publicStatus) && !isPendingDeletionStatus(privateStatus)) {
+    return {status: "active", restored: false};
+  }
+
+  const restoreEligibility = evaluateRestoreEligibility({
+    accountStatus: privateStatus || publicStatus,
+    scheduledDeletionAtMs: asTimestamp(privateUser.scheduledDeletionAt)?.toMillis() ?? null,
+    nowMs: Date.now(),
+  });
+  if (!restoreEligibility.allowed) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Permanent deletion has already started and can no longer be restored.",
+      {appCode: restoreEligibility.reason},
+    );
+  }
+
+  const now = FieldValue.serverTimestamp();
+  const restoredStatus = computeAccountStatus(normalizeRestrictions(user.restrictions));
+  const previousProfileVisibility = asTrimmedString(privateUser.previousProfileVisibility) || "public";
+  const batch = db.batch();
+  batch.set(userRef, {
+    accountStatus: restoredStatus,
+    deletionRequested: false,
+    profileVisibility: previousProfileVisibility,
+    updatedAt: now,
+  }, {merge: true});
+  batch.set(privateUserRef, {
+    accountStatus: "active",
+    deletionRequestedAt: null,
+    scheduledDeletionAt: null,
+    deletionReason: FieldValue.delete(),
+    deletionRequestVersion: FieldValue.delete(),
+    previousProfileVisibility: FieldValue.delete(),
+    restoredAt: now,
+    updatedAt: now,
+  }, {merge: true});
+  batch.set(db.collection("adminAuditLogs").doc(), {
+    eventType: "accountRestored",
+    userId: uid,
+    actorUserId: uid,
+    source: "mobileApp",
+    createdAt: now,
+  });
+  await batch.commit();
+
+  const restoredServiceCount = await restoreServicesAfterPendingDeletion(uid, now);
+
+  console.info("Account restored", {
+    userId: uid,
+    restoredServiceCount,
+  });
+
+  return {
+    status: "active",
+    restored: true,
+  };
+});
+
+async function processScheduledDeletionForUser(uid: string): Promise<{
+  skipped: boolean;
+  reason?: string;
+  stats?: AccountDeletionStats;
+}> {
+  const userRef = db.collection("users").doc(uid);
+  const privateUserRef = db.collection("userPrivate").doc(uid);
+  const jobRef = db.collection("accountDeletionJobs").doc(uid);
+  const [userSnapshot, privateUserSnapshot] = await Promise.all([
+    userRef.get(),
+    privateUserRef.get(),
+  ]);
+  const user = userSnapshot.data() ?? {};
+  const privateUser = privateUserSnapshot.data() ?? {};
+  if (!userSnapshot.exists) {
+    return {skipped: true, reason: "not-pending-deletion"};
+  }
+  const publicStatus = publicAccountStatusFromUser(user);
+  const privateStatus = asTrimmedString(privateUser.accountStatus);
+
+  const currentUsername = normalizeUsername(
+    asTrimmedString(user.usernameLowercase || user.username),
+  );
+  const stats = createDeletionStats();
+  const now = FieldValue.serverTimestamp();
+  let attemptCount = 0;
+
+  const shouldProceed = await db.runTransaction(async (transaction) => {
+    const freshPrivate = await transaction.get(privateUserRef);
+    const freshPrivateData = freshPrivate.data() ?? {};
+    const freshStatus = asTrimmedString(freshPrivateData.accountStatus);
+    const freshScheduledDeletionAtMs =
+      asTimestamp(freshPrivateData.scheduledDeletionAt)?.toMillis() ?? null;
+    const claimDecision = evaluateSchedulerClaimDecision({
+      accountStatus: freshStatus || privateStatus || publicStatus,
+      scheduledDeletionAtMs: freshScheduledDeletionAtMs,
+      nowMs: Date.now(),
+    });
+    if (!freshPrivate.exists || !claimDecision.shouldClaim) {
+      return false;
+    }
+    attemptCount =
+      (typeof freshPrivateData.attemptCount === "number" ?
+        freshPrivateData.attemptCount :
+        0) + 1;
+
+    transaction.set(jobRef, {
+      uid,
+      status: "inProgress" as AccountDeletionJobStatus,
+      requestedAt: freshPrivateData.deletionRequestedAt ?? null,
+      scheduledAt: freshPrivateData.scheduledDeletionAt ?? null,
+      startedAt: now,
+      completedAt: null,
+      lastError: "",
+      attemptCount,
+      currentStage: "claimed" as AccountDeletionStage,
+      updatedAt: now,
+    }, {merge: true});
+
+    transaction.set(userRef, {
+      accountStatus: "deletionInProgress",
+      profileVisibility: "hidden",
+      updatedAt: now,
+    }, {merge: true});
+    transaction.set(privateUserRef, {
+      accountStatus: "deletionInProgress",
+      updatedAt: now,
+    }, {merge: true});
+    transaction.set(db.collection("adminAuditLogs").doc(), {
+      eventType: "accountPermanentDeletionStarted",
+      userId: uid,
+      actorUserId: uid,
+      source: "scheduler",
+      createdAt: now,
+    });
+    return true;
+  });
+
+  if (!shouldProceed) {
+    return {skipped: true, reason: "restored-before-processing"};
+  }
+
+  try {
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "claimed",
+      attemptCount,
+      status: "started",
+    });
+    await getAuth().revokeRefreshTokens(uid);
+
+    await jobRef.set({
+      currentStage: "sessionsRevoked",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "sessionsRevoked",
+      attemptCount,
+      status: "success",
+    });
+
+    await jobRef.set({
+      currentStage: "cleanupFirestore",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await cleanupAccountFirestoreData(uid, stats);
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "firestoreCleanup",
+      attemptCount,
+      status: "success",
+    });
+
+    await jobRef.set({
+      currentStage: "retainedDataAnonymized",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await anonymizeRetainedAccountData(uid, stats);
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "retainedDataAnonymized",
+      attemptCount,
+      status: "success",
+    });
+
+    await jobRef.set({
+      currentStage: "cleanupStorage",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await deleteUserOwnedStorageArtifacts(uid, stats);
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "storageCleanup",
+      attemptCount,
+      status: "success",
+    });
+
+    await jobRef.set({
+      currentStage: "authUserDeleted",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    try {
+      await getAuth().deleteUser(uid);
+    } catch (error) {
+      const authError = error as {code?: string};
+      if (!isIgnorableAuthDeletionErrorCode(authError.code)) {
+        throw error;
+      }
+    }
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "authUserDeleted",
+      attemptCount,
+      status: "success",
+    });
+
+    if (currentUsername) {
+      await jobRef.set({
+        currentStage: "cleanupUsername",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+      const usernameSnapshot = await db.collection("usernames").doc(currentUsername).get();
+      if (
+        usernameSnapshot.exists &&
+        usernameReservationBelongsToUid(
+          asTrimmedString(usernameSnapshot.data()?.uid),
+          uid,
+        )
+      ) {
+        await usernameSnapshot.ref.delete();
+        incrementCounter(stats.firestoreDeleted, "usernames");
+      } else if (usernameSnapshot.exists) {
+        await jobRef.set({
+          lastError: "username-reservation-ownership-mismatch",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
+      console.info("Scheduled account deletion stage", {
+        userId: uid,
+        stage: "cleanupUsername",
+        attemptCount,
+        status: "success",
+      });
+    }
+
+    await jobRef.set({
+      currentStage: "identityDocumentsDeleted",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await deleteDocumentTree(privateUserRef, stats);
+    await deleteDocumentTree(userRef, stats);
+    console.info("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "identityDocumentsDeleted",
+      attemptCount,
+      status: "success",
+    });
+
+    await jobRef.set({
+      status: "completed" as AccountDeletionJobStatus,
+      currentStage: "completed" as AccountDeletionStage,
+      completedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      stats,
+    }, {merge: true});
+    await db.collection("adminAuditLogs").add({
+      eventType: "accountPermanentDeletionCompleted",
+      userId: uid,
+      actorUserId: uid,
+      source: "scheduler",
+      createdAt: FieldValue.serverTimestamp(),
+      stats,
+    });
+
+    console.info("Account permanently deleted", {userId: uid, stats});
+    return {skipped: false, stats};
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await jobRef.set({
+      status: "failed" as AccountDeletionJobStatus,
+      lastError: message,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await db.collection("adminAuditLogs").add({
+      eventType: "accountPermanentDeletionFailed",
+      userId: uid,
+      actorUserId: uid,
+      source: "scheduler",
+      createdAt: FieldValue.serverTimestamp(),
+      error: message,
+    });
+    console.error("Scheduled account deletion stage", {
+      userId: uid,
+      stage: "failed",
+      attemptCount,
+      status: "error",
+      errorCode: message,
+    });
+    throw error;
+  }
+}
+
+export const processScheduledAccountDeletions = onSchedule(
+  {
+    schedule: "every 6 hours",
+    timeZone: "Asia/Kolkata",
+    region: "asia-south1",
+    timeoutSeconds: 540,
+    memory: "1GiB",
+    maxInstances: 1,
+  },
+  async () => {
+    const snapshot = await db
+      .collection("userPrivate")
+      .where("accountStatus", "in", ["pendingDeletion", "deletionInProgress"])
+      .where("scheduledDeletionAt", "<=", Timestamp.now())
+      .orderBy("scheduledDeletionAt", "asc")
+      .limit(20)
+      .get();
+
+    if (snapshot.empty) {
+      console.info("No scheduled account deletions are due.");
+      return;
+    }
+
+    for (const doc of snapshot.docs) {
+      try {
+        const result = await processScheduledDeletionForUser(doc.id);
+        if (result.skipped) {
+          console.info("Scheduled account deletion skipped", {
+            userId: doc.id,
+            reason: result.reason,
+          });
+        }
+      } catch (error) {
+        console.error("Scheduled account deletion failed", {
+          userId: doc.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  },
+);
+
+export const changeUsername = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const requestedUsername = normalizeUsername(request.data?.username);
+  const validationError = validateNormalizedUsername(requestedUsername);
+  if (validationError) {
+    throw new HttpsError("invalid-argument", validationError, {
+      appCode: "invalid-username",
+    });
+  }
+
+  const userRef = db.collection("users").doc(uid);
+  const usernamesRef = db.collection("usernames");
+  const now = FieldValue.serverTimestamp();
+
+  const username = await db.runTransaction(async (transaction) => {
+    const userSnapshot = await transaction.get(userRef);
+    if (!userSnapshot.exists) {
+      throw new HttpsError("not-found", "Profile not found.");
+    }
+
+    const user = userSnapshot.data() ?? {};
+    assertAccountAvailable(
+      user,
+      "Usernames cannot be changed while the account is pending deletion.",
+    );
+    const currentUsername = normalizeUsername(
+      asTrimmedString(user.usernameLowercase || user.username),
+    );
+    if (!currentUsername) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Current username is missing.",
+        {appCode: "username-reservation-mismatch"},
+      );
+    }
+
+    if (currentUsername === requestedUsername) {
+      return requestedUsername;
+    }
+
+    const currentUsernameRef = usernamesRef.doc(currentUsername);
+    const nextUsernameRef = usernamesRef.doc(requestedUsername);
+    const [currentUsernameSnapshot, nextUsernameSnapshot] = await Promise.all([
+      transaction.get(currentUsernameRef),
+      transaction.get(nextUsernameRef),
+    ]);
+
+    const currentReservedUid = asTrimmedString(currentUsernameSnapshot.data()?.uid);
+    if (!currentUsernameSnapshot.exists || currentReservedUid !== uid) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Current username ownership could not be verified.",
+        {appCode: "username-reservation-mismatch"},
+      );
+    }
+
+    const nextReservedUid = asTrimmedString(nextUsernameSnapshot.data()?.uid);
+    if (nextUsernameSnapshot.exists && nextReservedUid && nextReservedUid !== uid) {
+      throw new HttpsError("already-exists", "Username is already taken.", {
+        appCode: "username-taken",
+      });
+    }
+
+    transaction.set(nextUsernameRef, {
+      uid,
+      username: requestedUsername,
+      usernameLowercase: requestedUsername,
+      ...(nextUsernameSnapshot.exists ? {} : {createdAt: now}),
+      updatedAt: now,
+    }, {merge: true});
+    transaction.set(userRef, {
+      username: requestedUsername,
+      usernameLowercase: requestedUsername,
+      updatedAt: now,
+    }, {merge: true});
+    transaction.delete(currentUsernameRef);
+    transaction.set(db.collection("adminAuditLogs").doc(), {
+      eventType: "usernameChanged",
+      userId: uid,
+      previousUsername: currentUsername,
+      nextUsername: requestedUsername,
+      createdAt: now,
+      actorUserId: uid,
+      source: "mobileApp",
+    });
+
+    return requestedUsername;
   });
 
   return {
     ok: true,
-    message:
-      "Your account deletion request has been submitted. Pettxo has restricted the account while records required for legal and payment retention are preserved.",
+    username,
   };
 });
+
+export const completeOnboardingProfile = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const role = asTrimmedString(request.data?.role);
+  const displayName = asTrimmedString(request.data?.displayName || request.data?.name);
+  const requestedUsername = normalizeUsername(request.data?.username);
+  const state = asTrimmedString(request.data?.state);
+  const city = asTrimmedString(request.data?.city);
+  const acceptedTerms = request.data?.acceptedTerms === true;
+  const acceptedPrivacy = request.data?.acceptedPrivacy === true;
+  const acceptedProviderAgreement = request.data?.acceptedProviderAgreement === true;
+
+  if (!role) {
+    throw new HttpsError("invalid-argument", "Profile role is required.", {
+      appCode: "invalid-profile-role",
+    });
+  }
+  if (!displayName) {
+    throw new HttpsError("invalid-argument", "Display name is required.", {
+      appCode: "invalid-display-name",
+    });
+  }
+  const usernameValidationError = validateNormalizedUsername(requestedUsername);
+  if (usernameValidationError) {
+    throw new HttpsError("invalid-argument", usernameValidationError, {
+      appCode: "invalid-username",
+    });
+  }
+  if (!state) {
+    throw new HttpsError("invalid-argument", "State is required.", {
+      appCode: "invalid-state",
+    });
+  }
+  if (!city) {
+    throw new HttpsError("invalid-argument", "City is required.", {
+      appCode: "invalid-city",
+    });
+  }
+  if (!acceptedTerms || !acceptedPrivacy) {
+    throw new HttpsError("failed-precondition", "Legal acceptance is required.", {
+      appCode: "legal-acceptance-required",
+    });
+  }
+  if (role === "serviceProvider" && !acceptedProviderAgreement) {
+    throw new HttpsError("failed-precondition", "Provider agreement is required.", {
+      appCode: "provider-agreement-required",
+    });
+  }
+
+  const authUser = await getAuth().getUser(uid);
+  const providers = providerIdsFromAuthUser(authUser);
+  const email = asTrimmedString(authUser.email);
+  const phoneNumber = asTrimmedString(authUser.phoneNumber);
+  const emailVerified = authUser.emailVerified === true;
+  const phoneVerified = phoneNumber.length > 0 && providers.includes("phone");
+  if (!phoneVerified) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Phone verification is required before completing your profile.",
+      {appCode: "phone-verification-required"},
+    );
+  }
+
+  const userRef = db.collection("users").doc(uid);
+  const privateUserRef = db.collection("userPrivate").doc(uid);
+  const usernamesRef = db.collection("usernames");
+  const targetUsernameRef = usernamesRef.doc(requestedUsername);
+  const now = FieldValue.serverTimestamp();
+
+  const username = await db.runTransaction(async (transaction) => {
+    const [userSnapshot, privateSnapshot, targetUsernameSnapshot] = await Promise.all([
+      transaction.get(userRef),
+      transaction.get(privateUserRef),
+      transaction.get(targetUsernameRef),
+    ]);
+
+    const user = userSnapshot.data() ?? {};
+    if (userSnapshot.exists) {
+      assertAccountAvailable(
+        user,
+        "This account cannot complete onboarding right now.",
+      );
+    }
+
+    const currentUsername = normalizeUsername(
+      asTrimmedString(user.usernameLowercase || user.username),
+    );
+    const currentPhotoUrl = asTrimmedString(user.photoUrl || user.profileImage);
+    const currentBio = asTrimmedString(user.bio);
+
+    const reservedUid = asTrimmedString(targetUsernameSnapshot.data()?.uid);
+    if (targetUsernameSnapshot.exists && reservedUid && reservedUid !== uid) {
+      throw new HttpsError("already-exists", "Username is already taken.", {
+        appCode: "username-taken",
+      });
+    }
+
+    if (currentUsername && currentUsername !== requestedUsername) {
+      const previousUsernameRef = usernamesRef.doc(currentUsername);
+      const previousUsernameSnapshot = await transaction.get(previousUsernameRef);
+      if (asTrimmedString(previousUsernameSnapshot.data()?.uid) === uid) {
+        transaction.delete(previousUsernameRef);
+      }
+    }
+
+    transaction.set(targetUsernameRef, {
+      uid,
+      username: requestedUsername,
+      usernameLowercase: requestedUsername,
+      ...(targetUsernameSnapshot.exists ? {} : {createdAt: now}),
+      updatedAt: now,
+    }, {merge: true});
+
+    transaction.set(userRef, {
+      uid,
+      role,
+      displayName,
+      name: displayName,
+      username: requestedUsername,
+      usernameLowercase: requestedUsername,
+      state,
+      city,
+      photoUrl: currentPhotoUrl,
+      profileImage: currentPhotoUrl,
+      bio: currentBio,
+      providers,
+      ...(userSnapshot.exists ? {} : {createdAt: now}),
+      updatedAt: now,
+    }, {merge: true});
+
+    const privateUser = privateSnapshot.data() ?? {};
+    transaction.set(privateUserRef, {
+      uid,
+      email,
+      phoneNumber,
+      phone: phoneNumber,
+      mobileNumber: phoneNumber,
+      emailVerified,
+      phoneVerified,
+      providers,
+      ...(!privateUser.createdAt ? {createdAt: now} : {}),
+      ...(!privateUser.acceptedTermsAt && acceptedTerms ?
+        {acceptedTermsAt: now} :
+        {}),
+      ...(!privateUser.acceptedPrivacyAt && acceptedPrivacy ?
+        {acceptedPrivacyAt: now} :
+        {}),
+      ...(!privateUser.acceptedProviderAgreementAt && acceptedProviderAgreement ?
+        {acceptedProviderAgreementAt: now} :
+        {}),
+      updatedAt: now,
+    }, {merge: true});
+
+    return requestedUsername;
+  });
+
+  return {
+    ok: true,
+    uid,
+    username,
+  };
+});
+
+export const syncAuthIdentity = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const authUser = await getAuth().getUser(uid);
+  const providers = providerIdsFromAuthUser(authUser);
+  const email = asTrimmedString(authUser.email);
+  const phoneNumber = asTrimmedString(authUser.phoneNumber);
+  const emailVerified = authUser.emailVerified === true;
+  const phoneVerified = phoneNumber.length > 0 && providers.includes("phone");
+  const userRef = db.collection("users").doc(uid);
+  const privateUserRef = db.collection("userPrivate").doc(uid);
+  const [userSnapshot, privateUserSnapshot] = await Promise.all([
+    userRef.get(),
+    privateUserRef.get(),
+  ]);
+  const now = FieldValue.serverTimestamp();
+  const batch = db.batch();
+
+  batch.set(privateUserRef, {
+    uid,
+    email,
+    phoneNumber,
+    phone: phoneNumber,
+    mobileNumber: phoneNumber,
+    emailVerified,
+    phoneVerified,
+    providers,
+    ...(privateUserSnapshot.exists ? {} : {createdAt: now}),
+    updatedAt: now,
+  }, {merge: true});
+
+  if (userSnapshot.exists) {
+    batch.set(userRef, {
+      uid,
+      providers,
+      updatedAt: now,
+    }, {merge: true});
+  }
+
+  await batch.commit();
+
+  return {
+    uid,
+    email,
+    phoneNumber,
+    emailVerified,
+    phoneVerified,
+    providers,
+    publicProfileExists: userSnapshot.exists,
+  };
+});
+
+export const requestPasswordReset = onCall(
+  {
+    invoker: "public",
+    region: "asia-south1",
+  },
+  async (request) => {
+    const normalizedEmail = normalizePasswordResetEmail(request.data?.email);
+    const validationError = validatePasswordResetEmail(normalizedEmail);
+    if (validationError) {
+      throw new HttpsError("invalid-argument", validationError, {
+        appCode: "invalid-email",
+      });
+    }
+
+    const emailHash = passwordResetRequestHash(normalizedEmail);
+    const rateLimitRef = db.collection("passwordResetRequests").doc(emailHash);
+    const nowMs = Date.now();
+    const rateLimitResult = await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(rateLimitRef);
+      const lastRequestedAtMs =
+        asTimestamp(snapshot.data()?.lastRequestedAt)?.toMillis() ?? 0;
+      if (lastRequestedAtMs > 0) {
+        const elapsedMs = nowMs - lastRequestedAtMs;
+        if (elapsedMs < passwordResetRequestCooldownMs) {
+          return {
+            allowed: false,
+            retryAfterMs: passwordResetRequestCooldownMs - elapsedMs,
+          };
+        }
+      }
+
+      transaction.set(rateLimitRef, {
+        lastRequestedAt: Timestamp.fromMillis(nowMs),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return {allowed: true, retryAfterMs: 0};
+    });
+
+    if (!rateLimitResult.allowed) {
+      console.info("Password reset rejected due to cooldown", {
+        emailHashPrefix: emailHash.slice(0, 12),
+        retryAfterMs: rateLimitResult.retryAfterMs,
+      });
+      throw new HttpsError(
+        "resource-exhausted",
+        "Please wait before requesting another reset email.",
+        {appCode: "rate-limited"},
+      );
+    }
+
+    let authUser;
+    try {
+      authUser = await getAuth().getUserByEmail(normalizedEmail);
+    } catch (error) {
+      const authError = error as {code?: string};
+      if (authError.code === "auth/user-not-found") {
+        console.info("Password reset rejected because auth account was missing", {
+          emailHashPrefix: emailHash.slice(0, 12),
+        });
+        throw new HttpsError(
+          "not-found",
+          "No password-enabled account found.",
+          {appCode: "account-not-found"},
+        );
+      }
+      console.error("Password reset lookup failed", {
+        emailHashPrefix: emailHash.slice(0, 12),
+        errorCode: authError.code ?? "unknown",
+      });
+      throw new HttpsError("internal", "Unable to process this request right now.");
+    }
+
+    const [privateUserSnapshot, publicUserSnapshot] = await Promise.all([
+      db.collection("userPrivate").doc(authUser.uid).get(),
+      db.collection("users").doc(authUser.uid).get(),
+    ]);
+    const trustedAccountStatus = asTrimmedString(
+      privateUserSnapshot.data()?.accountStatus ??
+        publicUserSnapshot.data()?.accountStatus,
+    );
+    const eligibilityStatus = evaluatePasswordResetEligibility({
+      providerIds: providerIdsFromAuthUser(authUser),
+      disabled: authUser.disabled === true,
+      accountStatus: trustedAccountStatus,
+    });
+
+    if (eligibilityStatus !== "approved") {
+      console.info("Password reset rejected", {
+        emailHashPrefix: emailHash.slice(0, 12),
+        eligibilityStatus,
+      });
+      throw new HttpsError(
+        "failed-precondition",
+        "This account cannot use password reset.",
+        {appCode: passwordResetAppCodeForStatus(eligibilityStatus)},
+      );
+    }
+
+    console.info("Password reset approved", {
+      emailHashPrefix: emailHash.slice(0, 12),
+    });
+    return {status: "approved"};
+  },
+);
 
 export const sendPushForNotification = onDocumentWritten(
   {
@@ -3400,6 +4609,10 @@ export const createRazorpayBookingOrder = onCall({
 
   const customerSnapshot = await customerRef.get();
   const customerData = customerSnapshot.exists ? customerSnapshot.data() ?? {} : {};
+  assertAccountAvailable(
+    customerData,
+    "Your account is pending deletion and cannot create new bookings.",
+  );
   assertBookingRestrictions(
     normalizeRestrictions(customerData.restrictions),
     "Your account cannot create new bookings right now.",
@@ -3428,6 +4641,10 @@ export const createRazorpayBookingOrder = onCall({
     const transactionCustomer = transactionCustomerSnapshot.exists ?
       transactionCustomerSnapshot.data() ?? {} :
       {};
+    assertAccountAvailable(
+      transactionCustomer,
+      "Your account is pending deletion and cannot create new bookings.",
+    );
     assertBookingRestrictions(
       normalizeRestrictions(transactionCustomer.restrictions),
       "Your account cannot create new bookings right now.",
@@ -3627,15 +4844,15 @@ export const createRazorpayBookingOrder = onCall({
         primaryPhotoUrl: service.primaryPhotoUrl ?? "",
       },
       providerSnapshot: {
-        name: ownerSnapshot.name ?? "",
+        name: ownerSnapshot.displayName ?? ownerSnapshot.name ?? "",
         username: ownerSnapshot.username ?? "",
-        photoUrl: ownerSnapshot.photoUrl ?? "",
+        photoUrl: ownerSnapshot.photoUrl ?? ownerSnapshot.profileImage ?? "",
         phoneMasked: "",
       },
       customerSnapshot: {
-        name: customer.name ?? "",
+        name: customer.displayName ?? customer.name ?? "",
         username: customer.username ?? "",
-        photoUrl: customer.profileImage ?? "",
+        photoUrl: customer.photoUrl ?? customer.profileImage ?? "",
         phoneMasked: "",
       },
       locationSnapshot: {
@@ -7189,7 +8406,12 @@ export const getProfileFollowCounts = onCall({invoker: "public"}, async (request
   };
 });
 
-export const createSocialNotification = onCall({invoker: "public"}, async (request) => {
+// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
+// but we keep the legacy us-central1 callable alive until a separate cleanup task.
+export const createSocialNotification = onCall({
+  invoker: "public",
+  region: ["asia-south1", "us-central1"],
+}, async (request) => {
   const senderId = request.auth?.uid ?? "";
   if (!senderId) {
     throw new HttpsError("unauthenticated", "Sign in to continue.");
@@ -7213,11 +8435,12 @@ export const createSocialNotification = onCall({invoker: "public"}, async (reque
     throw new HttpsError("failed-precondition", "Sender profile not found.");
   }
   const senderData = senderSnapshot.data() ?? {};
-  const senderDisplayName = safeText(
-    senderData.name ?? senderData.username,
-    "Someone",
+  assertAccountAvailable(
+    senderData,
+    "Your account is pending deletion and cannot create social activity.",
   );
-  const senderPhotoUrl = safeText(senderData.profileImage, "");
+  const senderDisplayName = displayNameFromUser(senderData, "Someone");
+  const senderPhotoUrl = photoUrlFromUser(senderData);
 
   if (type === "socialFollow") {
     const followId = `${senderId}_${recipientId}`;
@@ -7308,7 +8531,12 @@ export const createSocialNotification = onCall({invoker: "public"}, async (reque
   return {ok: true, created: true};
 });
 
-export const startProviderChat = onCall({invoker: "public"}, async (request) => {
+// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
+// but we keep the legacy us-central1 callable alive until a separate cleanup task.
+export const startProviderChat = onCall({
+  invoker: "public",
+  region: ["asia-south1", "us-central1"],
+}, async (request) => {
   const customerId = requireUid(request.auth);
   const serviceId = asTrimmedString(request.data?.serviceId);
 
@@ -7373,6 +8601,14 @@ export const startProviderChat = onCall({invoker: "public"}, async (request) => 
 
     const customer = customerSnapshot.data() ?? {};
     const provider = providerSnapshot.data() ?? {};
+    assertAccountAvailable(
+      customer,
+      "Your account is pending deletion and cannot start chats.",
+    );
+    assertAccountAvailable(
+      provider,
+      "This provider is unavailable right now.",
+    );
     assertChatRestrictions(
       normalizeRestrictions(customer.restrictions),
       "Your account cannot start chats right now.",
@@ -7453,7 +8689,12 @@ export const startProviderChat = onCall({invoker: "public"}, async (request) => 
   return {chatId: result.chatId};
 });
 
-export const startDirectUserChat = onCall({invoker: "public"}, async (request) => {
+// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
+// but we keep the legacy us-central1 callable alive until a separate cleanup task.
+export const startDirectUserChat = onCall({
+  invoker: "public",
+  region: ["asia-south1", "us-central1"],
+}, async (request) => {
   const currentUserId = requireUid(request.auth);
   const otherUserId = asTrimmedString(request.data?.otherUserId);
 
@@ -7490,6 +8731,14 @@ export const startDirectUserChat = onCall({invoker: "public"}, async (request) =
 
     const currentUser = currentUserSnapshot.data() ?? {};
     const otherUser = otherUserSnapshot.data() ?? {};
+    assertAccountAvailable(
+      currentUser,
+      "Your account is pending deletion and cannot start chats.",
+    );
+    assertAccountAvailable(
+      otherUser,
+      "This user is unavailable right now.",
+    );
     assertChatRestrictions(
       normalizeRestrictions(currentUser.restrictions),
       "Your account cannot start chats right now.",
@@ -7555,7 +8804,12 @@ export const startDirectUserChat = onCall({invoker: "public"}, async (request) =
   return {chatId: result.chatId};
 });
 
-export const sendChatMessage = onCall({invoker: "public"}, async (request) => {
+// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
+// but we keep the legacy us-central1 callable alive until a separate cleanup task.
+export const sendChatMessage = onCall({
+  invoker: "public",
+  region: ["asia-south1", "us-central1"],
+}, async (request) => {
   const senderId = requireUid(request.auth);
   const chatId = asTrimmedString(request.data?.chatId);
   const text = asTrimmedString(request.data?.text);
@@ -7593,6 +8847,10 @@ export const sendChatMessage = onCall({invoker: "public"}, async (request) => {
     throw new HttpsError("failed-precondition", "Sender profile not found.");
   }
   const sender = senderSnapshot.data() ?? {};
+  assertAccountAvailable(
+    sender,
+    "Your account is pending deletion and cannot send chat messages.",
+  );
   assertChatRestrictions(
     normalizeRestrictions(sender.restrictions),
     "Your account cannot send chat messages right now.",

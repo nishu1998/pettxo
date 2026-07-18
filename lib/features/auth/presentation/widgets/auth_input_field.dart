@@ -17,6 +17,7 @@ class AuthInputField extends StatefulWidget {
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
   final Widget? suffixIcon;
+  final EdgeInsetsGeometry? contentPadding;
 
   const AuthInputField({
     super.key,
@@ -33,6 +34,7 @@ class AuthInputField extends StatefulWidget {
     this.onChanged,
     this.onSubmitted,
     this.suffixIcon,
+    this.contentPadding,
   });
 
   @override
@@ -103,10 +105,9 @@ class _AuthInputFieldState extends State<AuthInputField> {
           prefixText: widget.prefixText,
           filled: true,
           fillColor: Colors.white,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 18,
-            vertical: 18,
-          ),
+          contentPadding:
+              widget.contentPadding ??
+              const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(borderRadius),
             borderSide: const BorderSide(color: Color(0xFFDADADA)),

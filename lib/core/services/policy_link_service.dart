@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../widgets/app_snackbar.dart';
+
 class PolicyLinkService {
   const PolicyLinkService._();
 
@@ -70,10 +72,9 @@ class PolicyLinkService {
   ) async {
     final opened = await openExternalPolicyUrl(key);
     if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Unable to open policy link. Please try again later.'),
-        ),
+      AppSnackbar.error(
+        context,
+        message: 'Unable to open policy link. Please try again later.',
       );
     }
   }

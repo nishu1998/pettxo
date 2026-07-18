@@ -4,13 +4,48 @@ import 'package:flutter/foundation.dart';
 
 import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/services/push_notification_service.dart';
+import 'pending_email_change_service.dart';
+import '../../domain/models/auth_action_exception.dart';
+import '../../domain/models/password_reset_request_result.dart';
+import '../../domain/utils/auth_error_utils.dart';
+import '../../domain/utils/auth_onboarding_resolver.dart';
+import '../../domain/utils/password_reset_request_flow.dart';
 import '../../domain/models/auth_result.dart';
 
+class AccountDeletionScheduleResult {
+  final String status;
+  final DateTime? scheduledDeletionAt;
+
+  const AccountDeletionScheduleResult({
+    required this.status,
+    required this.scheduledDeletionAt,
+  });
+}
+
 class AuthService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(
-    region: 'asia-south1',
-  );
+  final FirebaseAuth _auth;
+  final FirebaseFunctions _functions;
+  final PendingEmailChangeService _pendingEmailChangeService;
+  final Future<Map<String, dynamic>> Function(String normalizedEmail)?
+  _passwordResetApprovalRequester;
+  final Future<void> Function(String normalizedEmail)?
+  _passwordResetEmailSender;
+  Future<PasswordResetRequestResult>? _pendingPasswordResetRequest;
+
+  AuthService({
+    FirebaseAuth? auth,
+    FirebaseFunctions? functions,
+    PendingEmailChangeService? pendingEmailChangeService,
+    Future<Map<String, dynamic>> Function(String normalizedEmail)?
+    passwordResetApprovalRequester,
+    Future<void> Function(String normalizedEmail)? passwordResetEmailSender,
+  }) : _auth = auth ?? FirebaseAuth.instance,
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1'),
+       _pendingEmailChangeService =
+           pendingEmailChangeService ?? const PendingEmailChangeService(),
+       _passwordResetApprovalRequester = passwordResetApprovalRequester,
+       _passwordResetEmailSender = passwordResetEmailSender;
 
   Future<AuthResult> signUp({
     required String email,
@@ -21,6 +56,8 @@ class AuthService {
         email: email,
         password: password,
       );
+      await credential.user?.sendEmailVerification();
+      await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('sign-up');
 
       return AuthResult(user: credential.user);
@@ -40,6 +77,7 @@ class AuthService {
         email: email,
         password: password,
       );
+      await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('login');
 
       return AuthResult(user: credential.user);
@@ -51,7 +89,69 @@ class AuthService {
   }
 
   Future<void> sendPasswordResetEmail({required String email}) async {
-    await _auth.sendPasswordResetEmail(email: email);
+    try {
+      await _auth.sendPasswordResetEmail(email: email);
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'user-not-found') {
+        return;
+      }
+      throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<PasswordResetRequestResult> requestPasswordReset(String email) {
+    final inFlight = _pendingPasswordResetRequest;
+    if (inFlight != null) return inFlight;
+
+    final request = _requestPasswordResetInternal(email);
+    _pendingPasswordResetRequest = request;
+    return request.whenComplete(() {
+      if (identical(_pendingPasswordResetRequest, request)) {
+        _pendingPasswordResetRequest = null;
+      }
+    });
+  }
+
+  Future<PasswordResetRequestResult> _requestPasswordResetInternal(
+    String email,
+  ) async {
+    return runPasswordResetRequestFlow(
+      email: email,
+      approveRequest: (normalizedEmail) async {
+        if (_passwordResetApprovalRequester != null) {
+          await _passwordResetApprovalRequester(normalizedEmail);
+          return;
+        }
+        final callable = _functions.httpsCallable('requestPasswordReset');
+        await callable.call<Map<String, dynamic>>({'email': normalizedEmail});
+      },
+      sendResetEmail: (normalizedEmail) async {
+        if (_passwordResetEmailSender != null) {
+          await _passwordResetEmailSender(normalizedEmail);
+          return;
+        }
+        await _auth.sendPasswordResetEmail(email: normalizedEmail);
+      },
+      mapError: (error, _, normalizedEmail) {
+        if (error is FirebaseFunctionsException) {
+          return _mapPasswordResetFunctionsError(
+            error,
+            normalizedEmail: normalizedEmail,
+          );
+        }
+        if (error is FirebaseAuthException) {
+          return _mapPasswordResetAuthError(
+            error,
+            normalizedEmail: normalizedEmail,
+          );
+        }
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.unknownError,
+          normalizedEmail: normalizedEmail,
+          message: 'Unable to request a password reset right now.',
+        );
+      },
+    );
   }
 
   Future<void> verifyPhoneNumber({
@@ -129,6 +229,7 @@ class AuthService {
         smsCode: smsCode,
       );
       final result = await _auth.signInWithCredential(credential);
+      await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('phone-otp-login');
       return result;
     } on FirebaseAuthException catch (e) {
@@ -150,6 +251,7 @@ class AuthService {
     try {
       _debugLog('signInWithCredential:start provider=phone');
       final result = await _auth.signInWithCredential(credential);
+      await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('phone-auto-login');
       return result;
     } on FirebaseAuthException catch (e) {
@@ -161,66 +263,498 @@ class AuthService {
     }
   }
 
+  Future<UserCredential> linkCurrentUserWithPhoneCredential({
+    required String verificationId,
+    required String smsCode,
+  }) async {
+    final credential = PhoneAuthProvider.credential(
+      verificationId: verificationId,
+      smsCode: smsCode,
+    );
+    return linkCurrentUserWithCredential(credential);
+  }
+
+  Future<UserCredential> linkCurrentUserWithCredential(
+    PhoneAuthCredential credential,
+  ) async {
+    final currentUser = _auth.currentUser;
+    if (currentUser == null) {
+      throw Exception('You must be signed in before linking a phone number.');
+    }
+
+    final expectedUid = currentUser.uid;
+    try {
+      final result = await currentUser.linkWithCredential(credential);
+      final linkedUser = result.user;
+      if (linkedUser == null ||
+          !linkedUidRemainsUnchanged(
+            expectedUid: expectedUid,
+            actualUid: linkedUser.uid,
+          )) {
+        throw Exception(
+          'Phone linking did not stay on the same Pettxo account. Please try again.',
+        );
+      }
+
+      await syncTrustedAuthIdentity();
+      await _syncNotificationsSafely('phone-link');
+      return result;
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException('linkCurrentUserWithCredential:failed', e);
+      throw Exception(_mapFirebaseError(e));
+    } catch (error, stackTrace) {
+      _logUnexpectedError(
+        'linkCurrentUserWithCredential:unexpected',
+        error,
+        stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  Future<void> sendCurrentUserEmailVerification() async {
+    final currentUser = _requireCurrentUser();
+    try {
+      await currentUser.sendEmailVerification();
+    } on FirebaseAuthException catch (e) {
+      throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<void> linkCurrentUserWithEmailPassword({
+    required String email,
+    required String password,
+  }) async {
+    final currentUser = _requireCurrentUser();
+    final expectedUid = currentUser.uid;
+
+    try {
+      final credential = EmailAuthProvider.credential(
+        email: email.trim(),
+        password: password,
+      );
+      final result = await currentUser.linkWithCredential(credential);
+      final linkedUser = result.user;
+      if (linkedUser == null ||
+          !linkedUidRemainsUnchanged(
+            expectedUid: expectedUid,
+            actualUid: linkedUser.uid,
+          )) {
+        throw const AuthActionException(
+          code: 'uid-mismatch',
+          message:
+              'Pettxo could not safely link this email to your current account.',
+        );
+      }
+
+      await linkedUser.sendEmailVerification();
+      await reloadCurrentUser(syncTrustedIdentity: true);
+      final refreshedUser = _requireCurrentUser();
+      if (!linkedUidRemainsUnchanged(
+        expectedUid: expectedUid,
+        actualUid: refreshedUser.uid,
+      )) {
+        throw const AuthActionException(
+          code: 'uid-mismatch',
+          message:
+              'Pettxo detected an unexpected account change after linking.',
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException('linkCurrentUserWithEmailPassword:failed', e);
+      throw mapFirebaseAuthException(e);
+    } on AuthActionException {
+      rethrow;
+    } catch (error, stackTrace) {
+      _logUnexpectedError(
+        'linkCurrentUserWithEmailPassword:unexpected',
+        error,
+        stackTrace,
+      );
+      throw const AuthActionException(
+        code: 'link-failed',
+        message: 'Unable to link email and password right now.',
+      );
+    }
+  }
+
+  Future<void> changeCurrentUserPassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    try {
+      await reauthenticateCurrentUserWithPassword(
+        currentPassword: currentPassword,
+      );
+      final currentUser = _requireCurrentUser();
+      await currentUser.updatePassword(newPassword);
+      await reloadCurrentUser();
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException('changeCurrentUserPassword:failed', e);
+      throw mapFirebaseAuthException(e);
+    } catch (error, stackTrace) {
+      _logUnexpectedError(
+        'changeCurrentUserPassword:unexpected',
+        error,
+        stackTrace,
+      );
+      throw const AuthActionException(
+        code: 'password-update-failed',
+        message: 'Unable to change your password right now.',
+      );
+    }
+  }
+
+  Future<void> reauthenticateCurrentUserWithPassword({
+    required String currentPassword,
+  }) async {
+    final currentUser = _requireCurrentUser();
+    final email = (currentUser.email ?? '').trim();
+    if (email.isEmpty) {
+      throw const AuthActionException(
+        code: 'missing-email',
+        message: 'No verified email is linked to this account yet.',
+      );
+    }
+
+    try {
+      final credential = EmailAuthProvider.credential(
+        email: email,
+        password: currentPassword,
+      );
+      await currentUser.reauthenticateWithCredential(credential);
+      await reloadCurrentUser();
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException(
+        'reauthenticateCurrentUserWithPassword:failed',
+        e,
+      );
+      throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<void> reauthenticateCurrentUserWithPhoneCredential({
+    required String verificationId,
+    required String smsCode,
+  }) async {
+    final credential = PhoneAuthProvider.credential(
+      verificationId: verificationId,
+      smsCode: smsCode,
+    );
+    await reauthenticateCurrentUserWithPhoneAuthCredential(credential);
+  }
+
+  Future<void> reauthenticateCurrentUserWithPhoneAuthCredential(
+    PhoneAuthCredential credential,
+  ) async {
+    final currentUser = _requireCurrentUser();
+    final expectedUid = currentUser.uid;
+
+    try {
+      final result = await currentUser.reauthenticateWithCredential(credential);
+      final reauthenticatedUser = result.user;
+      if (reauthenticatedUser == null ||
+          !linkedUidRemainsUnchanged(
+            expectedUid: expectedUid,
+            actualUid: reauthenticatedUser.uid,
+          )) {
+        throw const AuthActionException(
+          code: 'uid-mismatch',
+          message:
+              'Pettxo could not confirm that this phone verification belongs to your current account.',
+        );
+      }
+      await reloadCurrentUser();
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException(
+        'reauthenticateCurrentUserWithPhoneCredential:failed',
+        e,
+      );
+      throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<String> changeUsername({required String username}) async {
+    try {
+      final callable = _functions.httpsCallable('changeUsername');
+      final result = await callable.call<Map<String, dynamic>>({
+        'username': username,
+      });
+      final data = Map<String, dynamic>.from(result.data);
+      return (data['username'] as String? ?? '').trim();
+    } on FirebaseFunctionsException catch (e) {
+      throw mapFunctionsActionException(e);
+    }
+  }
+
+  Future<String> completeOnboardingProfile({
+    required String role,
+    required String displayName,
+    required String username,
+    required String state,
+    required String city,
+    required bool acceptedTerms,
+    required bool acceptedPrivacy,
+    required bool acceptedProviderAgreement,
+  }) async {
+    try {
+      final callable = _functions.httpsCallable('completeOnboardingProfile');
+      final result = await callable.call<Map<String, dynamic>>({
+        'role': role,
+        'displayName': displayName,
+        'username': username,
+        'state': state,
+        'city': city,
+        'acceptedTerms': acceptedTerms,
+        'acceptedPrivacy': acceptedPrivacy,
+        'acceptedProviderAgreement': acceptedProviderAgreement,
+      });
+      final data = Map<String, dynamic>.from(result.data);
+      return (data['username'] as String? ?? '').trim();
+    } on FirebaseFunctionsException catch (e) {
+      throw mapFunctionsActionException(e);
+    }
+  }
+
+  Future<void> beginCurrentUserEmailChange({required String newEmail}) async {
+    final currentUser = _requireCurrentUser();
+    final expectedUid = currentUser.uid;
+
+    try {
+      final dynamic user = currentUser;
+      await user.verifyBeforeUpdateEmail(newEmail.trim());
+      await reloadCurrentUser();
+      final refreshedUser = _requireCurrentUser();
+      if (!linkedUidRemainsUnchanged(
+        expectedUid: expectedUid,
+        actualUid: refreshedUser.uid,
+      )) {
+        throw const AuthActionException(
+          code: 'uid-mismatch',
+          message: 'Pettxo detected an unexpected account change.',
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException('beginCurrentUserEmailChange:failed', e);
+      throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<void> updateCurrentUserPhoneNumber({
+    required String verificationId,
+    required String smsCode,
+  }) async {
+    final credential = PhoneAuthProvider.credential(
+      verificationId: verificationId,
+      smsCode: smsCode,
+    );
+    await updateCurrentUserPhoneNumberWithCredential(credential);
+  }
+
+  Future<void> updateCurrentUserPhoneNumberWithCredential(
+    PhoneAuthCredential credential,
+  ) async {
+    final currentUser = _requireCurrentUser();
+    final expectedUid = currentUser.uid;
+
+    try {
+      await currentUser.updatePhoneNumber(credential);
+      await reloadCurrentUser(syncTrustedIdentity: true);
+      final refreshedUser = _requireCurrentUser();
+      if (!linkedUidRemainsUnchanged(
+        expectedUid: expectedUid,
+        actualUid: refreshedUser.uid,
+      )) {
+        throw const AuthActionException(
+          code: 'uid-mismatch',
+          message:
+              'Pettxo detected an unexpected account change after updating your phone number.',
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      _logFirebaseAuthException('updateCurrentUserPhoneNumber:failed', e);
+      throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<User?> reloadCurrentUser({bool syncTrustedIdentity = false}) async {
+    final currentUser = _auth.currentUser;
+    if (currentUser == null) return null;
+    await currentUser.reload();
+    if (syncTrustedIdentity) {
+      await syncTrustedAuthIdentity();
+    }
+    return _auth.currentUser;
+  }
+
+  Future<void> syncTrustedAuthIdentity() async {
+    if (_auth.currentUser == null) return;
+    try {
+      final callable = _functions.httpsCallable('syncAuthIdentity');
+      await callable.call<Map<String, dynamic>>();
+    } catch (error, stackTrace) {
+      _logUnexpectedError('syncTrustedAuthIdentity:failed', error, stackTrace);
+      rethrow;
+    }
+  }
+
   Future<void> logout() async {
+    final uid = _auth.currentUser?.uid.trim();
     try {
       await PushNotificationService.instance
           .unregisterCurrentDeviceTokenForLogout();
     } catch (_) {
       // Token cleanup should not block sign-out.
     }
+    if (uid != null && uid.isNotEmpty) {
+      await _pendingEmailChangeService.clearPendingEmail(uid);
+    }
     LegalAcceptanceSessionService.instance.clearSignupConsent();
     await _auth.signOut();
   }
 
-  Future<String> requestAccountDeletion() async {
+  Future<AccountDeletionScheduleResult> requestAccountDeletion({
+    String reason = '',
+  }) async {
     final callable = _functions.httpsCallable('requestAccountDeletion');
-    final result = await callable.call<Map<String, dynamic>>();
+    final result = await callable.call<Map<String, dynamic>>({
+      if (reason.trim().isNotEmpty) 'reason': reason.trim(),
+    });
     final data = Map<String, dynamic>.from(result.data);
-    return (data['message'] as String? ?? 'Account deletion requested.').trim();
+    final rawDate = (data['scheduledDeletionAt'] as String? ?? '').trim();
+    return AccountDeletionScheduleResult(
+      status: (data['status'] as String? ?? 'pendingDeletion').trim(),
+      scheduledDeletionAt: rawDate.isEmpty
+          ? null
+          : DateTime.tryParse(rawDate)?.toLocal(),
+    );
+  }
+
+  Future<void> restoreAccount() async {
+    final callable = _functions.httpsCallable('restoreAccount');
+    await callable.call<Map<String, dynamic>>();
   }
 
   User? get currentUser => _auth.currentUser;
 
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
+  User _requireCurrentUser() {
+    final currentUser = _auth.currentUser;
+    if (currentUser == null) {
+      throw const AuthActionException(
+        code: 'no-current-user',
+        message: 'You must be signed in to continue.',
+      );
+    }
+    return currentUser;
+  }
+
   String _mapFirebaseError(FirebaseAuthException e) {
-    switch (e.code) {
-      case 'weak-password':
-        return "Password must be at least 6 characters.";
-      case 'email-already-in-use':
-        return "An account already exists with this email.";
+    return mapFirebaseAuthErrorCode(e.code);
+  }
+
+  PasswordResetRequestResult _mapPasswordResetFunctionsError(
+    FirebaseFunctionsException error, {
+    required String normalizedEmail,
+  }) {
+    String code = error.code;
+    final details = error.details;
+    if (details is Map) {
+      final appCode = details['appCode'];
+      if (appCode is String && appCode.trim().isNotEmpty) {
+        code = appCode.trim();
+      }
+    }
+
+    switch (code) {
       case 'invalid-email':
-        return "Invalid email format.";
-      case 'user-not-found':
-        return "No user found with this email.";
-      case 'wrong-password':
-        return "Incorrect password.";
-      case 'network-request-failed':
-        return "Network error. Check your internet connection.";
-      case 'too-many-requests':
-        return "Too many verification attempts for this phone number. Please wait 30 minutes before trying again or request a new OTP later.";
-      case 'invalid-verification-code':
-        return "The OTP you entered is invalid.";
-      case 'session-expired':
-        return "This OTP has expired. Please request a new one.";
-      case 'invalid-phone-number':
-        return "Enter a valid phone number.";
-      case 'operation-not-allowed':
-        return "Phone sign-in is not enabled for this Firebase project.";
-      case 'app-not-authorized':
-        return "This app build is not authorized for Firebase Phone Authentication. Check the Firebase app fingerprints and phone auth setup.";
-      case 'invalid-app-credential':
-        return "Firebase could not verify this app build. Check Play Integrity, SHA fingerprints, and Firebase app verification settings.";
-      case 'missing-client-identifier':
-        return "This app is missing the Firebase client configuration required for phone sign-in.";
-      case 'captcha-check-failed':
-        return "The app verification check failed. Please try again.";
-      case 'quota-exceeded':
-        return "SMS verification is temporarily unavailable due to too many attempts. Please wait 30 minutes before trying again.";
-      case 'invalid-verification-id':
-        return "This verification session is invalid. Please request a new OTP.";
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.invalidEmail,
+          normalizedEmail: normalizedEmail,
+          message: 'Enter a valid email address.',
+        );
+      case 'account-not-found':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.accountNotFound,
+          normalizedEmail: normalizedEmail,
+          message:
+              'We couldn’t find a password-enabled Pettxo account with this email.',
+        );
+      case 'phone-only-account':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.phoneOnlyAccount,
+          normalizedEmail: normalizedEmail,
+          message:
+              'This account does not have a password. Sign in using your phone number.',
+        );
+      case 'account-pending-deletion':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.accountPendingDeletion,
+          normalizedEmail: normalizedEmail,
+          message:
+              'This account is in recovery mode. Sign in normally to continue account recovery.',
+        );
+      case 'account-disabled':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.accountDisabled,
+          normalizedEmail: normalizedEmail,
+          message: 'This account cannot reset its password right now.',
+        );
+      case 'rate-limited':
+      case 'resource-exhausted':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.rateLimited,
+          normalizedEmail: normalizedEmail,
+          message:
+              'Please wait a moment before requesting another reset email.',
+        );
+      case 'unavailable':
+      case 'deadline-exceeded':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.networkError,
+          normalizedEmail: normalizedEmail,
+          message: 'Network error. Please try again.',
+        );
       default:
-        return "Authentication error. Please try again.";
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.unknownError,
+          normalizedEmail: normalizedEmail,
+          message: 'Unable to request a password reset right now.',
+        );
+    }
+  }
+
+  PasswordResetRequestResult _mapPasswordResetAuthError(
+    FirebaseAuthException error, {
+    required String normalizedEmail,
+  }) {
+    switch (error.code) {
+      case 'invalid-email':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.invalidEmail,
+          normalizedEmail: normalizedEmail,
+          message: 'Enter a valid email address.',
+        );
+      case 'network-request-failed':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.networkError,
+          normalizedEmail: normalizedEmail,
+          message: 'Network error. Please try again.',
+        );
+      case 'too-many-requests':
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.rateLimited,
+          normalizedEmail: normalizedEmail,
+          message:
+              'Please wait a moment before requesting another reset email.',
+        );
+      default:
+        return PasswordResetRequestResult(
+          status: PasswordResetRequestStatus.unknownError,
+          normalizedEmail: normalizedEmail,
+          message: 'Unable to request a password reset right now.',
+        );
     }
   }
 

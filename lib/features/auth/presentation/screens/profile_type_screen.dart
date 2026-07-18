@@ -45,7 +45,7 @@ class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
                 "Manage care, book services and track your pet’s journey.",
             onTap: () => navigate(context, ProfileType.petParent),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
           ProfileTypeCard(
             icon: Icons.work_outline_rounded,
             badge: "For professionals",
@@ -53,7 +53,7 @@ class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
             description: "List services, get bookings and grow your business.",
             onTap: () => navigate(context, ProfileType.serviceProvider),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
           ProfileTypeCard(
             icon: Icons.favorite_border_rounded,
             badge: "For community",

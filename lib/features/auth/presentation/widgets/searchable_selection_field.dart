@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -10,6 +12,8 @@ class SearchableSelectionField extends StatefulWidget {
   final bool enabled;
   final List<String> options;
   final ValueChanged<String> onSelected;
+  final EdgeInsetsGeometry? contentPadding;
+  final bool compactLabel;
 
   const SearchableSelectionField({
     super.key,
@@ -20,6 +24,8 @@ class SearchableSelectionField extends StatefulWidget {
     this.value,
     this.errorText,
     this.enabled = true,
+    this.contentPadding,
+    this.compactLabel = false,
   });
 
   @override
@@ -74,13 +80,13 @@ class _SearchableSelectionFieldState extends State<SearchableSelectionField> {
       children: [
         Text(
           widget.labelText,
-          style: const TextStyle(
+          style: TextStyle(
             color: AppColors.textGrey,
             fontWeight: FontWeight.w500,
-            fontSize: 14,
+            fontSize: widget.compactLabel ? 13 : 14,
           ),
         ),
-        const SizedBox(height: 8),
+        SizedBox(height: widget.compactLabel ? 6 : 8),
         GestureDetector(
           onTap: _openSelector,
           child: AnimatedContainer(
@@ -103,10 +109,9 @@ class _SearchableSelectionFieldState extends State<SearchableSelectionField> {
                 errorText: widget.errorText,
                 filled: true,
                 fillColor: widget.enabled ? Colors.white : Colors.grey.shade100,
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 18,
-                ),
+                contentPadding:
+                    widget.contentPadding ??
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(borderRadius),
                   borderSide: BorderSide(color: borderColor),
@@ -212,106 +217,175 @@ class _SelectionSheetState extends State<_SelectionSheet> {
       padding: EdgeInsets.only(bottom: bottomInset),
       child: SafeArea(
         top: false,
-        child: Container(
-          height: MediaQuery.sizeOf(context).height * 0.72,
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          child: Column(
-            children: [
-              Container(
-                width: 48,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: Colors.black12,
-                  borderRadius: BorderRadius.circular(999),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            child: Container(
+              height: MediaQuery.sizeOf(context).height * 0.72,
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+              decoration: BoxDecoration(
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(30),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      widget.title,
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close_rounded),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.62)),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.82),
+                    const Color(0xFFFFF8F2).withValues(alpha: 0.72),
+                  ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    blurRadius: 28,
+                    offset: const Offset(0, -8),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: 'Search ${widget.title.toLowerCase()}',
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  filled: true,
-                  fillColor: Colors.white,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 16),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(color: Color(0xFFDADADA)),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(color: Color(0xFFDADADA)),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(
-                      color: AppColors.primary,
-                      width: 1.8,
+              child: Column(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(999),
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 14),
-              Expanded(
-                child: _filteredOptions.isEmpty
-                    ? const Center(
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
                         child: Text(
-                          'No results found',
-                          style: TextStyle(color: AppColors.textGrey),
+                          widget.title,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black,
+                          ),
                         ),
-                      )
-                    : ListView.separated(
-                        itemCount: _filteredOptions.length,
-                        separatorBuilder: (_, _) => const Divider(height: 1),
-                        itemBuilder: (context, index) {
-                          final option = _filteredOptions[index];
-                          final isSelected = option == widget.selectedValue;
-                          return ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(
-                              option,
-                              style: TextStyle(
-                                fontWeight: isSelected
-                                    ? FontWeight.w700
-                                    : FontWeight.w500,
-                                color: AppColors.textDark,
-                              ),
-                            ),
-                            trailing: isSelected
-                                ? const Icon(
-                                    Icons.check_circle_rounded,
-                                    color: AppColors.primary,
-                                  )
-                                : null,
-                            onTap: () => Navigator.pop(context, option),
-                          );
-                        },
                       ),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.66),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.74),
+                          ),
+                        ),
+                        child: IconButton(
+                          visualDensity: VisualDensity.compact,
+                          splashRadius: 16,
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(
+                            minWidth: 34,
+                            minHeight: 34,
+                          ),
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close_rounded, size: 18),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Search ${widget.title.toLowerCase()}',
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.74),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 16),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.68),
+                        ),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.68),
+                        ),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.8,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Expanded(
+                    child: _filteredOptions.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'No results found',
+                              style: TextStyle(color: AppColors.textGrey),
+                            ),
+                          )
+                        : ListView.separated(
+                            itemCount: _filteredOptions.length,
+                            separatorBuilder: (_, _) => Divider(
+                              height: 1,
+                              color: Colors.black.withValues(alpha: 0.06),
+                            ),
+                            itemBuilder: (context, index) {
+                              final option = _filteredOptions[index];
+                              final isSelected = option == widget.selectedValue;
+                              return ListTile(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                                title: Text(
+                                  option,
+                                  style: TextStyle(
+                                    fontWeight: isSelected
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    color: AppColors.textDark,
+                                  ),
+                                ),
+                                trailing: isSelected
+                                    ? Container(
+                                        width: 28,
+                                        height: 28,
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary.withValues(
+                                            alpha: 0.12,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            9,
+                                          ),
+                                          border: Border.all(
+                                            color: AppColors.primary.withValues(
+                                              alpha: 0.22,
+                                            ),
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.check_rounded,
+                                          color: AppColors.primary,
+                                          size: 18,
+                                        ),
+                                      )
+                                    : null,
+                                onTap: () => Navigator.pop(context, option),
+                              );
+                            },
+                          ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),

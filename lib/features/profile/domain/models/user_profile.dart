@@ -1,14 +1,21 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../../../core/identity/username_utils.dart';
 import '../../../restrictions/domain/models/user_restriction_state.dart';
 
 class UserProfile {
   final String uid;
+  final String displayName;
+  final String photoUrl;
   final String email;
+  final bool emailVerified;
   final String role;
   final String name;
   final String username;
   final String usernameLowercase;
+  final String phoneNumber;
+  final bool phoneVerified;
+  final List<String> providers;
   final String phone;
   final String country;
   final String state;
@@ -28,17 +35,25 @@ class UserProfile {
   final bool deletionRequested;
   final String profileVisibility;
   final UserRestrictionState restrictionState;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
   final DateTime? acceptedTermsAt;
   final DateTime? acceptedPrivacyAt;
   final DateTime? acceptedProviderAgreementAt;
 
   const UserProfile({
     required this.uid,
+    required this.displayName,
+    required this.photoUrl,
     required this.email,
+    required this.emailVerified,
     required this.role,
     required this.name,
     required this.username,
     required this.usernameLowercase,
+    required this.phoneNumber,
+    required this.phoneVerified,
+    required this.providers,
     required this.phone,
     required this.country,
     required this.state,
@@ -58,14 +73,17 @@ class UserProfile {
     required this.deletionRequested,
     required this.profileVisibility,
     required this.restrictionState,
+    required this.createdAt,
+    required this.updatedAt,
     required this.acceptedTermsAt,
     required this.acceptedPrivacyAt,
     required this.acceptedProviderAgreementAt,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> data) {
-    final username = (data['username'] as String? ?? '').trim();
-    final normalizedUsername = username.replaceFirst('@', '').trim();
+    final username = normalizeUsername(
+      (data['username'] as String? ?? '').trim(),
+    );
     final hasFollowCounts = _hasAnyKey(data, const [
       'followingCount',
       'followingsCount',
@@ -74,26 +92,49 @@ class UserProfile {
       'followersCount',
       'followers',
     ]);
+    final displayName =
+        (data['displayName'] as String? ?? data['name'] as String? ?? '')
+            .trim();
+    final photoUrl =
+        (data['photoUrl'] as String? ?? data['profileImage'] as String? ?? '')
+            .trim();
+    final phoneNumber =
+        (data['phoneNumber'] as String? ??
+                data['phone'] as String? ??
+                data['mobileNumber'] as String? ??
+                '')
+            .trim();
+    final providers = ((data['providers'] as List?) ?? const <dynamic>[])
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
 
     return UserProfile(
       uid: (data['uid'] as String? ?? '').trim(),
+      displayName: displayName,
+      photoUrl: photoUrl,
       email: (data['email'] as String? ?? '').trim(),
+      emailVerified: data['emailVerified'] == true,
       role: (data['role'] as String? ?? 'petParent').trim(),
-      name: (data['name'] as String? ?? '').trim(),
-      username: normalizedUsername,
-      usernameLowercase:
-          (data['usernameLowercase'] as String? ?? normalizedUsername)
-              .trim()
-              .toLowerCase(),
-      phone: (data['phone'] as String? ?? data['mobileNumber'] as String? ?? '')
-          .trim(),
+      name: displayName,
+      username: username,
+      usernameLowercase: normalizeUsername(
+        (data['usernameLowercase'] as String? ?? username).trim(),
+      ),
+      phoneNumber: phoneNumber,
+      phoneVerified:
+          data['phoneVerified'] == true ||
+          (phoneNumber.isNotEmpty && providers.contains('phone')),
+      providers: providers,
+      phone: phoneNumber,
       country: (data['country'] as String? ?? '').trim(),
       state: (data['state'] as String? ?? '').trim(),
       city: (data['city'] as String? ?? '').trim(),
       address: (data['address'] as String? ?? '').trim(),
       legacyLocation: (data['location'] as String? ?? '').trim(),
       bio: (data['bio'] as String? ?? '').trim(),
-      profileImageUrl: (data['profileImage'] as String? ?? '').trim(),
+      profileImageUrl: photoUrl,
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
       followingCount: _readCount(data, const [
@@ -114,6 +155,8 @@ class UserProfile {
       profileVisibility: (data['profileVisibility'] as String? ?? 'public')
           .trim(),
       restrictionState: UserRestrictionState.fromMap(data),
+      createdAt: _readDate(data['createdAt']),
+      updatedAt: _readDate(data['updatedAt']),
       acceptedTermsAt: _readDate(data['acceptedTermsAt']),
       acceptedPrivacyAt: _readDate(data['acceptedPrivacyAt']),
       acceptedProviderAgreementAt: _readDate(
@@ -125,17 +168,25 @@ class UserProfile {
   Map<String, dynamic> toMap() {
     return {
       'uid': uid,
+      'displayName': displayName,
+      'photoUrl': photoUrl,
       'role': role,
-      'name': name,
+      'name': displayName,
       'username': username,
       'usernameLowercase': usernameLowercase,
+      'email': email,
+      'emailVerified': emailVerified,
+      'phoneNumber': phoneNumber,
+      'phone': phoneNumber,
+      'phoneVerified': phoneVerified,
+      'providers': providers,
       'country': country,
       'state': state,
       'city': city,
       'address': address,
       'location': location,
       'bio': bio,
-      'profileImage': profileImageUrl,
+      'profileImage': photoUrl,
       'ratingAverage': ratingAverage,
       'ratingCount': ratingCount,
       'followingCount': followingCount,
@@ -145,6 +196,8 @@ class UserProfile {
       'isActive': isActive,
       'deletionRequested': deletionRequested,
       'profileVisibility': profileVisibility,
+      'createdAt': createdAt,
+      'updatedAt': updatedAt,
     };
   }
 
@@ -216,12 +269,19 @@ class UserProfile {
     final normalizedStatus = accountStatus.trim().toLowerCase();
     return normalizedStatus == 'deleted' ||
         normalizedStatus == 'deactivated' ||
-        normalizedStatus == 'disabled';
+        normalizedStatus == 'disabled' ||
+        normalizedStatus == 'pendingdeletion' ||
+        normalizedStatus == 'deletioninprogress';
+  }
+
+  bool get isPendingDeletion {
+    return accountStatus.trim().toLowerCase() == 'pendingdeletion' ||
+        deletionRequested;
   }
 
   bool get isPubliclyVisible {
     if (isDeleted ||
-        deletionRequested ||
+        isPendingDeletion ||
         profileVisibility.toLowerCase() == 'hidden' ||
         isUnavailableAccountStatus ||
         isLegacyDeletedProfile) {

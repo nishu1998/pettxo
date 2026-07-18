@@ -19,6 +19,9 @@ class AuthShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final compact = screenWidth < 380;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -29,9 +32,9 @@ class AuthShell extends StatelessWidget {
             tween: Tween(begin: 0, end: 1),
             builder: (context, value, _) {
               return SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 20,
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 20 : 24,
+                  vertical: compact ? 14 : 18,
                 ),
                 child: Column(
                   children: [
@@ -40,54 +43,59 @@ class AuthShell extends StatelessWidget {
                       child: Opacity(
                         opacity: value,
                         child: Padding(
-                          padding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
+                          padding: EdgeInsets.fromLTRB(
+                            0,
+                            compact ? 4 : 6,
+                            0,
+                            compact ? 8 : 10,
+                          ),
                           child: Column(
                             children: [
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   SizedBox(
-                                    width: 52,
-                                    height: 52,
+                                    width: compact ? 58 : 64,
+                                    height: compact ? 58 : 64,
                                     child: Transform.scale(
-                                      scale: 1.18,
+                                      scale: compact ? 1.24 : 1.28,
                                       child: SvgPicture.asset(
                                         'assets/brand/pettxo_logo.svg',
                                         fit: BoxFit.contain,
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
+                                  SizedBox(width: compact ? 8 : 10),
                                   Text(
                                     eyebrow,
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       color: AppColors.primary,
-                                      fontSize: 16,
+                                      fontSize: compact ? 22 : 24,
                                       fontWeight: FontWeight.w800,
-                                      letterSpacing: 0.4,
+                                      letterSpacing: -0.3,
                                     ),
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 20),
+                              SizedBox(height: compact ? 8 : 10),
                               Text(
                                 title,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: Colors.black,
-                                  fontSize: 29,
+                                  fontSize: compact ? 27 : 29,
                                   fontWeight: FontWeight.w800,
                                   letterSpacing: -0.5,
                                   height: 1.08,
                                 ),
                               ),
-                              const SizedBox(height: 10),
+                              SizedBox(height: compact ? 8 : 10),
                               Text(
                                 subtitle,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: Color(0xFF4A4A4A),
-                                  fontSize: 14,
+                                  fontSize: compact ? 13.5 : 14,
                                   height: 1.5,
                                 ),
                               ),
@@ -101,7 +109,7 @@ class AuthShell extends StatelessWidget {
                       child: Opacity(
                         opacity: Curves.easeOut.transform(value),
                         child: Padding(
-                          padding: const EdgeInsets.only(top: 8),
+                          padding: EdgeInsets.only(top: compact ? 2 : 4),
                           child: child,
                         ),
                       ),
