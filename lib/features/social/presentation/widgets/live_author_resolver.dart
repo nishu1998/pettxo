@@ -6,11 +6,13 @@ class ResolvedAuthorData {
   final String displayName;
   final String username;
   final String imageUrl;
+  final String roleLabel;
 
   const ResolvedAuthorData({
     required this.displayName,
     required this.username,
     required this.imageUrl,
+    required this.roleLabel,
   });
 
   String get initials {
@@ -25,6 +27,7 @@ class LiveAuthorResolver extends StatelessWidget {
   final String fallbackName;
   final String fallbackUsername;
   final String fallbackImageUrl;
+  final String fallbackRoleLabel;
   final Widget Function(BuildContext context, ResolvedAuthorData author)
   builder;
 
@@ -34,6 +37,7 @@ class LiveAuthorResolver extends StatelessWidget {
     required this.fallbackName,
     required this.fallbackUsername,
     required this.fallbackImageUrl,
+    this.fallbackRoleLabel = '',
     required this.builder,
   });
 
@@ -44,6 +48,7 @@ class LiveAuthorResolver extends StatelessWidget {
       fallbackName: fallbackName,
       fallbackUsername: fallbackUsername,
       fallbackImageUrl: fallbackImageUrl,
+      fallbackRoleLabel: fallbackRoleLabel,
       builder: (context, snapshot) {
         return builder(
           context,
@@ -51,6 +56,7 @@ class LiveAuthorResolver extends StatelessWidget {
             displayName: snapshot.displayName,
             username: snapshot.username,
             imageUrl: snapshot.imageUrl,
+            roleLabel: snapshot.roleLabel,
           ),
         );
       },

@@ -490,6 +490,7 @@ class _SocialPostCardState extends State<SocialPostCard> {
       fallbackName: _post.authorDisplayName,
       fallbackUsername: _post.authorUsername,
       fallbackImageUrl: _post.authorPhotoUrl,
+      fallbackRoleLabel: _post.authorCategoryLabel,
       builder: (context, author) {
         return Container(
           decoration: BoxDecoration(
@@ -529,7 +530,7 @@ class _SocialPostCardState extends State<SocialPostCard> {
                               Expanded(
                                 child: _AuthorHeaderText(
                                   displayName: author.displayName,
-                                  categoryLabel: _post.authorCategoryLabel,
+                                  categoryLabel: author.roleLabel,
                                   isAdminPost: _isAdminPost,
                                   hasLocation: hasLocation,
                                   locationLabel: _post.locationLabel,

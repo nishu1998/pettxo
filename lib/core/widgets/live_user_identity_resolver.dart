@@ -7,11 +7,13 @@ class ResolvedUserIdentity {
   final String displayName;
   final String username;
   final String imageUrl;
+  final String roleLabel;
 
   const ResolvedUserIdentity({
     required this.displayName,
     required this.username,
     required this.imageUrl,
+    required this.roleLabel,
   });
 
   String get initials {
@@ -26,6 +28,7 @@ class LiveUserIdentityResolver extends StatelessWidget {
   final String fallbackName;
   final String fallbackUsername;
   final String fallbackImageUrl;
+  final String fallbackRoleLabel;
   final String placeholderName;
   final Widget Function(BuildContext context, ResolvedUserIdentity identity)
   builder;
@@ -36,6 +39,7 @@ class LiveUserIdentityResolver extends StatelessWidget {
     required this.fallbackName,
     required this.fallbackUsername,
     required this.fallbackImageUrl,
+    this.fallbackRoleLabel = '',
     required this.builder,
     this.placeholderName = 'Pettxo user',
   });
@@ -61,6 +65,7 @@ class LiveUserIdentityResolver extends StatelessWidget {
     final liveName = profile?.name.trim() ?? '';
     final liveUsername = profile?.username.trim() ?? '';
     final liveImageUrl = profile?.profileImageUrl.trim() ?? '';
+    final liveRoleLabel = profile?.roleLabel.trim() ?? '';
     final normalizedFallbackName = fallbackName.trim();
     final normalizedFallbackUsername = fallbackUsername.trim().replaceFirst(
       '@',
@@ -79,6 +84,7 @@ class LiveUserIdentityResolver extends StatelessWidget {
       imageUrl: liveImageUrl.isNotEmpty
           ? liveImageUrl
           : fallbackImageUrl.trim(),
+      roleLabel: liveRoleLabel.isNotEmpty ? liveRoleLabel : fallbackRoleLabel,
     );
   }
 }
