@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/data/services/auth_service.dart';
 import '../../../auth/data/services/pending_email_change_service.dart';
@@ -179,60 +180,19 @@ class _AccountSecurityScreenState extends State<AccountSecurityScreen> {
   Future<void> _requestAccountDeletion() async {
     if (_isDeletingAccount) return;
 
-    final confirmationController = TextEditingController();
-    final confirmed = await showDialog<bool>(
+    final confirmed = await AppConfirmationDialog.showPhraseConfirmation(
       context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final isMatch =
-                confirmationController.text.trim().toUpperCase() == 'DELETE';
-            return AlertDialog(
-              title: const Text('Schedule account deletion?'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Your access will stop immediately, and your Pettxo account will be permanently deleted after 30 days unless you sign in and restore it before then.',
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'During the recovery window, your UID, email or phone sign-in, and username stay reserved for this account.',
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: confirmationController,
-                    textCapitalization: TextCapitalization.characters,
-                    onChanged: (_) => setDialogState(() {}),
-                    decoration: const InputDecoration(
-                      labelText: 'Type DELETE to confirm',
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(false),
-                  child: const Text('Cancel'),
-                ),
-                TextButton(
-                  onPressed: isMatch
-                      ? () => Navigator.of(dialogContext).pop(true)
-                      : null,
-                  child: const Text(
-                    'Schedule deletion',
-                    style: TextStyle(color: Color(0xFFE15656)),
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      title: 'Schedule account deletion?',
+      message:
+          'Your access will stop immediately, and your Pettxo account will be permanently deleted after 30 days unless you sign in and restore it before then.',
+      helperMessage:
+          'During the recovery window, your UID, email or phone sign-in, and username stay reserved for this account.',
+      confirmationPhrase: 'DELETE',
+      inputLabel: 'Type DELETE to confirm',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Schedule deletion',
+      isDestructive: true,
     );
-    confirmationController.dispose();
-
     if (confirmed != true || !mounted) return;
 
     final didReauthenticate = await _reauthenticateForDeletion();

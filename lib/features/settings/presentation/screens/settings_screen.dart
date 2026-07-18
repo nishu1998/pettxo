@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
-import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/data/services/auth_service.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
 import '../../../provider/domain/models/provider_onboarding_models.dart';
@@ -32,7 +32,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   UserProfile? _profile;
   ProviderOnboardingSnapshot? _providerOnboarding;
   bool _isLoading = true;
-  bool _isSigningOut = false;
   String? _loadError;
 
   @override
@@ -97,28 +96,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _signOut() async {
-    if (_isSigningOut) return;
+    final confirmed = await AppConfirmationDialog.show(
+      context: context,
+      title: 'Sign out?',
+      message: 'Are you sure you want to sign out of your account?',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Sign Out',
+      isDestructive: true,
+      errorMessage: 'Unable to sign out. Please try again.',
+      onConfirm: () => _authService.logout(),
+    );
+    if (confirmed != true || !mounted) return;
 
-    setState(() => _isSigningOut = true);
-
-    try {
-      await _authService.logout();
-      if (!mounted) return;
-
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const AuthGatewayScreen()),
-        (route) => false,
-      );
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() => _isSigningOut = false);
-      AppFeedback.show(
-        context,
-        message: 'Unable to sign out right now. Please try again.',
-        tone: AppFeedbackTone.error,
-      );
-    }
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const AuthGatewayScreen()),
+      (route) => false,
+    );
   }
 
   @override
@@ -418,22 +411,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _SettingsCard(
                     child: _NavTile(
                       icon: Icons.logout_rounded,
-                      title: _isSigningOut ? 'Signing out...' : 'Sign out',
+                      title: 'Sign out',
                       titleColor: const Color(0xFFE15656),
                       iconColor: const Color(0xFFE15656),
                       iconBackgroundColor: const Color(0xFFFFF1EF),
                       subtitle: null,
-                      trailing: _isSigningOut
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(
-                              Icons.chevron_right_rounded,
-                              color: Color(0xFFE15656),
-                            ),
-                      onTap: _isSigningOut ? null : _signOut,
+                      trailing: const Icon(
+                        Icons.chevron_right_rounded,
+                        color: Color(0xFFE15656),
+                      ),
+                      onTap: _signOut,
                     ),
                   ),
                 ],

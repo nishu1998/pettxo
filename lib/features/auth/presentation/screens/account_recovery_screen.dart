@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../data/services/auth_service.dart';
 import 'auth_gateway_screen.dart';
@@ -103,6 +104,25 @@ class _AccountRecoveryScreenState extends State<AccountRecoveryScreen> {
   Future<void> _continueDeletion() async {
     await _authService.logout();
     if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const AuthGatewayScreen()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _signOut() async {
+    final confirmed = await AppConfirmationDialog.show(
+      context: context,
+      title: 'Sign out?',
+      message: 'Are you sure you want to sign out of your account?',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Sign Out',
+      isDestructive: true,
+      errorMessage: 'Unable to sign out. Please try again.',
+      onConfirm: () => _authService.logout(),
+    );
+    if (confirmed != true || !mounted) return;
+
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const AuthGatewayScreen()),
       (route) => false,
@@ -299,7 +319,7 @@ class _AccountRecoveryScreenState extends State<AccountRecoveryScreen> {
                         ),
                         const SizedBox(height: 8),
                         TextButton(
-                          onPressed: _continueDeletion,
+                          onPressed: _signOut,
                           child: const Text('Sign Out'),
                         ),
                       ],
