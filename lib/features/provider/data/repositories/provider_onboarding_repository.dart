@@ -8,6 +8,20 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../../domain/models/provider_onboarding_models.dart';
 
+class ProviderVerificationUploadFile {
+  const ProviderVerificationUploadFile({
+    required this.file,
+    required this.fileName,
+    required this.contentType,
+  });
+
+  final File file;
+  final String fileName;
+  final String contentType;
+
+  bool get isPdf => contentType == 'application/pdf';
+}
+
 class ProviderOnboardingRepository {
   final FirebaseFirestore _firestore;
   final FirebaseAuth _auth;
@@ -171,8 +185,8 @@ class ProviderOnboardingRepository {
 
   Future<void> submitVerification({
     required String documentType,
-    required File frontImage,
-    File? backImage,
+    required ProviderVerificationUploadFile frontDocument,
+    ProviderVerificationUploadFile? backDocument,
   }) async {
     final uid = _currentUid;
     final normalizedDocumentType = _normalizeDocumentType(documentType);
@@ -180,16 +194,16 @@ class ProviderOnboardingRepository {
       throw Exception('Invalid document type');
     }
 
-    final frontUrl = await _uploadIdentityImage(
+    final frontUrl = await _uploadIdentityDocument(
       userId: uid,
-      image: frontImage,
+      document: frontDocument,
       suffix: 'front',
     );
-    final backUrl = backImage == null
+    final backUrl = backDocument == null
         ? ''
-        : await _uploadIdentityImage(
+        : await _uploadIdentityDocument(
             userId: uid,
-            image: backImage,
+            document: backDocument,
             suffix: 'back',
           );
 
@@ -202,6 +216,10 @@ class ProviderOnboardingRepository {
         'documentType': normalizedDocumentType,
         'documentFrontUrl': frontUrl,
         'documentBackUrl': backUrl,
+        'documentFrontContentType': frontDocument.contentType,
+        'documentBackContentType': backDocument?.contentType ?? '',
+        'documentFrontFileName': frontDocument.fileName.trim(),
+        'documentBackFileName': backDocument?.fileName.trim() ?? '',
         'submittedAt': FieldValue.serverTimestamp(),
         'reviewedAt': null,
         'reviewedBy': null,
@@ -304,12 +322,32 @@ class ProviderOnboardingRepository {
     }
   }
 
-  Future<String> _uploadIdentityImage({
+  Future<String> _uploadIdentityDocument({
     required String userId,
-    required File image,
+    required ProviderVerificationUploadFile document,
     required String suffix,
   }) async {
-    final bytes = await image.readAsBytes();
+    final fileName = document.fileName.trim().isEmpty
+        ? 'document'
+        : document.fileName.trim();
+    final extension = _normalizedExtension(fileName, document.contentType);
+    final ref = _storage.ref().child(
+      'providerVerification/$userId/identity/${DateTime.now().millisecondsSinceEpoch}_$suffix.$extension',
+    );
+
+    if (document.isPdf) {
+      final bytes = await document.file.readAsBytes();
+      await ref.putData(
+        bytes,
+        SettableMetadata(
+          contentType: document.contentType,
+          customMetadata: {'originalFileName': fileName},
+        ),
+      );
+      return ref.getDownloadURL();
+    }
+
+    final bytes = await document.file.readAsBytes();
     final compressedBytes = await FlutterImageCompress.compressWithList(
       bytes,
       quality: 82,
@@ -318,11 +356,28 @@ class ProviderOnboardingRepository {
       format: CompressFormat.jpeg,
     );
     final uploadBytes = Uint8List.fromList(compressedBytes);
-    final ref = _storage.ref().child(
-      'providerVerification/$userId/identity/${DateTime.now().millisecondsSinceEpoch}_$suffix.jpg',
+    await ref.putData(
+      uploadBytes,
+      SettableMetadata(
+        contentType: 'image/jpeg',
+        customMetadata: {'originalFileName': fileName},
+      ),
     );
-    await ref.putData(uploadBytes, SettableMetadata(contentType: 'image/jpeg'));
     return ref.getDownloadURL();
+  }
+
+  String _normalizedExtension(String fileName, String contentType) {
+    if (contentType == 'application/pdf') {
+      return 'pdf';
+    }
+    final dotIndex = fileName.lastIndexOf('.');
+    if (dotIndex != -1 && dotIndex < fileName.length - 1) {
+      final candidate = fileName.substring(dotIndex + 1).trim().toLowerCase();
+      if (candidate == 'png' || candidate == 'webp') {
+        return candidate;
+      }
+    }
+    return 'jpg';
   }
 
   String _maskAccountNumber(String accountNumber) {

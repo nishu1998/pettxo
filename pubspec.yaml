@@ -43,6 +43,8 @@ dependencies:
   share_plus: ^13.1.0
   razorpay_flutter: ^1.4.0
   connectivity_plus: ^6.1.5
+  file_selector: ^1.0.3
+  pdfx: ^2.9.2
 
 dev_dependencies:
   flutter_test:

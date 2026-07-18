@@ -15,6 +15,10 @@ class ProviderVerificationRecord {
   final String documentType;
   final String documentFrontUrl;
   final String documentBackUrl;
+  final String documentFrontContentType;
+  final String documentBackContentType;
+  final String documentFrontFileName;
+  final String documentBackFileName;
   final DateTime? submittedAt;
   final DateTime? reviewedAt;
   final String reviewedBy;
@@ -30,6 +34,10 @@ class ProviderVerificationRecord {
     required this.documentType,
     required this.documentFrontUrl,
     required this.documentBackUrl,
+    required this.documentFrontContentType,
+    required this.documentBackContentType,
+    required this.documentFrontFileName,
+    required this.documentBackFileName,
     required this.submittedAt,
     required this.reviewedAt,
     required this.reviewedBy,
@@ -47,6 +55,10 @@ class ProviderVerificationRecord {
       documentType: '',
       documentFrontUrl: '',
       documentBackUrl: '',
+      documentFrontContentType: '',
+      documentBackContentType: '',
+      documentFrontFileName: '',
+      documentBackFileName: '',
       submittedAt: null,
       reviewedAt: null,
       reviewedBy: '',
@@ -69,6 +81,14 @@ class ProviderVerificationRecord {
       documentType: (data['documentType'] as String? ?? '').trim(),
       documentFrontUrl: (data['documentFrontUrl'] as String? ?? '').trim(),
       documentBackUrl: (data['documentBackUrl'] as String? ?? '').trim(),
+      documentFrontContentType:
+          (data['documentFrontContentType'] as String? ?? '').trim(),
+      documentBackContentType:
+          (data['documentBackContentType'] as String? ?? '').trim(),
+      documentFrontFileName: (data['documentFrontFileName'] as String? ?? '')
+          .trim(),
+      documentBackFileName: (data['documentBackFileName'] as String? ?? '')
+          .trim(),
       submittedAt: _readDate(data['submittedAt']),
       reviewedAt: _readDate(data['reviewedAt']),
       reviewedBy: (data['reviewedBy'] as String? ?? '').trim(),
@@ -84,6 +104,12 @@ class ProviderVerificationRecord {
   bool get isPending => status == providerVerificationPending;
   bool get isApproved => status == providerVerificationApproved;
   bool get isRejected => status == providerVerificationRejected;
+  bool get hasFrontDocument => documentFrontUrl.isNotEmpty;
+  bool get hasBackDocument => documentBackUrl.isNotEmpty;
+  bool get frontDocumentIsPdf =>
+      _isPdf(documentFrontContentType, documentFrontUrl);
+  bool get backDocumentIsPdf =>
+      _isPdf(documentBackContentType, documentBackUrl);
 
   bool get graceExpired {
     final graceEnd = gracePeriodEndsAt;
@@ -103,6 +129,13 @@ class ProviderVerificationRecord {
       return 'Your verification is under review. This usually takes 24–72 hours.';
     }
     return 'Submit your identity proof to start receiving bookings as a provider.';
+  }
+
+  static bool _isPdf(String contentType, String url) {
+    final normalizedContentType = contentType.trim().toLowerCase();
+    if (normalizedContentType == 'application/pdf') return true;
+    final normalizedUrl = url.trim().toLowerCase();
+    return normalizedUrl.contains('.pdf');
   }
 }
 

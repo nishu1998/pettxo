@@ -1,8 +1,12 @@
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pdfx/pdfx.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/policy_link_service.dart';
@@ -30,8 +34,8 @@ class _ProviderVerificationScreenState
 
   ProviderVerificationRecord? _verification;
   String _selectedDocumentType = 'aadhaar';
-  File? _frontImage;
-  File? _backImage;
+  _SelectedVerificationDocument? _frontDocument;
+  _SelectedVerificationDocument? _backDocument;
   bool _acceptedProviderAgreement = false;
   bool _hasStoredProviderAgreement = false;
   bool _isLoading = true;
@@ -77,16 +81,78 @@ class _ProviderVerificationScreenState
     if (!mounted || file == null) return;
     setState(() {
       if (isFront) {
-        _frontImage = File(file.path);
+        _frontDocument = _SelectedVerificationDocument.image(File(file.path));
       } else {
-        _backImage = File(file.path);
+        _backDocument = _SelectedVerificationDocument.image(File(file.path));
       }
     });
   }
 
+  Future<void> _pickPdf({required bool isFront}) async {
+    const pdfTypeGroup = XTypeGroup(
+      label: 'PDF documents',
+      extensions: <String>['pdf'],
+    );
+    final picked = await openFile(acceptedTypeGroups: const [pdfTypeGroup]);
+    if (!mounted || picked == null) return;
+    final path = picked.path;
+    if (path.trim().isEmpty) return;
+    final document = _SelectedVerificationDocument.pdf(
+      File(path),
+      picked.name.trim().isEmpty ? 'document.pdf' : picked.name.trim(),
+    );
+    setState(() {
+      if (isFront) {
+        _frontDocument = document;
+      } else {
+        _backDocument = document;
+      }
+    });
+  }
+
+  Future<void> _pickDocument({required bool isFront}) async {
+    final selectedType = await showModalBottomSheet<_VerificationPickerType>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const _DocumentSourceSheet(),
+    );
+    if (!mounted || selectedType == null) return;
+    if (selectedType == _VerificationPickerType.image) {
+      await _pickImage(isFront: isFront);
+      return;
+    }
+    await _pickPdf(isFront: isFront);
+  }
+
+  Future<void> _openSubmittedDocument({
+    required String url,
+    required bool isPdf,
+    required String title,
+  }) async {
+    if (url.trim().isEmpty) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: 'This document link is unavailable right now.',
+        tone: AppFeedbackTone.error,
+      );
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.72),
+      builder: (dialogContext) => _SubmittedDocumentPreviewDialog(
+        title: title,
+        documentUrl: url.trim(),
+        isPdf: isPdf,
+      ),
+    );
+  }
+
   Future<void> _submit() async {
     if (_isSubmitting) return;
-    if (_frontImage == null) {
+    if (_frontDocument == null) {
       AppFeedback.show(
         context,
         message: 'Upload the front side of your identity proof first.',
@@ -108,8 +174,8 @@ class _ProviderVerificationScreenState
       }
       await _repository.submitVerification(
         documentType: _selectedDocumentType,
-        frontImage: _frontImage!,
-        backImage: _backImage,
+        frontDocument: _frontDocument!.toUploadFile(),
+        backDocument: _backDocument?.toUploadFile(),
       );
       if (!mounted) return;
       AppFeedback.show(
@@ -191,12 +257,25 @@ class _ProviderVerificationScreenState
                   onDocumentTypeChanged: (value) {
                     setState(() => _selectedDocumentType = value);
                   },
-                  frontImage: _frontImage,
-                  backImage: _backImage,
-                  onPickFront: () => _pickImage(isFront: true),
-                  onPickBack: () => _pickImage(isFront: false),
-                  existingFrontUrl: verification.documentFrontUrl,
-                  existingBackUrl: verification.documentBackUrl,
+                  frontDocument: _frontDocument,
+                  backDocument: _backDocument,
+                  onPickFront: () => _pickDocument(isFront: true),
+                  onPickBack: () => _pickDocument(isFront: false),
+                  verification: verification,
+                  onViewFront: verification.hasFrontDocument
+                      ? () => _openSubmittedDocument(
+                          url: verification.documentFrontUrl,
+                          isPdf: verification.frontDocumentIsPdf,
+                          title: 'Front document',
+                        )
+                      : null,
+                  onViewBack: verification.hasBackDocument
+                      ? () => _openSubmittedDocument(
+                          url: verification.documentBackUrl,
+                          isPdf: verification.backDocumentIsPdf,
+                          title: 'Back document',
+                        )
+                      : null,
                 ),
                 if (!_hasStoredProviderAgreement) ...[
                   const SizedBox(height: 16),
@@ -356,23 +435,25 @@ class _FormCard extends StatelessWidget {
   final bool enabled;
   final String selectedDocumentType;
   final ValueChanged<String> onDocumentTypeChanged;
-  final File? frontImage;
-  final File? backImage;
+  final _SelectedVerificationDocument? frontDocument;
+  final _SelectedVerificationDocument? backDocument;
   final VoidCallback onPickFront;
   final VoidCallback onPickBack;
-  final String existingFrontUrl;
-  final String existingBackUrl;
+  final VoidCallback? onViewFront;
+  final VoidCallback? onViewBack;
+  final ProviderVerificationRecord verification;
 
   const _FormCard({
     required this.enabled,
     required this.selectedDocumentType,
     required this.onDocumentTypeChanged,
-    required this.frontImage,
-    required this.backImage,
+    required this.frontDocument,
+    required this.backDocument,
     required this.onPickFront,
     required this.onPickBack,
-    required this.existingFrontUrl,
-    required this.existingBackUrl,
+    required this.onViewFront,
+    required this.onViewBack,
+    required this.verification,
   });
 
   @override
@@ -403,21 +484,35 @@ class _FormCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           _UploadRow(
-            title: 'Front image',
-            subtitle: frontImage == null && existingFrontUrl.isNotEmpty
-                ? 'A document image is already on file.'
-                : 'Upload a clear photo of the front side.',
-            hasImage: frontImage != null || existingFrontUrl.isNotEmpty,
+            title: 'Front document',
+            subtitle: frontDocument != null
+                ? frontDocument!.summaryLabel
+                : verification.hasFrontDocument
+                ? verification.frontDocumentIsPdf
+                      ? 'A PDF document is already on file.'
+                      : 'A document image is already on file.'
+                : 'Upload a clear image or PDF of the front side.',
+            hasDocument: frontDocument != null || verification.hasFrontDocument,
             onTap: enabled ? onPickFront : null,
+            onView: onViewFront,
+            isPdf:
+                frontDocument?.isPdf == true || verification.frontDocumentIsPdf,
           ),
           const SizedBox(height: 12),
           _UploadRow(
-            title: 'Back image (optional)',
-            subtitle: backImage == null && existingBackUrl.isNotEmpty
-                ? 'A back image is already on file.'
-                : 'Add the back side if your document includes important details there.',
-            hasImage: backImage != null || existingBackUrl.isNotEmpty,
+            title: 'Back document (optional)',
+            subtitle: backDocument != null
+                ? backDocument!.summaryLabel
+                : verification.hasBackDocument
+                ? verification.backDocumentIsPdf
+                      ? 'A back-side PDF is already on file.'
+                      : 'A back-side image is already on file.'
+                : 'Add the back side as an image or PDF if it includes important details.',
+            hasDocument: backDocument != null || verification.hasBackDocument,
             onTap: enabled ? onPickBack : null,
+            onView: onViewBack,
+            isPdf:
+                backDocument?.isPdf == true || verification.backDocumentIsPdf,
           ),
         ],
       ),
@@ -657,14 +752,18 @@ class _DocumentTypeTile extends StatelessWidget {
 class _UploadRow extends StatelessWidget {
   final String title;
   final String subtitle;
-  final bool hasImage;
+  final bool hasDocument;
+  final bool isPdf;
   final VoidCallback? onTap;
+  final VoidCallback? onView;
 
   const _UploadRow({
     required this.title,
     required this.subtitle,
-    required this.hasImage,
+    required this.hasDocument,
+    required this.isPdf,
     required this.onTap,
+    this.onView,
   });
 
   @override
@@ -681,7 +780,9 @@ class _UploadRow extends StatelessWidget {
           CircleAvatar(
             backgroundColor: AppColors.primary.withValues(alpha: 0.1),
             child: Icon(
-              hasImage ? Icons.check_rounded : Icons.image_outlined,
+              hasDocument
+                  ? (isPdf ? Icons.picture_as_pdf_rounded : Icons.check_rounded)
+                  : Icons.upload_file_outlined,
               color: AppColors.primary,
             ),
           ),
@@ -709,14 +810,130 @@ class _UploadRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          SecondaryButton(
-            label: hasImage ? 'Change' : 'Upload',
-            onPressed: onTap,
-            expand: false,
-            size: AppButtonSize.compact,
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SecondaryButton(
+                label: hasDocument ? 'Change' : 'Upload',
+                onPressed: onTap,
+                expand: false,
+                size: AppButtonSize.compact,
+              ),
+              if (hasDocument && onView != null) ...[
+                const SizedBox(height: 8),
+                TextButton(onPressed: onView, child: const Text('View')),
+              ],
+            ],
           ),
         ],
       ),
+    );
+  }
+}
+
+enum _VerificationPickerType { image, pdf }
+
+class _DocumentSourceSheet extends StatelessWidget {
+  const _DocumentSourceSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 42,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: AppColors.textGrey.withValues(alpha: 0.22),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Choose upload type',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: AppColors.textDark,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Upload a clear image from your gallery or select a PDF document.',
+              style: TextStyle(color: AppColors.textGrey, height: 1.45),
+            ),
+            const SizedBox(height: 16),
+            _DocumentTypeTile(
+              icon: Icons.image_outlined,
+              label: 'Upload image',
+              selected: false,
+              onTap: () =>
+                  Navigator.pop(context, _VerificationPickerType.image),
+            ),
+            const SizedBox(height: 10),
+            _DocumentTypeTile(
+              icon: Icons.picture_as_pdf_outlined,
+              label: 'Upload PDF',
+              selected: false,
+              onTap: () => Navigator.pop(context, _VerificationPickerType.pdf),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectedVerificationDocument {
+  const _SelectedVerificationDocument({
+    required this.file,
+    required this.fileName,
+    required this.contentType,
+  });
+
+  factory _SelectedVerificationDocument.image(File file) {
+    return _SelectedVerificationDocument(
+      file: file,
+      fileName: file.path.split(Platform.pathSeparator).last,
+      contentType: 'image/jpeg',
+    );
+  }
+
+  factory _SelectedVerificationDocument.pdf(File file, String fileName) {
+    return _SelectedVerificationDocument(
+      file: file,
+      fileName: fileName,
+      contentType: 'application/pdf',
+    );
+  }
+
+  final File file;
+  final String fileName;
+  final String contentType;
+
+  bool get isPdf => contentType == 'application/pdf';
+
+  String get summaryLabel =>
+      isPdf ? 'Selected PDF: $fileName' : 'Selected image: $fileName';
+
+  ProviderVerificationUploadFile toUploadFile() {
+    return ProviderVerificationUploadFile(
+      file: file,
+      fileName: fileName,
+      contentType: contentType,
     );
   }
 }
@@ -752,6 +969,215 @@ class _ErrorState extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SubmittedDocumentPreviewDialog extends StatelessWidget {
+  const _SubmittedDocumentPreviewDialog({
+    required this.title,
+    required this.documentUrl,
+    required this.isPdf,
+  });
+
+  final String title;
+  final String documentUrl;
+  final bool isPdf;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final dialogWidth = math.min(size.width - 24, 520.0);
+    final dialogHeight = math.min(size.height * 0.8, 720.0);
+
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        width: dialogWidth,
+        height: dialogHeight,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(color: AppColors.primary.withValues(alpha: 0.14)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.16),
+              blurRadius: 28,
+              offset: const Offset(0, 18),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 16, 12, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: IconButton.styleFrom(
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.08,
+                      ),
+                      minimumSize: const Size(40, 40),
+                    ),
+                    icon: const Icon(Icons.close_rounded),
+                    color: AppColors.primary,
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(28),
+                ),
+                child: ColoredBox(
+                  color: const Color(0xFFF9F4EF),
+                  child: isPdf
+                      ? _PdfDocumentPreview(documentUrl: documentUrl)
+                      : InteractiveViewer(
+                          minScale: 1,
+                          maxScale: 4,
+                          child: Center(
+                            child: Image.network(
+                              documentUrl,
+                              fit: BoxFit.contain,
+                              loadingBuilder:
+                                  (context, child, loadingProgress) =>
+                                      loadingProgress == null
+                                      ? child
+                                      : const Center(
+                                          child: CircularProgressIndicator(),
+                                        ),
+                              errorBuilder: (context, error, stackTrace) =>
+                                  const Padding(
+                                    padding: EdgeInsets.all(24),
+                                    child: Text(
+                                      'We could not load this document preview right now.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: AppColors.textGrey,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PdfDocumentPreview extends StatefulWidget {
+  const _PdfDocumentPreview({required this.documentUrl});
+
+  final String documentUrl;
+
+  @override
+  State<_PdfDocumentPreview> createState() => _PdfDocumentPreviewState();
+}
+
+class _PdfDocumentPreviewState extends State<_PdfDocumentPreview> {
+  PdfControllerPinch? _controller;
+  Object? _loadError;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPdf();
+  }
+
+  Future<void> _loadPdf() async {
+    try {
+      final bytes = await _downloadPdfBytes(widget.documentUrl);
+      final controller = PdfControllerPinch(
+        document: PdfDocument.openData(bytes),
+      );
+      if (!mounted) {
+        controller.dispose();
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = error;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<Uint8List> _downloadPdfBytes(String url) async {
+    final uri = Uri.parse(url);
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(uri);
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception('Failed to load PDF');
+      }
+      final builder = BytesBuilder(copy: false);
+      await for (final chunk in response) {
+        builder.add(chunk);
+      }
+      return builder.takeBytes();
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_loadError != null || _controller == null) {
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            'We could not load this PDF preview right now.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+    }
+    return PdfViewPinch(
+      controller: _controller!,
+      backgroundDecoration: const BoxDecoration(color: Color(0xFFF9F4EF)),
     );
   }
 }
