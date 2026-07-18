@@ -8,6 +8,8 @@ import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../auth/domain/models/profile_type.dart';
+import '../../../auth/presentation/widgets/profile_type_selector_dialog.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 
@@ -34,6 +36,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   String? _loadError;
   String? _nameError;
   String? _locationError;
+  ProfileType _selectedProfileType = ProfileType.petParent;
   File? _selectedImage;
   UserProfile? _initialProfile;
 
@@ -52,6 +55,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _nameController.text = profile.name;
       _locationController.text = profile.location;
       _bioController.text = profile.bio;
+      _selectedProfileType = profileTypeFromStoredValue(profile.role);
 
       setState(() => _isLoading = false);
     } catch (_) {
@@ -139,6 +143,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         name: name,
         location: location,
         bio: bio,
+        role: _selectedProfileType.storedValue,
         profileImageUrl: uploadedImageUrl,
       );
 
@@ -351,6 +356,24 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           },
                         ),
                         const SizedBox(height: 14),
+                        _ProfileSelectionField(
+                          label: 'Account Type',
+                          value: _selectedProfileType.label,
+                          onTap: _isSaving
+                              ? null
+                              : () async {
+                                  final selected =
+                                      await ProfileTypeSelectorDialog.show(
+                                        context,
+                                        selectedType: _selectedProfileType,
+                                      );
+                                  if (selected == null || !mounted) return;
+                                  setState(() {
+                                    _selectedProfileType = selected;
+                                  });
+                                },
+                        ),
+                        const SizedBox(height: 14),
                         _ProfileTextField(
                           controller: _bioController,
                           label: 'Bio',
@@ -424,6 +447,67 @@ class _ProfileTextField extends StatelessWidget {
           borderRadius: BorderRadius.circular(18),
           borderSide: BorderSide(
             color: AppColors.primary.withValues(alpha: 0.28),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileSelectionField extends StatelessWidget {
+  const _ProfileSelectionField({
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
+
+  final String label;
+  final String value;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: InputDecorator(
+          decoration: InputDecoration(
+            labelText: label,
+            filled: true,
+            fillColor: const Color(0xFFFCFBFA),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: BorderSide(
+                color: AppColors.primary.withValues(alpha: 0.28),
+              ),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  value,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: AppColors.textGrey,
+              ),
+            ],
           ),
         ),
       ),

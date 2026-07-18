@@ -459,6 +459,7 @@ service cloud.firestore {
         'displayName',
         'name',
         'bio',
+        'role',
         'profileType',
         'photoUrl',
         'profileImage',
@@ -476,6 +477,7 @@ service cloud.firestore {
       request.resource.data.usernameLowercase == resource.data.usernameLowercase &&
       request.resource.data.displayName is string &&
       request.resource.data.name == request.resource.data.displayName &&
+      request.resource.data.role in ['petParent', 'serviceProvider', 'petLover'] &&
       request.resource.data.photoUrl is string &&
       request.resource.data.profileImage == request.resource.data.photoUrl &&
       request.resource.data.updatedAt == request.time;

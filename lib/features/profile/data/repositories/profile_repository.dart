@@ -7,6 +7,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 
 import '../../../../core/identity/username_utils.dart' as username_utils;
 import '../../../../core/services/firestore_cache_service.dart';
+import '../../../auth/domain/models/profile_type.dart';
 import '../../../restrictions/domain/models/user_restriction_state.dart';
 import '../../domain/models/user_profile.dart';
 
@@ -386,9 +387,11 @@ class ProfileRepository {
     required String name,
     required String location,
     required String bio,
+    String? role,
     String? profileImageUrl,
   }) async {
     final normalizedLocationPayload = _buildNormalizedLocationPayload(location);
+    final normalizedRole = role?.trim() ?? '';
     final publicPayload = <String, dynamic>{
       'displayName': name.trim(),
       'name': name.trim(),
@@ -397,12 +400,69 @@ class ProfileRepository {
       ...normalizedLocationPayload,
     };
 
+    if (normalizedRole.isNotEmpty) {
+      publicPayload['role'] = normalizedRole;
+    }
+
     if (profileImageUrl != null && profileImageUrl.trim().isNotEmpty) {
       publicPayload['photoUrl'] = profileImageUrl.trim();
       publicPayload['profileImage'] = profileImageUrl.trim();
     }
 
     await _publicUserDoc(_uid).set(publicPayload, SetOptions(merge: true));
+    if (normalizedRole.isNotEmpty) {
+      await _syncCurrentUserRoleAcrossPosts(
+        role: normalizedRole,
+        profileImageUrl: profileImageUrl?.trim(),
+        displayName: name.trim(),
+      );
+    }
+  }
+
+  Future<void> _syncCurrentUserRoleAcrossPosts({
+    required String role,
+    required String displayName,
+    String? profileImageUrl,
+  }) async {
+    final roleLabel = profileTypeFromStoredValue(role).label;
+    final trimmedPhotoUrl = profileImageUrl?.trim() ?? '';
+    QueryDocumentSnapshot<Map<String, dynamic>>? lastDoc;
+
+    while (true) {
+      Query<Map<String, dynamic>> query = _firestore
+          .collection('socialPosts')
+          .where('authorId', isEqualTo: _uid)
+          .orderBy('createdAtEpoch', descending: true)
+          .limit(50);
+
+      if (lastDoc != null) {
+        query = query.startAfterDocument(lastDoc);
+      }
+
+      final snapshot = await query.get();
+      if (snapshot.docs.isEmpty) {
+        break;
+      }
+
+      final batch = _firestore.batch();
+      for (final doc in snapshot.docs) {
+        final update = <String, dynamic>{
+          'authorCategoryLabel': roleLabel,
+          'authorDisplayName': displayName,
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+        if (trimmedPhotoUrl.isNotEmpty) {
+          update['authorPhotoUrl'] = trimmedPhotoUrl;
+        }
+        batch.set(doc.reference, update, SetOptions(merge: true));
+      }
+      await batch.commit();
+
+      if (snapshot.docs.length < 50) {
+        break;
+      }
+      lastDoc = snapshot.docs.last;
+    }
   }
 
   Map<String, dynamic> _buildNormalizedLocationPayload(String location) {
