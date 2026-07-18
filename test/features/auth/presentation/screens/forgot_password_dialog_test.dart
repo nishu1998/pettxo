@@ -5,7 +5,7 @@ import 'package:pettexo/features/auth/presentation/screens/signin_screen.dart';
 
 void main() {
   testWidgets(
-    'forgot password success state has no Done button and can go back to sign in',
+    'forgot password success state has no Done or back button and can be dismissed',
     (tester) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -48,9 +48,9 @@ void main() {
 
       expect(find.text('Password reset email sent'), findsOneWidget);
       expect(find.text('Done'), findsNothing);
-      expect(find.text('Back to Sign In'), findsOneWidget);
+      expect(find.text('Back to Sign In'), findsNothing);
 
-      await tester.tap(find.text('Back to Sign In'));
+      await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
 
       expect(find.text('Reset Password'), findsNothing);

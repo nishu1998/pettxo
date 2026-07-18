@@ -67,6 +67,24 @@ class ExploreHashtagSummary {
   }
 }
 
+enum SocialPostUploadStage { preparing, uploading, finalizing }
+
+@immutable
+class SocialPostUploadProgress {
+  const SocialPostUploadProgress({
+    required this.stage,
+    required this.fraction,
+    required this.message,
+  });
+
+  final SocialPostUploadStage stage;
+  final double fraction;
+  final String message;
+}
+
+typedef SocialPostUploadProgressCallback =
+    void Function(SocialPostUploadProgress progress);
+
 class SocialPostRepository {
   SocialPostRepository({
     FirebaseFirestore? firestore,
@@ -326,6 +344,7 @@ class SocialPostRepository {
     required SocialPostAspectRatio aspectRatio,
     required String caption,
     required List<String> hashtags,
+    SocialPostUploadProgressCallback? onProgress,
   }) async {
     if (images.isEmpty) {
       throw Exception('Select at least one image.');
@@ -334,6 +353,13 @@ class SocialPostRepository {
       throw Exception('You can upload up to 5 images.');
     }
 
+    onProgress?.call(
+      const SocialPostUploadProgress(
+        stage: SocialPostUploadStage.preparing,
+        fraction: 0.04,
+        message: 'Preparing your post...',
+      ),
+    );
     final authorId = await _ensureAuthenticatedForStorageWrite();
     final profile = await _profileRepository.getCurrentUserProfile();
     final postRef = _postsCollection.doc();
@@ -342,6 +368,7 @@ class SocialPostRepository {
       postId: postRef.id,
       images: images,
       aspectRatio: aspectRatio,
+      onProgress: onProgress,
     );
 
     final payload = <String, dynamic>{
@@ -379,6 +406,13 @@ class SocialPostRepository {
     };
 
     try {
+      onProgress?.call(
+        const SocialPostUploadProgress(
+          stage: SocialPostUploadStage.finalizing,
+          fraction: 0.95,
+          message: 'Publishing your post...',
+        ),
+      );
       await postRef.set(payload);
     } on FirebaseException catch (error) {
       throw Exception(_mapCreatePostError(error));
@@ -983,12 +1017,24 @@ class SocialPostRepository {
     required String postId,
     required List<XFile> images,
     required SocialPostAspectRatio aspectRatio,
+    SocialPostUploadProgressCallback? onProgress,
   }) async {
     final fullSizeUrls = <String>[];
     final thumbnailUrls = <String>[];
+    final totalUploads = images.length * 2;
+    var completedUploads = 0;
 
     try {
       for (var index = 0; index < images.length; index++) {
+        onProgress?.call(
+          SocialPostUploadProgress(
+            stage: SocialPostUploadStage.uploading,
+            fraction: totalUploads == 0
+                ? 0.10
+                : 0.10 + ((completedUploads / totalUploads) * 0.76),
+            message: 'Uploading image ${index + 1} of ${images.length}...',
+          ),
+        );
         final originalSize = await images[index].length();
         if (originalSize > 5 * 1024 * 1024) {
           throw Exception('Each image must be 5 MB or smaller before upload.');
@@ -1008,9 +1054,25 @@ class SocialPostRepository {
           processed.feedBytes,
           SettableMetadata(contentType: 'image/jpeg'),
         );
+        completedUploads += 1;
+        onProgress?.call(
+          SocialPostUploadProgress(
+            stage: SocialPostUploadStage.uploading,
+            fraction: 0.10 + ((completedUploads / totalUploads) * 0.76),
+            message: 'Uploading image ${index + 1} of ${images.length}...',
+          ),
+        );
         await thumbRef.putData(
           processed.thumbnailBytes,
           SettableMetadata(contentType: 'image/jpeg'),
+        );
+        completedUploads += 1;
+        onProgress?.call(
+          SocialPostUploadProgress(
+            stage: SocialPostUploadStage.uploading,
+            fraction: 0.10 + ((completedUploads / totalUploads) * 0.76),
+            message: 'Uploading image ${index + 1} of ${images.length}...',
+          ),
         );
 
         fullSizeUrls.add(await imageRef.getDownloadURL());

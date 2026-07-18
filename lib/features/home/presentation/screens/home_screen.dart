@@ -19,6 +19,7 @@ import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../../social/data/follow_repository.dart';
+import '../../../social/data/services/post_publish_coordinator.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/social_feed_ranker.dart';
 import '../../../social/domain/models/social_post_model.dart';
@@ -61,6 +62,8 @@ class _HomeScreenState extends State<HomeScreen> {
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
   late final VoidCallback _networkStatusListener;
+  late final VoidCallback _postPublishListener;
+  int _lastHandledPublishEventId = 0;
 
   static const double _topBarTopResetOffset = 12;
   static const double _topBarHideThreshold = 32;
@@ -84,6 +87,16 @@ class _HomeScreenState extends State<HomeScreen> {
     NetworkStatusService.instance.isOnlineListenable.addListener(
       _networkStatusListener,
     );
+    _postPublishListener = () {
+      final state = PostPublishCoordinator.instance.state;
+      if (state.phase != PostPublishPhase.success) return;
+      if (state.eventId == _lastHandledPublishEventId) return;
+      _lastHandledPublishEventId = state.eventId;
+      unawaited(_refreshHome());
+    };
+    PostPublishCoordinator.instance.stateListenable.addListener(
+      _postPublishListener,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showEligibleOffers();
     });
@@ -93,6 +106,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    PostPublishCoordinator.instance.stateListenable.removeListener(
+      _postPublishListener,
+    );
     NetworkStatusService.instance.isOnlineListenable.removeListener(
       _networkStatusListener,
     );
@@ -677,22 +693,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                             )) {
                                           return;
                                         }
-                                        final created =
-                                            await Navigator.pushNamed(
-                                              context,
-                                              "/create",
-                                            );
-                                        if (!context.mounted) return;
-                                        if (created is SocialPostModel) {
-                                          await _loadInitialPosts();
-                                          if (!context.mounted) return;
-                                          AppFeedback.show(
-                                            context,
-                                            message:
-                                                'Post published successfully.',
-                                            tone: AppFeedbackTone.success,
-                                          );
-                                        }
+                                        await Navigator.pushNamed(
+                                          context,
+                                          "/create",
+                                        );
                                       },
                                       icon: const Icon(
                                         Icons.add_rounded,

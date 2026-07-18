@@ -36,6 +36,7 @@ import 'features/settings/presentation/screens/edit_profile_screen.dart';
 import 'features/settings/presentation/screens/legal_policies_screen.dart';
 import 'features/settings/presentation/screens/settings_screen.dart';
 import 'features/social/presentation/screens/create_post_screen.dart';
+import 'features/social/presentation/widgets/post_publish_status_host.dart';
 import 'features/splash/presentation/screens/splash_screen.dart';
 import 'firebase_options.dart';
 import 'core/theme/app_theme.dart'; // ✅ Use your theme
@@ -98,13 +99,18 @@ class PettexoApp extends StatelessWidget {
       navigatorKey: AppLoader.navigatorKey,
       builder: (context, child) {
         return NetworkStatusBannerHost(
-          child: SafeArea(
-            top: false,
-            left: false,
-            right: false,
-            bottom: true,
-            maintainBottomViewPadding: true,
-            child: child ?? const SizedBox.shrink(),
+          child: Stack(
+            children: [
+              SafeArea(
+                top: false,
+                left: false,
+                right: false,
+                bottom: true,
+                maintainBottomViewPadding: true,
+                child: child ?? const SizedBox.shrink(),
+              ),
+              const PostPublishStatusHost(),
+            ],
           ),
         );
       },

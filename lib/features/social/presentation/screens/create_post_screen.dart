@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -9,6 +8,7 @@ import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
+import '../../data/services/post_publish_coordinator.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/models/social_post_model.dart';
 
@@ -31,6 +31,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   final SocialPostRepository _repository = SocialPostRepository();
   final ImagePicker _imagePicker = ImagePicker();
   final ImageCropService _imageCropService = ImageCropService();
+  final PostPublishCoordinator _publishCoordinator =
+      PostPublishCoordinator.instance;
   final TextEditingController _captionController = TextEditingController();
   final TextEditingController _hashtagController = TextEditingController();
 
@@ -43,6 +45,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   @override
   void initState() {
     super.initState();
+    _restoreRecoverableDraft();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(
@@ -58,6 +61,20 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     _captionController.dispose();
     _hashtagController.dispose();
     super.dispose();
+  }
+
+  void _restoreRecoverableDraft() {
+    final draft = _publishCoordinator.takeRecoverableDraft();
+    if (draft == null) return;
+
+    _captionController.text = draft.caption;
+    _selectedImages
+      ..clear()
+      ..addAll(draft.toImages());
+    _hashtags
+      ..clear()
+      ..addAll(draft.hashtags);
+    _aspectRatio = draft.aspectRatio;
   }
 
   Future<void> _pickImages() async {
@@ -176,60 +193,19 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   Future<void> _publish() async {
     if (_selectedImages.isEmpty || _isPublishing) return;
 
+    final started = _publishCoordinator.startPublish(
+      images: List<XFile>.from(_selectedImages),
+      aspectRatio: _aspectRatio,
+      caption: _captionController.text,
+      hashtags: _hashtags,
+    );
+    if (!started) {
+      return;
+    }
+
     setState(() => _isPublishing = true);
-    try {
-      final post = await _repository.createPost(
-        images: _selectedImages,
-        aspectRatio: _aspectRatio,
-        caption: _captionController.text,
-        hashtags: _hashtags,
-      );
-      if (!mounted) return;
-      Navigator.pop(context, post);
-    } on FirebaseException catch (error) {
-      if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: _friendlyPublishError(error),
-        tone: AppFeedbackTone.error,
-      );
-    } catch (error, stackTrace) {
-      debugPrint('CreatePostScreen publish failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
-      if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: _friendlyPublishError(error),
-        tone: AppFeedbackTone.error,
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isPublishing = false);
-      }
-    }
-  }
-
-  String _friendlyPublishError(Object error) {
-    if (error is FirebaseException) {
-      switch (error.code) {
-        case 'permission-denied':
-          return 'You do not have permission to publish a post right now.';
-        case 'unauthenticated':
-          return 'Please sign in again before publishing a post.';
-        case 'unavailable':
-          return 'Post publishing is temporarily unavailable. Please try again.';
-      }
-      final message = error.message?.trim() ?? '';
-      if (message.isNotEmpty) {
-        return message;
-      }
-    }
-
-    final message = error.toString().replaceFirst('Exception: ', '').trim();
-    if (message.isEmpty || message.contains('package:cloud_firestore')) {
-      return 'Unable to publish your post right now. Please try again.';
-    }
-    return message;
+    if (!mounted) return;
+    Navigator.pop(context);
   }
 
   void _selectAspectRatio(SocialPostAspectRatio ratio) {
