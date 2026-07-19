@@ -7,7 +7,6 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/services/auth_service.dart';
 import '../../domain/models/phone_auth_flow.dart';
-import '../widgets/phone_auth_verification_overlay.dart';
 import 'auth_gateway_screen.dart';
 import 'otp_verification_screen.dart';
 
@@ -132,127 +131,143 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
             child: SafeArea(
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  return SingleChildScrollView(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: compact ? 16 : 18,
-                      vertical: compact ? 12 : 16,
-                    ),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        minHeight: constraints.maxHeight - (compact ? 24 : 32),
-                      ),
-                      child: Column(
-                        children: [
-                          SizedBox(height: compact ? 60 : 68),
-                          SizedBox(
-                            width: compact ? 82 : 92,
-                            height: compact ? 70 : 76,
-                            child: SvgPicture.asset(
-                              'assets/brand/pettxo_logo.svg',
-                              fit: BoxFit.contain,
-                            ),
+                  return IgnorePointer(
+                    ignoring: _isLoading,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 180),
+                      opacity: _isLoading ? 0.97 : 1,
+                      child: SingleChildScrollView(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: compact ? 16 : 18,
+                          vertical: compact ? 12 : 16,
+                        ),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight:
+                                constraints.maxHeight - (compact ? 24 : 32),
                           ),
-                          Transform.translate(
-                            offset: const Offset(0, -8),
-                            child: Text(
-                              'Pettxo',
-                              style: TextStyle(
-                                color: AppColors.primary,
-                                fontSize: compact ? 28 : 30,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.8,
+                          child: Column(
+                            children: [
+                              SizedBox(height: compact ? 60 : 68),
+                              SizedBox(
+                                width: compact ? 82 : 92,
+                                height: compact ? 70 : 76,
+                                child: SvgPicture.asset(
+                                  'assets/brand/pettxo_logo.svg',
+                                  fit: BoxFit.contain,
+                                ),
                               ),
-                            ),
-                          ),
-                          SizedBox(height: compact ? 0 : 4),
-                          Text(
-                            'Welcome back',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: AppColors.textDark,
-                              fontSize: compact ? 28 : 30,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -1.2,
-                              height: 1.02,
-                            ),
-                          ),
-                          SizedBox(height: compact ? 12 : 14),
-                          Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: compact ? 6 : 8,
-                            ),
-                            child: Text(
-                              'Sign in with your phone number to continue.',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: const Color(0xFF958E88),
-                                fontSize: compact ? 15 : 16,
-                                height: 1.4,
-                                fontWeight: FontWeight.w500,
+                              Transform.translate(
+                                offset: const Offset(0, -8),
+                                child: Text(
+                                  'Pettxo',
+                                  style: TextStyle(
+                                    color: AppColors.primary,
+                                    fontSize: compact ? 28 : 30,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: -0.8,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                          SizedBox(height: compact ? 28 : 32),
-                          _PhoneSignInField(
-                            focusNode: _phoneFocus,
-                            errorText: _phoneError,
-                            textInputAction: TextInputAction.done,
-                            onChanged: (value) {
-                              setState(() {
-                                _fullPhoneNumber = value.trim();
-                                _phoneError = _validatePhone(_fullPhoneNumber);
-                              });
-                            },
-                            onSubmitted: (_) => _continueWithPhone(),
-                          ),
-                          SizedBox(height: compact ? 16 : 18),
-                          _PhoneAuthPrimaryButton(
-                            label: _isLoading ? 'Please wait...' : 'Continue',
-                            compact: compact,
-                            isLoading: _isLoading,
-                            onPressed: _isLoading ? null : _continueWithPhone,
-                          ),
-                          SizedBox(height: compact ? 10 : 12),
-                          _PhoneAuthSecondaryButton(
-                            label: 'Continue with email',
-                            compact: compact,
-                            onPressed: () => Navigator.pop(context),
-                          ),
-                          SizedBox(height: compact ? 20 : 22),
-                          Padding(
-                            padding: EdgeInsets.only(bottom: compact ? 6 : 8),
-                            child: Wrap(
-                              alignment: WrapAlignment.center,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                Text(
-                                  'New to Pettxo? ',
+                              SizedBox(height: compact ? 0 : 4),
+                              Text(
+                                'Welcome back',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: AppColors.textDark,
+                                  fontSize: compact ? 28 : 30,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -1.2,
+                                  height: 1.02,
+                                ),
+                              ),
+                              SizedBox(height: compact ? 12 : 14),
+                              Padding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: compact ? 6 : 8,
+                                ),
+                                child: Text(
+                                  'Sign in with your phone number to continue.',
+                                  textAlign: TextAlign.center,
                                   style: TextStyle(
                                     color: const Color(0xFF958E88),
                                     fontSize: compact ? 15 : 16,
+                                    height: 1.4,
                                     fontWeight: FontWeight.w500,
                                   ),
                                 ),
-                                GestureDetector(
-                                  onTap: () {
-                                    Navigator.pushReplacementNamed(
-                                      context,
-                                      '/signup',
+                              ),
+                              SizedBox(height: compact ? 28 : 32),
+                              _PhoneSignInField(
+                                focusNode: _phoneFocus,
+                                errorText: _phoneError,
+                                textInputAction: TextInputAction.done,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _fullPhoneNumber = value.trim();
+                                    _phoneError = _validatePhone(
+                                      _fullPhoneNumber,
                                     );
-                                  },
-                                  child: Text(
-                                    'Create account',
-                                    style: TextStyle(
-                                      color: AppColors.primary,
-                                      fontSize: compact ? 15 : 16,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
+                                  });
+                                },
+                                onSubmitted: (_) => _continueWithPhone(),
+                              ),
+                              SizedBox(height: compact ? 16 : 18),
+                              _PhoneAuthPrimaryButton(
+                                label: _isLoading
+                                    ? 'Sending code...'
+                                    : 'Continue',
+                                compact: compact,
+                                isLoading: _isLoading,
+                                onPressed: _isLoading
+                                    ? null
+                                    : _continueWithPhone,
+                              ),
+                              SizedBox(height: compact ? 10 : 12),
+                              _PhoneAuthSecondaryButton(
+                                label: 'Continue with email',
+                                compact: compact,
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                              SizedBox(height: compact ? 20 : 22),
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  bottom: compact ? 6 : 8,
                                 ),
-                              ],
-                            ),
+                                child: Wrap(
+                                  alignment: WrapAlignment.center,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    Text(
+                                      'New to Pettxo? ',
+                                      style: TextStyle(
+                                        color: const Color(0xFF958E88),
+                                        fontSize: compact ? 15 : 16,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    GestureDetector(
+                                      onTap: () {
+                                        Navigator.pushReplacementNamed(
+                                          context,
+                                          '/signup',
+                                        );
+                                      },
+                                      child: Text(
+                                        'Create account',
+                                        style: TextStyle(
+                                          color: AppColors.primary,
+                                          fontSize: compact ? 15 : 16,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   );
@@ -260,10 +275,6 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
               ),
             ),
           ),
-          if (_isLoading)
-            const PhoneAuthVerificationOverlay(
-              message: 'Verifying your number securely...',
-            ),
         ],
       ),
     );
@@ -450,10 +461,18 @@ class _PhoneAuthPrimaryButton extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(18),
-          gradient: AppColors.brandGradient,
+          gradient: isLoading
+              ? const LinearGradient(
+                  colors: [Color(0xFFFFB9A5), Color(0xFFFDA184)],
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                )
+              : AppColors.brandGradient,
           boxShadow: [
             BoxShadow(
-              color: AppColors.primary.withValues(alpha: 0.2),
+              color: AppColors.primary.withValues(
+                alpha: isLoading ? 0.12 : 0.2,
+              ),
               blurRadius: 18,
               offset: const Offset(0, 8),
             ),
@@ -466,13 +485,30 @@ class _PhoneAuthPrimaryButton extends StatelessWidget {
             onTap: onPressed,
             child: Center(
               child: isLoading
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.6,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                      ),
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.white,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          label,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: compact ? 15.5 : 16.5,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.3,
+                          ),
+                        ),
+                      ],
                     )
                   : Text(
                       label,
