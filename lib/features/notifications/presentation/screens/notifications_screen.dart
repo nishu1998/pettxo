@@ -46,7 +46,7 @@ class NotificationsScreen extends StatelessWidget {
             : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: _notificationsFor(user.uid),
                 builder: (context, snapshot) {
-                  final docs = _dedupeAndSortNotifications(
+                  final docs = _sortNotificationsByLatestFirst(
                     snapshot.data?.docs ?? const [],
                   );
                   final unreadCount = docs.where((doc) {
@@ -104,41 +104,13 @@ class NotificationsScreen extends StatelessWidget {
     );
   }
 
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _dedupeAndSortNotifications(
+  List<QueryDocumentSnapshot<Map<String, dynamic>>>
+  _sortNotificationsByLatestFirst(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> source,
   ) {
-    final latestByKey = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
-    for (final doc in source) {
-      final data = doc.data();
-      final category = '${data['category'] ?? data['data']?['category'] ?? ''}';
-      final type = '${data['type'] ?? data['data']?['type'] ?? ''}';
-      final chatId = '${data['chatId'] ?? data['data']?['chatId'] ?? ''}'
-          .trim();
-      final isChat =
-          category == 'chat' || type == 'chat' || type == 'chatMessage';
-      final key = isChat && chatId.isNotEmpty ? 'chat:$chatId' : doc.id;
-      final existing = latestByKey[key];
-      if (existing == null ||
-          _sortDateFor(doc).isAfter(_sortDateFor(existing))) {
-        latestByKey[key] = doc;
-      }
-    }
-
-    final docs = latestByKey.values.toList(growable: false);
-    docs.sort((a, b) {
-      final aUnread = _isUnread(a);
-      final bUnread = _isUnread(b);
-      if (aUnread != bUnread) {
-        return aUnread ? -1 : 1;
-      }
-      return _sortDateFor(b).compareTo(_sortDateFor(a));
-    });
+    final docs = source.toList(growable: false);
+    docs.sort((a, b) => _sortDateFor(b).compareTo(_sortDateFor(a)));
     return docs;
-  }
-
-  bool _isUnread(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-    final data = doc.data();
-    return data['read'] != true && data['isRead'] != true;
   }
 
   DateTime _sortDateFor(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
@@ -355,7 +327,7 @@ class _NotificationTile extends StatelessWidget {
           ],
         ),
         child: Material(
-          color: Colors.white,
+          color: isUnread ? const Color(0xFFF7AF83) : Colors.white,
           borderRadius: BorderRadius.circular(22),
           child: InkWell(
             onTap: onTap,
@@ -363,13 +335,11 @@ class _NotificationTile extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.fromLTRB(12, 14, 14, 14),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: isUnread ? const Color(0xFFF7AF83) : Colors.white,
                 borderRadius: BorderRadius.circular(22),
                 border: Border.all(
-                  color: isUnread
-                      ? AppColors.primary
-                      : AppColors.textGrey.withValues(alpha: 0.08),
-                  width: isUnread ? 2 : 1,
+                  color: AppColors.textGrey.withValues(alpha: 0.08),
+                  width: 1,
                 ),
               ),
               child: Row(
