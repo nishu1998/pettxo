@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../../core/identity/username_utils.dart' as username_utils;
 import '../../../../core/services/firestore_cache_service.dart';
@@ -411,11 +412,21 @@ class ProfileRepository {
 
     await _publicUserDoc(_uid).set(publicPayload, SetOptions(merge: true));
     if (normalizedRole.isNotEmpty) {
-      await _syncCurrentUserRoleAcrossPosts(
-        role: normalizedRole,
-        profileImageUrl: profileImageUrl?.trim(),
-        displayName: name.trim(),
-      );
+      try {
+        await _syncCurrentUserRoleAcrossPosts(
+          role: normalizedRole,
+          profileImageUrl: profileImageUrl?.trim(),
+          displayName: name.trim(),
+        );
+      } on FirebaseException catch (error, stackTrace) {
+        if (error.code != 'permission-denied') {
+          rethrow;
+        }
+        debugPrint(
+          'ProfileRepository debug -> skipped social post author snapshot sync for uid=$_uid because Firestore rules denied the write: ${error.message}',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
     }
   }
 
@@ -426,26 +437,21 @@ class ProfileRepository {
   }) async {
     final roleLabel = profileTypeFromStoredValue(role).label;
     final trimmedPhotoUrl = profileImageUrl?.trim() ?? '';
-    QueryDocumentSnapshot<Map<String, dynamic>>? lastDoc;
+    final snapshot = await _firestore
+        .collection('socialPosts')
+        .where('authorId', isEqualTo: _uid)
+        .get();
 
-    while (true) {
-      Query<Map<String, dynamic>> query = _firestore
-          .collection('socialPosts')
-          .where('authorId', isEqualTo: _uid)
-          .orderBy('createdAtEpoch', descending: true)
-          .limit(50);
+    if (snapshot.docs.isEmpty) {
+      return;
+    }
 
-      if (lastDoc != null) {
-        query = query.startAfterDocument(lastDoc);
-      }
-
-      final snapshot = await query.get();
-      if (snapshot.docs.isEmpty) {
-        break;
-      }
-
+    for (var start = 0; start < snapshot.docs.length; start += 50) {
+      final end = min(start + 50, snapshot.docs.length);
+      final chunk = snapshot.docs.sublist(start, end);
       final batch = _firestore.batch();
-      for (final doc in snapshot.docs) {
+
+      for (final doc in chunk) {
         final update = <String, dynamic>{
           'authorCategoryLabel': roleLabel,
           'authorDisplayName': displayName,
@@ -456,12 +462,8 @@ class ProfileRepository {
         }
         batch.set(doc.reference, update, SetOptions(merge: true));
       }
-      await batch.commit();
 
-      if (snapshot.docs.length < 50) {
-        break;
-      }
-      lastDoc = snapshot.docs.last;
+      await batch.commit();
     }
   }
 

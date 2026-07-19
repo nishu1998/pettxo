@@ -697,32 +697,44 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                               followSnapshot
                                                                   .data ??
                                                               false;
-                                                          return SecondaryButton(
-                                                            label:
-                                                                _isFollowActionRunning
-                                                                ? 'Updating...'
-                                                                : (isFollowing
-                                                                      ? 'Following'
-                                                                      : 'Follow'),
-                                                            size: AppButtonSize
-                                                                .compact,
-                                                            onPressed:
-                                                                currentUserId
-                                                                        .isEmpty ||
-                                                                    followSnapshot
-                                                                            .connectionState ==
-                                                                        ConnectionState
-                                                                            .waiting
-                                                                ? null
-                                                                : () => _toggleFollow(
-                                                                    currentUserId:
-                                                                        currentUserId,
-                                                                    profile:
-                                                                        profile,
-                                                                    currentlyFollowing:
-                                                                        isFollowing,
-                                                                  ),
-                                                          );
+                                                          final onPressed =
+                                                              currentUserId
+                                                                      .isEmpty ||
+                                                                  followSnapshot
+                                                                          .connectionState ==
+                                                                      ConnectionState
+                                                                          .waiting
+                                                              ? null
+                                                              : () => _toggleFollow(
+                                                                  currentUserId:
+                                                                      currentUserId,
+                                                                  profile:
+                                                                      profile,
+                                                                  currentlyFollowing:
+                                                                      isFollowing,
+                                                                );
+                                                          final label =
+                                                              _isFollowActionRunning
+                                                              ? 'Updating...'
+                                                              : (isFollowing
+                                                                    ? 'Following'
+                                                                    : 'Follow');
+
+                                                          return isFollowing
+                                                              ? SecondaryButton(
+                                                                  label: label,
+                                                                  size: AppButtonSize
+                                                                      .compact,
+                                                                  onPressed:
+                                                                      onPressed,
+                                                                )
+                                                              : GradientButton(
+                                                                  label: label,
+                                                                  size: AppButtonSize
+                                                                      .compact,
+                                                                  onPressed:
+                                                                      onPressed,
+                                                                );
                                                         },
                                                       ),
                                               ),

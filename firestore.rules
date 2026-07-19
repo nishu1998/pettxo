@@ -669,6 +669,23 @@ service cloud.firestore {
       request.resource.data.shareCount == resource.data.shareCount + 1;
     }
 
+    function safeSocialPostAuthorSnapshotUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'authorDisplayName',
+        'authorPhotoUrl',
+        'authorCategoryLabel',
+        'updatedAt'
+      ]) &&
+      resource.data.authorId == request.auth.uid &&
+      resource.data.authorType == 'user' &&
+      request.resource.data.authorDisplayName is string &&
+      request.resource.data.authorDisplayName.size() > 0 &&
+      request.resource.data.authorPhotoUrl is string &&
+      request.resource.data.authorCategoryLabel is string &&
+      request.resource.data.authorCategoryLabel.size() > 0 &&
+      request.resource.data.updatedAt == request.time;
+    }
+
     function safeSocialPostSoftDelete() {
       return request.resource.data.diff(resource.data).changedKeys().hasOnly([
         'visibilityStatus',
@@ -1218,6 +1235,7 @@ service cloud.firestore {
       allow update: if requesterAccountIsActive() &&
         (
           (canModerateSocialContent() && safeAdminSocialModerationUpdate()) ||
+          safeSocialPostAuthorSnapshotUpdate() ||
           safeSocialPostSoftDelete() ||
           safeSocialPostLikeCounterUpdate(postId) ||
           safeSocialPostReportCounterUpdate(postId) ||
