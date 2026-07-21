@@ -32,8 +32,10 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/android/build/
 functions/lib/
 functions/node_modules/
+firebase_rules_tests/node_modules/
 
 # Symbolication related
 app.*.symbols
