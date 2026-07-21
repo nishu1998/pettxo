@@ -59,6 +59,7 @@ class GradientButton extends StatefulWidget {
   final bool expand;
   final AppButtonSize size;
   final double? labelFontSize;
+  final bool isLoading;
 
   const GradientButton({
     super.key,
@@ -68,6 +69,7 @@ class GradientButton extends StatefulWidget {
     this.expand = true,
     this.size = AppButtonSize.regular,
     this.labelFontSize,
+    this.isLoading = false,
   });
 
   @override
@@ -77,7 +79,7 @@ class GradientButton extends StatefulWidget {
 class _GradientButtonState extends _BaseAnimatedButtonState<GradientButton> {
   @override
   Widget build(BuildContext context) {
-    final disabled = widget.onPressed == null;
+    final disabled = widget.onPressed == null || widget.isLoading;
     final radius = AppButtonTokens.radius(widget.size);
 
     Widget child = AnimatedScale(
@@ -119,15 +121,26 @@ class _GradientButtonState extends _BaseAnimatedButtonState<GradientButton> {
                     vertical: AppButtonTokens.verticalPadding(widget.size),
                   ),
                   child: Center(
-                    child: _ButtonLabel(
-                      label: widget.label,
-                      icon: widget.icon,
-                      style: AppButtonTokens.labelStyle(
-                        widget.size,
-                      ).copyWith(fontSize: widget.labelFontSize),
-                      iconColor: Colors.white,
-                      iconSize: AppButtonTokens.iconSize(widget.size),
-                    ),
+                    child: widget.isLoading
+                        ? SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.4,
+                              valueColor: const AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
+                            ),
+                          )
+                        : _ButtonLabel(
+                            label: widget.label,
+                            icon: widget.icon,
+                            style: AppButtonTokens.labelStyle(
+                              widget.size,
+                            ).copyWith(fontSize: widget.labelFontSize),
+                            iconColor: Colors.white,
+                            iconSize: AppButtonTokens.iconSize(widget.size),
+                          ),
                   ),
                 ),
               ),

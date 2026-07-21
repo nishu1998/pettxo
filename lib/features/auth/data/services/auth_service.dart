@@ -10,6 +10,7 @@ import '../../domain/models/password_reset_request_result.dart';
 import '../../domain/utils/auth_error_utils.dart';
 import '../../domain/utils/auth_onboarding_resolver.dart';
 import '../../domain/utils/password_reset_request_flow.dart';
+import '../../domain/utils/phone_login_eligibility_utils.dart';
 import '../../domain/models/auth_result.dart';
 
 class AccountDeletionScheduleResult {
@@ -20,6 +21,41 @@ class AccountDeletionScheduleResult {
     required this.status,
     required this.scheduledDeletionAt,
   });
+}
+
+enum PhoneLoginEligibilityStatus {
+  active,
+  invalidPhone,
+  notFound,
+  incompleteSignup,
+  blocked,
+  accountRecoveryRequired,
+  rateLimited,
+  networkError,
+  unknownError,
+}
+
+class PhoneLoginEligibilityResult {
+  final PhoneLoginEligibilityStatus status;
+  final String normalizedPhoneNumber;
+  final String message;
+  final bool exists;
+  final bool canLogin;
+  final String reason;
+  final PhoneLoginEligibilityDecision decision;
+
+  const PhoneLoginEligibilityResult({
+    required this.status,
+    required this.normalizedPhoneNumber,
+    required this.message,
+    required this.exists,
+    required this.canLogin,
+    required this.reason,
+    required this.decision,
+  });
+
+  bool get isApproved =>
+      canLogin && status == PhoneLoginEligibilityStatus.active;
 }
 
 class AuthService {
@@ -96,6 +132,73 @@ class AuthService {
         return;
       }
       throw mapFirebaseAuthException(e);
+    }
+  }
+
+  Future<PhoneLoginEligibilityResult> checkPhoneLoginEligibility(
+    String phoneNumber,
+  ) async {
+    final normalizedPhoneNumber = phoneNumber.trim();
+    final maskedPhoneNumber = maskPhoneNumberForLogs(normalizedPhoneNumber);
+    _debugLog(
+      'checkPhoneLoginEligibility:prepared '
+      'phone=$maskedPhoneNumber region=asia-south1',
+    );
+    try {
+      final callable = _functions.httpsCallable('checkPhoneLoginEligibility');
+      _debugLog('checkPhoneLoginEligibility:requestStarted');
+      final result = await callable.call<Map<String, dynamic>>({
+        'phoneNumber': normalizedPhoneNumber,
+      });
+      _debugLog(
+        'checkPhoneLoginEligibility:resultType=${result.data.runtimeType}',
+      );
+      final parsed = parsePhoneLoginEligibilityResponse(result.data);
+      _debugLog(
+        'checkPhoneLoginEligibility:safeResponse '
+        'exists=${_safeLogValue(result.data, 'exists')} '
+        'canLogin=${_safeLogValue(result.data, 'canLogin')} '
+        'reason=${_safeLogValue(result.data, 'reason')}',
+      );
+      _debugLog(
+        'checkPhoneLoginEligibility:parsed '
+        'exists=${parsed.exists} canLogin=${parsed.canLogin} '
+        'reason=${phoneLoginReasonToWire(parsed.reason)} '
+        'malformed=${parsed.isMalformed}',
+      );
+      final decision = phoneLoginDecisionForParsedResult(parsed);
+      _debugLog(
+        'checkPhoneLoginEligibility:decision=${_phoneLoginDecisionLabel(decision)}',
+      );
+      return _resultFromParsedEligibility(
+        normalizedPhoneNumber: normalizedPhoneNumber,
+        parsed: parsed,
+        decision: decision,
+      );
+    } on FirebaseFunctionsException catch (error) {
+      _logFirebaseFunctionsException(
+        'checkPhoneLoginEligibility:failed',
+        error,
+      );
+      return _mapPhoneLoginEligibilityFunctionsError(
+        error,
+        normalizedPhoneNumber: normalizedPhoneNumber,
+      );
+    } catch (error, stackTrace) {
+      _logUnexpectedError(
+        'checkPhoneLoginEligibility:unexpected',
+        error,
+        stackTrace,
+      );
+      return PhoneLoginEligibilityResult(
+        status: PhoneLoginEligibilityStatus.unknownError,
+        normalizedPhoneNumber: normalizedPhoneNumber,
+        message: 'Unable to verify this phone number right now.',
+        exists: false,
+        canLogin: false,
+        reason: 'technical_failure',
+        decision: PhoneLoginEligibilityDecision.showNetworkError,
+      );
     }
   }
 
@@ -758,10 +861,119 @@ class AuthService {
     }
   }
 
+  PhoneLoginEligibilityResult _mapPhoneLoginEligibilityFunctionsError(
+    FirebaseFunctionsException error, {
+    required String normalizedPhoneNumber,
+  }) {
+    String code = error.code;
+    final details = error.details;
+    if (details is Map) {
+      final appCode = details['appCode'];
+      if (appCode is String && appCode.trim().isNotEmpty) {
+        code = appCode.trim();
+      }
+    }
+
+    switch (code) {
+      case 'invalid-phone':
+        return PhoneLoginEligibilityResult(
+          status: PhoneLoginEligibilityStatus.invalidPhone,
+          normalizedPhoneNumber: normalizedPhoneNumber,
+          message: 'Enter a valid phone number.',
+          exists: false,
+          canLogin: false,
+          reason: 'invalid_phone',
+          decision: PhoneLoginEligibilityDecision.showNetworkError,
+        );
+      case 'rate-limited':
+      case 'resource-exhausted':
+        return PhoneLoginEligibilityResult(
+          status: PhoneLoginEligibilityStatus.rateLimited,
+          normalizedPhoneNumber: normalizedPhoneNumber,
+          message: 'Please wait a moment before trying again.',
+          exists: false,
+          canLogin: false,
+          reason: 'rate_limited',
+          decision: PhoneLoginEligibilityDecision.showNetworkError,
+        );
+      case 'unavailable':
+      case 'deadline-exceeded':
+        return PhoneLoginEligibilityResult(
+          status: PhoneLoginEligibilityStatus.networkError,
+          normalizedPhoneNumber: normalizedPhoneNumber,
+          message: 'Network error. Please try again.',
+          exists: false,
+          canLogin: false,
+          reason: 'network_error',
+          decision: PhoneLoginEligibilityDecision.showNetworkError,
+        );
+      default:
+        return PhoneLoginEligibilityResult(
+          status: PhoneLoginEligibilityStatus.unknownError,
+          normalizedPhoneNumber: normalizedPhoneNumber,
+          message: 'Unable to verify this phone number right now.',
+          exists: false,
+          canLogin: false,
+          reason: 'technical_failure',
+          decision: PhoneLoginEligibilityDecision.showNetworkError,
+        );
+    }
+  }
+
+  PhoneLoginEligibilityResult _resultFromParsedEligibility({
+    required String normalizedPhoneNumber,
+    required ParsedPhoneLoginEligibility parsed,
+    required PhoneLoginEligibilityDecision decision,
+  }) {
+    return PhoneLoginEligibilityResult(
+      status: _statusFromParsedEligibility(parsed),
+      normalizedPhoneNumber: normalizedPhoneNumber,
+      message: phoneLoginMessageForParsedResult(parsed),
+      exists: parsed.exists,
+      canLogin: parsed.canLogin,
+      reason: phoneLoginReasonToWire(parsed.reason),
+      decision: decision,
+    );
+  }
+
+  PhoneLoginEligibilityStatus _statusFromParsedEligibility(
+    ParsedPhoneLoginEligibility parsed,
+  ) {
+    if (parsed.isMalformed) return PhoneLoginEligibilityStatus.unknownError;
+    switch (parsed.reason) {
+      case PhoneLoginEligibilityReason.active:
+        return parsed.canLogin
+            ? PhoneLoginEligibilityStatus.active
+            : PhoneLoginEligibilityStatus.unknownError;
+      case PhoneLoginEligibilityReason.notFound:
+        return PhoneLoginEligibilityStatus.notFound;
+      case PhoneLoginEligibilityReason.incompleteSignup:
+        return PhoneLoginEligibilityStatus.incompleteSignup;
+      case PhoneLoginEligibilityReason.blocked:
+        return PhoneLoginEligibilityStatus.blocked;
+      case PhoneLoginEligibilityReason.accountRecoveryRequired:
+        return PhoneLoginEligibilityStatus.accountRecoveryRequired;
+      case PhoneLoginEligibilityReason.technicalFailure:
+        return PhoneLoginEligibilityStatus.unknownError;
+    }
+  }
+
   void _debugLog(String message) {
     if (kDebugMode) {
       debugPrint('AuthService $message');
     }
+  }
+
+  void _logFirebaseFunctionsException(
+    String context,
+    FirebaseFunctionsException error,
+  ) {
+    if (!kDebugMode) return;
+    debugPrint(
+      'AuthService $context code=${error.code} '
+      'message=${error.message ?? error.toString()} details=${error.details}',
+    );
+    debugPrintStack(stackTrace: error.stackTrace);
   }
 
   void _logFirebaseAuthException(String context, FirebaseAuthException error) {
@@ -790,6 +1002,26 @@ class AuthService {
     if (trimmed.length <= 4) return trimmed;
     final suffix = trimmed.substring(trimmed.length - 4);
     return '***$suffix';
+  }
+
+  String _phoneLoginDecisionLabel(PhoneLoginEligibilityDecision decision) {
+    switch (decision) {
+      case PhoneLoginEligibilityDecision.startOtp:
+        return 'startOtp';
+      case PhoneLoginEligibilityDecision.showNotFound:
+        return 'showNotFound';
+      case PhoneLoginEligibilityDecision.showBlocked:
+        return 'showBlocked';
+      case PhoneLoginEligibilityDecision.showRecovery:
+        return 'showRecovery';
+      case PhoneLoginEligibilityDecision.showNetworkError:
+        return 'showNetworkError';
+    }
+  }
+
+  Object? _safeLogValue(Object? value, String key) {
+    if (value is Map) return value[key];
+    return null;
   }
 
   Future<void> _syncNotificationsSafely(String reason) async {

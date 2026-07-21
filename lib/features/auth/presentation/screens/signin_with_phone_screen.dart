@@ -6,6 +6,7 @@ import 'package:intl_phone_field/intl_phone_field.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/services/auth_service.dart';
+import '../../data/services/phone_login_guard_service.dart';
 import '../../domain/models/phone_auth_flow.dart';
 import 'auth_gateway_screen.dart';
 import 'otp_verification_screen.dart';
@@ -19,6 +20,8 @@ class SignInWithPhoneScreen extends StatefulWidget {
 
 class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
   final AuthService _authService = AuthService();
+  final PhoneLoginGuardService _phoneLoginGuardService =
+      PhoneLoginGuardService();
   final FocusNode _phoneFocus = FocusNode();
 
   String? _phoneError;
@@ -56,12 +59,32 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
       _didNavigate = false;
     });
 
+    final eligibility = await _authService.checkPhoneLoginEligibility(
+      _fullPhoneNumber,
+    );
+    if (!eligibility.isApproved) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+      });
+      AppSnackbar.showError(context, eligibility.message);
+      return;
+    }
+
     await _authService.verifyPhoneNumber(
       phoneNumber: _fullPhoneNumber,
       verificationCompleted: (credential) async {
         if (_didNavigate) return;
         _didNavigate = true;
         await _authService.signInWithCredential(credential);
+        final guard = await _phoneLoginGuardService
+            .verifyExistingPhoneLoginAccount();
+        if (!guard.allowAccess) {
+          if (!mounted) return;
+          AppSnackbar.showError(context, guard.message ?? 'Sign in failed.');
+          Navigator.pushReplacementNamed(context, '/signup/phone');
+          return;
+        }
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
@@ -250,7 +273,7 @@ class _SignInWithPhoneScreenState extends State<SignInWithPhoneScreen> {
                                       onTap: () {
                                         Navigator.pushReplacementNamed(
                                           context,
-                                          '/signup',
+                                          '/signup/phone',
                                         );
                                       },
                                       child: Text(

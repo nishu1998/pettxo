@@ -6,6 +6,7 @@ import 'package:sms_autofill/sms_autofill.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../data/services/phone_login_guard_service.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_service.dart';
 import '../../domain/models/phone_auth_flow.dart';
@@ -35,6 +36,8 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
   static const int _resendDelay = 30;
 
   final AuthService _authService = AuthService();
+  final PhoneLoginGuardService _phoneLoginGuardService =
+      PhoneLoginGuardService();
   final List<TextEditingController> _controllers = List.generate(
     _otpLength,
     (_) => TextEditingController(),
@@ -124,6 +127,28 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
     );
   }
 
+  Future<bool> _guardExistingPhoneLoginIfNeeded() async {
+    if (widget.flow != PhoneAuthFlow.signIn) {
+      return true;
+    }
+
+    final guard = await _phoneLoginGuardService
+        .verifyExistingPhoneLoginAccount();
+    if (guard.allowAccess) {
+      return true;
+    }
+
+    if (!mounted) return false;
+    AppSnackbar.showError(
+      context,
+      guard.message ?? 'No Pettxo account exists with this phone number.',
+    );
+    Navigator.of(
+      context,
+    ).pushNamedAndRemoveUntil('/signup/phone', (route) => false);
+    return false;
+  }
+
   Future<void> _submitOtp() async {
     if (!_isOtpComplete || _isSubmitting) return;
 
@@ -148,6 +173,8 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
           );
           break;
       }
+      final canProceed = await _guardExistingPhoneLoginIfNeeded();
+      if (!canProceed) return;
       await _handleVerifiedUser();
     } catch (e) {
       if (!mounted) return;
@@ -181,6 +208,8 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen>
             await _authService.linkCurrentUserWithCredential(credential);
             break;
         }
+        final canProceed = await _guardExistingPhoneLoginIfNeeded();
+        if (!canProceed) return;
         await _handleVerifiedUser();
       },
       codeSent: (verificationId, resendToken) async {

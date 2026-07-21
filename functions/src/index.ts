@@ -34,6 +34,11 @@ import {
   normalizePasswordResetEmail,
   validatePasswordResetEmail,
 } from "./passwordReset";
+import {
+  evaluatePhoneLoginEligibility,
+  normalizePhoneLoginNumber,
+  validatePhoneLoginNumber,
+} from "./phoneLoginEligibility";
 
 setGlobalOptions({
   region: "asia-south1",
@@ -63,6 +68,7 @@ const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
 const socialActivityPushChannelId = "pettxo_social_activity";
 const otherUpdatesPushChannelId = "pettxo_other_updates";
 const passwordResetRequestCooldownMs = 60 * 1000;
+const phoneLoginEligibilityCooldownMs = 30 * 1000;
 
 type BookingStatus =
   | "paymentPending"
@@ -266,6 +272,10 @@ function passwordResetRequestHash(email: string): string {
   return createHash("sha256").update(email).digest("hex");
 }
 
+function phoneLoginEligibilityRequestHash(phoneNumber: string): string {
+  return createHash("sha256").update(phoneNumber).digest("hex");
+}
+
 function passwordResetAppCodeForStatus(
   status: ReturnType<typeof evaluatePasswordResetEligibility>,
 ): string {
@@ -276,6 +286,25 @@ function passwordResetAppCodeForStatus(
       return "account-pending-deletion";
     case "phoneOnlyAccount":
       return "phone-only-account";
+    default:
+      return "unknown";
+  }
+}
+
+function phoneLoginAppCodeForStatus(
+  status: ReturnType<typeof evaluatePhoneLoginEligibility>,
+): string {
+  switch (status) {
+    case "notFound":
+      return "not_found";
+    case "incompleteSignup":
+      return "incomplete_signup";
+    case "blocked":
+      return "blocked";
+    case "accountRecoveryRequired":
+      return "account_recovery_required";
+    case "active":
+      return "active";
     default:
       return "unknown";
   }
@@ -4094,6 +4123,141 @@ export const syncAuthIdentity = onCall({invoker: "public"}, async (request) => {
     publicProfileExists: userSnapshot.exists,
   };
 });
+
+export const checkPhoneLoginEligibility = onCall(
+  {
+    invoker: "public",
+    region: "asia-south1",
+  },
+  async (request) => {
+    const normalizedPhoneNumber = normalizePhoneLoginNumber(
+      request.data?.phoneNumber,
+    );
+    const maskedPhoneNumber = maskIdentifier(normalizedPhoneNumber, 4);
+    console.info("Phone login eligibility request received", {
+      maskedPhoneNumber,
+      region: "asia-south1",
+    });
+    const validationError = validatePhoneLoginNumber(normalizedPhoneNumber);
+    if (validationError) {
+      throw new HttpsError("invalid-argument", validationError, {
+        appCode: "invalid-phone",
+      });
+    }
+
+    const phoneHash = phoneLoginEligibilityRequestHash(normalizedPhoneNumber);
+    const rateLimitRef = db
+      .collection("phoneLoginEligibilityChecks")
+      .doc(phoneHash);
+    const nowMs = Date.now();
+    const rateLimitResult = await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(rateLimitRef);
+      const lastRequestedAtMs =
+        asTimestamp(snapshot.data()?.lastRequestedAt)?.toMillis() ?? 0;
+      if (lastRequestedAtMs > 0) {
+        const elapsedMs = nowMs - lastRequestedAtMs;
+        if (elapsedMs < phoneLoginEligibilityCooldownMs) {
+          return {
+            allowed: false,
+            retryAfterMs: phoneLoginEligibilityCooldownMs - elapsedMs,
+          };
+        }
+      }
+
+      transaction.set(
+        rateLimitRef,
+        {
+          lastRequestedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return {allowed: true, retryAfterMs: 0};
+    });
+
+    if (!rateLimitResult.allowed) {
+      console.info("Phone login eligibility rate limited", {
+        phoneHashPrefix: phoneHash.slice(0, 12),
+        retryAfterMs: rateLimitResult.retryAfterMs,
+      });
+      throw new HttpsError(
+        "resource-exhausted",
+        "Please wait before trying again.",
+        {appCode: "rate-limited"},
+      );
+    }
+
+    let authUser;
+    try {
+      authUser = await getAuth().getUserByPhoneNumber(normalizedPhoneNumber);
+      console.info("Phone login auth lookup succeeded", {
+        maskedPhoneNumber,
+        authDisabled: authUser.disabled === true,
+      });
+    } catch (error) {
+      const authError = error as {code?: string};
+      if (authError.code === "auth/user-not-found") {
+        console.info("Phone login auth lookup returned user-not-found", {
+          maskedPhoneNumber,
+          phoneHashPrefix: phoneHash.slice(0, 12),
+        });
+        const response = {
+          exists: false,
+          canLogin: false,
+          reason: phoneLoginAppCodeForStatus("notFound"),
+        };
+        console.info("Phone login eligibility response", {
+          maskedPhoneNumber,
+          ...response,
+        });
+        return response;
+      }
+      console.error("Phone login lookup failed", {
+        maskedPhoneNumber,
+        phoneHashPrefix: phoneHash.slice(0, 12),
+        errorCode: authError.code ?? "unknown",
+      });
+      throw new HttpsError("internal", "Unable to process this request right now.");
+    }
+
+    const publicUserRef = db.collection("users").doc(authUser.uid);
+    const privateUserRef = db.collection("userPrivate").doc(authUser.uid);
+    const [publicUserSnapshot, privateUserSnapshot] = await Promise.all([
+      publicUserRef.get(),
+      privateUserRef.get(),
+    ]);
+    const publicUser = publicUserSnapshot.data() ?? {};
+    const privateUser = privateUserSnapshot.data() ?? {};
+    const trustedAccountStatus = asTrimmedString(
+      privateUser.accountStatus ?? publicUser.accountStatus,
+    ) || "active";
+    console.info("Phone login registration snapshot", {
+      maskedPhoneNumber,
+      usersExists: publicUserSnapshot.exists,
+      userPrivateExists: privateUserSnapshot.exists,
+      accountStatusPublic: asTrimmedString(publicUser.accountStatus) || "missing",
+      accountStatusPrivate: asTrimmedString(privateUser.accountStatus) || "missing",
+      trustedAccountStatus,
+    });
+
+    const eligibilityStatus = evaluatePhoneLoginEligibility({
+      disabled: authUser.disabled === true,
+      accountStatus: trustedAccountStatus,
+      hasPublicProfile: publicUserSnapshot.exists,
+      hasPrivateProfile: privateUserSnapshot.exists,
+    });
+    const response = {
+      exists: true,
+      canLogin: eligibilityStatus === "active",
+      reason: phoneLoginAppCodeForStatus(eligibilityStatus),
+    };
+    console.info("Phone login eligibility response", {
+      maskedPhoneNumber,
+      ...response,
+    });
+    return response;
+  },
+);
 
 export const requestPasswordReset = onCall(
   {
