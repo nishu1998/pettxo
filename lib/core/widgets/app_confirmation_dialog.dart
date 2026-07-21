@@ -1,8 +1,7 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 
 import '../constants/app_colors.dart';
+import 'app_glass_overlay.dart';
 import 'app_snackbar.dart';
 
 class AppConfirmationDialog {
@@ -172,7 +171,6 @@ class _ConfirmationDialogRouteState extends State<_ConfirmationDialogRoute> {
     final confirmColor = widget.isDestructive
         ? const Color(0xFFE06A6A)
         : AppColors.primary;
-    final surface = isDark ? const Color(0xCC1D1B1A) : const Color(0xCCFFFFFF);
     final titleColor = isDark ? Colors.white : AppColors.textDark;
     final messageColor = isDark
         ? Colors.white.withValues(alpha: 0.78)
@@ -183,114 +181,68 @@ class _ConfirmationDialogRouteState extends State<_ConfirmationDialogRoute> {
       child: Material(
         type: MaterialType.transparency,
         child: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: surface,
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(
-                          color: Colors.white.withValues(
-                            alpha: isDark ? 0.16 : 0.58,
-                          ),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(
-                              alpha: isDark ? 0.28 : 0.10,
-                            ),
-                            blurRadius: 28,
-                            offset: const Offset(0, 14),
-                          ),
-                          BoxShadow(
-                            color: confirmColor.withValues(
-                              alpha: isDark ? 0.10 : 0.08,
-                            ),
-                            blurRadius: 20,
-                            offset: const Offset(0, 8),
-                          ),
-                        ],
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.title,
-                              style: theme.textTheme.headlineSmall?.copyWith(
-                                color: titleColor,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.4,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              widget.message,
-                              style: theme.textTheme.bodyLarge?.copyWith(
-                                color: messageColor,
-                                height: 1.45,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(height: 22),
-                            LayoutBuilder(
-                              builder: (context, constraints) {
-                                final stackButtons = constraints.maxWidth < 260;
-                                final children = [
-                                  Expanded(
-                                    child: _DialogActionButton(
-                                      label: widget.cancelLabel,
-                                      onPressed: _isProcessing
-                                          ? null
-                                          : _handleCancel,
-                                      isPrimary: false,
-                                      tintColor: isDark
-                                          ? Colors.white
-                                          : AppColors.textGrey,
-                                    ),
-                                  ),
-                                  if (!stackButtons) const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _DialogActionButton(
-                                      label: widget.confirmLabel,
-                                      onPressed: _isProcessing
-                                          ? null
-                                          : _handleConfirm,
-                                      isPrimary: true,
-                                      tintColor: confirmColor,
-                                      isLoading: _isProcessing,
-                                    ),
-                                  ),
-                                ];
-
-                                if (stackButtons) {
-                                  return Column(
-                                    children: [
-                                      children[0],
-                                      const SizedBox(height: 10),
-                                      children[1],
-                                    ],
-                                  );
-                                }
-                                return Row(children: children);
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+          child: AppGlassDialogFrame(
+            padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
+            borderRadius: BorderRadius.circular(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.title,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    color: titleColor,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.4,
                   ),
                 ),
-              ),
+                const SizedBox(height: 10),
+                Text(
+                  widget.message,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: messageColor,
+                    height: 1.45,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final stackButtons = constraints.maxWidth < 260;
+                    final children = [
+                      Expanded(
+                        child: _DialogActionButton(
+                          label: widget.cancelLabel,
+                          onPressed: _isProcessing ? null : _handleCancel,
+                          isPrimary: false,
+                          tintColor: isDark ? Colors.white : AppColors.textGrey,
+                        ),
+                      ),
+                      if (!stackButtons) const SizedBox(width: 12),
+                      Expanded(
+                        child: _DialogActionButton(
+                          label: widget.confirmLabel,
+                          onPressed: _isProcessing ? null : _handleConfirm,
+                          isPrimary: true,
+                          tintColor: confirmColor,
+                          isLoading: _isProcessing,
+                        ),
+                      ),
+                    ];
+
+                    if (stackButtons) {
+                      return Column(
+                        children: [
+                          children[0],
+                          const SizedBox(height: 10),
+                          children[1],
+                        ],
+                      );
+                    }
+                    return Row(children: children);
+                  },
+                ),
+              ],
             ),
           ),
         ),
@@ -390,7 +342,6 @@ class _PhraseConfirmationDialogRouteState
     final confirmColor = widget.isDestructive
         ? const Color(0xFFE06A6A)
         : AppColors.primary;
-    final surface = isDark ? const Color(0xCC1D1B1A) : const Color(0xCCFFFFFF);
     final titleColor = isDark ? Colors.white : AppColors.textDark;
     final messageColor = isDark
         ? Colors.white.withValues(alpha: 0.78)
@@ -401,167 +352,121 @@ class _PhraseConfirmationDialogRouteState
       child: Material(
         type: MaterialType.transparency,
         child: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: surface,
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(
-                          color: Colors.white.withValues(
-                            alpha: isDark ? 0.16 : 0.58,
-                          ),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(
-                              alpha: isDark ? 0.28 : 0.10,
-                            ),
-                            blurRadius: 28,
-                            offset: const Offset(0, 14),
-                          ),
-                          BoxShadow(
-                            color: confirmColor.withValues(
-                              alpha: isDark ? 0.10 : 0.08,
-                            ),
-                            blurRadius: 20,
-                            offset: const Offset(0, 8),
-                          ),
-                        ],
+          child: AppGlassDialogFrame(
+            padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
+            borderRadius: BorderRadius.circular(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.title,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    color: titleColor,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  widget.message,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: messageColor,
+                    height: 1.45,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                if ((widget.helperMessage ?? '').trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    widget.helperMessage!.trim(),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: messageColor,
+                      height: 1.4,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 18),
+                TextField(
+                  controller: _controller,
+                  textCapitalization: TextCapitalization.characters,
+                  enabled: !_isProcessing,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: widget.inputLabel,
+                    hintText: widget.confirmationPhrase,
+                    filled: true,
+                    fillColor: Colors.white.withValues(
+                      alpha: isDark ? 0.08 : 0.58,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide(
+                        color: confirmColor.withValues(alpha: 0.18),
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.title,
-                              style: theme.textTheme.headlineSmall?.copyWith(
-                                color: titleColor,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.4,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              widget.message,
-                              style: theme.textTheme.bodyLarge?.copyWith(
-                                color: messageColor,
-                                height: 1.45,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            if ((widget.helperMessage ?? '')
-                                .trim()
-                                .isNotEmpty) ...[
-                              const SizedBox(height: 12),
-                              Text(
-                                widget.helperMessage!.trim(),
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: messageColor,
-                                  height: 1.4,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 18),
-                            TextField(
-                              controller: _controller,
-                              textCapitalization: TextCapitalization.characters,
-                              enabled: !_isProcessing,
-                              onChanged: (_) => setState(() {}),
-                              decoration: InputDecoration(
-                                labelText: widget.inputLabel,
-                                hintText: widget.confirmationPhrase,
-                                filled: true,
-                                fillColor: Colors.white.withValues(
-                                  alpha: isDark ? 0.08 : 0.58,
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 16,
-                                ),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                  borderSide: BorderSide(
-                                    color: confirmColor.withValues(alpha: 0.18),
-                                  ),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                  borderSide: BorderSide(
-                                    color: Colors.white.withValues(
-                                      alpha: isDark ? 0.12 : 0.68,
-                                    ),
-                                  ),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                  borderSide: BorderSide(
-                                    color: confirmColor.withValues(alpha: 0.75),
-                                    width: 1.5,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 22),
-                            LayoutBuilder(
-                              builder: (context, constraints) {
-                                final stackButtons = constraints.maxWidth < 260;
-                                final children = [
-                                  Expanded(
-                                    child: _DialogActionButton(
-                                      label: widget.cancelLabel,
-                                      onPressed: _isProcessing
-                                          ? null
-                                          : _handleCancel,
-                                      isPrimary: false,
-                                      tintColor: isDark
-                                          ? Colors.white
-                                          : AppColors.textGrey,
-                                    ),
-                                  ),
-                                  if (!stackButtons) const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _DialogActionButton(
-                                      label: widget.confirmLabel,
-                                      onPressed: (_isProcessing || !_isMatch)
-                                          ? null
-                                          : _handleConfirm,
-                                      isPrimary: true,
-                                      tintColor: confirmColor,
-                                      isLoading: _isProcessing,
-                                    ),
-                                  ),
-                                ];
-
-                                if (stackButtons) {
-                                  return Column(
-                                    children: [
-                                      children[0],
-                                      const SizedBox(height: 10),
-                                      children[1],
-                                    ],
-                                  );
-                                }
-                                return Row(children: children);
-                              },
-                            ),
-                          ],
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide(
+                        color: Colors.white.withValues(
+                          alpha: isDark ? 0.12 : 0.68,
                         ),
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide(
+                        color: confirmColor.withValues(alpha: 0.75),
+                        width: 1.5,
                       ),
                     ),
                   ),
                 ),
-              ),
+                const SizedBox(height: 22),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final stackButtons = constraints.maxWidth < 260;
+                    final children = [
+                      Expanded(
+                        child: _DialogActionButton(
+                          label: widget.cancelLabel,
+                          onPressed: _isProcessing ? null : _handleCancel,
+                          isPrimary: false,
+                          tintColor: isDark ? Colors.white : AppColors.textGrey,
+                        ),
+                      ),
+                      if (!stackButtons) const SizedBox(width: 12),
+                      Expanded(
+                        child: _DialogActionButton(
+                          label: widget.confirmLabel,
+                          onPressed: (_isProcessing || !_isMatch)
+                              ? null
+                              : _handleConfirm,
+                          isPrimary: true,
+                          tintColor: confirmColor,
+                          isLoading: _isProcessing,
+                        ),
+                      ),
+                    ];
+
+                    if (stackButtons) {
+                      return Column(
+                        children: [
+                          children[0],
+                          const SizedBox(height: 10),
+                          children[1],
+                        ],
+                      );
+                    }
+                    return Row(children: children);
+                  },
+                ),
+              ],
             ),
           ),
         ),

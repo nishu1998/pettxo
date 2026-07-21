@@ -1,8 +1,7 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../domain/models/profile_type.dart';
 
 class ProfileTypeSelectorDialog {
@@ -55,78 +54,44 @@ class _ProfileTypeSelectorSheet extends StatelessWidget {
         child: Center(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 430),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(26),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? const Color(0xCC1D1B1A)
-                          : const Color(0xCCFFFFFF),
-                      borderRadius: BorderRadius.circular(26),
-                      border: Border.all(
-                        color: Colors.white.withValues(
-                          alpha: isDark ? 0.14 : 0.56,
-                        ),
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(
-                            alpha: isDark ? 0.26 : 0.10,
-                          ),
-                          blurRadius: 28,
-                          offset: const Offset(0, 14),
-                        ),
-                        BoxShadow(
-                          color: AppColors.primary.withValues(alpha: 0.08),
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Account Type',
-                            style: theme.textTheme.headlineSmall?.copyWith(
-                              color: isDark ? Colors.white : AppColors.textDark,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: -0.4,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Choose the tag that best describes how you identify on Pettxo.',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: isDark
-                                  ? Colors.white.withValues(alpha: 0.76)
-                                  : AppColors.textGrey,
-                              height: 1.4,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          const SizedBox(height: 18),
-                          for (final type in ProfileType.values) ...[
-                            _ProfileTypeOptionTile(
-                              type: type,
-                              isSelected: type == selectedType,
-                              onTap: () => Navigator.of(context).pop(type),
-                            ),
-                            if (type != ProfileType.values.last)
-                              const SizedBox(height: 10),
-                          ],
-                        ],
-                      ),
+            child: AppGlassDialogFrame(
+              maxWidth: 430,
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+              borderRadius: BorderRadius.circular(26),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Account Type',
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      color: isDark ? Colors.white : AppColors.textDark,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.4,
                     ),
                   ),
-                ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Choose the tag that best describes how you identify on Pettxo.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: isDark
+                          ? Colors.white.withValues(alpha: 0.76)
+                          : AppColors.textGrey,
+                      height: 1.4,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  for (final type in ProfileType.values) ...[
+                    _ProfileTypeOptionTile(
+                      type: type,
+                      isSelected: type == selectedType,
+                      onTap: () => Navigator.of(context).pop(type),
+                    ),
+                    if (type != ProfileType.values.last)
+                      const SizedBox(height: 10),
+                  ],
+                ],
               ),
             ),
           ),
