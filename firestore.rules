@@ -886,10 +886,19 @@ service cloud.firestore {
         'userId',
         'status',
         'documentType',
+        'documentFrontPath',
+        'documentBackPath',
         'documentFrontUrl',
         'documentBackUrl',
+        'documentFrontContentType',
+        'documentBackContentType',
+        'documentFrontFileName',
+        'documentBackFileName',
+        'verificationMethod',
         'submittedAt',
         'reviewedAt',
+        'documentDeletionScheduledAt',
+        'documentDeletedAt',
         'reviewedBy',
         'rejectionReason',
         'firstServiceListedAt',
@@ -899,20 +908,82 @@ service cloud.firestore {
       ]);
     }
 
+    function validProviderVerificationPath(userId, path) {
+      return path is string &&
+        path.size() > 0 &&
+        path.size() <= 512 &&
+        path.matches('^providerVerification/' + userId + '/identity/[^/]+$');
+    }
+
+    function validOptionalProviderVerificationPath(userId, path) {
+      return path == '' || validProviderVerificationPath(userId, path);
+    }
+
     function safeProviderVerificationOwnerWrite(userId) {
       return validProviderVerificationDocKeys(request.resource.data) &&
         request.resource.data.userId == userId &&
         request.resource.data.status == 'pending' &&
-        request.resource.data.documentType in ['aadhaar', 'drivingLicense', 'voterId'] &&
+        request.resource.data.documentType in ['aadhaar', 'panCard', 'drivingLicense', 'voterId'] &&
+        validProviderVerificationPath(userId, request.resource.data.documentFrontPath) &&
+        validOptionalProviderVerificationPath(userId, request.resource.data.documentBackPath) &&
         request.resource.data.documentFrontUrl is string &&
-        request.resource.data.documentFrontUrl.size() > 0 &&
+        request.resource.data.documentFrontUrl == '' &&
         request.resource.data.documentBackUrl is string &&
+        (
+          request.resource.data.documentBackUrl == '' ||
+          request.resource.data.documentBackUrl == null
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(['documentFrontContentType']) ||
+          (
+            request.resource.data.documentFrontContentType is string &&
+            request.resource.data.documentFrontContentType.size() <= 100
+          )
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(['documentBackContentType']) ||
+          request.resource.data.documentBackContentType == null ||
+          (
+            request.resource.data.documentBackContentType is string &&
+            request.resource.data.documentBackContentType.size() <= 100
+          )
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(['documentFrontFileName']) ||
+          (
+            request.resource.data.documentFrontFileName is string &&
+            request.resource.data.documentFrontFileName.size() <= 255
+          )
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(['documentBackFileName']) ||
+          request.resource.data.documentBackFileName == null ||
+          (
+            request.resource.data.documentBackFileName is string &&
+            request.resource.data.documentBackFileName.size() <= 255
+          )
+        ) &&
+        (
+          request.resource.data.documentType != 'panCard' ||
+          request.resource.data.documentBackPath == '' &&
+          (
+            request.resource.data.documentBackContentType == null ||
+            request.resource.data.documentBackContentType == ''
+          ) &&
+          (
+            request.resource.data.documentBackFileName == null ||
+            request.resource.data.documentBackFileName == ''
+          )
+        ) &&
+        request.resource.data.verificationMethod == 'manual' &&
         request.resource.data.reviewedAt == null &&
         request.resource.data.reviewedBy == null &&
         (
           request.resource.data.rejectionReason == null ||
           request.resource.data.rejectionReason == ''
         ) &&
+        request.resource.data.documentDeletionScheduledAt == null &&
+        request.resource.data.documentDeletedAt == null &&
         (
           !request.resource.data.keys().hasAny(['firstServiceListedAt']) ||
           request.resource.data.firstServiceListedAt == null ||
@@ -943,10 +1014,19 @@ service cloud.firestore {
         request.resource.data.userId == resource.data.userId &&
         request.resource.data.status == resource.data.status &&
         request.resource.data.documentType == resource.data.documentType &&
+        request.resource.data.documentFrontPath == resource.data.documentFrontPath &&
+        request.resource.data.documentBackPath == resource.data.documentBackPath &&
         request.resource.data.documentFrontUrl == resource.data.documentFrontUrl &&
         request.resource.data.documentBackUrl == resource.data.documentBackUrl &&
+        request.resource.data.documentFrontContentType == resource.data.documentFrontContentType &&
+        request.resource.data.documentBackContentType == resource.data.documentBackContentType &&
+        request.resource.data.documentFrontFileName == resource.data.documentFrontFileName &&
+        request.resource.data.documentBackFileName == resource.data.documentBackFileName &&
+        request.resource.data.verificationMethod == resource.data.verificationMethod &&
         request.resource.data.submittedAt == resource.data.submittedAt &&
         request.resource.data.reviewedAt == resource.data.reviewedAt &&
+        request.resource.data.documentDeletionScheduledAt == resource.data.documentDeletionScheduledAt &&
+        request.resource.data.documentDeletedAt == resource.data.documentDeletedAt &&
         request.resource.data.reviewedBy == resource.data.reviewedBy &&
         request.resource.data.rejectionReason == resource.data.rejectionReason &&
         request.resource.data.createdAt == resource.data.createdAt &&
@@ -1173,6 +1253,10 @@ service cloud.firestore {
     match /{path=**}/providerVerification/{docId} {
       allow read: if canReviewProviderVerification();
       allow create, update, delete: if false;
+    }
+
+    match /verificationDocumentCleanup/{cleanupId} {
+      allow read, write: if false;
     }
 
     match /userPrivate/{userId} {

@@ -13,14 +13,19 @@ class ProviderVerificationRecord {
   final String userId;
   final String status;
   final String documentType;
+  final String documentFrontPath;
+  final String documentBackPath;
   final String documentFrontUrl;
   final String documentBackUrl;
   final String documentFrontContentType;
   final String documentBackContentType;
   final String documentFrontFileName;
   final String documentBackFileName;
+  final String verificationMethod;
   final DateTime? submittedAt;
   final DateTime? reviewedAt;
+  final DateTime? documentDeletionScheduledAt;
+  final DateTime? documentDeletedAt;
   final String reviewedBy;
   final String rejectionReason;
   final DateTime? firstServiceListedAt;
@@ -32,14 +37,19 @@ class ProviderVerificationRecord {
     required this.userId,
     required this.status,
     required this.documentType,
+    required this.documentFrontPath,
+    required this.documentBackPath,
     required this.documentFrontUrl,
     required this.documentBackUrl,
     required this.documentFrontContentType,
     required this.documentBackContentType,
     required this.documentFrontFileName,
     required this.documentBackFileName,
+    required this.verificationMethod,
     required this.submittedAt,
     required this.reviewedAt,
+    required this.documentDeletionScheduledAt,
+    required this.documentDeletedAt,
     required this.reviewedBy,
     required this.rejectionReason,
     required this.firstServiceListedAt,
@@ -53,14 +63,19 @@ class ProviderVerificationRecord {
       userId: userId,
       status: providerVerificationNotSubmitted,
       documentType: '',
+      documentFrontPath: '',
+      documentBackPath: '',
       documentFrontUrl: '',
       documentBackUrl: '',
       documentFrontContentType: '',
       documentBackContentType: '',
       documentFrontFileName: '',
       documentBackFileName: '',
+      verificationMethod: 'manual',
       submittedAt: null,
       reviewedAt: null,
+      documentDeletionScheduledAt: null,
+      documentDeletedAt: null,
       reviewedBy: '',
       rejectionReason: '',
       firstServiceListedAt: null,
@@ -79,6 +94,8 @@ class ProviderVerificationRecord {
       status: (data['status'] as String? ?? providerVerificationNotSubmitted)
           .trim(),
       documentType: (data['documentType'] as String? ?? '').trim(),
+      documentFrontPath: (data['documentFrontPath'] as String? ?? '').trim(),
+      documentBackPath: (data['documentBackPath'] as String? ?? '').trim(),
       documentFrontUrl: (data['documentFrontUrl'] as String? ?? '').trim(),
       documentBackUrl: (data['documentBackUrl'] as String? ?? '').trim(),
       documentFrontContentType:
@@ -89,8 +106,14 @@ class ProviderVerificationRecord {
           .trim(),
       documentBackFileName: (data['documentBackFileName'] as String? ?? '')
           .trim(),
+      verificationMethod: (data['verificationMethod'] as String? ?? 'manual')
+          .trim(),
       submittedAt: _readDate(data['submittedAt']),
       reviewedAt: _readDate(data['reviewedAt']),
+      documentDeletionScheduledAt: _readDate(
+        data['documentDeletionScheduledAt'],
+      ),
+      documentDeletedAt: _readDate(data['documentDeletedAt']),
       reviewedBy: (data['reviewedBy'] as String? ?? '').trim(),
       rejectionReason: (data['rejectionReason'] as String? ?? '').trim(),
       firstServiceListedAt: _readDate(data['firstServiceListedAt']),
@@ -104,12 +127,36 @@ class ProviderVerificationRecord {
   bool get isPending => status == providerVerificationPending;
   bool get isApproved => status == providerVerificationApproved;
   bool get isRejected => status == providerVerificationRejected;
-  bool get hasFrontDocument => documentFrontUrl.isNotEmpty;
-  bool get hasBackDocument => documentBackUrl.isNotEmpty;
+  bool get canResubmit => isPending || isRejected;
+  bool get isPanCard => documentType == 'panCard';
+  bool get hasFrontDocument =>
+      documentFrontPath.isNotEmpty || documentFrontUrl.isNotEmpty;
+  bool get hasBackDocument =>
+      documentBackPath.isNotEmpty || documentBackUrl.isNotEmpty;
+  String get preferredFrontDocumentLocation =>
+      documentFrontPath.isNotEmpty ? documentFrontPath : documentFrontUrl;
+  String get preferredBackDocumentLocation =>
+      documentBackPath.isNotEmpty ? documentBackPath : documentBackUrl;
+  bool get usesPrivateStoragePaths => documentFrontPath.isNotEmpty;
   bool get frontDocumentIsPdf =>
-      _isPdf(documentFrontContentType, documentFrontUrl);
+      _isPdf(documentFrontContentType, preferredFrontDocumentLocation);
   bool get backDocumentIsPdf =>
-      _isPdf(documentBackContentType, documentBackUrl);
+      _isPdf(documentBackContentType, preferredBackDocumentLocation);
+
+  String get documentTypeLabel {
+    switch (documentType) {
+      case 'aadhaar':
+        return 'Aadhaar Card';
+      case 'panCard':
+        return 'PAN Card';
+      case 'drivingLicense':
+        return 'Driving Licence';
+      case 'voterId':
+        return 'Voter ID';
+      default:
+        return 'Identity document';
+    }
+  }
 
   bool get graceExpired {
     final graceEnd = gracePeriodEndsAt;

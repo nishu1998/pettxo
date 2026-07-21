@@ -1,25 +1,37 @@
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../../domain/models/provider_onboarding_models.dart';
 
 class ProviderVerificationUploadFile {
   const ProviderVerificationUploadFile({
-    required this.file,
+    required this.bytes,
     required this.fileName,
     required this.contentType,
+    this.localPath,
   });
 
-  final File file;
+  final Uint8List bytes;
   final String fileName;
   final String contentType;
+  final String? localPath;
 
   bool get isPdf => contentType == 'application/pdf';
+
+  int get fileSize => bytes.length;
+}
+
+class _UploadedVerificationDocument {
+  const _UploadedVerificationDocument({
+    required this.ref,
+    required this.storagePath,
+  });
+
+  final Reference ref;
+  final String storagePath;
 }
 
 class ProviderOnboardingRepository {
@@ -194,43 +206,82 @@ class ProviderOnboardingRepository {
       throw Exception('Invalid document type');
     }
 
-    final frontUrl = await _uploadIdentityDocument(
-      userId: uid,
-      document: frontDocument,
-      suffix: 'front',
-    );
-    final backUrl = backDocument == null
-        ? ''
-        : await _uploadIdentityDocument(
-            userId: uid,
-            document: backDocument,
-            suffix: 'back',
-          );
+    debugPrint('Verification upload started');
+    debugPrint('User UID: ${_auth.currentUser?.uid}');
+    debugPrint('Selected document type: $normalizedDocumentType');
 
-    final docRef = _verificationDoc(uid);
-    await _firestore.runTransaction((transaction) async {
-      final snapshot = await transaction.get(docRef);
-      final payload = <String, dynamic>{
-        'userId': uid,
-        'status': providerVerificationPending,
-        'documentType': normalizedDocumentType,
-        'documentFrontUrl': frontUrl,
-        'documentBackUrl': backUrl,
-        'documentFrontContentType': frontDocument.contentType,
-        'documentBackContentType': backDocument?.contentType ?? '',
-        'documentFrontFileName': frontDocument.fileName.trim(),
-        'documentBackFileName': backDocument?.fileName.trim() ?? '',
-        'submittedAt': FieldValue.serverTimestamp(),
-        'reviewedAt': null,
-        'reviewedBy': null,
-        'rejectionReason': null,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-      if (!snapshot.exists) {
-        payload['createdAt'] = FieldValue.serverTimestamp();
+    final effectiveBackDocument = normalizedDocumentType == 'panCard'
+        ? null
+        : backDocument;
+
+    final uploadedRefs = <Reference>[];
+
+    try {
+      final frontUpload = await _uploadIdentityDocument(
+        userId: uid,
+        document: frontDocument,
+        suffix: 'front',
+      );
+      uploadedRefs.add(frontUpload.ref);
+
+      _UploadedVerificationDocument? backUpload;
+      if (effectiveBackDocument != null) {
+        backUpload = await _uploadIdentityDocument(
+          userId: uid,
+          document: effectiveBackDocument,
+          suffix: 'back',
+        );
+        uploadedRefs.add(backUpload.ref);
       }
-      transaction.set(docRef, payload, SetOptions(merge: true));
-    });
+
+      final docRef = _verificationDoc(uid);
+      debugPrint('Submitting provider verification document to Firestore');
+      await _firestore.runTransaction((transaction) async {
+        final snapshot = await transaction.get(docRef);
+        final payload = <String, dynamic>{
+          'userId': uid,
+          'status': providerVerificationPending,
+          'documentType': normalizedDocumentType,
+          'documentFrontPath': frontUpload.storagePath,
+          'documentBackPath': backUpload?.storagePath ?? '',
+          'documentFrontUrl': '',
+          'documentBackUrl': '',
+          'documentFrontContentType': frontDocument.contentType,
+          'documentBackContentType': effectiveBackDocument?.contentType ?? '',
+          'documentFrontFileName': frontDocument.fileName.trim(),
+          'documentBackFileName': effectiveBackDocument?.fileName.trim() ?? '',
+          'verificationMethod': 'manual',
+          'submittedAt': FieldValue.serverTimestamp(),
+          'reviewedAt': null,
+          'reviewedBy': null,
+          'rejectionReason': null,
+          'documentDeletionScheduledAt': null,
+          'documentDeletedAt': null,
+          'firstServiceListedAt': null,
+          'gracePeriodEndsAt': null,
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+        if (!snapshot.exists) {
+          payload['createdAt'] = FieldValue.serverTimestamp();
+        }
+        transaction.set(docRef, payload, SetOptions(merge: true));
+      });
+    } on FirebaseException catch (error, stackTrace) {
+      debugPrint('Firebase code: ${error.code}');
+      debugPrint('Firebase message: ${error.message}');
+      debugPrintStack(stackTrace: stackTrace);
+      if (uploadedRefs.isNotEmpty) {
+        await _cleanupOrphanedVerificationUploads(uploadedRefs);
+      }
+      rethrow;
+    } catch (error, stackTrace) {
+      debugPrint('Verification submit error: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (uploadedRefs.isNotEmpty) {
+        await _cleanupOrphanedVerificationUploads(uploadedRefs);
+      }
+      rethrow;
+    }
   }
 
   Future<void> saveBankDetails({
@@ -322,7 +373,7 @@ class ProviderOnboardingRepository {
     }
   }
 
-  Future<String> _uploadIdentityDocument({
+  Future<_UploadedVerificationDocument> _uploadIdentityDocument({
     required String userId,
     required ProviderVerificationUploadFile document,
     required String suffix,
@@ -330,40 +381,83 @@ class ProviderOnboardingRepository {
     final fileName = document.fileName.trim().isEmpty
         ? 'document'
         : document.fileName.trim();
+    final uploadBytes = document.bytes;
+    if (uploadBytes.isEmpty) {
+      throw FirebaseException(
+        plugin: 'firebase_storage',
+        code: 'missing-file',
+        message: 'The selected file is empty.',
+      );
+    }
+    if (document.fileSize > 10 * 1024 * 1024) {
+      throw FirebaseException(
+        plugin: 'firebase_storage',
+        code: 'file-too-large',
+        message: 'The selected file exceeds the 10 MB verification limit.',
+      );
+    }
     final extension = _normalizedExtension(fileName, document.contentType);
     final ref = _storage.ref().child(
       'providerVerification/$userId/identity/${DateTime.now().millisecondsSinceEpoch}_$suffix.$extension',
     );
+    debugPrint('File name: $fileName');
+    debugPrint('File size: ${document.fileSize}');
+    debugPrint('File content type: ${document.contentType}');
+    debugPrint('Local path: ${document.localPath ?? 'unavailable'}');
+    debugPrint('Storage path: ${ref.fullPath}');
 
     if (document.isPdf) {
-      final bytes = await document.file.readAsBytes();
       await ref.putData(
-        bytes,
+        uploadBytes,
         SettableMetadata(
           contentType: document.contentType,
           customMetadata: {'originalFileName': fileName},
         ),
       );
-      return ref.getDownloadURL();
+      debugPrint('Verification upload completed for ${ref.fullPath}');
+      return _UploadedVerificationDocument(ref: ref, storagePath: ref.fullPath);
     }
 
-    final bytes = await document.file.readAsBytes();
     final compressedBytes = await FlutterImageCompress.compressWithList(
-      bytes,
+      uploadBytes,
       quality: 82,
       minWidth: 1600,
       minHeight: 1600,
       format: CompressFormat.jpeg,
     );
-    final uploadBytes = Uint8List.fromList(compressedBytes);
+    if (compressedBytes.isEmpty) {
+      throw FirebaseException(
+        plugin: 'flutter_image_compress',
+        code: 'image-compress-failed',
+        message: 'Unable to compress the selected image.',
+      );
+    }
+    final compressedUploadBytes = Uint8List.fromList(compressedBytes);
     await ref.putData(
-      uploadBytes,
+      compressedUploadBytes,
       SettableMetadata(
         contentType: 'image/jpeg',
         customMetadata: {'originalFileName': fileName},
       ),
     );
-    return ref.getDownloadURL();
+    debugPrint('Verification upload completed for ${ref.fullPath}');
+    return _UploadedVerificationDocument(ref: ref, storagePath: ref.fullPath);
+  }
+
+  Future<void> _cleanupOrphanedVerificationUploads(List<Reference> refs) async {
+    for (final ref in refs) {
+      try {
+        debugPrint('Cleaning orphaned verification upload: ${ref.fullPath}');
+        await ref.delete();
+      } on FirebaseException catch (error, stackTrace) {
+        debugPrint('Firebase code: ${error.code}');
+        debugPrint('Firebase message: ${error.message}');
+        debugPrintStack(stackTrace: stackTrace);
+      } catch (error, stackTrace) {
+        debugPrint('Verification cleanup error: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
   }
 
   String _normalizedExtension(String fileName, String contentType) {
@@ -403,6 +497,7 @@ class ProviderOnboardingRepository {
   String? _normalizeDocumentType(String documentType) {
     final normalized = documentType.trim();
     if (normalized == 'aadhaar' ||
+        normalized == 'panCard' ||
         normalized == 'drivingLicense' ||
         normalized == 'voterId') {
       return normalized;

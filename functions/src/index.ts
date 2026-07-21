@@ -39,6 +39,14 @@ import {
   normalizePhoneLoginNumber,
   validatePhoneLoginNumber,
 } from "./phoneLoginEligibility";
+import {
+  calculateProviderVerificationDocumentDeletionAtMillis,
+  cleanupReasonForVerificationStatus,
+  collectProviderVerificationDocumentPaths,
+  diffProviderVerificationDocumentPaths,
+  normalizeProviderVerificationDocumentPath,
+  providerVerificationDocumentPathBelongsToUser,
+} from "./providerVerificationDocuments";
 
 setGlobalOptions({
   region: "asia-south1",
@@ -69,6 +77,7 @@ const socialActivityPushChannelId = "pettxo_social_activity";
 const otherUpdatesPushChannelId = "pettxo_other_updates";
 const passwordResetRequestCooldownMs = 60 * 1000;
 const phoneLoginEligibilityCooldownMs = 30 * 1000;
+const providerVerificationCleanupBatchLimit = 20;
 
 type BookingStatus =
   | "paymentPending"
@@ -3049,8 +3058,12 @@ function userAllowsNotification(
 
 type ProviderVerificationSnapshot = {
   status: string;
+  documentFrontPath: string;
+  documentBackPath: string;
   gracePeriodEndsAt: Timestamp | null;
   reviewedAt: Timestamp | null;
+  documentDeletionScheduledAt: Timestamp | null;
+  documentDeletedAt: Timestamp | null;
   reviewedBy: string;
   rejectionReason: string;
 };
@@ -3058,11 +3071,173 @@ type ProviderVerificationSnapshot = {
 function normalizeProviderVerification(data: DocumentData | undefined): ProviderVerificationSnapshot {
   return {
     status: asTrimmedString(data?.status) || "notSubmitted",
+    documentFrontPath: normalizeProviderVerificationDocumentPath(data?.documentFrontPath),
+    documentBackPath: normalizeProviderVerificationDocumentPath(data?.documentBackPath),
     gracePeriodEndsAt: data?.gracePeriodEndsAt instanceof Timestamp ? data.gracePeriodEndsAt as Timestamp : null,
     reviewedAt: data?.reviewedAt instanceof Timestamp ? data.reviewedAt as Timestamp : null,
+    documentDeletionScheduledAt:
+      data?.documentDeletionScheduledAt instanceof Timestamp ? data.documentDeletionScheduledAt as Timestamp : null,
+    documentDeletedAt:
+      data?.documentDeletedAt instanceof Timestamp ? data.documentDeletedAt as Timestamp : null,
     reviewedBy: asTrimmedString(data?.reviewedBy),
     rejectionReason: asTrimmedString(data?.rejectionReason),
   };
+}
+
+function providerVerificationDocumentPaths(
+  verification: ProviderVerificationSnapshot,
+): string[] {
+  return collectProviderVerificationDocumentPaths([
+    verification.documentFrontPath,
+    verification.documentBackPath,
+  ]);
+}
+
+function providerVerificationCleanupDocId(params: {
+  userId: string;
+  verificationId: string;
+  reason: string;
+  storagePaths: string[];
+}): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify({
+      userId: params.userId,
+      verificationId: params.verificationId,
+      reason: params.reason,
+      storagePaths: [...params.storagePaths].sort(),
+    }))
+    .digest("hex")
+    .slice(0, 32);
+  return `${params.verificationId}_${params.reason}_${digest}`;
+}
+
+async function enqueueProviderVerificationDocumentCleanup(params: {
+  userId: string;
+  verificationId: string;
+  storagePaths: string[];
+  reason: "approved" | "rejected" | "resubmitted";
+  scheduledDeletionAtMs: number;
+}): Promise<void> {
+  const normalizedPaths = collectProviderVerificationDocumentPaths(params.storagePaths);
+  if (normalizedPaths.length === 0) return;
+  if (normalizedPaths.some((path) => !providerVerificationDocumentPathBelongsToUser(params.userId, path))) {
+    throw new Error(`Invalid provider verification cleanup path for ${params.userId}.`);
+  }
+
+  const cleanupId = providerVerificationCleanupDocId({
+    userId: params.userId,
+    verificationId: params.verificationId,
+    reason: params.reason,
+    storagePaths: normalizedPaths,
+  });
+
+  await db.collection("verificationDocumentCleanup").doc(cleanupId).set({
+    userId: params.userId,
+    verificationId: params.verificationId,
+    storagePaths: normalizedPaths,
+    reason: params.reason,
+    status: "scheduled",
+    attemptCount: 0,
+    scheduledDeletionAt: Timestamp.fromMillis(params.scheduledDeletionAtMs),
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    completedAt: null,
+    lastError: "",
+  }, {merge: true});
+}
+
+async function claimProviderVerificationCleanupJob(
+  ref: DocumentReference,
+  now: Timestamp,
+): Promise<DocumentData | null> {
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return null;
+    const data = snapshot.data() ?? {};
+    const scheduledDeletionAt = data.scheduledDeletionAt instanceof Timestamp ?
+      data.scheduledDeletionAt as Timestamp :
+      null;
+    if (asTrimmedString(data.status) !== "scheduled" ||
+      !scheduledDeletionAt ||
+      scheduledDeletionAt.toMillis() > now.toMillis()) {
+      return null;
+    }
+    transaction.set(ref, {
+      status: "processing",
+      attemptCount: FieldValue.increment(1),
+      processingStartedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return data;
+  });
+}
+
+async function markProviderVerificationCleanupCompleted(params: {
+  ref: DocumentReference;
+  userId: string;
+  verificationId: string;
+  storagePaths: string[];
+}): Promise<void> {
+  const verificationRef = db
+    .collection("users")
+    .doc(params.userId)
+    .collection("providerVerification")
+    .doc(params.verificationId);
+
+  await db.runTransaction(async (transaction) => {
+    const verificationSnapshot = await transaction.get(verificationRef);
+    if (verificationSnapshot.exists) {
+      const data = verificationSnapshot.data() ?? {};
+      const currentFrontPath = normalizeProviderVerificationDocumentPath(data.documentFrontPath);
+      const currentBackPath = normalizeProviderVerificationDocumentPath(data.documentBackPath);
+      const deletedPaths = new Set(params.storagePaths);
+      const updates: Record<string, unknown> = {};
+
+      if (deletedPaths.has(currentFrontPath)) {
+        updates.documentFrontPath = "";
+        updates.documentFrontUrl = "";
+      }
+      if (deletedPaths.has(currentBackPath)) {
+        updates.documentBackPath = "";
+        updates.documentBackUrl = "";
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updates.documentDeletedAt = FieldValue.serverTimestamp();
+        updates.updatedAt = FieldValue.serverTimestamp();
+        transaction.set(verificationRef, updates, {merge: true});
+      }
+    }
+
+    transaction.set(params.ref, {
+      status: "completed",
+      completedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      lastError: "",
+    }, {merge: true});
+  });
+}
+
+async function markProviderVerificationCleanupRetryable(
+  ref: DocumentReference,
+  errorMessage: string,
+): Promise<void> {
+  await ref.set({
+    status: "scheduled",
+    updatedAt: FieldValue.serverTimestamp(),
+    lastError: errorMessage,
+  }, {merge: true});
+}
+
+async function markProviderVerificationCleanupFailed(
+  ref: DocumentReference,
+  errorMessage: string,
+): Promise<void> {
+  await ref.set({
+    status: "failed",
+    updatedAt: FieldValue.serverTimestamp(),
+    lastError: errorMessage,
+  }, {merge: true});
 }
 
 function shouldPauseServicesForVerification(verification: ProviderVerificationSnapshot, now = Timestamp.now()): boolean {
@@ -4698,17 +4873,127 @@ export const syncProviderServicesOnVerificationUpdate = onDocumentWritten(
     const beforeVerification = normalizeProviderVerification(before);
     const afterVerification = normalizeProviderVerification(after);
 
-    const relevantChange =
+    const verificationStateChanged =
       beforeVerification.status !== afterVerification.status ||
       beforeVerification.gracePeriodEndsAt?.toMillis() !==
         afterVerification.gracePeriodEndsAt?.toMillis();
+    const documentPathChanged =
+      beforeVerification.documentFrontPath !== afterVerification.documentFrontPath ||
+      beforeVerification.documentBackPath !== afterVerification.documentBackPath;
 
-    if (!relevantChange) return;
+    if (verificationStateChanged) {
+      await updateProviderServicesForVerification(
+        event.params.userId,
+        afterVerification,
+      );
+    }
 
-    await updateProviderServicesForVerification(
-      event.params.userId,
-      afterVerification,
-    );
+    if (documentPathChanged &&
+      (beforeVerification.status === "pending" || beforeVerification.status === "rejected") &&
+      afterVerification.status === "pending") {
+      const replacedPaths = diffProviderVerificationDocumentPaths(
+        providerVerificationDocumentPaths(beforeVerification),
+        providerVerificationDocumentPaths(afterVerification),
+      );
+      if (replacedPaths.length > 0) {
+        await enqueueProviderVerificationDocumentCleanup({
+          userId: event.params.userId,
+          verificationId: "main",
+          storagePaths: replacedPaths,
+          reason: "resubmitted",
+          scheduledDeletionAtMs:
+            calculateProviderVerificationDocumentDeletionAtMillis(Date.now()),
+        });
+      }
+    }
+
+    const reviewCleanupReason =
+      beforeVerification.status !== afterVerification.status ?
+        cleanupReasonForVerificationStatus(afterVerification.status) :
+        null;
+    const activePaths = providerVerificationDocumentPaths(afterVerification);
+    if (reviewCleanupReason &&
+      activePaths.length > 0 &&
+      afterVerification.documentDeletionScheduledAt == null &&
+      afterVerification.documentDeletedAt == null) {
+      const scheduledDeletionAtMs =
+        calculateProviderVerificationDocumentDeletionAtMillis(Date.now());
+      await enqueueProviderVerificationDocumentCleanup({
+        userId: event.params.userId,
+        verificationId: "main",
+        storagePaths: activePaths,
+        reason: reviewCleanupReason,
+        scheduledDeletionAtMs,
+      });
+      await event.data?.after.ref.set({
+        documentDeletionScheduledAt: Timestamp.fromMillis(scheduledDeletionAtMs),
+        documentDeletedAt: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+  },
+);
+
+export const processProviderVerificationDocumentCleanup = onSchedule(
+  {
+    schedule: "every 12 hours",
+    timeZone: "Asia/Kolkata",
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    const now = Timestamp.now();
+    const snapshot = await db
+      .collection("verificationDocumentCleanup")
+      .where("scheduledDeletionAt", "<=", now)
+      .orderBy("scheduledDeletionAt")
+      .limit(providerVerificationCleanupBatchLimit * 3)
+      .get();
+
+    for (const doc of snapshot.docs) {
+      const job = await claimProviderVerificationCleanupJob(doc.ref, now);
+      if (!job) continue;
+
+      const userId = asTrimmedString(job.userId);
+      const verificationId = asTrimmedString(job.verificationId) || "main";
+      const storagePaths = collectProviderVerificationDocumentPaths(
+        Array.isArray(job.storagePaths) ? job.storagePaths : [],
+      );
+      const invalidPath = storagePaths.find(
+        (path) => !providerVerificationDocumentPathBelongsToUser(userId, path),
+      );
+
+      if (!userId || storagePaths.length === 0 || invalidPath) {
+        await markProviderVerificationCleanupFailed(
+          doc.ref,
+          invalidPath ?
+            `invalid-storage-path:${invalidPath}` :
+            "missing-user-or-storage-paths",
+        );
+        continue;
+      }
+
+      try {
+        for (const path of storagePaths) {
+          await storage.bucket().file(path).delete({ignoreNotFound: true});
+        }
+        await markProviderVerificationCleanupCompleted({
+          ref: doc.ref,
+          userId,
+          verificationId,
+          storagePaths,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Provider verification cleanup failed", {
+          cleanupId: doc.id,
+          userId,
+          verificationId,
+          message,
+        });
+        await markProviderVerificationCleanupRetryable(doc.ref, message);
+      }
+    }
   },
 );
 

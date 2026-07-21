@@ -1,0 +1,14 @@
+{
+  "name": "pettxo-firebase-rules-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:firestore": "firebase emulators:exec --only firestore --project demo-pettexo \"node --test firestore.rules.test.mjs\"",
+    "test:storage": "firebase emulators:exec --only firestore,storage --project demo-pettexo \"node --test storage.rules.test.mjs\"",
+    "test": "npm run test:firestore && npm run test:storage"
+  },
+  "dependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.10.0"
+  }
+}
