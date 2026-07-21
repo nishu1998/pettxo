@@ -5,9 +5,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_distance_utils.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
@@ -49,6 +51,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
   bool _isTopBarVisible = true;
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
+  double? _resolvedDistanceKm;
 
   ProfileServiceListing get service => widget.service;
   bool get showRebookHint => widget.showRebookHint;
@@ -57,7 +60,11 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _resolvedDistanceKm = ServiceDistanceUtils.normalizeDistanceKm(
+      widget.service.distanceKm,
+    );
     _scrollController.addListener(_handleScroll);
+    _primeDistanceFallbackIfNeeded();
   }
 
   @override
@@ -103,6 +110,44 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
       }
     } else if (direction == ScrollDirection.idle) {
       _scrollDeltaAccumulator = 0;
+    }
+  }
+
+  Future<void> _primeDistanceFallbackIfNeeded() async {
+    if (_resolvedDistanceKm != null) return;
+    if (!ServiceDistanceUtils.hasUsableCoordinates(
+      service.latitude,
+      service.longitude,
+    )) {
+      return;
+    }
+
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition();
+      final distanceKm = ServiceDistanceUtils.calculateDistanceKm(
+        userLatitude: position.latitude,
+        userLongitude: position.longitude,
+        serviceLatitude: service.latitude,
+        serviceLongitude: service.longitude,
+      );
+
+      if (!mounted || distanceKm == null) return;
+      setState(() => _resolvedDistanceKm = distanceKm);
+    } catch (_) {
+      // Distance is optional UI context, so failures stay non-blocking.
     }
   }
 
@@ -180,12 +225,14 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
             children: [
               _ServiceHero(
                 service: service,
+                resolvedDistanceKm: _resolvedDistanceKm,
                 isOwner: isOwner,
                 canOpenMenu: currentUserId.isNotEmpty && !isOwner,
               ),
               const SizedBox(height: 18),
               _ServiceSummaryCard(
                 service: service,
+                resolvedDistanceKm: _resolvedDistanceKm,
                 showRebookHint: showRebookHint,
               ),
               const SizedBox(height: 18),
@@ -564,11 +611,13 @@ class _ServiceBottomActionBar extends StatelessWidget {
 
 class _ServiceHero extends StatelessWidget {
   final ProfileServiceListing service;
+  final double? resolvedDistanceKm;
   final bool isOwner;
   final bool canOpenMenu;
 
   const _ServiceHero({
     required this.service,
+    required this.resolvedDistanceKm,
     required this.isOwner,
     required this.canOpenMenu,
   });
@@ -578,9 +627,9 @@ class _ServiceHero extends StatelessWidget {
     final serviceMode = service.bookingServiceType.isEmpty
         ? service.serviceType
         : service.bookingServiceType;
-    final distanceLabel = service.distanceKm > 0
-        ? '${service.distanceKm.toStringAsFixed(service.distanceKm < 10 ? 1 : 0)} km away'
-        : '';
+    final distanceLabel = ServiceDistanceUtils.formatDistance(
+      resolvedDistanceKm,
+    );
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(32),
@@ -773,10 +822,12 @@ class _HeroInfoPill extends StatelessWidget {
 
 class _ServiceSummaryCard extends StatelessWidget {
   final ProfileServiceListing service;
+  final double? resolvedDistanceKm;
   final bool showRebookHint;
 
   const _ServiceSummaryCard({
     required this.service,
+    required this.resolvedDistanceKm,
     required this.showRebookHint,
   });
 
@@ -867,7 +918,10 @@ class _ServiceSummaryCard extends StatelessWidget {
           const SizedBox(height: 18),
           _ProviderCompactCard(service: service),
           const SizedBox(height: 18),
-          _InsightStrip(service: service),
+          _InsightStrip(
+            service: service,
+            resolvedDistanceKm: resolvedDistanceKm,
+          ),
         ],
       ),
     );
@@ -1285,14 +1339,18 @@ class _ServiceActionRow extends StatelessWidget {
 
 class _InsightStrip extends StatelessWidget {
   final ProfileServiceListing service;
+  final double? resolvedDistanceKm;
 
-  const _InsightStrip({required this.service});
+  const _InsightStrip({
+    required this.service,
+    required this.resolvedDistanceKm,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final distanceLabel = service.distanceKm > 0
-        ? '${service.distanceKm.toStringAsFixed(service.distanceKm < 10 ? 1 : 0)} km'
-        : (service.distance.trim().isEmpty ? 'Not set' : service.distance);
+    final distanceLabel = ServiceDistanceUtils.formatDistance(
+      resolvedDistanceKm,
+    );
 
     return Row(
       children: [
@@ -1311,14 +1369,16 @@ class _InsightStrip extends StatelessWidget {
             value: service.animalType,
           ),
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _InsightTile(
-            icon: Icons.location_on_outlined,
-            label: 'Distance',
-            value: distanceLabel,
+        if (distanceLabel.isNotEmpty) ...[
+          const SizedBox(width: 10),
+          Expanded(
+            child: _InsightTile(
+              icon: Icons.location_on_outlined,
+              label: 'Distance',
+              value: distanceLabel,
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/network_status_service.dart';
+import '../../../../core/utils/service_distance_utils.dart';
 import '../../../../core/utils/service_ranking.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
@@ -381,13 +382,12 @@ class _ServicesScreenState extends State<ServicesScreen> {
     // dedicated search index) once discovery scale and analytics require it.
     final ranked = searchedServices.map((service) {
       final distanceKm = hasUserLocation && _hasCoordinates(service)
-          ? Geolocator.distanceBetween(
-                  userLatitude,
-                  userLongitude,
-                  service.latitude,
-                  service.longitude,
-                ) /
-                1000
+          ? ServiceDistanceUtils.calculateDistanceKm(
+              userLatitude: userLatitude,
+              userLongitude: userLongitude,
+              serviceLatitude: service.latitude,
+              serviceLongitude: service.longitude,
+            )
           : null;
 
       final breakdown = ServiceRanking.calculate(
@@ -515,7 +515,10 @@ class _ServicesScreenState extends State<ServicesScreen> {
   }
 
   bool _hasCoordinates(ServiceModel service) {
-    return service.latitude != 0 || service.longitude != 0;
+    return ServiceDistanceUtils.hasUsableCoordinates(
+      service.latitude,
+      service.longitude,
+    );
   }
 
   bool _matchesSearch(ServiceModel service, String normalizedQuery) {
@@ -690,6 +693,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                           padding: const EdgeInsets.only(bottom: 16),
                           child: _MarketplaceServiceCard(
                             service: entry.service,
+                            distanceKm: entry.distanceKm,
                           ),
                         );
                       }),
@@ -713,6 +717,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                             padding: const EdgeInsets.only(bottom: 16),
                             child: _MarketplaceServiceCard(
                               service: entry.service,
+                              distanceKm: entry.distanceKm,
                             ),
                           );
                         }),
@@ -1156,11 +1161,25 @@ class _CategoryChip extends StatelessWidget {
 
 class _MarketplaceServiceCard extends StatelessWidget {
   final ServiceModel service;
+  final double? distanceKm;
 
-  const _MarketplaceServiceCard({required this.service});
+  const _MarketplaceServiceCard({
+    required this.service,
+    required this.distanceKm,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final distanceLabel = ServiceDistanceUtils.formatDistance(distanceKm);
+    final hasDisplayAddress = service.displayAddress.isNotEmpty;
+    final locationLabel = distanceLabel.isEmpty
+        ? (hasDisplayAddress
+              ? service.displayAddress
+              : 'Location shared after booking')
+        : (hasDisplayAddress
+              ? '$distanceLabel · ${service.displayAddress}'
+              : distanceLabel);
+
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1169,8 +1188,11 @@ class _MarketplaceServiceCard extends StatelessWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) =>
-                  ServiceDetailScreen(service: service.toProfileListing()),
+              builder: (_) => ServiceDetailScreen(
+                service: service.toProfileListing(
+                  distanceKmOverride: distanceKm,
+                ),
+              ),
             ),
           );
         },
@@ -1343,9 +1365,7 @@ class _MarketplaceServiceCard extends StatelessWidget {
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
-                                  service.displayAddress.isEmpty
-                                      ? 'Location shared after booking'
-                                      : service.displayAddress,
+                                  locationLabel,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(

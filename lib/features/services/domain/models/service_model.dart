@@ -300,7 +300,7 @@ class ServiceModel {
     };
   }
 
-  ProfileServiceListing toProfileListing() {
+  ProfileServiceListing toProfileListing({double? distanceKmOverride}) {
     return ProfileServiceListing(
       id: id,
       ownerUserId: ownerUserId,
@@ -342,7 +342,7 @@ class ServiceModel {
       trustScore: trustScore,
       rankingScore: rankingScore,
       organicRankingScore: organicRankingScore,
-      distanceKm: distanceKm,
+      distanceKm: distanceKmOverride ?? distanceKm,
       isSponsored: isSponsored,
       sponsorBoost: sponsorBoost,
       sponsorStartAt: sponsorStartAt,
