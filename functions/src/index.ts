@@ -4793,7 +4793,6 @@ export const sendPushForNotification = onDocumentWritten(
 export const enqueueServiceModeration = onDocumentCreated(
   {
     document: "services/{serviceId}",
-    region: "us-central1",
   },
   async (event) => {
     const serviceId = event.params.serviceId;
@@ -4819,7 +4818,6 @@ export const enqueueServiceModeration = onDocumentCreated(
 export const syncServiceSlots = onDocumentWritten(
   {
     document: "services/{serviceId}",
-    region: "us-central1",
     timeoutSeconds: 120,
     memory: "512MiB",
   },
@@ -5000,7 +4998,6 @@ export const processProviderVerificationDocumentCleanup = onSchedule(
 export const enqueueReportModeration = onDocumentCreated(
   {
     document: "reports/{reportId}",
-    region: "us-central1",
   },
   async (event) => {
     const reportId = event.params.reportId;
@@ -8855,11 +8852,8 @@ export const getProfileFollowCounts = onCall({invoker: "public"}, async (request
   };
 });
 
-// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
-// but we keep the legacy us-central1 callable alive until a separate cleanup task.
 export const createSocialNotification = onCall({
   invoker: "public",
-  region: ["asia-south1", "us-central1"],
 }, async (request) => {
   const senderId = request.auth?.uid ?? "";
   if (!senderId) {
@@ -8980,11 +8974,8 @@ export const createSocialNotification = onCall({
   return {ok: true, created: true};
 });
 
-// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
-// but we keep the legacy us-central1 callable alive until a separate cleanup task.
 export const startProviderChat = onCall({
   invoker: "public",
-  region: ["asia-south1", "us-central1"],
 }, async (request) => {
   const customerId = requireUid(request.auth);
   const serviceId = asTrimmedString(request.data?.serviceId);
@@ -9138,11 +9129,8 @@ export const startProviderChat = onCall({
   return {chatId: result.chatId};
 });
 
-// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
-// but we keep the legacy us-central1 callable alive until a separate cleanup task.
 export const startDirectUserChat = onCall({
   invoker: "public",
-  region: ["asia-south1", "us-central1"],
 }, async (request) => {
   const currentUserId = requireUid(request.auth);
   const otherUserId = asTrimmedString(request.data?.otherUserId);
@@ -9253,11 +9241,8 @@ export const startDirectUserChat = onCall({
   return {chatId: result.chatId};
 });
 
-// Temporary dual-region compatibility export. The Flutter app targets asia-south1,
-// but we keep the legacy us-central1 callable alive until a separate cleanup task.
 export const sendChatMessage = onCall({
   invoker: "public",
-  region: ["asia-south1", "us-central1"],
 }, async (request) => {
   const senderId = requireUid(request.auth);
   const chatId = asTrimmedString(request.data?.chatId);
@@ -9504,7 +9489,6 @@ export const markChatDelivered = onCall({invoker: "public"}, async (request) => 
 
 export const markChatRead = onCall({
   invoker: "public",
-  region: ["asia-south1", "us-central1"],
 }, async (request) => {
   const uid = requireUid(request.auth);
   const chatId = asTrimmedString(request.data?.chatId);
