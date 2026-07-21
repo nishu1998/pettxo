@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../auth/data/services/auth_service.dart';
 import '../../../auth/data/services/pending_email_change_service.dart';
 import '../../../auth/data/services/recent_login_service.dart';
@@ -517,11 +518,20 @@ class _PasswordReauthDialogState extends State<_PasswordReauthDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Confirm your password'),
-      content: Column(
+    return AppGlassDialogFrame(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Text(
+            'Confirm your password',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 16),
           AuthInputField(
             controller: _passwordController,
             labelText: 'Current Password',
@@ -541,20 +551,27 @@ class _PasswordReauthDialogState extends State<_PasswordReauthDialog> {
               },
             ),
           ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: _isSubmitting
+                      ? null
+                      : () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              Expanded(
+                child: TextButton(
+                  onPressed: _isSubmitting ? null : _submit,
+                  child: Text(_isSubmitting ? 'Checking...' : 'Continue'),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: _isSubmitting
-              ? null
-              : () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: _isSubmitting ? null : _submit,
-          child: Text(_isSubmitting ? 'Checking...' : 'Continue'),
-        ),
-      ],
     );
   }
 }
@@ -653,14 +670,28 @@ class _PhoneReauthDialogState extends State<_PhoneReauthDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Confirm your phone'),
-      content: Column(
+    return AppGlassDialogFrame(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Text(
+            'Confirm your phone',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 14),
           if (_verificationId == null)
             const Text(
               'We will send an OTP to your current verified phone number before deletion continues.',
+              style: TextStyle(
+                color: AppColors.textGrey,
+                height: 1.45,
+                fontWeight: FontWeight.w500,
+              ),
             )
           else
             AuthInputField(
@@ -673,28 +704,37 @@ class _PhoneReauthDialogState extends State<_PhoneReauthDialog> {
                 }
               },
             ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: _isBusy
+                      ? null
+                      : () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              Expanded(
+                child: TextButton(
+                  onPressed: _isBusy
+                      ? null
+                      : _verificationId == null
+                      ? _sendCode
+                      : _verifyCode,
+                  child: Text(
+                    _isBusy
+                        ? 'Please wait...'
+                        : _verificationId == null
+                        ? 'Send OTP'
+                        : 'Continue',
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: _isBusy ? null : () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: _isBusy
-              ? null
-              : _verificationId == null
-              ? _sendCode
-              : _verifyCode,
-          child: Text(
-            _isBusy
-                ? 'Please wait...'
-                : _verificationId == null
-                ? 'Send OTP'
-                : 'Continue',
-          ),
-        ),
-      ],
     );
   }
 }

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/app_loader.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
@@ -227,106 +228,13 @@ class _BookingsScreenState extends State<BookingsScreen> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await AppConfirmationDialog.show(
       context: context,
-      builder: (dialogContext) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 22),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFCF8F5),
-              borderRadius: BorderRadius.circular(30),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.14),
-                  blurRadius: 28,
-                  offset: const Offset(0, 16),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 52,
-                  height: 52,
-                  decoration: BoxDecoration(
-                    gradient: AppColors.brandGradient,
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: const Icon(
-                    Icons.delete_outline_rounded,
-                    color: Colors.white,
-                    size: 26,
-                  ),
-                ),
-                const SizedBox(height: 18),
-                const Text(
-                  'Delete request?',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
-                    color: AppColors.textDark,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Remove this unpaid booking request?',
-                  style: TextStyle(
-                    fontSize: 15,
-                    height: 1.45,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textGrey,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        onPressed: () => Navigator.pop(dialogContext, false),
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppColors.textGrey,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          backgroundColor: Colors.white,
-                        ),
-                        child: const Text(
-                          'Keep',
-                          style: TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton(
-                        onPressed: () => Navigator.pop(dialogContext, true),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                        ),
-                        child: const Text(
-                          'Delete',
-                          style: TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      title: 'Delete request?',
+      message: 'Remove this unpaid booking request?',
+      cancelLabel: 'Keep',
+      confirmLabel: 'Delete',
+      isDestructive: true,
     );
 
     if (confirmed != true) return;

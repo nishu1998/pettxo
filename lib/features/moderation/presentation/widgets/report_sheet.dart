@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/repositories/report_repository.dart';
 
@@ -95,20 +96,11 @@ class _ReportSheetViewState extends State<_ReportSheetView> {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + viewInsets.bottom),
-        child: Container(
+        padding: EdgeInsets.only(bottom: viewInsets.bottom),
+        child: AppGlassBottomSheetFrame(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFCF8F5),
-            borderRadius: BorderRadius.circular(28),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 28,
-                offset: const Offset(0, 14),
-              ),
-            ],
-          ),
+          maxHeightFactor: 0.86,
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -161,7 +153,7 @@ class _ReportSheetViewState extends State<_ReportSheetView> {
                         decoration: BoxDecoration(
                           color: isSelected
                               ? const Color(0xFFFFF1EA)
-                              : Colors.white,
+                              : Colors.white.withValues(alpha: 0.9),
                           borderRadius: BorderRadius.circular(18),
                           border: Border.all(
                             color: isSelected
@@ -200,7 +192,7 @@ class _ReportSheetViewState extends State<_ReportSheetView> {
                 const SizedBox(height: 6),
                 Container(
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: Colors.white.withValues(alpha: 0.9),
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
                       color: AppColors.primary.withValues(alpha: 0.08),

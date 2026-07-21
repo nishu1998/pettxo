@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../data/services/offer_service.dart';
 import '../../domain/models/mobile_offer_campaign.dart';
 
@@ -60,19 +61,9 @@ class _OfferPopupDialogState extends State<OfferPopupDialog> {
   @override
   Widget build(BuildContext context) {
     final offer = widget.offer;
-    return Container(
+    return AppGlassDialogFrame(
       padding: const EdgeInsets.all(22),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFCF8F5),
-        borderRadius: BorderRadius.circular(30),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.16),
-            blurRadius: 28,
-            offset: const Offset(0, 16),
-          ),
-        ],
-      ),
+      borderRadius: BorderRadius.circular(30),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -5,8 +5,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/social_post_repository.dart';
@@ -201,44 +203,33 @@ class _CommentSheetState extends State<CommentSheet> {
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        return SafeArea(
-          top: false,
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(28),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (isOwnComment)
-                  _CommentMenuTile(
-                    icon: Icons.delete_outline_rounded,
-                    label: 'Delete comment',
-                    isDestructive: true,
-                    onTap: () => Navigator.pop(
-                      context,
-                      _CommentMenuAction.deleteComment,
-                    ),
-                  )
-                else
-                  _CommentMenuTile(
-                    icon: Icons.flag_outlined,
-                    label: 'Report comment',
-                    onTap: () => Navigator.pop(
-                      context,
-                      _CommentMenuAction.reportComment,
-                    ),
-                  ),
+        return AppGlassBottomSheetFrame(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isOwnComment)
                 _CommentMenuTile(
-                  icon: Icons.close_rounded,
-                  label: 'Cancel',
-                  onTap: () => Navigator.pop(context),
+                  icon: Icons.delete_outline_rounded,
+                  label: 'Delete comment',
+                  isDestructive: true,
+                  onTap: () =>
+                      Navigator.pop(context, _CommentMenuAction.deleteComment),
+                )
+              else
+                _CommentMenuTile(
+                  icon: Icons.flag_outlined,
+                  label: 'Report comment',
+                  onTap: () =>
+                      Navigator.pop(context, _CommentMenuAction.reportComment),
                 ),
-              ],
-            ),
+              _CommentMenuTile(
+                icon: Icons.close_rounded,
+                label: 'Cancel',
+                onTap: () => Navigator.pop(context),
+              ),
+            ],
           ),
         );
       },
@@ -263,27 +254,12 @@ class _CommentSheetState extends State<CommentSheet> {
     )) {
       return;
     }
-    final shouldDelete = await showDialog<bool>(
+    final shouldDelete = await AppConfirmationDialog.show(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Delete comment?'),
-          content: const Text('This will remove your comment from the post.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text(
-                'Delete',
-                style: TextStyle(color: Color(0xFFD64B4B)),
-              ),
-            ),
-          ],
-        );
-      },
+      title: 'Delete comment?',
+      message: 'This will remove your comment from the post.',
+      confirmLabel: 'Delete',
+      isDestructive: true,
     );
     if (shouldDelete != true || !mounted) return;
 
@@ -328,27 +304,20 @@ class _CommentSheetState extends State<CommentSheet> {
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        return SafeArea(
-          top: false,
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(28),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: _commentReportReasons
-                  .map((reason) {
-                    return _CommentMenuTile(
-                      icon: Icons.outlined_flag_rounded,
-                      label: reason,
-                      onTap: () => Navigator.pop(context, reason),
-                    );
-                  })
-                  .toList(growable: false),
-            ),
+        return AppGlassBottomSheetFrame(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: _commentReportReasons
+                .map((reason) {
+                  return _CommentMenuTile(
+                    icon: Icons.outlined_flag_rounded,
+                    label: reason,
+                    onTap: () => Navigator.pop(context, reason),
+                  );
+                })
+                .toList(growable: false),
           ),
         );
       },

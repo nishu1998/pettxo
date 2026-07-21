@@ -9,7 +9,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/app_loader.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
@@ -360,26 +362,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         bookingId: booking.id,
       );
       if (!mounted) return;
-      final confirmed = await showDialog<bool>(
+      final confirmed = await AppConfirmationDialog.show(
         context: context,
-        builder: (dialogContext) {
-          return AlertDialog(
-            title: const Text('Cancel booking?'),
-            content: Text(
-              'Refund will be ${_moneyFromPaise(preview.refundAmountPaise)} based on current timing.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext, false),
-                child: const Text('Go Back'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext, true),
-                child: const Text('Confirm Cancel'),
-              ),
-            ],
-          );
-        },
+        title: 'Cancel booking?',
+        message:
+            'Refund will be ${_moneyFromPaise(preview.refundAmountPaise)} based on current timing.',
+        cancelLabel: 'Go Back',
+        confirmLabel: 'Confirm Cancel',
       );
       if (confirmed != true) return;
 
@@ -418,13 +407,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
           padding: EdgeInsets.only(
             bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
           ),
-          child: Container(
+          child: AppGlassBottomSheetFrame(
             margin: const EdgeInsets.all(12),
             padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-            ),
+            maxHeightFactor: 0.86,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,

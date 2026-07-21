@@ -8,6 +8,7 @@ import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/network_status_service.dart';
 import '../../../../core/utils/service_ranking.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
@@ -203,150 +204,135 @@ class _ServicesScreenState extends State<ServicesScreen> {
             final maxSheetHeight = mediaQuery.size.height * 0.82;
             return SafeArea(
               top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: AppGlassBottomSheetFrame(
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
                 child: ConstrainedBox(
                   constraints: BoxConstraints(maxHeight: maxSheetHeight),
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(28),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.08),
-                          blurRadius: 28,
-                          offset: const Offset(0, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Filters',
+                        style: TextStyle(
+                          color: AppColors.textDark,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
                         ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Filters',
-                          style: TextStyle(
-                            color: AppColors.textDark,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Radius',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
                         ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Radius',
-                          style: TextStyle(
-                            color: AppColors.textGrey,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Flexible(
-                          child: SingleChildScrollView(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: _DiscoveryRadiusFilter.values
-                                  .map((option) {
-                                    final isSelected = draftRadius == option;
-                                    return Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 10,
-                                      ),
-                                      child: InkWell(
-                                        borderRadius: BorderRadius.circular(18),
-                                        onTap: () {
-                                          setSheetState(
-                                            () => draftRadius = option,
-                                          );
-                                        },
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 16,
-                                            vertical: 14,
+                      ),
+                      const SizedBox(height: 10),
+                      Flexible(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: _DiscoveryRadiusFilter.values
+                                .map((option) {
+                                  final isSelected = draftRadius == option;
+                                  return Padding(
+                                    padding: const EdgeInsets.only(bottom: 10),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(18),
+                                      onTap: () {
+                                        setSheetState(
+                                          () => draftRadius = option,
+                                        );
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 16,
+                                          vertical: 14,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: isSelected
+                                              ? const Color(0xFFFFF1EA)
+                                              : const Color(0xFFFFFCFA),
+                                          borderRadius: BorderRadius.circular(
+                                            18,
                                           ),
-                                          decoration: BoxDecoration(
+                                          border: Border.all(
                                             color: isSelected
-                                                ? const Color(0xFFFFF1EA)
-                                                : const Color(0xFFFFFCFA),
-                                            borderRadius: BorderRadius.circular(
-                                              18,
-                                            ),
-                                            border: Border.all(
-                                              color: isSelected
-                                                  ? AppColors.primary
-                                                        .withValues(alpha: 0.28)
-                                                  : AppColors.primary
-                                                        .withValues(
-                                                          alpha: 0.08,
-                                                        ),
-                                            ),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Expanded(
-                                                child: Text(
-                                                  option.label,
-                                                  style: TextStyle(
-                                                    color: AppColors.textDark,
-                                                    fontSize: 14.5,
-                                                    fontWeight: isSelected
-                                                        ? FontWeight.w800
-                                                        : FontWeight.w700,
+                                                ? AppColors.primary.withValues(
+                                                    alpha: 0.28,
+                                                  )
+                                                : AppColors.primary.withValues(
+                                                    alpha: 0.08,
                                                   ),
-                                                ),
-                                              ),
-                                              Icon(
-                                                isSelected
-                                                    ? Icons
-                                                          .radio_button_checked_rounded
-                                                    : Icons
-                                                          .radio_button_off_rounded,
-                                                color: isSelected
-                                                    ? AppColors.primary
-                                                    : AppColors.textGrey,
-                                              ),
-                                            ],
                                           ),
                                         ),
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                option.label,
+                                                style: TextStyle(
+                                                  color: AppColors.textDark,
+                                                  fontSize: 14.5,
+                                                  fontWeight: isSelected
+                                                      ? FontWeight.w800
+                                                      : FontWeight.w700,
+                                                ),
+                                              ),
+                                            ),
+                                            Icon(
+                                              isSelected
+                                                  ? Icons
+                                                        .radio_button_checked_rounded
+                                                  : Icons
+                                                        .radio_button_off_rounded,
+                                              color: isSelected
+                                                  ? AppColors.primary
+                                                  : AppColors.textGrey,
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                    );
-                                  })
-                                  .toList(growable: false),
-                            ),
+                                    ),
+                                  );
+                                })
+                                .toList(growable: false),
                           ),
                         ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: SecondaryButton(
-                                label: 'Clear Filters',
-                                onPressed: () {
-                                  setState(() {
-                                    _selectedRadius =
-                                        _DiscoveryRadiusFilter.smart;
-                                  });
-                                  Navigator.pop(context);
-                                },
-                              ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SecondaryButton(
+                              label: 'Clear Filters',
+                              onPressed: () {
+                                setState(() {
+                                  _selectedRadius =
+                                      _DiscoveryRadiusFilter.smart;
+                                });
+                                Navigator.pop(context);
+                              },
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: GradientButton(
-                                label: 'Apply',
-                                onPressed: () {
-                                  setState(() {
-                                    _selectedRadius = draftRadius;
-                                  });
-                                  Navigator.pop(context);
-                                },
-                              ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: GradientButton(
+                              label: 'Apply',
+                              onPressed: () {
+                                setState(() {
+                                  _selectedRadius = draftRadius;
+                                });
+                                Navigator.pop(context);
+                              },
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               ),

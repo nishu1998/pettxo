@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/follow_repository.dart';
@@ -242,27 +244,12 @@ class _SocialPostCardState extends State<SocialPostCard> {
     )) {
       return;
     }
-    final shouldDelete = await showDialog<bool>(
+    final shouldDelete = await AppConfirmationDialog.show(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Delete post?'),
-          content: const Text('This will remove the post from the feed.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text(
-                'Delete',
-                style: TextStyle(color: Color(0xFFD64B4B)),
-              ),
-            ),
-          ],
-        );
-      },
+      title: 'Delete post?',
+      message: 'This will remove the post from the feed.',
+      confirmLabel: 'Delete',
+      isDestructive: true,
     );
     if (shouldDelete != true || !mounted) return;
 
@@ -302,28 +289,21 @@ class _SocialPostCardState extends State<SocialPostCard> {
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        return SafeArea(
-          top: false,
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(28),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: _reportReasons
-                  .map((reason) {
-                    return _MenuTile(
-                      icon: Icons.outlined_flag_rounded,
-                      label: reason,
-                      enabled: !_isReporting,
-                      onTap: () => Navigator.pop(context, reason),
-                    );
-                  })
-                  .toList(growable: false),
-            ),
+        return AppGlassBottomSheetFrame(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: _reportReasons
+                .map((reason) {
+                  return _MenuTile(
+                    icon: Icons.outlined_flag_rounded,
+                    label: reason,
+                    enabled: !_isReporting,
+                    onTap: () => Navigator.pop(context, reason),
+                  );
+                })
+                .toList(growable: false),
           ),
         );
       },

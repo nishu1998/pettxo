@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../data/repositories/profile_content_repository.dart';
 import '../../domain/models/pet_profile.dart';
 import '../../domain/models/profile_service_listing.dart';
@@ -1498,61 +1499,45 @@ class _ServiceActionMenuButton extends StatelessWidget {
         final canResume = service.isPaused && !service.isPausedByVerification;
         final canPause = !service.isPaused && !service.isPausedByVerification;
 
-        return SafeArea(
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.96),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.72)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.12),
-                  blurRadius: 28,
-                  offset: const Offset(0, 14),
+        return AppGlassBottomSheetFrame(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          padding: EdgeInsets.zero,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (canPause)
+                _ServiceActionRow(
+                  icon: Icons.pause_circle_outline_rounded,
+                  label: 'Pause service',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    onPause();
+                  },
                 ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (canPause)
-                    _ServiceActionRow(
-                      icon: Icons.pause_circle_outline_rounded,
-                      label: 'Pause service',
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        onPause();
-                      },
-                    ),
-                  if (canResume)
-                    _ServiceActionRow(
-                      icon: Icons.play_circle_outline_rounded,
-                      label: 'Resume service',
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        onResume();
-                      },
-                    ),
-                  if (canPause || canResume)
-                    Divider(
-                      height: 1,
-                      color: AppColors.textGrey.withValues(alpha: 0.12),
-                    ),
-                  _ServiceActionRow(
-                    icon: Icons.delete_outline_rounded,
-                    label: 'Delete service',
-                    isDestructive: true,
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      onDelete();
-                    },
-                  ),
-                ],
+              if (canResume)
+                _ServiceActionRow(
+                  icon: Icons.play_circle_outline_rounded,
+                  label: 'Resume service',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    onResume();
+                  },
+                ),
+              if (canPause || canResume)
+                Divider(
+                  height: 1,
+                  color: AppColors.textGrey.withValues(alpha: 0.12),
+                ),
+              _ServiceActionRow(
+                icon: Icons.delete_outline_rounded,
+                label: 'Delete service',
+                isDestructive: true,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  onDelete();
+                },
               ),
-            ),
+            ],
           ),
         );
       },

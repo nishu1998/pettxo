@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../data/repositories/pet_repository.dart';
 import '../../domain/models/pet_profile.dart';
 import 'add_edit_pet_screen.dart';
@@ -28,29 +30,13 @@ class _PetDetailScreenState extends State<PetDetailScreen> {
 
   Future<void> _confirmDelete(PetProfile pet) async {
     if (_isDeleting) return;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await AppConfirmationDialog.show(
       context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Delete pet?'),
-          content: Text(
-            'Remove ${pet.name} from your profile? This keeps existing records safe but hides the pet publicly.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text(
-                'Delete',
-                style: TextStyle(color: Colors.redAccent),
-              ),
-            ),
-          ],
-        );
-      },
+      title: 'Delete pet?',
+      message:
+          'Remove ${pet.name} from your profile? This keeps existing records safe but hides the pet publicly.',
+      confirmLabel: 'Delete',
+      isDestructive: true,
     );
     if (confirmed != true || !mounted) return;
 
@@ -82,58 +68,43 @@ class _PetDetailScreenState extends State<PetDetailScreen> {
       context: context,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) {
-        return SafeArea(
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.96),
-              borderRadius: BorderRadius.circular(28),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.12),
-                  blurRadius: 28,
-                  offset: const Offset(0, 14),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _PetActionRow(
-                    icon: Icons.edit_rounded,
-                    label: 'Edit pet',
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => AddEditPetScreen(
-                            ownerId: pet.ownerId,
-                            petId: pet.id,
-                            initialPet: pet,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  Divider(
-                    height: 1,
-                    color: AppColors.textGrey.withValues(alpha: 0.12),
-                  ),
-                  _PetActionRow(
-                    icon: Icons.delete_outline_rounded,
-                    label: 'Delete pet',
-                    isDestructive: true,
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      _confirmDelete(pet);
-                    },
-                  ),
-                ],
+        return AppGlassBottomSheetFrame(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          padding: EdgeInsets.zero,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _PetActionRow(
+                icon: Icons.edit_rounded,
+                label: 'Edit pet',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AddEditPetScreen(
+                        ownerId: pet.ownerId,
+                        petId: pet.id,
+                        initialPet: pet,
+                      ),
+                    ),
+                  );
+                },
               ),
-            ),
+              Divider(
+                height: 1,
+                color: AppColors.textGrey.withValues(alpha: 0.12),
+              ),
+              _PetActionRow(
+                icon: Icons.delete_outline_rounded,
+                label: 'Delete pet',
+                isDestructive: true,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _confirmDelete(pet);
+                },
+              ),
+            ],
           ),
         );
       },
