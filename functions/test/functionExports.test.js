@@ -1,0 +1,67 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const expectedExportNames = [
+  "acceptBookingRequest",
+  "applyUserRestriction",
+  "cancelBooking",
+  "changeUsername",
+  "checkPhoneLoginEligibility",
+  "claimOffer",
+  "closeChat",
+  "completeBooking",
+  "completeOnboardingProfile",
+  "createOfferCampaign",
+  "createRazorpayBookingOrder",
+  "createSocialNotification",
+  "deletePendingPaymentBookingForCustomer",
+  "enqueueReportModeration",
+  "enqueueServiceModeration",
+  "expirePendingPayments",
+  "expireStaleBookingRequests",
+  "finalizeCompletedBookingPayoutEligibility",
+  "finalizeNoShows",
+  "generateBookingOtp",
+  "getEligibleOffers",
+  "getPendingPaymentBooking",
+  "getProfileFollowCounts",
+  "markChatDelivered",
+  "markChatRead",
+  "markRazorpayPaymentFailed",
+  "moderateService",
+  "pauseServicesForExpiredProviderVerification",
+  "previewCancellation",
+  "previewOfferForBooking",
+  "processProviderVerificationDocumentCleanup",
+  "processScheduledAccountDeletions",
+  "raiseDispute",
+  "razorpayWebhook",
+  "rejectBookingRequest",
+  "removeNotificationToken",
+  "removeUserRestriction",
+  "requestAccountDeletion",
+  "requestPasswordReset",
+  "restoreAccount",
+  "sendChatMessage",
+  "sendPushForNotification",
+  "sendTestPushToSelf",
+  "setOfferCampaignStatus",
+  "startDirectUserChat",
+  "startProviderChat",
+  "submitBookingReview",
+  "syncAuthIdentity",
+  "syncNotificationToken",
+  "syncProfileFollowCounts",
+  "syncProviderServicesOnVerificationUpdate",
+  "syncServiceSlots",
+  "updateOfferCampaign",
+  "verifyBookingOtpAndStart",
+  "verifyRazorpayPayment",
+].sort();
+
+test("compiled function exports match the production baseline", async () => {
+  const moduleExports = require("../lib/index.js");
+  const actualExportNames = Object.keys(moduleExports).sort();
+
+  assert.deepStrictEqual(actualExportNames, expectedExportNames);
+});

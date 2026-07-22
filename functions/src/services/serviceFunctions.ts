@@ -1,0 +1,1 @@
+export {syncServiceSlots} from "../legacyFunctions";
