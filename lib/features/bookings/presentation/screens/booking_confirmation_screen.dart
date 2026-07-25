@@ -6,10 +6,10 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
-import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/repositories/booking_repository.dart';
-import '../../domain/models/booking_model.dart';
+import '../../domain/models/booking_read_model.dart';
+import 'canonical_booking_detail_screen.dart';
 
 class BookingConfirmationScreen extends StatefulWidget {
   final String bookingId;
@@ -48,10 +48,10 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
       backgroundColor: AppColors.background,
       body: Stack(
         children: [
-          StreamBuilder<BookingModel?>(
-            stream: _bookingRepository.watchBookingById(widget.bookingId),
+          StreamBuilder<BookingReadModel?>(
+            stream: _bookingRepository.watchBookingReadModel(widget.bookingId),
             builder: (context, snapshot) {
-              final booking = snapshot.data;
+              final readModel = snapshot.data;
               return ListView(
                 padding: EdgeInsets.fromLTRB(
                   18,
@@ -60,17 +60,30 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
                   bottomInset + 24,
                 ),
                 children: [
-                  _StatusHero(booking: booking),
+                  _StatusHero(readModel: readModel),
                   const SizedBox(height: 16),
-                  _SummaryCard(booking: booking),
+                  _SummaryCard(readModel: readModel),
                   const SizedBox(height: 20),
                   GradientButton(
                     label: 'View Booking',
-                    onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                      context,
-                      '/bookings',
-                      (route) => route.isFirst,
-                    ),
+                    onPressed: () {
+                      if (readModel is CanonicalBookingReadModel) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => CanonicalBookingDetailScreen(
+                              bookingId: widget.bookingId,
+                            ),
+                          ),
+                        );
+                        return;
+                      }
+                      Navigator.pushNamedAndRemoveUntil(
+                        context,
+                        '/bookings',
+                        (route) => route.isFirst,
+                      );
+                    },
                   ),
                 ],
               );
@@ -139,18 +152,18 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
 }
 
 class _StatusHero extends StatelessWidget {
-  final BookingModel? booking;
+  final BookingReadModel? readModel;
 
-  const _StatusHero({required this.booking});
+  const _StatusHero({required this.readModel});
 
   @override
   Widget build(BuildContext context) {
-    final remaining = booking?.remainingGraceDuration;
-    final graceText = remaining == null
-        ? 'Full refund window will appear as soon as the booking syncs.'
-        : remaining == Duration.zero
-        ? 'The full-refund grace window has ended. Cancellation charges now apply.'
-        : 'Full refund available for ${_formatDuration(remaining)}';
+    final booking = readModel is CanonicalBookingReadModel
+        ? (readModel as CanonicalBookingReadModel).booking
+        : null;
+    final graceText = booking == null
+        ? 'We are syncing your confirmed booking details.'
+        : 'Payment is confirmed. Private contact, OTP, and booking chat now unlock from your Firestore booking state.';
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -187,21 +200,19 @@ class _StatusHero extends StatelessWidget {
       ),
     );
   }
-
-  static String _formatDuration(Duration value) {
-    final minutes = value.inMinutes;
-    final seconds = value.inSeconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-  }
 }
 
 class _SummaryCard extends StatelessWidget {
-  final BookingModel? booking;
+  final BookingReadModel? readModel;
 
-  const _SummaryCard({required this.booking});
+  const _SummaryCard({required this.readModel});
 
   @override
   Widget build(BuildContext context) {
+    final canonicalReadModel = readModel is CanonicalBookingReadModel
+        ? readModel as CanonicalBookingReadModel
+        : null;
+    final booking = canonicalReadModel?.booking;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -211,31 +222,19 @@ class _SummaryCard extends StatelessWidget {
       ),
       child: booking == null
           ? const Center(child: CircularProgressIndicator())
-          : LiveUserIdentityResolver(
-              userId: booking!.providerId,
-              fallbackName: booking!.providerName,
-              fallbackUsername: booking!.providerUsername,
-              fallbackImageUrl: booking!.providerPhotoUrl,
-              placeholderName: 'Provider',
-              builder: (context, identity) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _row('Service', booking!.serviceName),
-                    _row('Provider', identity.displayName),
-                    _row('Status', booking!._statusLabelForUi),
-                    _row(
-                      'Amount paid',
-                      _moneyFromPaise(booking!.grossAmountPaise),
-                    ),
-                    if (booking!.graceWindowEndsAt != null)
-                      _row(
-                        'Full-refund until',
-                        _dateTimeLabel(booking!.graceWindowEndsAt!),
-                      ),
-                  ],
-                );
-              },
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _row('Service', booking.service.serviceTitle),
+                _row('Provider', booking.participants.provider.displayName),
+                _row('Status', 'Confirmed'),
+                _row(
+                  'Amount paid',
+                  _moneyFromPaise(booking.financials?.customerPaidPaise ?? 0),
+                ),
+                if (booking.lifecycle.paidAt != null)
+                  _row('Paid at', _dateTimeLabel(booking.lifecycle.paidAt!)),
+              ],
             ),
     );
   }
@@ -278,16 +277,5 @@ class _SummaryCard extends StatelessWidget {
     return paise % 100 == 0
         ? '₹${rupees.toStringAsFixed(0)}'
         : '₹${rupees.toStringAsFixed(2)}';
-  }
-}
-
-extension on BookingModel {
-  String get _statusLabelForUi {
-    if (isRequested) return 'Awaiting provider response';
-    if (isAccepted) return 'Confirmed';
-    if (isCompleted) return 'Completed';
-    if (isNoShow) return 'No-show';
-    if (isCancelled) return 'Cancelled';
-    return status;
   }
 }

@@ -1,28 +1,35 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:flutter/foundation.dart';
 
-import '../../domain/models/booking_cancellation_preview.dart';
-import '../../domain/models/booking_model.dart';
+import '../mappers/booking_document_mapper.dart';
 import '../../domain/models/booking_payment_order.dart';
-import '../../domain/models/pending_payment_booking.dart';
+import '../../domain/models/canonical_booking_cancellation_models.dart';
+import '../../domain/models/canonical_booking_private.dart';
+import '../../domain/models/booking_read_model.dart';
+import '../../domain/models/booking_v3_models.dart';
+import '../../domain/models/canonical_provider_booking_request_view.dart';
+import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/provider_earning_record.dart';
 import '../../domain/models/service_slot_model.dart';
 
-enum PendingPaymentRemovalOutcome { deleted, hiddenExpired, alreadyHidden }
-
 class BookingRepository {
-  final FirebaseFirestore _firestore;
-  final FirebaseFunctions _functions;
+  final FirebaseFirestore? _providedFirestore;
+  final FirebaseFunctions? _providedFunctions;
 
   BookingRepository({
     FirebaseFirestore? firestore,
     FirebaseFunctions? functions,
-  }) : _firestore = firestore ?? FirebaseFirestore.instance,
-       _functions =
-           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1');
+  }) : _providedFirestore = firestore,
+       _providedFunctions = functions;
 
-  Stream<List<BookingModel>> watchReceivingBookings(
+  FirebaseFirestore get _firestore =>
+      _providedFirestore ?? FirebaseFirestore.instance;
+
+  FirebaseFunctions get _functions =>
+      _providedFunctions ??
+      FirebaseFunctions.instanceFor(region: 'asia-south1');
+
+  Stream<List<BookingReadModel>> watchReceivingBookingReadModels(
     String currentUserId, {
     int limit = 80,
   }) {
@@ -35,32 +42,81 @@ class BookingRepository {
         .orderBy('scheduledStartAt', descending: true)
         .limit(limit)
         .snapshots()
-        .map(
-          (snapshot) => _mapBookings(
-            snapshot,
-          ).where((booking) => !booking.isHiddenFromCustomer).toList(),
-        );
+        .map((snapshot) {
+          return snapshot.docs
+              .map(mapBookingDocumentSnapshot)
+              .whereType<CanonicalBookingReadModel>()
+              .toList(growable: false);
+        });
   }
 
-  Stream<List<BookingModel>> watchDeliveringBookings(
+  Stream<List<BookingReadModel>> watchDeliveringBookingReadModels(
     String currentUserId, {
     int limit = 80,
   }) {
     final userId = currentUserId.trim();
     if (userId.isEmpty) return Stream.value(const []);
 
-    // Current booking functions write serviceOwnerId. BookingModel still accepts
-    // providerId as a fallback so a future schema rename is low-friction.
     return _firestore
         .collection('bookings')
         .where('serviceOwnerId', isEqualTo: userId)
         .orderBy('scheduledStartAt', descending: true)
         .limit(limit)
         .snapshots()
-        .map(_mapBookings);
+        .map(
+          (snapshot) => snapshot.docs
+              .map(mapBookingDocumentSnapshot)
+              .toList(growable: false),
+        );
   }
 
-  Stream<BookingModel?> watchBookingById(String bookingId) {
+  Stream<List<CanonicalProviderBookingRequestView>>
+  watchProviderCanonicalRequests(String currentUserId, {int limit = 80}) {
+    final userId = currentUserId.trim();
+    if (userId.isEmpty) return Stream.value(const []);
+
+    return _firestore
+        .collection('bookings')
+        .where('serviceOwnerId', isEqualTo: userId)
+        .where(
+          'stateQueryValue',
+          whereIn: const [
+            'REQUESTED',
+            'PENDING_PROVIDER',
+            'ACCEPTED_AWAITING_PAYMENT',
+          ],
+        )
+        .limit(limit)
+        .snapshots()
+        .map((snapshot) {
+          final requests = snapshot.docs
+              .map(mapBookingDocumentSnapshot)
+              .whereType<CanonicalBookingReadModel>()
+              .map(
+                (readModel) => CanonicalProviderBookingRequestView.fromBooking(
+                  readModel.bookingId,
+                  readModel.booking,
+                ),
+              )
+              .toList(growable: false);
+          requests.sort((left, right) {
+            final leftTime =
+                left.timerStartsAt ??
+                left.acceptDeadlineAt ??
+                left.scheduledStartAt ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            final rightTime =
+                right.timerStartsAt ??
+                right.acceptDeadlineAt ??
+                right.scheduledStartAt ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            return rightTime.compareTo(leftTime);
+          });
+          return requests;
+        });
+  }
+
+  Stream<BookingReadModel?> watchBookingReadModel(String bookingId) {
     final id = bookingId.trim();
     if (id.isEmpty) return Stream.value(null);
 
@@ -70,17 +126,17 @@ class BookingRepository {
         .snapshots()
         .map(
           (snapshot) =>
-              snapshot.exists ? BookingModel.fromDocument(snapshot) : null,
+              snapshot.exists ? mapBookingDocumentSnapshot(snapshot) : null,
         );
   }
 
-  Future<BookingModel?> fetchBookingById(String bookingId) async {
+  Future<BookingReadModel?> fetchBookingReadModel(String bookingId) async {
     final id = bookingId.trim();
     if (id.isEmpty) return null;
 
     final snapshot = await _firestore.collection('bookings').doc(id).get();
     if (!snapshot.exists) return null;
-    return BookingModel.fromDocument(snapshot);
+    return mapBookingDocumentSnapshot(snapshot);
   }
 
   Stream<List<ServiceSlotModel>> watchServiceSlotsForDate({
@@ -103,237 +159,578 @@ class BookingRepository {
         );
   }
 
-  List<BookingModel> receivingUpcoming(List<BookingModel> bookings) {
-    return bookings
-        .where((booking) => booking.belongsInReceivingUpcoming)
-        .toList()
-      ..sort(_sortUpcoming);
-  }
-
-  List<BookingModel> receivingPast(List<BookingModel> bookings) {
-    return bookings.where((booking) => booking.belongsInReceivingPast).toList()
-      ..sort(_sortLatestFirst);
-  }
-
-  List<BookingModel> deliveringRequests(List<BookingModel> bookings) {
-    return bookings.where((booking) => booking.isRequested).toList()
-      ..sort(_sortUpcoming);
-  }
-
-  List<BookingModel> deliveringConfirmed(List<BookingModel> bookings) {
-    return bookings.where((booking) => booking.isConfirmedLike).toList()
-      ..sort(_sortUpcoming);
-  }
-
-  List<BookingModel> deliveringPast(List<BookingModel> bookings) {
-    return bookings.where((booking) => booking.belongsInDeliveringPast).toList()
-      ..sort(_sortLatestFirst);
-  }
-
-  Future<BookingPaymentOrder> createRazorpayBookingOrder({
-    required String serviceId,
-    required String slotId,
-    required String userId,
-    String? claimedOfferId,
+  Future<CanonicalBookingRequestResult> createBookingRequestV3({
+    required CanonicalBookingRequestInput input,
   }) async {
-    final callable = _functions.httpsCallable('createRazorpayBookingOrder');
+    final callable = _functions.httpsCallable('createBookingRequestV3');
+    try {
+      final result = await callable.call<Map<String, dynamic>>(
+        input.toCallableMap(),
+      );
+      return CanonicalBookingRequestResult.fromMap(
+        Map<String, dynamic>.from(result.data),
+      );
+    } on FirebaseFunctionsException catch (error) {
+      throw _mapCanonicalRequestError(error);
+    } on FormatException catch (error) {
+      throw CanonicalBookingRequestException(
+        code: CanonicalBookingRequestFailureCode.unknown,
+        message:
+            'We could not understand the booking response. Please try again.',
+        issues: [error.message],
+      );
+    }
+  }
+
+  Future<CanonicalBookingCommandResult> markBookingViewedByProviderV3({
+    required String bookingId,
+  }) async {
+    return _invokeCanonicalCommand(
+      callableName: 'markBookingViewedByProviderV3',
+      bookingId: bookingId,
+    );
+  }
+
+  Future<CanonicalBookingCommandResult> acceptBookingRequestV3({
+    required String bookingId,
+  }) async {
+    return _invokeCanonicalCommand(
+      callableName: 'acceptBookingRequestV3',
+      bookingId: bookingId,
+    );
+  }
+
+  Future<CanonicalBookingCommandResult> declineBookingRequestV3({
+    required String bookingId,
+  }) async {
+    return _invokeCanonicalCommand(
+      callableName: 'declineBookingRequestV3',
+      bookingId: bookingId,
+    );
+  }
+
+  Future<CanonicalBookingCommandResult> cancelBookingRequestByParentV3({
+    required String bookingId,
+  }) async {
+    return _invokeCanonicalCommand(
+      callableName: 'cancelBookingRequestByParentV3',
+      bookingId: bookingId,
+    );
+  }
+
+  Future<CanonicalBookingCancellationPreview> previewBookingCancellationV3({
+    required String bookingId,
+    required String actorType,
+  }) async {
+    final callable = _functions.httpsCallable('previewBookingCancellationV3');
     final result = await callable.call<Map<String, dynamic>>({
-      'serviceId': serviceId,
-      'slotId': slotId,
-      'userId': userId,
-      'claimedOfferId': claimedOfferId,
+      'bookingId': bookingId.trim(),
+      'actorType': actorType.trim(),
     });
-    final order = BookingPaymentOrder.fromMap(
+    return CanonicalBookingCancellationPreview.fromMap(
       Map<String, dynamic>.from(result.data),
     );
-    _debugLog(
-      'createRazorpayBookingOrder -> bookingId=${order.bookingId}, '
-      'orderId=${_maskValue(order.razorpayOrderId)}, '
-      'amountPaise=${order.amountPaise}',
-    );
-    return order;
   }
 
-  Future<PendingPaymentBooking?> getPendingPaymentBooking({
-    String? bookingId,
-    String? serviceId,
-    String? slotId,
-  }) async {
-    final callable = _functions.httpsCallable('getPendingPaymentBooking');
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': bookingId,
-      'serviceId': serviceId,
-      'slotId': slotId,
-    });
-
-    final data = Map<String, dynamic>.from(result.data);
-    final pending = data['pendingBooking'];
-    if (pending is! Map) return null;
-    return PendingPaymentBooking.fromMap(Map<String, dynamic>.from(pending));
-  }
-
-  Future<String> verifyRazorpayPayment({
+  Future<CanonicalBookingCancellationResult>
+  cancelConfirmedBookingByCustomerV3({
     required String bookingId,
+    String? reasonCode,
+    String? reasonText,
+  }) async {
+    return _cancelConfirmedBookingV3(
+      callableName: 'cancelConfirmedBookingByCustomerV3',
+      bookingId: bookingId,
+      reasonCode: reasonCode,
+      reasonText: reasonText,
+    );
+  }
+
+  Future<CanonicalBookingCancellationResult>
+  cancelConfirmedBookingByProviderV3({
+    required String bookingId,
+    String? reasonCode,
+    String? reasonText,
+  }) async {
+    return _cancelConfirmedBookingV3(
+      callableName: 'cancelConfirmedBookingByProviderV3',
+      bookingId: bookingId,
+      reasonCode: reasonCode,
+      reasonText: reasonText,
+    );
+  }
+
+  Future<CanonicalPaymentOrderResult> createPaymentOrderV3({
+    required String bookingId,
+    String? paymentAttemptId,
+    String? claimedOfferId,
+  }) async {
+    final callable = _functions.httpsCallable('createRazorpayPaymentOrderV3');
+    try {
+      final result = await callable.call<Map<String, dynamic>>({
+        'bookingId': bookingId.trim(),
+        'paymentAttemptId': paymentAttemptId?.trim(),
+        'claimedOfferId': claimedOfferId?.trim(),
+      });
+      return CanonicalPaymentOrderResult.fromMap(
+        Map<String, dynamic>.from(result.data),
+      );
+    } on FirebaseFunctionsException catch (error) {
+      throw _mapCanonicalPaymentError(error);
+    }
+  }
+
+  Future<CanonicalPaymentVerificationResult> verifyPaymentV3({
+    required String bookingId,
+    required String paymentAttemptId,
     required String razorpayOrderId,
     required String razorpayPaymentId,
     required String razorpaySignature,
   }) async {
-    final callable = _functions.httpsCallable('verifyRazorpayPayment');
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': bookingId,
-      'razorpay_order_id': razorpayOrderId,
-      'razorpay_payment_id': razorpayPaymentId,
-      'razorpay_signature': razorpaySignature,
-    });
+    final callable = _functions.httpsCallable('verifyBookingPaymentV3');
+    try {
+      final result = await callable.call<Map<String, dynamic>>({
+        'bookingId': bookingId.trim(),
+        'paymentAttemptId': paymentAttemptId.trim(),
+        'razorpay_order_id': razorpayOrderId.trim(),
+        'razorpay_payment_id': razorpayPaymentId.trim(),
+        'razorpay_signature': razorpaySignature.trim(),
+      });
+      return CanonicalPaymentVerificationResult.fromMap(
+        Map<String, dynamic>.from(result.data),
+      );
+    } on FirebaseFunctionsException catch (error) {
+      throw _mapCanonicalPaymentError(error);
+    }
+  }
 
-    final data = result.data;
-    _debugLog(
-      'verifyRazorpayPayment -> bookingId=$bookingId, '
-      'orderId=${_maskValue(razorpayOrderId)}, '
-      'paymentId=${_maskValue(razorpayPaymentId)}',
+  Stream<CanonicalPaymentAttemptReadModel?> watchPaymentAttempt({
+    required String bookingId,
+    required String paymentAttemptId,
+  }) {
+    final safeBookingId = bookingId.trim();
+    final safeAttemptId = paymentAttemptId.trim();
+    if (safeBookingId.isEmpty || safeAttemptId.isEmpty) {
+      return Stream.value(null);
+    }
+
+    return _firestore
+        .collection('bookings')
+        .doc(safeBookingId)
+        .collection('paymentAttempts')
+        .doc(safeAttemptId)
+        .snapshots()
+        .map((snapshot) {
+          if (!snapshot.exists) return null;
+          return CanonicalPaymentAttemptReadModel.fromMap(
+            Map<String, dynamic>.from(snapshot.data() ?? const {}),
+          );
+        });
+  }
+
+  Future<CanonicalPaymentAttemptReadModel?> fetchCanonicalPaymentAttempt({
+    required String bookingId,
+    required String paymentAttemptId,
+  }) async {
+    final safeBookingId = bookingId.trim();
+    final safeAttemptId = paymentAttemptId.trim();
+    if (safeBookingId.isEmpty || safeAttemptId.isEmpty) return null;
+
+    final snapshot = await _firestore
+        .collection('bookings')
+        .doc(safeBookingId)
+        .collection('paymentAttempts')
+        .doc(safeAttemptId)
+        .get();
+    if (!snapshot.exists) return null;
+    return CanonicalPaymentAttemptReadModel.fromMap(
+      Map<String, dynamic>.from(snapshot.data() ?? const {}),
     );
-    return (data['bookingId'] as String? ?? bookingId).trim();
   }
 
-  void _debugLog(String message) {
-    if (!kDebugMode) return;
-    debugPrint('BookingRepository debug -> $message');
-  }
+  Stream<CanonicalBookingPrivateData?> watchCanonicalBookingPrivate(
+    String bookingId,
+  ) {
+    final id = bookingId.trim();
+    if (id.isEmpty) return Stream.value(null);
 
-  String _maskValue(String value) {
-    final trimmed = value.trim();
-    if (trimmed.isEmpty) return '';
-    if (trimmed.length <= 8) return trimmed;
-    return '${trimmed.substring(0, 4)}...${trimmed.substring(trimmed.length - 4)}';
-  }
-
-  Future<void> markRazorpayPaymentFailed({
-    required String bookingId,
-    String? code,
-    String? message,
-  }) async {
-    final callable = _functions.httpsCallable('markRazorpayPaymentFailed');
-    await callable.call<Map<String, dynamic>>({
-      'bookingId': bookingId,
-      'code': code,
-      'message': message,
+    return _firestore.collection('bookingPrivate').doc(id).snapshots().map((
+      snapshot,
+    ) {
+      if (!snapshot.exists) return null;
+      return CanonicalBookingPrivateData.fromMap(
+        Map<String, dynamic>.from(snapshot.data() ?? const {}),
+      );
     });
   }
 
-  Future<void> acceptBookingRequest({required String bookingId}) async {
+  Future<CanonicalBookingPrivateData?> fetchCanonicalBookingPrivate(
+    String bookingId,
+  ) async {
     final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
-      );
-    }
+    if (id.isEmpty) return null;
 
-    final callable = _functions.httpsCallable('acceptBookingRequest');
-    await callable.call<Map<String, dynamic>>({'bookingId': id});
+    final snapshot = await _firestore
+        .collection('bookingPrivate')
+        .doc(id)
+        .get();
+    if (!snapshot.exists) return null;
+    return CanonicalBookingPrivateData.fromMap(
+      Map<String, dynamic>.from(snapshot.data() ?? const {}),
+    );
   }
 
-  Future<void> rejectBookingRequest({
-    required String bookingId,
-    String reason = 'Rejected by provider',
-  }) async {
+  Stream<CanonicalBookingPrivateParticipantsData?>
+  watchCanonicalBookingPrivateParticipants(String bookingId) {
     final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
-      );
-    }
+    if (id.isEmpty) return Stream.value(null);
 
-    final callable = _functions.httpsCallable('rejectBookingRequest');
-    await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'reason': reason,
+    return _firestore
+        .collection('bookingPrivateParticipants')
+        .doc(id)
+        .snapshots()
+        .map((snapshot) {
+          if (!snapshot.exists) return null;
+          return CanonicalBookingPrivateParticipantsData.fromMap(
+            Map<String, dynamic>.from(snapshot.data() ?? const {}),
+          );
+        });
+  }
+
+  Future<CanonicalBookingPrivateParticipantsData?>
+  fetchCanonicalBookingPrivateParticipants(String bookingId) async {
+    final id = bookingId.trim();
+    if (id.isEmpty) return null;
+
+    final snapshot = await _firestore
+        .collection('bookingPrivateParticipants')
+        .doc(id)
+        .get();
+    if (!snapshot.exists) return null;
+    return CanonicalBookingPrivateParticipantsData.fromMap(
+      Map<String, dynamic>.from(snapshot.data() ?? const {}),
+    );
+  }
+
+  Stream<BookingReadModel?> watchCanonicalBookingConfirmation(
+    String bookingId,
+  ) {
+    return watchBookingReadModel(bookingId).map((booking) {
+      if (booking is! CanonicalBookingReadModel) return null;
+      return booking.booking.state == CanonicalBookingStateV3.confirmed &&
+              booking.booking.lifecycle.paidAt != null
+          ? booking
+          : null;
     });
   }
 
-  Future<void> cancelBooking({
-    required String bookingId,
-    String reason = 'Cancelled by user',
-  }) async {
-    final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
-      );
-    }
-
-    final callable = _functions.httpsCallable('cancelBooking');
-    await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'reason': reason,
-    });
+  Stream<BookingReadModel?> watchCanonicalBooking(String bookingId) {
+    return watchBookingReadModel(bookingId);
   }
 
-  Future<BookingCancellationPreview> previewCancellation({
-    required String bookingId,
-  }) async {
+  Future<BookingReadModel?> fetchCanonicalBooking(String bookingId) {
+    return fetchBookingReadModel(bookingId);
+  }
+
+  Stream<CanonicalBookingCancellationRecord?> watchCanonicalBookingCancellation(
+    String bookingId,
+  ) {
     final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
-      );
+    if (id.isEmpty) return Stream.value(null);
+    return _firestore
+        .collection('bookingCancellations')
+        .doc(id)
+        .snapshots()
+        .map((snapshot) {
+          if (!snapshot.exists) return null;
+          return CanonicalBookingCancellationRecord.fromMap(
+            Map<String, dynamic>.from(snapshot.data() ?? const {}),
+          );
+        });
+  }
+
+  Future<CanonicalBookingCancellationRecord?> fetchCanonicalBookingCancellation(
+    String bookingId,
+  ) async {
+    final id = bookingId.trim();
+    if (id.isEmpty) return null;
+    final snapshot = await _firestore
+        .collection('bookingCancellations')
+        .doc(id)
+        .get();
+    if (!snapshot.exists) return null;
+    return CanonicalBookingCancellationRecord.fromMap(
+      Map<String, dynamic>.from(snapshot.data() ?? const {}),
+    );
+  }
+
+  CanonicalBookingRequestException _mapCanonicalRequestError(
+    FirebaseFunctionsException error,
+  ) {
+    final details = error.details;
+    Map<String, dynamic> detailMap = const <String, dynamic>{};
+    if (details is Map) {
+      detailMap = Map<String, dynamic>.from(details.cast<dynamic, dynamic>());
+    }
+    final detailCode = (detailMap['code'] as String? ?? '')
+        .trim()
+        .toUpperCase();
+    final issuesRaw = detailMap['issues'];
+    final issues = issuesRaw is List
+        ? issuesRaw.map((entry) => '$entry').toList(growable: false)
+        : const <String>[];
+
+    CanonicalBookingRequestFailureCode code;
+    switch (detailCode) {
+      case 'CANONICAL_BOOKING_DISABLED':
+        code = CanonicalBookingRequestFailureCode.canonicalBookingDisabled;
+        break;
+      case 'SERVICE_NOT_FOUND':
+        code = CanonicalBookingRequestFailureCode.serviceNotFound;
+        break;
+      case 'SERVICE_INACTIVE':
+        code = CanonicalBookingRequestFailureCode.serviceInactive;
+        break;
+      case 'SERVICE_PAUSED':
+        code = CanonicalBookingRequestFailureCode.servicePaused;
+        break;
+      case 'PROVIDER_PAUSED':
+      case 'PROVIDER_UNAVAILABLE':
+        code = CanonicalBookingRequestFailureCode.providerUnavailable;
+        break;
+      case 'INVALID_BOOKING_TYPE':
+        code = CanonicalBookingRequestFailureCode.invalidBookingType;
+        break;
+      case 'INVALID_SCHEDULE':
+      case 'INVALID_RANGE':
+      case 'INVALID_NIGHTS':
+      case 'INVALID_SLOT_RANGE':
+      case 'INVALID_SLOT_COUNT':
+      case 'INVALID_TOTAL_DURATION':
+      case 'NON_CONTIGUOUS':
+      case 'OVERLAPPING':
+        code = CanonicalBookingRequestFailureCode.invalidSchedule;
+        break;
+      case 'RUNWAY_NOT_SATISFIED':
+        code = CanonicalBookingRequestFailureCode.runwayNotSatisfied;
+        break;
+      case 'INVALID_TIMEZONE':
+      case 'INVALID_WORKING_HOURS':
+        code = CanonicalBookingRequestFailureCode.invalidTimezone;
+        break;
+      case 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD':
+        code = CanonicalBookingRequestFailureCode.idempotencyConflict;
+        break;
+      default:
+        switch (error.code) {
+          case 'unauthenticated':
+            code = CanonicalBookingRequestFailureCode.unauthenticated;
+            break;
+          case 'permission-denied':
+            code = CanonicalBookingRequestFailureCode.permissionDenied;
+            break;
+          case 'not-found':
+            code = CanonicalBookingRequestFailureCode.serviceNotFound;
+            break;
+          default:
+            code = CanonicalBookingRequestFailureCode.unknown;
+            break;
+        }
+        break;
     }
 
-    final callable = _functions.httpsCallable('previewCancellation');
-    final result = await callable.call<Map<String, dynamic>>({'bookingId': id});
-    return BookingCancellationPreview.fromMap(
+    return CanonicalBookingRequestException(
+      code: code,
+      message: _canonicalRequestMessage(code, error.message),
+      issues: issues,
+    );
+  }
+
+  Future<CanonicalBookingCancellationResult> _cancelConfirmedBookingV3({
+    required String callableName,
+    required String bookingId,
+    String? reasonCode,
+    String? reasonText,
+  }) async {
+    final callable = _functions.httpsCallable(callableName);
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': bookingId.trim(),
+      'reasonCode': reasonCode?.trim(),
+      'reasonText': reasonText?.trim(),
+    });
+    return CanonicalBookingCancellationResult.fromMap(
       Map<String, dynamic>.from(result.data),
     );
   }
 
-  Future<BookingCancellationPreview> cancelBookingWithBreakdown({
+  Future<CanonicalBookingCommandResult> _invokeCanonicalCommand({
+    required String callableName,
     required String bookingId,
-    String reason = 'Cancelled by user',
   }) async {
-    final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
+    final callable = _functions.httpsCallable(callableName);
+    try {
+      final result = await callable.call<Map<String, dynamic>>({
+        'bookingId': bookingId.trim(),
+      });
+      return CanonicalBookingCommandResult.fromMap(
+        Map<String, dynamic>.from(result.data),
       );
+    } on FirebaseFunctionsException catch (error) {
+      throw _mapCanonicalCommandError(error);
     }
+  }
 
-    final callable = _functions.httpsCallable('cancelBooking');
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'reason': reason,
-    });
-    return BookingCancellationPreview.fromMap(
-      Map<String, dynamic>.from(result.data),
+  CanonicalBookingRequestException _mapCanonicalCommandError(
+    FirebaseFunctionsException error,
+  ) {
+    final details = error.details;
+    Map<String, dynamic> detailMap = const <String, dynamic>{};
+    if (details is Map) {
+      detailMap = Map<String, dynamic>.from(details.cast<dynamic, dynamic>());
+    }
+    final detailCode = (detailMap['code'] as String? ?? '')
+        .trim()
+        .toUpperCase();
+    final code = switch (detailCode) {
+      'BOOKING_NOT_FOUND' => CanonicalBookingRequestFailureCode.serviceNotFound,
+      'ACTOR_NOT_AUTHORIZED' =>
+        CanonicalBookingRequestFailureCode.permissionDenied,
+      'INVALID_BOOKING_STATE' =>
+        CanonicalBookingRequestFailureCode.invalidSchedule,
+      'DEADLINE_PASSED' =>
+        CanonicalBookingRequestFailureCode.runwayNotSatisfied,
+      'CANONICAL_BOOKING_DISABLED' =>
+        CanonicalBookingRequestFailureCode.canonicalBookingDisabled,
+      _ =>
+        error.code == 'unauthenticated'
+            ? CanonicalBookingRequestFailureCode.unauthenticated
+            : CanonicalBookingRequestFailureCode.unknown,
+    };
+    return CanonicalBookingRequestException(
+      code: code,
+      message: error.message?.trim().isNotEmpty == true
+          ? error.message!.trim()
+          : 'We could not update this booking request right now.',
     );
   }
 
-  Future<void> raiseDispute({
-    required String bookingId,
-    required String reason,
-    required String description,
-  }) async {
-    final id = bookingId.trim();
-    final trimmedReason = reason.trim();
-    final trimmedDescription = description.trim();
-    if (id.isEmpty || trimmedReason.isEmpty || trimmedDescription.isEmpty) {
-      throw ArgumentError('bookingId, reason, and description are required');
+  CanonicalPaymentException _mapCanonicalPaymentError(
+    FirebaseFunctionsException error,
+  ) {
+    final details = error.details;
+    Map<String, dynamic> detailMap = const <String, dynamic>{};
+    if (details is Map) {
+      detailMap = Map<String, dynamic>.from(details.cast<dynamic, dynamic>());
     }
+    final detailCode = (detailMap['code'] as String? ?? '')
+        .trim()
+        .toUpperCase();
 
-    final callable = _functions.httpsCallable('raiseDispute');
-    await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'reason': trimmedReason,
-      'description': trimmedDescription,
-    });
+    final code = switch (detailCode) {
+      'BOOKING_NOT_FOUND' => CanonicalPaymentFailureCode.bookingNotFound,
+      'INVALID_CANONICAL_BOOKING' =>
+        CanonicalPaymentFailureCode.invalidCanonicalBooking,
+      'ACTOR_NOT_AUTHORIZED' => CanonicalPaymentFailureCode.actorNotAuthorized,
+      'PAYMENT_DISABLED' => CanonicalPaymentFailureCode.paymentDisabled,
+      'BOOKING_NOT_PAYABLE' => CanonicalPaymentFailureCode.bookingNotPayable,
+      'PAYMENT_WINDOW_EXPIRED' =>
+        CanonicalPaymentFailureCode.paymentWindowExpired,
+      'PAYMENT_ATTEMPT_CONFLICT' =>
+        CanonicalPaymentFailureCode.paymentAttemptConflict,
+      'SERVICE_UNAVAILABLE' => CanonicalPaymentFailureCode.serviceUnavailable,
+      'CAPACITY_UNAVAILABLE' => CanonicalPaymentFailureCode.capacityUnavailable,
+      'COUPON_INVALID' => CanonicalPaymentFailureCode.couponInvalid,
+      'PRICING_CHANGED' => CanonicalPaymentFailureCode.pricingChanged,
+      'PAYMENT_ALREADY_CONFIRMED' =>
+        CanonicalPaymentFailureCode.paymentAlreadyConfirmed,
+      'PAYMENT_RECONCILIATION_REQUIRED' =>
+        CanonicalPaymentFailureCode.paymentReconciliationRequired,
+      _ => switch (error.code) {
+        'unauthenticated' => CanonicalPaymentFailureCode.unauthenticated,
+        _ => CanonicalPaymentFailureCode.unknown,
+      },
+    };
+
+    return CanonicalPaymentException(
+      code: code,
+      message: _canonicalPaymentMessage(code, error.message),
+    );
+  }
+
+  String _canonicalRequestMessage(
+    CanonicalBookingRequestFailureCode code,
+    String? fallback,
+  ) {
+    switch (code) {
+      case CanonicalBookingRequestFailureCode.canonicalBookingDisabled:
+        return 'This request flow is not available right now.';
+      case CanonicalBookingRequestFailureCode.unauthenticated:
+        return 'Please sign in again before sending your request.';
+      case CanonicalBookingRequestFailureCode.serviceNotFound:
+        return 'This service is no longer available.';
+      case CanonicalBookingRequestFailureCode.serviceInactive:
+        return 'This service is not active right now.';
+      case CanonicalBookingRequestFailureCode.servicePaused:
+        return 'This service is temporarily paused.';
+      case CanonicalBookingRequestFailureCode.providerUnavailable:
+        return 'This provider is temporarily unavailable.';
+      case CanonicalBookingRequestFailureCode.invalidBookingType:
+        return 'This booking type is not available right now.';
+      case CanonicalBookingRequestFailureCode.invalidSchedule:
+        return 'Please review your selected schedule and try again.';
+      case CanonicalBookingRequestFailureCode.runwayNotSatisfied:
+        return 'This schedule is too soon for the required booking window.';
+      case CanonicalBookingRequestFailureCode.invalidTimezone:
+        return 'We could not verify the provider schedule right now.';
+      case CanonicalBookingRequestFailureCode.idempotencyConflict:
+        return 'Your request changed while we were submitting it. Please review and try again.';
+      case CanonicalBookingRequestFailureCode.permissionDenied:
+        return 'You do not have permission to send this request.';
+      case CanonicalBookingRequestFailureCode.unknown:
+        return fallback?.trim().isNotEmpty == true
+            ? fallback!.trim()
+            : 'We could not send your request right now.';
+    }
+  }
+
+  String _canonicalPaymentMessage(
+    CanonicalPaymentFailureCode code,
+    String? fallback,
+  ) {
+    switch (code) {
+      case CanonicalPaymentFailureCode.unauthenticated:
+        return 'Please sign in again before continuing.';
+      case CanonicalPaymentFailureCode.bookingNotFound:
+        return 'This booking could not be found.';
+      case CanonicalPaymentFailureCode.invalidCanonicalBooking:
+        return 'This booking is not ready for canonical payment.';
+      case CanonicalPaymentFailureCode.actorNotAuthorized:
+        return 'You do not have permission to pay for this booking.';
+      case CanonicalPaymentFailureCode.paymentDisabled:
+        return 'Canonical payment is not active for this booking yet.';
+      case CanonicalPaymentFailureCode.bookingNotPayable:
+        return 'This booking is not payable right now.';
+      case CanonicalPaymentFailureCode.paymentWindowExpired:
+        return 'The payment window has expired.';
+      case CanonicalPaymentFailureCode.paymentAttemptConflict:
+        return 'This payment attempt no longer matches the current booking state.';
+      case CanonicalPaymentFailureCode.serviceUnavailable:
+        return 'This service is not available for payment right now.';
+      case CanonicalPaymentFailureCode.capacityUnavailable:
+        return 'Availability changed before payment could be confirmed.';
+      case CanonicalPaymentFailureCode.couponInvalid:
+        return 'This coupon can no longer be applied.';
+      case CanonicalPaymentFailureCode.pricingChanged:
+        return 'The booking price changed before payment started.';
+      case CanonicalPaymentFailureCode.paymentAlreadyConfirmed:
+        return 'This booking payment is already confirmed.';
+      case CanonicalPaymentFailureCode.paymentReconciliationRequired:
+        return 'Payment was received and is being reconciled securely.';
+      case CanonicalPaymentFailureCode.unknown:
+        return fallback?.trim().isNotEmpty == true
+            ? fallback!.trim()
+            : 'We could not continue this payment right now.';
+    }
   }
 
   Stream<List<ProviderEarningRecord>> watchProviderEarnings(
@@ -356,27 +753,14 @@ class BookingRepository {
         );
   }
 
-  Future<String> generateBookingOtp({required String bookingId}) async {
-    final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
-      );
-    }
-
-    final callable = _functions.httpsCallable('generateBookingOtp');
-    final result = await callable.call<Map<String, dynamic>>({'bookingId': id});
-    return (result.data['otp'] as String? ?? '').trim();
-  }
-
-  Future<void> verifyBookingOtpAndStart({
+  Future<void> verifyBookingStartOtpV3({
     required String bookingId,
     required String otp,
+    required String requestAttemptId,
   }) async {
     final id = bookingId.trim();
     final otpValue = otp.trim();
+    final attemptId = requestAttemptId.trim();
     if (id.isEmpty) {
       throw ArgumentError.value(
         bookingId,
@@ -387,15 +771,23 @@ class BookingRepository {
     if (otpValue.isEmpty) {
       throw ArgumentError.value(otp, 'otp', 'otp is required');
     }
+    if (attemptId.isEmpty) {
+      throw ArgumentError.value(
+        requestAttemptId,
+        'requestAttemptId',
+        'requestAttemptId is required',
+      );
+    }
 
-    final callable = _functions.httpsCallable('verifyBookingOtpAndStart');
+    final callable = _functions.httpsCallable('verifyBookingStartOtpV3');
     await callable.call<Map<String, dynamic>>({
       'bookingId': id,
       'otp': otpValue,
+      'requestAttemptId': attemptId,
     });
   }
 
-  Future<void> completeBooking({required String bookingId}) async {
+  Future<void> completeBookingServiceV3({required String bookingId}) async {
     final id = bookingId.trim();
     if (id.isEmpty) {
       throw ArgumentError.value(
@@ -405,113 +797,70 @@ class BookingRepository {
       );
     }
 
-    final callable = _functions.httpsCallable('completeBooking');
+    final callable = _functions.httpsCallable('completeBookingServiceV3');
     await callable.call<Map<String, dynamic>>({'bookingId': id});
   }
 
-  Future<PendingPaymentRemovalOutcome> deletePendingPaymentBookingForCustomer({
+  Future<String> submitBookingReviewV3({
     required String bookingId,
+    required int rating,
+    String comment = '',
+    List<String> tags = const [],
   }) async {
-    final trimmedBookingId = bookingId.trim();
-    if (trimmedBookingId.isEmpty) {
+    final id = bookingId.trim();
+    if (id.isEmpty) {
       throw ArgumentError.value(
         bookingId,
         'bookingId',
         'bookingId is required',
       );
     }
-    final callable = _functions.httpsCallable(
-      'deletePendingPaymentBookingForCustomer',
-    );
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': trimmedBookingId,
-    });
-    final outcome = (result.data['outcome'] as String? ?? '').trim();
-    return switch (outcome) {
-      'hidden_expired' => PendingPaymentRemovalOutcome.hiddenExpired,
-      'already_hidden' => PendingPaymentRemovalOutcome.alreadyHidden,
-      _ => PendingPaymentRemovalOutcome.deleted,
-    };
-  }
-
-  Future<BookingContactSnapshot> fetchPostConfirmationDetails(
-    BookingModel booking, {
-    bool includeProviderPhone = false,
-  }) async {
-    final providerId = booking.providerId.trim();
-    final serviceId = booking.serviceId.trim();
-
-    final futures = await Future.wait([
-      providerId.isEmpty || !includeProviderPhone
-          ? Future<DocumentSnapshot<Map<String, dynamic>>?>.value(null)
-          : _firestore.collection('users').doc(providerId).get(),
-      serviceId.isEmpty
-          ? Future<DocumentSnapshot<Map<String, dynamic>>?>.value(null)
-          : _firestore.collection('services').doc(serviceId).get(),
-    ]);
-
-    final providerData = futures[0]?.data() ?? const <String, dynamic>{};
-    final serviceData = futures[1]?.data() ?? const <String, dynamic>{};
-    final serviceLocation = _map(serviceData['location']);
-
-    final phone = _firstString([
-      booking.providerPhone,
-      providerData['phone'],
-      providerData['mobileNumber'],
-      providerData['phoneNumber'],
-    ]);
-
-    return BookingContactSnapshot(
-      providerPhone: phone,
-      displayAddress: _firstString([
-        booking.displayAddress,
-        serviceLocation['displayAddress'],
-      ]),
-      latitude: booking.hasUsableCoordinates
-          ? booking.latitude
-          : _double(serviceLocation['latitude']),
-      longitude: booking.hasUsableCoordinates
-          ? booking.longitude
-          : _double(serviceLocation['longitude']),
-    );
-  }
-
-  List<BookingModel> _mapBookings(
-    QuerySnapshot<Map<String, dynamic>> snapshot,
-  ) {
-    return snapshot.docs.map(BookingModel.fromDocument).toList();
-  }
-
-  int _sortUpcoming(BookingModel a, BookingModel b) {
-    final aStart = a.scheduledStartAt ?? a.createdAt ?? DateTime(9999);
-    final bStart = b.scheduledStartAt ?? b.createdAt ?? DateTime(9999);
-    return aStart.compareTo(bStart);
-  }
-
-  int _sortLatestFirst(BookingModel a, BookingModel b) {
-    final aStart = a.scheduledStartAt ?? a.createdAt ?? DateTime(0);
-    final bStart = b.scheduledStartAt ?? b.createdAt ?? DateTime(0);
-    return bStart.compareTo(aStart);
-  }
-
-  Map<String, dynamic> _map(Object? value) {
-    if (value is Map<String, dynamic>) return value;
-    if (value is Map) return Map<String, dynamic>.from(value);
-    return const <String, dynamic>{};
-  }
-
-  String _firstString(List<Object?> values) {
-    for (final value in values) {
-      final text = value?.toString().trim() ?? '';
-      if (text.isNotEmpty) return text;
+    if (rating < 1 || rating > 5) {
+      throw ArgumentError.value(
+        rating,
+        'rating',
+        'rating must be between 1 and 5',
+      );
     }
-    return '';
+
+    final cleanedTags = tags
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    final callable = _functions.httpsCallable('submitBookingReviewV3');
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': id,
+      'rating': rating,
+      'comment': comment.trim(),
+      'tags': cleanedTags,
+    });
+    return (result.data['reviewId'] as String? ?? '').trim();
   }
 
-  double _double(Object? value) {
-    if (value is double) return value;
-    if (value is num) return value.toDouble();
-    return double.tryParse(value?.toString() ?? '') ?? 0;
+  Future<String> createBookingDisputeV3({
+    required String bookingId,
+    required String reason,
+    required String description,
+    List<String> attachments = const [],
+  }) async {
+    final id = bookingId.trim();
+    final trimmedReason = reason.trim();
+    final trimmedDescription = description.trim();
+    if (id.isEmpty || trimmedReason.isEmpty || trimmedDescription.isEmpty) {
+      throw ArgumentError('bookingId, reason, and description are required');
+    }
+
+    final callable = _functions.httpsCallable('createBookingDisputeV3');
+    final result = await callable.call<Map<String, dynamic>>({
+      'bookingId': id,
+      'reason': trimmedReason,
+      'description': trimmedDescription,
+      'attachments': attachments
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+    });
+    return (result.data['disputeId'] as String? ?? '').trim();
   }
 
   String _dateKey(DateTime date) {
@@ -520,21 +869,4 @@ class BookingRepository {
         '${local.month.toString().padLeft(2, '0')}-'
         '${local.day.toString().padLeft(2, '0')}';
   }
-}
-
-class BookingContactSnapshot {
-  final String providerPhone;
-  final String displayAddress;
-  final double latitude;
-  final double longitude;
-
-  const BookingContactSnapshot({
-    required this.providerPhone,
-    required this.displayAddress,
-    required this.latitude,
-    required this.longitude,
-  });
-
-  bool get hasLocation =>
-      displayAddress.trim().isNotEmpty || latitude != 0 || longitude != 0;
 }

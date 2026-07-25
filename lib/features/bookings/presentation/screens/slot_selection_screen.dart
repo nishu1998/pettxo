@@ -4,9 +4,11 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
-import '../../domain/models/booking_checkout_draft.dart';
+import '../../domain/models/booking_v3_models.dart';
+import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/service_slot_model.dart';
-import 'payment_review_screen.dart';
+import '../../domain/utils/booking_request_attempt_id.dart';
+import 'canonical_booking_request_review_screen.dart';
 
 class SlotSelectionScreen extends StatefulWidget {
   final String serviceId;
@@ -36,10 +38,11 @@ class SlotSelectionScreen extends StatefulWidget {
 
 class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   static const Color _screenBackground = Color(0xFFFCF8F5);
-  final BookingRepository _bookingRepository = BookingRepository();
   late DateTime _selectedDate;
   late DateTime _focusedMonth;
-  ServiceSlotModel? _selectedSlot;
+  final List<ServiceSlotModel> _selectedCanonicalSlots = <ServiceSlotModel>[];
+  final BookingRequestAttemptIdController _requestAttemptIdController =
+      BookingRequestAttemptIdController();
   String? _slotError;
 
   @override
@@ -75,6 +78,10 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
 
   DateTime get _lastSelectableDate => _today.add(const Duration(days: 30));
 
+  String get _effectiveTimezone => 'Asia/Kolkata';
+
+  int get _canonicalUnitPricePaise => widget.price * 100;
+
   bool get _canGoToPreviousMonth {
     final currentMonth = DateTime(_today.year, _today.month);
     return _focusedMonth.isAfter(currentMonth);
@@ -108,7 +115,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     setState(() {
       _focusedMonth = next;
       _selectedDate = nextSelectedDate;
-      _selectedSlot = null;
+      _selectedCanonicalSlots.clear();
       _slotError = null;
     });
   }
@@ -117,26 +124,44 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
       return;
     }
-    final selectedSlot = _selectedSlot;
-    if (selectedSlot == null) {
-      setState(() => _slotError = 'Choose an available slot to continue.');
+    final selection = _buildCanonicalSelection(_selectedCanonicalSlots);
+    if (selection == null || selection.slots.isEmpty) {
+      setState(() => _slotError = 'Choose at least one available slot.');
       return;
     }
+    final validation = validateSlotBookingSelectionV3(selection);
+    if (!validation.ok || validation.normalizedSelection == null) {
+      setState(() {
+        _slotError =
+            'Choose continuous slots from the same service to continue.';
+      });
+      return;
+    }
+
+    final normalizedSelection = validation.normalizedSelection!;
+    final estimatedSubtotalPaise =
+        normalizedSelection.slotCount * _canonicalUnitPricePaise;
+    final requestInput = CanonicalBookingRequestInput(
+      requestAttemptId: _requestAttemptIdController.idForPayload(
+        _canonicalPayloadKey(normalizedSelection),
+      ),
+      serviceId: widget.serviceId,
+      bookingType: BookingV3Type.slot,
+      slotRequest: CanonicalSlotRequestInput(
+        selection: normalizedSelection,
+        estimatedSubtotalPaise: estimatedSubtotalPaise,
+      ),
+    );
 
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => PaymentReviewScreen(
-          draft: BookingCheckoutDraft(
-            serviceId: widget.serviceId,
-            serviceName: widget.serviceName,
-            price: widget.price,
-            durationMinutes: widget.durationMinutes,
-            providerId: widget.providerId,
-            slotId: selectedSlot.id,
-            selectedSlot: selectedSlot.startAt,
-            selectedSlotEnd: selectedSlot.endAt,
-          ),
+        builder: (_) => CanonicalBookingRequestReviewScreen(
+          input: requestInput,
+          serviceName: widget.serviceName,
+          providerName: widget.providerName,
+          serviceImageUrl: widget.serviceImageUrl,
+          timezone: _effectiveTimezone,
         ),
       ),
     );
@@ -186,7 +211,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                   setState(() {
                     _selectedDate = date;
                     _focusedMonth = DateTime(date.year, date.month);
-                    _selectedSlot = null;
+                    _selectedCanonicalSlots.clear();
                     _slotError = null;
                   });
                 },
@@ -195,16 +220,26 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               ),
               const SizedBox(height: 22),
               const Text(
-                'Available slots',
+                'Choose one or more continuous slots',
                 style: TextStyle(
                   color: AppColors.textDark,
                   fontSize: 20,
                   fontWeight: FontWeight.w900,
                 ),
               ),
+              const SizedBox(height: 6),
+              const Text(
+                'Nothing will be charged now. Your selection is not reserved until payment succeeds.',
+                style: TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.4,
+                ),
+              ),
               const SizedBox(height: 12),
               StreamBuilder<List<ServiceSlotModel>>(
-                stream: _bookingRepository.watchServiceSlotsForDate(
+                stream: BookingRepository().watchServiceSlotsForDate(
                   serviceId: widget.serviceId,
                   date: _selectedDate,
                 ),
@@ -212,13 +247,25 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                     _buildSlotSelector(context, snapshot),
               ),
               const SizedBox(height: 14),
-              const _CancellationInfoBanner(),
+              if (_selectedCanonicalSlots.isNotEmpty) ...[
+                _CanonicalSelectionSummaryCard(
+                  selectedSlots: _selectedCanonicalSlots,
+                  unitPricePaise: _canonicalUnitPricePaise,
+                ),
+                const SizedBox(height: 14),
+              ],
+              const _CanonicalRequestInfoBanner(),
             ],
           ),
-          _SlotTopBar(topInset: topInset, onBack: () => Navigator.pop(context)),
+          _SlotTopBar(
+            topInset: topInset,
+            title: 'Request slots',
+            onBack: () => Navigator.pop(context),
+          ),
           _SlotBottomBar(
             bottomInset: bottomInset,
-            isReady: _selectedSlot != null,
+            isReady: _selectedCanonicalSlots.isNotEmpty,
+            label: 'Review request',
             onContinue: _continue,
           ),
         ],
@@ -259,13 +306,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       children: [
         _SlotRail(
           slots: slots,
-          selectedSlotId: _selectedSlot?.id,
-          onSlotSelected: (slot) {
-            setState(() {
-              _selectedSlot = slot;
-              _slotError = null;
-            });
-          },
+          selectedSlotId: null,
+          selectedSlotIds: _selectedCanonicalSlots
+              .map((slot) => slot.id)
+              .toSet(),
+          allowMultiSelect: true,
+          onSlotSelected: _handleSlotTapped,
         ),
         const SizedBox(height: 12),
         const Row(
@@ -301,7 +347,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   void _selectSuggestedSlotIfNeeded(List<ServiceSlotModel> slots) {
-    if (_selectedSlot != null ||
+    if (_selectedCanonicalSlots.isNotEmpty ||
         widget.suggestedSlotStartAt == null ||
         !_isSameDay(widget.suggestedSlotStartAt!, _selectedDate)) {
       return;
@@ -323,12 +369,103 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     if (suggestedSlot == null) return;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _selectedSlot?.id == suggestedSlot.id) return;
+      if (!mounted ||
+          _selectedCanonicalSlots.any((slot) => slot.id == suggestedSlot.id)) {
+        return;
+      }
       setState(() {
-        _selectedSlot = suggestedSlot;
+        _selectedCanonicalSlots
+          ..clear()
+          ..add(suggestedSlot);
         _slotError = null;
       });
     });
+  }
+
+  void _handleSlotTapped(ServiceSlotModel slot) {
+    _toggleCanonicalSlot(slot);
+  }
+
+  void _toggleCanonicalSlot(ServiceSlotModel slot) {
+    final nextSelection = [..._selectedCanonicalSlots];
+    final existingIndex = nextSelection.indexWhere(
+      (entry) => entry.id == slot.id,
+    );
+    if (existingIndex >= 0) {
+      nextSelection.removeAt(existingIndex);
+      setState(() {
+        _selectedCanonicalSlots
+          ..clear()
+          ..addAll(nextSelection);
+        _slotError = null;
+      });
+      return;
+    }
+
+    nextSelection.add(slot);
+    final selection = _buildCanonicalSelection(nextSelection);
+    if (selection == null) {
+      setState(() {
+        _slotError = 'We could not prepare those slots. Please try again.';
+      });
+      return;
+    }
+    final validation = validateSlotBookingSelectionV3(selection);
+    if (!validation.ok) {
+      setState(() {
+        _slotError =
+            'Please choose continuous slots in order without gaps or overlaps.';
+      });
+      return;
+    }
+
+    setState(() {
+      _selectedCanonicalSlots
+        ..clear()
+        ..addAll(
+          [...nextSelection]..sort((a, b) => a.startAt.compareTo(b.startAt)),
+        );
+      _slotError = null;
+    });
+  }
+
+  SlotBookingSelectionV3? _buildCanonicalSelection(
+    List<ServiceSlotModel> slots,
+  ) {
+    if (slots.isEmpty) return null;
+    final sorted = [...slots]..sort((a, b) => a.startAt.compareTo(b.startAt));
+    final segments = sorted
+        .map(
+          (slot) => BookingSlotSegmentV3(
+            slotId: slot.id,
+            serviceId: widget.serviceId,
+            providerId: widget.providerId,
+            timezone: _effectiveTimezone,
+            dateKey: slot.dateKey,
+            startAt: slot.startAt,
+            endAt: slot.endAt,
+            durationMinutes: slot.endAt.difference(slot.startAt).inMinutes,
+            unitPricePaise: _canonicalUnitPricePaise,
+          ),
+        )
+        .toList(growable: false);
+
+    return SlotBookingSelectionV3(
+      bookingType: BookingV3Type.slot,
+      slots: segments,
+      slotCount: segments.length,
+      scheduledStartAt: segments.first.startAt,
+      scheduledEndAt: segments.last.endAt,
+      totalDurationMinutes: segments.fold<int>(
+        0,
+        (sum, segment) => sum + segment.durationMinutes,
+      ),
+    );
+  }
+
+  String _canonicalPayloadKey(SlotBookingSelectionV3 selection) {
+    final slotIds = selection.slots.map((slot) => slot.slotId).join(',');
+    return '${widget.serviceId}|${widget.providerId}|$slotIds|${selection.scheduledStartAt.toUtc().toIso8601String()}';
   }
 
   String _formatDuration(int minutes) {
@@ -347,9 +484,14 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
 
 class _SlotTopBar extends StatelessWidget {
   final double topInset;
+  final String title;
   final VoidCallback onBack;
 
-  const _SlotTopBar({required this.topInset, required this.onBack});
+  const _SlotTopBar({
+    required this.topInset,
+    required this.title,
+    required this.onBack,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -388,9 +530,9 @@ class _SlotTopBar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 14),
-            const Expanded(
+            Expanded(
               child: Text(
-                'Choose a slot',
+                title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -817,11 +959,15 @@ class _DateChip extends StatelessWidget {
 class _SlotRail extends StatefulWidget {
   final List<ServiceSlotModel> slots;
   final String? selectedSlotId;
+  final Set<String> selectedSlotIds;
+  final bool allowMultiSelect;
   final ValueChanged<ServiceSlotModel> onSlotSelected;
 
   const _SlotRail({
     required this.slots,
     required this.selectedSlotId,
+    required this.selectedSlotIds,
+    required this.allowMultiSelect,
     required this.onSlotSelected,
   });
 
@@ -875,7 +1021,10 @@ class _SlotRailState extends State<_SlotRail> {
             width: _slotWidth,
             child: _SlotTile(
               slot: slot,
-              isSelected: widget.selectedSlotId == slot.id,
+              isSelected: widget.allowMultiSelect
+                  ? widget.selectedSlotIds.contains(slot.id)
+                  : widget.selectedSlotId == slot.id,
+              isMultiSelect: widget.allowMultiSelect,
               onTap: slot.canRequest ? () => widget.onSlotSelected(slot) : null,
             ),
           );
@@ -900,11 +1049,13 @@ class _SlotRailState extends State<_SlotRail> {
 class _SlotTile extends StatelessWidget {
   final ServiceSlotModel slot;
   final bool isSelected;
+  final bool isMultiSelect;
   final VoidCallback? onTap;
 
   const _SlotTile({
     required this.slot,
     required this.isSelected,
+    required this.isMultiSelect,
     required this.onTap,
   });
 
@@ -991,6 +1142,10 @@ class _SlotTile extends StatelessWidget {
                   fontWeight: FontWeight.w800,
                 ),
               ),
+              if (isSelected && isMultiSelect) ...[
+                const SizedBox(height: 6),
+                const Icon(Icons.check_rounded, size: 14, color: Colors.white),
+              ],
             ],
           ),
         ),
@@ -1007,27 +1162,27 @@ class _SlotTile extends StatelessWidget {
   }
 }
 
-class _CancellationInfoBanner extends StatelessWidget {
-  const _CancellationInfoBanner();
+class _CanonicalRequestInfoBanner extends StatelessWidget {
+  const _CanonicalRequestInfoBanner();
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       decoration: BoxDecoration(
-        color: const Color(0xFFE4EEFF),
+        color: const Color(0xFFFFF1EA),
         borderRadius: BorderRadius.circular(18),
       ),
       child: const Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.info_outline_rounded, color: Color(0xFF1E5ED8), size: 20),
+          Icon(Icons.schedule_rounded, color: AppColors.primary, size: 20),
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Cancellation charges apply based on timing. You will see the exact refund window before you pay.',
+              'If the provider is currently outside working hours, their response timer will start when working hours begin.',
               style: TextStyle(
-                color: Color(0xFF1E5ED8),
+                color: AppColors.primary,
                 fontSize: 14.5,
                 fontWeight: FontWeight.w900,
                 height: 1.35,
@@ -1040,14 +1195,97 @@ class _CancellationInfoBanner extends StatelessWidget {
   }
 }
 
+class _CanonicalSelectionSummaryCard extends StatelessWidget {
+  final List<ServiceSlotModel> selectedSlots;
+  final int unitPricePaise;
+
+  const _CanonicalSelectionSummaryCard({
+    required this.selectedSlots,
+    required this.unitPricePaise,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sorted = [...selectedSlots]
+      ..sort((a, b) => a.startAt.compareTo(b.startAt));
+    final start = sorted.first.startAt;
+    final end = sorted.last.endAt;
+    final totalMinutes = sorted.fold<int>(
+      0,
+      (sum, slot) => sum + slot.endAt.difference(slot.startAt).inMinutes,
+    );
+    final estimatedSubtotalPaise = sorted.length * unitPricePaise;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.14)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Selected schedule',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '${_formatSlotTime(start)} - ${_formatSlotTime(end)}',
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '${sorted.length} slot${sorted.length == 1 ? '' : 's'} · ${_formatDuration(totalMinutes)} · Estimated subtotal ₹${(estimatedSubtotalPaise / 100).toStringAsFixed(0)}',
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 13.5,
+              fontWeight: FontWeight.w700,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatSlotTime(DateTime date) {
+  final hour = date.hour;
+  final minute = date.minute;
+  final suffix = hour >= 12 ? 'PM' : 'AM';
+  final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+  return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
+}
+
+String _formatDuration(int minutes) {
+  if (minutes <= 0) return 'Duration varies';
+  if (minutes % 60 == 0 && minutes >= 60) {
+    final hours = minutes ~/ 60;
+    return '$hours hr${hours == 1 ? '' : 's'}';
+  }
+  return '$minutes min';
+}
+
 class _SlotBottomBar extends StatelessWidget {
   final double bottomInset;
   final bool isReady;
+  final String label;
   final VoidCallback onContinue;
 
   const _SlotBottomBar({
     required this.bottomInset,
     required this.isReady,
+    required this.label,
     required this.onContinue,
   });
 
@@ -1086,9 +1324,9 @@ class _SlotBottomBar extends StatelessWidget {
               child: InkWell(
                 onTap: onContinue,
                 borderRadius: BorderRadius.circular(19),
-                child: const Center(
+                child: Center(
                   child: Text(
-                    'Continue',
+                    label,
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 18,

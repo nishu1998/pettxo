@@ -6,13 +6,32 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../bookings/domain/models/booking_flow_models.dart';
-import '../../../bookings/presentation/screens/booking_detail_screen.dart';
+import '../../../bookings/presentation/navigation/booking_navigation_resolver.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../profile/presentation/widgets/profile_content_sections.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
+
+  static final BookingNavigationResolver _bookingNavigationResolver =
+      BookingNavigationResolver();
+
+  @visibleForTesting
+  static BookingOpenRequest bookingOpenRequestFromNotificationData(
+    Map<String, dynamic> data,
+  ) {
+    final bookingId = '${data['bookingId'] ?? data['data']?['bookingId'] ?? ''}'
+        .trim();
+    final role =
+        '${data['recipientRole'] ?? data['data']?['recipientRole'] ?? ''}';
+    return BookingNavigationResolver.openRequestForExternalBooking(
+      bookingId: bookingId,
+      contextMode: role == 'provider'
+          ? BookingContextMode.delivering
+          : BookingContextMode.receiving,
+    );
+  }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _notificationsFor(String uid) {
     // Notifications are backend-created; the client only reads and marks them
@@ -143,8 +162,8 @@ class NotificationsScreen extends StatelessWidget {
     }
 
     if (!context.mounted) return;
-    final bookingId =
-        '${data['bookingId'] ?? data['data']?['bookingId'] ?? ''}';
+    final bookingRequest = bookingOpenRequestFromNotificationData(data);
+    final bookingId = bookingRequest.bookingId;
     final category = '${data['category'] ?? data['data']?['category'] ?? ''}';
     final type = '${data['type'] ?? data['data']?['type'] ?? ''}';
     final chatId = '${data['chatId'] ?? data['data']?['chatId'] ?? ''}'.trim();
@@ -200,18 +219,9 @@ class NotificationsScreen extends StatelessWidget {
       return;
     }
 
-    final role =
-        '${data['recipientRole'] ?? data['data']?['recipientRole'] ?? ''}';
-    final contextMode = role == 'provider'
-        ? BookingContextMode.delivering
-        : BookingContextMode.receiving;
-
-    Navigator.push(
+    await _bookingNavigationResolver.openBookingRequest(
       context,
-      MaterialPageRoute(
-        builder: (_) =>
-            BookingDetailScreen(bookingId: bookingId, contextMode: contextMode),
-      ),
+      bookingRequest,
     );
   }
 }

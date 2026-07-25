@@ -1,46 +1,81 @@
 import 'dart:async';
 
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/app_loader.dart';
-import '../../../../core/widgets/app_confirmation_dialog.dart';
+import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/presentation/screens/service_detail_screen.dart';
 import '../../data/repositories/booking_repository.dart';
-import '../../domain/models/booking_model.dart';
-import '../../domain/models/booking_checkout_draft.dart';
+import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_flow_models.dart';
+import '../../domain/models/booking_read_model.dart';
+import '../../domain/models/booking_v3_models.dart';
+import '../../domain/models/canonical_booking_request_models.dart';
+import '../../domain/models/canonical_provider_booking_request_view.dart';
+import '../navigation/booking_navigation_resolver.dart';
 import '../../../services/data/repositories/services_repository.dart';
-import '../widgets/booking_card.dart';
-import 'booking_detail_screen.dart';
-import 'payment_review_screen.dart';
+import '../widgets/canonical_provider_request_card.dart';
+
+typedef BookingStreamBuilder =
+    Stream<List<BookingReadModel>> Function(
+      String userId,
+      BookingContextMode contextMode,
+    );
+
+typedef ProviderRequestStreamBuilder =
+    Stream<List<CanonicalProviderBookingRequestView>> Function(String userId);
+
+typedef BookingRequestOpener =
+    Future<void> Function(BuildContext context, BookingOpenRequest request);
 
 class BookingsScreen extends StatefulWidget {
-  const BookingsScreen({super.key});
+  const BookingsScreen({
+    super.key,
+    this.bookingRepository,
+    this.servicesRepository,
+    this.bookingNavigationResolver,
+    this.currentUserIdOverride,
+    this.bookingStreamBuilder,
+    this.providerRequestStreamBuilder,
+    this.bookingRequestOpener,
+    this.useLiveIdentity = true,
+  });
+
+  final BookingRepository? bookingRepository;
+  final ServicesRepository? servicesRepository;
+  final BookingNavigationResolver? bookingNavigationResolver;
+  final String? currentUserIdOverride;
+  final BookingStreamBuilder? bookingStreamBuilder;
+  final ProviderRequestStreamBuilder? providerRequestStreamBuilder;
+  final BookingRequestOpener? bookingRequestOpener;
+  final bool useLiveIdentity;
 
   @override
   State<BookingsScreen> createState() => _BookingsScreenState();
 }
 
 class _BookingsScreenState extends State<BookingsScreen> {
-  final BookingRepository _bookingRepository = BookingRepository();
-  final ServicesRepository _servicesRepository = ServicesRepository();
+  late final BookingRepository _bookingRepository =
+      widget.bookingRepository ?? BookingRepository();
+  late final ServicesRepository _servicesRepository =
+      widget.servicesRepository ?? ServicesRepository();
+  late final BookingNavigationResolver _bookingNavigationResolver =
+      widget.bookingNavigationResolver ?? BookingNavigationResolver();
   BookingContextMode _context = BookingContextMode.receiving;
   BookingTab _receivingTab = BookingTab.upcoming;
   BookingTab _deliveringTab = BookingTab.requests;
   late final Timer _timer;
-  BookingContextMode? _cachedStreamContext;
-  String? _cachedStreamUserId;
-  Stream<List<BookingModel>>? _cachedBookingStream;
-  String? _actionBookingId;
-  String? _actionLabel;
-  String? _deletingPendingBookingId;
+  BookingContextMode? _cachedReadModelContext;
+  String? _cachedReadModelUserId;
+  Stream<List<BookingReadModel>>? _cachedReadModelStream;
+  String? _canonicalActionBookingId;
+  String? _canonicalActionType;
 
   @override
   void initState() {
@@ -62,34 +97,55 @@ class _BookingsScreenState extends State<BookingsScreen> {
   BookingTab get _activeTab =>
       _context == BookingContextMode.receiving ? _receivingTab : _deliveringTab;
 
-  Stream<List<BookingModel>> _bookingStreamFor(String userId) {
-    if (_cachedBookingStream != null &&
-        _cachedStreamContext == _context &&
-        _cachedStreamUserId == userId) {
-      return _cachedBookingStream!;
+  Stream<List<BookingReadModel>> _bookingReadModelStreamFor(String userId) {
+    if (widget.bookingStreamBuilder != null) {
+      return widget.bookingStreamBuilder!(userId, _context);
+    }
+    if (_cachedReadModelStream != null &&
+        _cachedReadModelContext == _context &&
+        _cachedReadModelUserId == userId) {
+      return _cachedReadModelStream!;
     }
 
-    _cachedStreamContext = _context;
-    _cachedStreamUserId = userId;
-    _cachedBookingStream = _context == BookingContextMode.receiving
-        ? _bookingRepository.watchReceivingBookings(userId)
-        : _bookingRepository.watchDeliveringBookings(userId);
-    return _cachedBookingStream!;
+    _cachedReadModelContext = _context;
+    _cachedReadModelUserId = userId;
+    _cachedReadModelStream = _context == BookingContextMode.receiving
+        ? _bookingRepository.watchReceivingBookingReadModels(userId)
+        : _bookingRepository.watchDeliveringBookingReadModels(userId);
+    return _cachedReadModelStream!;
   }
 
-  List<BookingModel> _bookingsForActiveTab(List<BookingModel> bookings) {
-    if (_context == BookingContextMode.receiving) {
-      return _activeTab == BookingTab.upcoming
-          ? _bookingRepository.receivingUpcoming(bookings)
-          : _bookingRepository.receivingPast(bookings);
-    }
+  List<CanonicalBookingReadModel> _canonicalBookingsForActiveTab(
+    List<BookingReadModel> bookings,
+  ) {
+    final canonical = bookings.whereType<CanonicalBookingReadModel>();
+    final filtered = canonical
+        .where((entry) {
+          final state = entry.booking.state;
+          if (_context == BookingContextMode.receiving) {
+            return _activeTab == BookingTab.upcoming
+                ? !_isPastCustomerState(state)
+                : _isPastCustomerState(state);
+          }
 
-    return switch (_activeTab) {
-      BookingTab.requests => _bookingRepository.deliveringRequests(bookings),
-      BookingTab.confirmed => _bookingRepository.deliveringConfirmed(bookings),
-      BookingTab.pastDeliveries => _bookingRepository.deliveringPast(bookings),
-      _ => const <BookingModel>[],
-    };
+          return switch (_activeTab) {
+            BookingTab.requests =>
+              state == CanonicalBookingStateV3.requested ||
+                  state == CanonicalBookingStateV3.pendingProvider,
+            BookingTab.confirmed => _isProviderActiveState(state),
+            BookingTab.pastDeliveries => _isPastProviderState(state),
+            _ => false,
+          };
+        })
+        .toList(growable: false);
+
+    return filtered..sort((left, right) {
+      final leftTime =
+          left.booking.scheduledStartAt ?? left.booking.serviceAnchorAt;
+      final rightTime =
+          right.booking.scheduledStartAt ?? right.booking.serviceAnchorAt;
+      return rightTime.compareTo(leftTime);
+    });
   }
 
   String _sectionLabelFor(int count) {
@@ -134,251 +190,37 @@ class _BookingsScreenState extends State<BookingsScreen> {
     }
   }
 
-  void _openBookingDetail(BookingRecord booking) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => BookingDetailScreen(
-          bookingId: booking.id,
-          contextMode: booking.context,
-          fallbackBooking: booking,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _handleAction(
-    BookingRecord booking,
-    BookingActionData action,
+  Future<void> _openCanonicalProviderRequest(
+    CanonicalProviderBookingRequestView request,
   ) async {
-    final normalizedLabel = action.label.toLowerCase().trim();
-    if (normalizedLabel == 'resume payment') {
-      await _resumePendingPayment(booking);
-      return;
-    }
-    if (normalizedLabel == 'book again') {
-      await _openRebookService(booking);
-      return;
-    }
-
-    if (action.opensDetail ||
-        action.toastMessage == null && booking.detailType != null) {
-      _openBookingDetail(booking);
-      return;
-    }
-
-    if (normalizedLabel == 'accept' || normalizedLabel == 'reject') {
-      await _runRequestAction(
-        bookingId: booking.id,
-        actionLabel: action.label,
-        accept: normalizedLabel == 'accept',
-      );
-      return;
-    }
-
-    if (action.toastMessage != null) {
-      _showToast(action.toastMessage!);
-    }
-  }
-
-  Future<void> _resumePendingPayment(BookingRecord booking) async {
-    final slotStart = booking.scheduledStartAt;
-    final slotEnd = booking.scheduledEndAt;
-    if (booking.serviceId.trim().isEmpty ||
-        booking.slotId.trim().isEmpty ||
-        booking.providerUserId.trim().isEmpty ||
-        slotStart == null ||
-        slotEnd == null) {
-      _showToast(
-        'This pending payment is missing booking details.',
-        tone: AppSnackbarTone.warning,
-      );
-      return;
-    }
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PaymentReviewScreen(
-          pendingBookingId: booking.id,
-          draft: BookingCheckoutDraft(
-            serviceId: booking.serviceId,
-            serviceName: booking.title,
-            price: (booking.pricePaise / 100).round(),
-            durationMinutes: booking.durationMinutes,
-            providerId: booking.providerUserId,
-            slotId: booking.slotId,
-            selectedSlot: slotStart,
-            selectedSlotEnd: slotEnd,
-          ),
-        ),
-      ),
+    final openRequest = BookingNavigationResolver.openRequestForExternalBooking(
+      bookingId: request.bookingId,
+      contextMode: BookingContextMode.delivering,
     );
-  }
-
-  Future<void> _deletePendingRequest(BookingRecord booking) async {
-    if (_deletingPendingBookingId != null) return;
-
-    final bookingOwnerId = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
-    if (bookingOwnerId.isEmpty) {
-      _showToast(
-        'Please sign in again and try once more.',
-        tone: AppSnackbarTone.warning,
-      );
+    final opener = widget.bookingRequestOpener;
+    if (opener != null) {
+      await opener(context, openRequest);
       return;
     }
+    await _bookingNavigationResolver.openBookingRequest(context, openRequest);
+  }
 
-    final confirmed = await AppConfirmationDialog.show(
-      context: context,
-      title: 'Delete request?',
-      message: 'Remove this unpaid booking request?',
-      cancelLabel: 'Keep',
-      confirmLabel: 'Delete',
-      isDestructive: true,
+  Future<void> _openCanonicalBooking(String bookingId) async {
+    final openRequest = BookingNavigationResolver.openRequestForExternalBooking(
+      bookingId: bookingId,
+      contextMode: _context,
     );
-
-    if (confirmed != true) return;
-
-    setState(() => _deletingPendingBookingId = booking.id);
-    try {
-      final outcome = await _bookingRepository
-          .deletePendingPaymentBookingForCustomer(bookingId: booking.id);
-      final message = switch (outcome) {
-        PendingPaymentRemovalOutcome.hiddenExpired ||
-        PendingPaymentRemovalOutcome.alreadyHidden =>
-          'Old pending request removed.',
-        PendingPaymentRemovalOutcome.deleted => 'Pending request deleted',
-      };
-      _showToast(
-        message,
-        tone: outcome == PendingPaymentRemovalOutcome.deleted
-            ? AppSnackbarTone.success
-            : AppSnackbarTone.info,
-      );
-    } on FirebaseFunctionsException catch (error) {
-      if (error.code == 'failed-precondition') {
-        await _resolveStalePendingDeletion(bookingId: booking.id);
-      } else {
-        _showToast(
-          _friendlyPendingDeleteError(error),
-          tone: AppSnackbarTone.error,
-        );
-      }
-    } catch (error) {
-      _showToast(
-        'Could not delete the pending request. Please try again.',
-        tone: AppSnackbarTone.error,
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _deletingPendingBookingId = null);
-      }
-    }
-  }
-
-  Future<void> _resolveStalePendingDeletion({required String bookingId}) async {
-    try {
-      final latestBooking = await _bookingRepository.fetchBookingById(
-        bookingId,
-      );
-      if (latestBooking == null) {
-        _showToast('Old pending request removed.', tone: AppSnackbarTone.info);
-        return;
-      }
-
-      if (latestBooking.canDeletePendingPayment) {
-        _showToast(
-          'This payment request changed. Please try again.',
-          tone: AppSnackbarTone.warning,
-        );
-        return;
-      }
-
-      if (latestBooking.normalizedPaymentStatus == 'paid' ||
-          latestBooking.isAccepted ||
-          latestBooking.isInProgress ||
-          latestBooking.isCompleted) {
-        _showToast(
-          'Payment already completed. Booking refreshed.',
-          tone: AppSnackbarTone.info,
-        );
-        return;
-      }
-
-      if (latestBooking.isExpiredPendingPayment ||
-          latestBooking.normalizedStatus == 'payment_expired' ||
-          latestBooking.hasServiceStartedOrPassed) {
-        final outcome = await _bookingRepository
-            .deletePendingPaymentBookingForCustomer(bookingId: bookingId);
-        final removed =
-            outcome == PendingPaymentRemovalOutcome.hiddenExpired ||
-            outcome == PendingPaymentRemovalOutcome.alreadyHidden;
-        _showToast(
-          removed ? 'Old pending request removed.' : 'Pending request deleted',
-          tone: removed ? AppSnackbarTone.info : AppSnackbarTone.success,
-        );
-        return;
-      }
-
-      _showToast(
-        'This payment request is no longer available.',
-        tone: AppSnackbarTone.warning,
-      );
-    } on FirebaseFunctionsException catch (error) {
-      _showToast(
-        _friendlyPendingDeleteError(error),
-        tone: AppSnackbarTone.error,
-      );
-    } catch (_) {
-      _showToast(
-        'Could not update this pending request right now.',
-        tone: AppSnackbarTone.error,
-      );
-    }
-  }
-
-  String _friendlyPendingDeleteError(FirebaseFunctionsException error) {
-    switch (error.code) {
-      case 'permission-denied':
-        return 'Only the user who created this booking can remove this pending request.';
-      case 'not-found':
-        return 'This pending request was not found.';
-      case 'unauthenticated':
-        return 'Please sign in again and try once more.';
-      case 'unavailable':
-        return 'Booking service is unavailable right now. Please try again in a moment.';
-      case 'internal':
-        return error.message?.trim().isNotEmpty == true
-            ? error.message!.trim()
-            : 'Booking service hit an internal error. Please try again.';
-      case 'failed-precondition':
-        final message = error.message?.trim().toLowerCase() ?? '';
-        if (message == 'payment-completed') {
-          return 'Payment already completed. Booking refreshed.';
-        }
-        return 'This payment request can no longer be removed.';
-      default:
-        return error.message?.trim().isNotEmpty == true
-            ? error.message!.trim()
-            : 'Could not delete the pending request. Please try again.';
-    }
-  }
-
-  Future<void> _openRebookService(BookingRecord booking) async {
-    // In Pettxo's booking context naming, "receiving" is the customer-side
-    // view (bookings where currentUser == customerId) and "delivering" is the
-    // provider-side received-work view (bookings where currentUser ==
-    // serviceOwnerId). Rebooking must stay customer-only.
-    final isCustomerSideBooking =
-        booking.context == BookingContextMode.receiving;
-    if (!isCustomerSideBooking) {
-      _showToast(
-        'Book Again is only available for your completed bookings.',
-        tone: AppSnackbarTone.warning,
-      );
+    final opener = widget.bookingRequestOpener;
+    if (opener != null) {
+      await opener(context, openRequest);
       return;
     }
+    await _bookingNavigationResolver.openBookingRequest(context, openRequest);
+  }
 
+  Future<void> _openCanonicalRebookService(
+    CanonicalBookingDocumentV3 booking,
+  ) async {
     final serviceId = booking.serviceId.trim();
     if (serviceId.isEmpty) {
       _showToast(
@@ -422,60 +264,267 @@ class _BookingsScreenState extends State<BookingsScreen> {
     }
   }
 
-  Future<void> _runRequestAction({
-    required String bookingId,
-    required String actionLabel,
+  String? _canonicalCountdownText(CanonicalProviderBookingRequestView request) {
+    if (!request.isPendingProvider || request.acceptDeadlineAt == null) {
+      return null;
+    }
+    final remaining = request.acceptDeadlineAt!
+        .difference(DateTime.now())
+        .inSeconds;
+    if (remaining <= 0) return '00:00';
+    return _formatCountdown(remaining);
+  }
+
+  bool _isCanonicalAccepting(CanonicalProviderBookingRequestView request) {
+    return _canonicalActionBookingId == request.bookingId &&
+        _canonicalActionType == 'accept';
+  }
+
+  bool _isCanonicalDeclining(CanonicalProviderBookingRequestView request) {
+    return _canonicalActionBookingId == request.bookingId &&
+        _canonicalActionType == 'decline';
+  }
+
+  Future<void> _runCanonicalProviderAction({
+    required CanonicalProviderBookingRequestView request,
     required bool accept,
   }) async {
-    if (_actionBookingId != null) return;
+    if (_canonicalActionBookingId != null) return;
 
     setState(() {
-      _actionBookingId = bookingId;
-      _actionLabel = actionLabel;
+      _canonicalActionBookingId = request.bookingId;
+      _canonicalActionType = accept ? 'accept' : 'decline';
     });
-    AppLoader.showWithMessage(
-      accept ? 'Accepting booking request...' : 'Rejecting booking request...',
-    );
 
     try {
       if (accept) {
-        await _bookingRepository.acceptBookingRequest(bookingId: bookingId);
+        await _bookingRepository.acceptBookingRequestV3(
+          bookingId: request.bookingId,
+        );
         _showToast(
-          'Booking accepted. Pet parent notified.',
+          'Request accepted. The customer now has 60 minutes to pay.',
           tone: AppSnackbarTone.success,
         );
       } else {
-        await _bookingRepository.rejectBookingRequest(
-          bookingId: bookingId,
-          reason: 'Rejected by provider',
+        await _bookingRepository.declineBookingRequestV3(
+          bookingId: request.bookingId,
         );
-        _showToast('Booking rejected.', tone: AppSnackbarTone.warning);
+        _showToast('Request declined.', tone: AppSnackbarTone.info);
       }
-    } catch (error) {
-      _showToast(_friendlyActionError(error), tone: AppSnackbarTone.error);
+    } on CanonicalBookingRequestException catch (error) {
+      _showToast(
+        _friendlyCanonicalActionError(error),
+        tone: AppSnackbarTone.error,
+      );
     } finally {
-      AppLoader.hide();
       if (mounted) {
         setState(() {
-          _actionBookingId = null;
-          _actionLabel = null;
+          _canonicalActionBookingId = null;
+          _canonicalActionType = null;
         });
       }
     }
   }
 
-  String _friendlyActionError(Object error) {
-    final text = error.toString();
-    if (text.contains('failed-precondition')) {
-      return 'This request can no longer be changed.';
+  String _friendlyCanonicalActionError(CanonicalBookingRequestException error) {
+    switch (error.code) {
+      case CanonicalBookingRequestFailureCode.canonicalBookingDisabled:
+        return 'This canonical request action is not enabled right now.';
+      case CanonicalBookingRequestFailureCode.permissionDenied:
+        return 'Only the assigned provider can update this request.';
+      case CanonicalBookingRequestFailureCode.runwayNotSatisfied:
+        return 'The response window already ended for this request.';
+      case CanonicalBookingRequestFailureCode.invalidSchedule:
+        return 'This request already moved to a different state.';
+      case CanonicalBookingRequestFailureCode.unauthenticated:
+        return 'Please sign in again and try once more.';
+      default:
+        return error.message.trim().isNotEmpty
+            ? error.message.trim()
+            : 'Could not update this canonical request right now.';
     }
-    if (text.contains('permission-denied')) {
-      return 'Only the service owner can update this request.';
+  }
+
+  Widget _buildCanonicalRuntimeBody(String currentUserId) {
+    return StreamBuilder<List<BookingReadModel>>(
+      stream: _bookingReadModelStreamFor(currentUserId),
+      builder: (context, snapshot) {
+        final allBookings = snapshot.data ?? const <BookingReadModel>[];
+        final canonicalBookings = _canonicalBookingsForActiveTab(allBookings);
+        final canonicalRequestCount = allBookings
+            .whereType<CanonicalBookingReadModel>()
+            .where((entry) {
+              final state = entry.booking.state;
+              return state == CanonicalBookingStateV3.requested ||
+                  state == CanonicalBookingStateV3.pendingProvider;
+            })
+            .length;
+
+        if (snapshot.hasError) {
+          return _wrapSwipeNavigation(
+            _BookingSectionShell(
+              subtabBar: _SubtabBar(
+                contextMode: _context,
+                activeTab: _activeTab,
+                requestCount: canonicalRequestCount,
+                onChanged: _handleTabChanged,
+              ),
+              child: _EmptyState(
+                icon: Icons.cloud_off_rounded,
+                title: 'Could not load bookings',
+                subtitle: snapshot.error.toString(),
+              ),
+            ),
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
+          return _wrapSwipeNavigation(
+            _BookingSectionShell(
+              subtabBar: _SubtabBar(
+                contextMode: _context,
+                activeTab: _activeTab,
+                requestCount: canonicalRequestCount,
+                onChanged: _handleTabChanged,
+              ),
+              child: const _LoadingState(),
+            ),
+          );
+        }
+
+        return StreamBuilder<List<CanonicalProviderBookingRequestView>>(
+          stream: _context == BookingContextMode.delivering
+              ? (widget.providerRequestStreamBuilder?.call(currentUserId) ??
+                    _bookingRepository.watchProviderCanonicalRequests(
+                      currentUserId,
+                    ))
+              : Stream.value(const []),
+          builder: (context, canonicalSnapshot) {
+            final canonicalRequests = _activeTab == BookingTab.requests
+                ? canonicalSnapshot.data ??
+                      const <CanonicalProviderBookingRequestView>[]
+                : const <CanonicalProviderBookingRequestView>[];
+
+            final bodyChildren = _activeTab == BookingTab.requests
+                ? _buildCanonicalRequestOnlySections(canonicalRequests)
+                : _buildCanonicalBookingSections(canonicalBookings);
+
+            return _wrapSwipeNavigation(
+              _BookingSectionShell(
+                subtabBar: _SubtabBar(
+                  contextMode: _context,
+                  activeTab: _activeTab,
+                  requestCount: canonicalRequests.length,
+                  onChanged: _handleTabChanged,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: bodyChildren,
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _wrapSwipeNavigation(Widget child) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragEnd: (details) {
+        final velocity = details.primaryVelocity ?? 0;
+        if (velocity.abs() < 180) return;
+        _handleTabSwipe(velocity < 0);
+      },
+      child: child,
+    );
+  }
+
+  List<Widget> _buildCanonicalRequestOnlySections(
+    List<CanonicalProviderBookingRequestView> canonicalRequests,
+  ) {
+    if (canonicalRequests.isEmpty) {
+      return const [_EmptyState()];
     }
-    if (text.contains('not-found')) {
-      return 'Booking request not found.';
+
+    return [
+      const Padding(
+        padding: EdgeInsets.only(bottom: 12),
+        child: Text(
+          'REQUESTS',
+          style: TextStyle(
+            color: Color(0xFF908476),
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.3,
+          ),
+        ),
+      ),
+      ...canonicalRequests.map(
+        (request) => Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: CanonicalProviderRequestCard(
+            request: request,
+            countdownText: _canonicalCountdownText(request),
+            isAccepting: _isCanonicalAccepting(request),
+            isDeclining: _isCanonicalDeclining(request),
+            onTap: () => _openCanonicalProviderRequest(request),
+            onAccept: request.isPendingProvider
+                ? () => _runCanonicalProviderAction(
+                    request: request,
+                    accept: true,
+                  )
+                : null,
+            onDecline: request.isPendingProvider
+                ? () => _runCanonicalProviderAction(
+                    request: request,
+                    accept: false,
+                  )
+                : null,
+          ),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _buildCanonicalBookingSections(
+    List<CanonicalBookingReadModel> canonicalBookings,
+  ) {
+    if (canonicalBookings.isEmpty) {
+      return const [_EmptyState()];
     }
-    return 'Could not update booking. Please try again.';
+
+    return [
+      Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Text(
+          _sectionLabelFor(canonicalBookings.length).toUpperCase(),
+          style: const TextStyle(
+            color: Color(0xFF908476),
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.3,
+          ),
+        ),
+      ),
+      ...canonicalBookings.map(
+        (booking) => Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: _CanonicalBookingListCard(
+            booking: booking.booking,
+            contextMode: _context,
+            onTap: () => _openCanonicalBooking(booking.bookingId),
+            onBookAgain:
+                _context == BookingContextMode.receiving &&
+                    _activeTab == BookingTab.past
+                ? () => _openCanonicalRebookService(booking.booking)
+                : null,
+          ),
+        ),
+      ),
+    ];
   }
 
   List<BookingTab> _tabsForContext(BookingContextMode contextMode) {
@@ -498,12 +547,38 @@ class _BookingsScreenState extends State<BookingsScreen> {
     _handleTabChanged(tabs[nextIndex]);
   }
 
+  bool _isPastCustomerState(CanonicalBookingStateV3 state) {
+    return state == CanonicalBookingStateV3.completedPendingReview ||
+        state == CanonicalBookingStateV3.completedFinal ||
+        state == CanonicalBookingStateV3.cancelledByParent ||
+        state == CanonicalBookingStateV3.cancelled ||
+        state == CanonicalBookingStateV3.declined ||
+        state == CanonicalBookingStateV3.expired ||
+        state == CanonicalBookingStateV3.paymentExpired ||
+        state == CanonicalBookingStateV3.noShow ||
+        state == CanonicalBookingStateV3.disputed;
+  }
+
+  bool _isProviderActiveState(CanonicalBookingStateV3 state) {
+    return state == CanonicalBookingStateV3.acceptedAwaitingPayment ||
+        state == CanonicalBookingStateV3.confirmed ||
+        state == CanonicalBookingStateV3.inProgress ||
+        state == CanonicalBookingStateV3.completedPendingReview;
+  }
+
+  bool _isPastProviderState(CanonicalBookingStateV3 state) {
+    return !_isProviderActiveState(state) &&
+        state != CanonicalBookingStateV3.requested &&
+        state != CanonicalBookingStateV3.pendingProvider;
+  }
+
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
     final topContentPadding = topInset + 118;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    final currentUserId =
+        widget.currentUserIdOverride ?? FirebaseAuth.instance.currentUser?.uid;
 
     return Scaffold(
       backgroundColor: const Color(0xFFFBF6EF),
@@ -549,135 +624,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
                   ),
                 )
               else
-                StreamBuilder<List<BookingModel>>(
-                  stream: _bookingStreamFor(currentUserId),
-                  builder: (context, snapshot) {
-                    final allBookings = snapshot.data ?? const <BookingModel>[];
-                    final requestCount = _bookingRepository
-                        .deliveringRequests(allBookings)
-                        .length;
-
-                    if (snapshot.hasError) {
-                      return GestureDetector(
-                        behavior: HitTestBehavior.translucent,
-                        onHorizontalDragEnd: (details) {
-                          final velocity = details.primaryVelocity ?? 0;
-                          if (velocity.abs() < 180) return;
-                          _handleTabSwipe(velocity < 0);
-                        },
-                        child: _BookingSectionShell(
-                          subtabBar: _SubtabBar(
-                            contextMode: _context,
-                            activeTab: _activeTab,
-                            requestCount: requestCount,
-                            onChanged: _handleTabChanged,
-                          ),
-                          child: _EmptyState(
-                            icon: Icons.cloud_off_rounded,
-                            title: 'Could not load bookings',
-                            subtitle: snapshot.error.toString(),
-                          ),
-                        ),
-                      );
-                    }
-
-                    if (snapshot.connectionState == ConnectionState.waiting &&
-                        !snapshot.hasData) {
-                      return GestureDetector(
-                        behavior: HitTestBehavior.translucent,
-                        onHorizontalDragEnd: (details) {
-                          final velocity = details.primaryVelocity ?? 0;
-                          if (velocity.abs() < 180) return;
-                          _handleTabSwipe(velocity < 0);
-                        },
-                        child: _BookingSectionShell(
-                          subtabBar: _SubtabBar(
-                            contextMode: _context,
-                            activeTab: _activeTab,
-                            requestCount: requestCount,
-                            onChanged: _handleTabChanged,
-                          ),
-                          child: const _LoadingState(),
-                        ),
-                      );
-                    }
-
-                    final visibleBookings = _bookingsForActiveTab(allBookings);
-                    final records = visibleBookings
-                        .map((booking) => booking.toBookingRecord(_context))
-                        .toList();
-
-                    return GestureDetector(
-                      behavior: HitTestBehavior.translucent,
-                      onHorizontalDragEnd: (details) {
-                        final velocity = details.primaryVelocity ?? 0;
-                        if (velocity.abs() < 180) return;
-                        _handleTabSwipe(velocity < 0);
-                      },
-                      child: _BookingSectionShell(
-                        subtabBar: _SubtabBar(
-                          contextMode: _context,
-                          activeTab: _activeTab,
-                          requestCount: requestCount,
-                          onChanged: _handleTabChanged,
-                        ),
-                        child: records.isEmpty
-                            ? const _EmptyState()
-                            : Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 12),
-                                    child: Text(
-                                      _sectionLabelFor(
-                                        records.length,
-                                      ).toUpperCase(),
-                                      style: const TextStyle(
-                                        color: Color(0xFF908476),
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w800,
-                                        letterSpacing: 1.3,
-                                      ),
-                                    ),
-                                  ),
-                                  ...records.map((booking) {
-                                    return Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 16,
-                                      ),
-                                      child: BookingCard(
-                                        booking: booking,
-                                        loadingActionLabel:
-                                            _actionBookingId == booking.id
-                                            ? _actionLabel
-                                            : null,
-                                        isDeletingPendingRequest:
-                                            _deletingPendingBookingId ==
-                                            booking.id,
-                                        countdownText:
-                                            booking.countdownSeconds != null
-                                            ? _formatCountdown(
-                                                booking.countdownSeconds!,
-                                              )
-                                            : null,
-                                        onTap: () =>
-                                            _openBookingDetail(booking),
-                                        onActionTap: (action) =>
-                                            _handleAction(booking, action),
-                                        onDeletePendingRequest:
-                                            booking.isPendingPaymentRequest
-                                            ? () =>
-                                                  _deletePendingRequest(booking)
-                                            : null,
-                                      ),
-                                    );
-                                  }),
-                                ],
-                              ),
-                      ),
-                    );
-                  },
-                ),
+                _buildCanonicalRuntimeBody(currentUserId),
             ],
           ),
           Positioned(
@@ -958,6 +905,250 @@ class _SubtabBar extends StatelessWidget {
         }).toList(),
       ),
     );
+  }
+}
+
+class _CanonicalBookingListCard extends StatelessWidget {
+  const _CanonicalBookingListCard({
+    required this.booking,
+    required this.contextMode,
+    required this.onTap,
+    this.onBookAgain,
+  });
+
+  final CanonicalBookingDocumentV3 booking;
+  final BookingContextMode contextMode;
+  final VoidCallback onTap;
+  final VoidCallback? onBookAgain;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(28),
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primary.withValues(alpha: 0.08),
+              blurRadius: 24,
+              offset: const Offset(0, 12),
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        booking.service.serviceTitle,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        contextMode == BookingContextMode.receiving
+                            ? booking.participants.provider.displayName
+                            : '${booking.participants.parent.displayFirstName} ${booking.participants.parent.lastInitial}'
+                                  .trim(),
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF8E8479),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _pillColor(booking.state),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    _stateLabel(booking.state),
+                    style: const TextStyle(
+                      color: AppColors.textDark,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _scheduleLabel(booking),
+              style: const TextStyle(
+                fontSize: 15,
+                color: Color(0xFF5F5650),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF7F1),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                _supportingLine(booking),
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 12,
+                  height: 1.45,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            if (onBookAgain != null) ...[
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: SecondaryButton(
+                      label: 'Book again',
+                      onPressed: onBookAgain,
+                      size: AppButtonSize.compact,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  static Color _pillColor(CanonicalBookingStateV3 state) {
+    switch (state) {
+      case CanonicalBookingStateV3.confirmed:
+      case CanonicalBookingStateV3.inProgress:
+      case CanonicalBookingStateV3.completedPendingReview:
+      case CanonicalBookingStateV3.completedFinal:
+        return const Color(0xFFDDF7E3);
+      case CanonicalBookingStateV3.acceptedAwaitingPayment:
+        return const Color(0xFFFFE1D2);
+      case CanonicalBookingStateV3.requested:
+      case CanonicalBookingStateV3.pendingProvider:
+        return const Color(0xFFFFE8D4);
+      default:
+        return const Color(0xFFF3F4F6);
+    }
+  }
+
+  static String _stateLabel(CanonicalBookingStateV3 state) {
+    return switch (state) {
+      CanonicalBookingStateV3.requested => 'Queued',
+      CanonicalBookingStateV3.pendingProvider => 'Pending',
+      CanonicalBookingStateV3.acceptedAwaitingPayment => 'Pay now',
+      CanonicalBookingStateV3.confirmed => 'Confirmed',
+      CanonicalBookingStateV3.inProgress => 'In progress',
+      CanonicalBookingStateV3.completedPendingReview => 'Review pending',
+      CanonicalBookingStateV3.completedFinal => 'Completed',
+      CanonicalBookingStateV3.paymentExpired => 'Payment expired',
+      CanonicalBookingStateV3.cancelledByParent ||
+      CanonicalBookingStateV3.cancelled => 'Cancelled',
+      CanonicalBookingStateV3.declined => 'Declined',
+      CanonicalBookingStateV3.expired => 'Expired',
+      CanonicalBookingStateV3.noShow => 'No show',
+      CanonicalBookingStateV3.disputed => 'Disputed',
+      CanonicalBookingStateV3.serviceNotStarted => 'Not started',
+    };
+  }
+
+  static String _scheduleLabel(CanonicalBookingDocumentV3 booking) {
+    final start = booking.scheduledStartAt ?? booking.serviceAnchorAt;
+    final end = booking.schedule is CanonicalSlotBookingScheduleV3
+        ? (booking.schedule as CanonicalSlotBookingScheduleV3).scheduledEndAt
+        : null;
+    final day = _dateLabel(start);
+    final startTime = _timeLabel(start);
+    if (end == null) return '$day · $startTime';
+    return '$day · $startTime to ${_timeLabel(end)}';
+  }
+
+  static String _supportingLine(CanonicalBookingDocumentV3 booking) {
+    switch (booking.state) {
+      case CanonicalBookingStateV3.requested:
+      case CanonicalBookingStateV3.pendingProvider:
+        return 'Waiting for provider response. Nothing has been charged.';
+      case CanonicalBookingStateV3.acceptedAwaitingPayment:
+        return 'Provider accepted. Complete payment to confirm availability.';
+      case CanonicalBookingStateV3.confirmed:
+        return 'Payment confirmed. OTP and private booking details unlock in the booking screen.';
+      case CanonicalBookingStateV3.inProgress:
+        return 'Service is currently in progress.';
+      case CanonicalBookingStateV3.completedPendingReview:
+        return 'Service completed. You can now leave a review.';
+      case CanonicalBookingStateV3.completedFinal:
+        return 'Booking finished successfully.';
+      case CanonicalBookingStateV3.paymentExpired:
+        return 'The payment window expired before confirmation.';
+      case CanonicalBookingStateV3.cancelledByParent:
+      case CanonicalBookingStateV3.cancelled:
+        return 'This booking was cancelled.';
+      case CanonicalBookingStateV3.declined:
+        return 'The provider declined this request.';
+      case CanonicalBookingStateV3.expired:
+        return 'The provider did not respond in time.';
+      case CanonicalBookingStateV3.noShow:
+        return 'This booking was marked as a no-show.';
+      case CanonicalBookingStateV3.disputed:
+        return 'This booking is under dispute review.';
+      case CanonicalBookingStateV3.serviceNotStarted:
+        return 'The service did not start as scheduled.';
+    }
+  }
+
+  static String _dateLabel(DateTime value) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${value.day} ${months[value.month - 1]}';
+  }
+
+  static String _timeLabel(DateTime value) {
+    final hour = value.hour;
+    final minute = value.minute;
+    final suffix = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+    return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
   }
 }
 

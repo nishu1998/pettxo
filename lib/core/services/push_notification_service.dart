@@ -10,7 +10,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../features/bookings/domain/models/booking_flow_models.dart';
-import '../../features/bookings/presentation/screens/booking_detail_screen.dart';
+import '../../features/bookings/presentation/navigation/booking_navigation_resolver.dart';
 import '../../features/messages/presentation/screens/chat_detail_screen.dart';
 import '../../features/notifications/presentation/screens/notifications_screen.dart';
 import '../../features/profile/presentation/screens/profile_screen.dart';
@@ -44,6 +44,49 @@ class _AndroidChannelSpec {
   });
 }
 
+enum PushPayloadDeliveryMode { foreground, backgroundTap, initialLaunch }
+
+enum PushNavigationTarget {
+  booking,
+  chat,
+  senderProfile,
+  recipientProfile,
+  notifications,
+}
+
+class PushNavigationIntent {
+  const PushNavigationIntent.booking(this.bookingRequest)
+    : target = PushNavigationTarget.booking,
+      chatId = null,
+      profileUserId = null;
+
+  const PushNavigationIntent.chat(this.chatId)
+    : target = PushNavigationTarget.chat,
+      bookingRequest = null,
+      profileUserId = null;
+
+  const PushNavigationIntent.senderProfile(this.profileUserId)
+    : target = PushNavigationTarget.senderProfile,
+      bookingRequest = null,
+      chatId = null;
+
+  const PushNavigationIntent.recipientProfile(this.profileUserId)
+    : target = PushNavigationTarget.recipientProfile,
+      bookingRequest = null,
+      chatId = null;
+
+  const PushNavigationIntent.notifications()
+    : target = PushNavigationTarget.notifications,
+      bookingRequest = null,
+      chatId = null,
+      profileUserId = null;
+
+  final PushNavigationTarget target;
+  final BookingOpenRequest? bookingRequest;
+  final String? chatId;
+  final String? profileUserId;
+}
+
 class PushNotificationService {
   PushNotificationService._();
 
@@ -66,6 +109,8 @@ class PushNotificationService {
   final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(
     region: 'asia-south1',
   );
+  final BookingNavigationResolver _bookingNavigationResolver =
+      BookingNavigationResolver();
 
   StreamSubscription<User?>? _authSubscription;
   StreamSubscription<String>? _tokenRefreshSubscription;
@@ -486,6 +531,53 @@ class PushNotificationService {
     );
   }
 
+  @visibleForTesting
+  static BookingOpenRequest bookingOpenRequestFromPayload(
+    Map<String, dynamic> data,
+  ) {
+    final bookingId = '${data['bookingId'] ?? ''}'.trim();
+    final recipientRole = '${data['recipientRole'] ?? ''}';
+    return BookingNavigationResolver.openRequestForExternalBooking(
+      bookingId: bookingId,
+      contextMode: recipientRole == 'provider'
+          ? BookingContextMode.delivering
+          : BookingContextMode.receiving,
+    );
+  }
+
+  @visibleForTesting
+  static PushNavigationIntent navigationIntentFromPayload(
+    Map<String, dynamic> data, {
+    PushPayloadDeliveryMode mode = PushPayloadDeliveryMode.backgroundTap,
+  }) {
+    final type = '${data['type'] ?? ''}'.trim();
+    final bookingRequest = bookingOpenRequestFromPayload(data);
+    final chatId = '${data['chatId'] ?? ''}'.trim();
+    final senderId = '${data['senderId'] ?? ''}'.trim();
+    final recipientId = '${data['recipientId'] ?? ''}'.trim();
+    final category = '${data['category'] ?? ''}'.trim();
+
+    if ((type == 'chat' || type == 'chatMessage' || category == 'chat') &&
+        chatId.isNotEmpty) {
+      return PushNavigationIntent.chat(chatId);
+    }
+
+    if (bookingRequest.bookingId.isNotEmpty) {
+      return PushNavigationIntent.booking(bookingRequest);
+    }
+
+    if (type == 'socialFollow' && senderId.isNotEmpty) {
+      return PushNavigationIntent.senderProfile(senderId);
+    }
+
+    if ((type == 'socialLike' || type == 'socialComment') &&
+        recipientId.isNotEmpty) {
+      return PushNavigationIntent.recipientProfile(recipientId);
+    }
+
+    return const PushNavigationIntent.notifications();
+  }
+
   void _navigateFromPayload(Map<String, dynamic> data) {
     final navigator = AppLoader.navigatorKey.currentState;
     if (navigator == null) {
@@ -495,56 +587,42 @@ class PushNotificationService {
       return;
     }
 
-    final type = _stringValue(data['type']);
-    final bookingId = _stringValue(data['bookingId']);
-    final chatId = _stringValue(data['chatId']);
-    final senderId = _stringValue(data['senderId']);
-    final recipientId = _stringValue(data['recipientId']);
-    final recipientRole = _stringValue(data['recipientRole']);
+    final intent = navigationIntentFromPayload(data);
 
     _debugLog(
-      'PushNotificationService navigate debug -> type=$type, chatId=$chatId, senderId=$senderId, recipientId=$recipientId, recipientRole=$recipientRole',
+      'PushNotificationService navigate debug -> target=${intent.target.name}, bookingId=${intent.bookingRequest?.bookingId ?? ''}, chatId=${intent.chatId ?? ''}, profileUserId=${intent.profileUserId ?? ''}',
     );
 
-    if ((type == 'chat' || type == 'chatMessage') && chatId.isNotEmpty) {
-      navigator.push(
-        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
-      );
-      return;
-    }
-
-    if (bookingId.isNotEmpty) {
-      navigator.push(
-        MaterialPageRoute(
-          builder: (_) => BookingDetailScreen(
-            bookingId: bookingId,
-            contextMode: recipientRole == 'provider'
-                ? BookingContextMode.delivering
-                : BookingContextMode.receiving,
+    switch (intent.target) {
+      case PushNavigationTarget.chat:
+        navigator.push(
+          MaterialPageRoute(
+            builder: (_) => ChatDetailScreen(chatId: intent.chatId!),
           ),
-        ),
-      );
-      return;
+        );
+        return;
+      case PushNavigationTarget.booking:
+        unawaited(
+          _bookingNavigationResolver.openBookingRequest(
+            navigator.context,
+            intent.bookingRequest!,
+          ),
+        );
+        return;
+      case PushNavigationTarget.senderProfile:
+      case PushNavigationTarget.recipientProfile:
+        navigator.push(
+          MaterialPageRoute(
+            builder: (_) => ProfileScreen(userId: intent.profileUserId!),
+          ),
+        );
+        return;
+      case PushNavigationTarget.notifications:
+        navigator.push(
+          MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+        );
+        return;
     }
-
-    if (type == 'socialFollow' && senderId.isNotEmpty) {
-      navigator.push(
-        MaterialPageRoute(builder: (_) => ProfileScreen(userId: senderId)),
-      );
-      return;
-    }
-
-    if ((type == 'socialLike' || type == 'socialComment') &&
-        recipientId.isNotEmpty) {
-      navigator.push(
-        MaterialPageRoute(builder: (_) => ProfileScreen(userId: recipientId)),
-      );
-      return;
-    }
-
-    navigator.push(
-      MaterialPageRoute(builder: (_) => const NotificationsScreen()),
-    );
   }
 
   String _stringValue(Object? value) {

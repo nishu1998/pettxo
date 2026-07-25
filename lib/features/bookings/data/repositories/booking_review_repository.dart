@@ -1,56 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 
 import '../../domain/models/booking_review_model.dart';
 
 class BookingReviewRepository {
   final FirebaseFirestore _firestore;
-  final FirebaseFunctions _functions;
 
-  BookingReviewRepository({
-    FirebaseFirestore? firestore,
-    FirebaseFunctions? functions,
-  }) : _firestore = firestore ?? FirebaseFirestore.instance,
-       _functions =
-           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1');
-
-  Future<String> submitBookingReview({
-    required String bookingId,
-    required int rating,
-    String comment = '',
-    List<String> tags = const [],
-  }) async {
-    final id = bookingId.trim();
-    if (id.isEmpty) {
-      throw ArgumentError.value(
-        bookingId,
-        'bookingId',
-        'bookingId is required',
-      );
-    }
-    if (rating < 1 || rating > 5) {
-      throw ArgumentError.value(
-        rating,
-        'rating',
-        'rating must be between 1 and 5',
-      );
-    }
-
-    final cleanedTags = tags
-        .map((value) => value.trim())
-        .where((value) => value.isNotEmpty)
-        .toList(growable: false);
-
-    final callable = _functions.httpsCallable('submitBookingReview');
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'rating': rating,
-      'comment': comment.trim(),
-      'tags': cleanedTags,
-    });
-
-    return (result.data['reviewId'] as String? ?? '').trim();
-  }
+  BookingReviewRepository({FirebaseFirestore? firestore})
+    : _firestore = firestore ?? FirebaseFirestore.instance;
 
   Stream<List<BookingReviewModel>> watchServiceReviews(
     String serviceId, {
