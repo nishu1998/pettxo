@@ -4,9 +4,9 @@ import 'package:flutter/services.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
-import '../../../../core/widgets/glass_surface.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../domain/models/service_details_draft.dart';
+import '../widgets/add_service_flow_header.dart';
 import 'add_service_booking_setup_screen.dart';
 
 class AddServiceScreen extends StatefulWidget {
@@ -461,9 +461,9 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final topContentPadding = topInset + 108;
+    final topContentPadding =
+        MediaQuery.paddingOf(context).top + AddServiceFlowHeader.contentHeight;
 
     return Scaffold(
       backgroundColor: _screenBackground,
@@ -482,7 +482,6 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
               ),
               children: [
                 _FormSectionCard(
-                  title: 'Service Details',
                   subtitle:
                       'Define the service clearly so pet parents understand exactly what they are booking.',
                   children: [
@@ -656,66 +655,9 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
                 ),
               ],
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              top: topInset + 10,
-              child: Align(
-                child: FractionallySizedBox(
-                  widthFactor: 0.85,
-                  child: GlassSurface(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 11,
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    backgroundColor: Colors.white.withValues(alpha: 0.72),
-                    blurSigma: 20,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.62),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.06),
-                        blurRadius: 22,
-                        offset: const Offset(0, 10),
-                      ),
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.56),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: IconButton(
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(Icons.arrow_back_rounded),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Service Details',
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textDark,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+            AddServiceFlowHeader(
+              title: 'Service Details',
+              onBack: () => Navigator.pop(context),
             ),
           ],
         ),
@@ -725,15 +667,10 @@ class _AddServiceScreenState extends State<AddServiceScreen> {
 }
 
 class _FormSectionCard extends StatelessWidget {
-  final String title;
   final String subtitle;
   final List<Widget> children;
 
-  const _FormSectionCard({
-    required this.title,
-    required this.subtitle,
-    required this.children,
-  });
+  const _FormSectionCard({required this.subtitle, required this.children});
 
   @override
   Widget build(BuildContext context) {
@@ -754,15 +691,6 @@ class _FormSectionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
-              color: AppColors.textDark,
-            ),
-          ),
-          const SizedBox(height: 8),
           Text(
             subtitle,
             style: const TextStyle(

@@ -3,6 +3,7 @@ import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
@@ -12,6 +13,7 @@ import '../../domain/models/service_booking_setup_draft.dart';
 import '../../domain/models/service_details_draft.dart';
 import 'add_service_additional_details_screen.dart';
 import 'service_location_picker_screen.dart';
+import '../widgets/add_service_flow_header.dart';
 import '../widgets/service_location_card.dart';
 
 class AddServiceBookingSetupScreen extends StatefulWidget {
@@ -61,7 +63,6 @@ class _AddServiceBookingSetupScreenState
   final Set<String> _selectedDays = {'Mon', 'Tue', 'Wed', 'Thu', 'Fri'};
   int? _startMinutes = 9 * 60;
   int? _endMinutes = 17 * 60;
-  bool _sameForAllDays = true;
   String? _selectedServiceType = _serviceTypeOptions.first;
   ServiceLocation? _selectedLocation;
   bool _isLoadingLocation = true;
@@ -457,16 +458,107 @@ class _AddServiceBookingSetupScreenState
       context: context,
       initialTime: initialTime,
       builder: (context, child) {
+        final theme = Theme.of(context);
+        final mediaQuery = MediaQuery.of(context);
+        final size = mediaQuery.size;
+        final compact = size.width < 390 || size.height < 780;
         return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
+          data: theme.copyWith(
+            dialogTheme: const DialogThemeData(
+              backgroundColor: Colors.transparent,
+              surfaceTintColor: Colors.transparent,
+              elevation: 0,
+            ),
+            colorScheme: theme.colorScheme.copyWith(
               primary: AppColors.primary,
               onPrimary: Colors.white,
-              surface: AppColors.background,
+              surface: Colors.transparent,
               onSurface: AppColors.textDark,
             ),
+            timePickerTheme: TimePickerThemeData(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(30),
+              ),
+              helpTextStyle: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+              ),
+              hourMinuteTextColor: AppColors.textDark,
+              hourMinuteTextStyle: const TextStyle(
+                fontSize: 44,
+                fontWeight: FontWeight.w700,
+              ),
+              hourMinuteColor: Colors.white.withValues(alpha: 0.58),
+              dayPeriodColor: WidgetStateColor.resolveWith((states) {
+                if (states.contains(WidgetState.selected)) {
+                  return AppColors.primary.withValues(alpha: 0.18);
+                }
+                return Colors.white.withValues(alpha: 0.58);
+              }),
+              dayPeriodTextColor: WidgetStateColor.resolveWith((states) {
+                return AppColors.primary;
+              }),
+              dayPeriodShape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+                side: BorderSide(
+                  color: AppColors.primary.withValues(alpha: 0.20),
+                ),
+              ),
+              dialBackgroundColor: Colors.white.withValues(alpha: 0.52),
+              dialHandColor: AppColors.primary,
+              dialTextColor: AppColors.textDark,
+              entryModeIconColor: AppColors.textGrey,
+              cancelButtonStyle: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                textStyle: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              confirmButtonStyle: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                textStyle: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+            ),
           ),
-          child: child!,
+          child: MediaQuery(
+            data: mediaQuery.copyWith(
+              textScaler: mediaQuery.textScaler.clamp(
+                minScaleFactor: 0.88,
+                maxScaleFactor: 1,
+              ),
+            ),
+            child: AppGlassDialogFrame(
+              maxWidth: compact ? size.width - 28 : 410,
+              padding: EdgeInsets.zero,
+              borderRadius: BorderRadius.circular(compact ? 24 : 30),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(compact ? 24 : 30),
+                child: SizedBox(
+                  width: compact ? size.width - 52 : null,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.topCenter,
+                    child: child!,
+                  ),
+                ),
+              ),
+            ),
+          ),
         );
       },
     );
@@ -513,7 +605,7 @@ class _AddServiceBookingSetupScreenState
       availableDays: _days.where(_selectedDays.contains).toList(),
       startMinutes: _startMinutes!,
       endMinutes: _endMinutes!,
-      sameForAllDays: _sameForAllDays,
+      sameForAllDays: true,
       serviceType: _selectedServiceType!,
       location: _selectedLocation!,
     );
@@ -537,9 +629,9 @@ class _AddServiceBookingSetupScreenState
 
   @override
   Widget build(BuildContext context) {
-    final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final topContentPadding = topInset + 108;
+    final topContentPadding =
+        MediaQuery.paddingOf(context).top + AddServiceFlowHeader.contentHeight;
 
     return Scaffold(
       backgroundColor: _screenBackground,
@@ -556,7 +648,6 @@ class _AddServiceBookingSetupScreenState
               ),
               children: [
                 const _IntroCard(
-                  title: 'Booking Setup',
                   subtitle:
                       'This information controls availability, capacity, cancellations, and visibility.',
                 ),
@@ -698,36 +789,6 @@ class _AddServiceBookingSetupScreenState
                         ),
                       ],
                     ),
-                    const SizedBox(height: 18),
-                    const Text(
-                      'Same for all days?',
-                      style: TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    _SegmentedChoice(
-                      isPrimarySelected: _sameForAllDays,
-                      primaryLabel: 'Yes',
-                      secondaryLabel: 'No',
-                      onPrimaryTap: () =>
-                          setState(() => _sameForAllDays = true),
-                      onSecondaryTap: () =>
-                          setState(() => _sameForAllDays = false),
-                    ),
-                    if (!_sameForAllDays) ...[
-                      const SizedBox(height: 10),
-                      const Text(
-                        'Per-day scheduling is planned for a future phase.',
-                        style: TextStyle(
-                          color: AppColors.textGrey,
-                          fontSize: 12.5,
-                          height: 1.5,
-                        ),
-                      ),
-                    ],
                   ],
                 ),
                 const SizedBox(height: 18),
@@ -761,33 +822,38 @@ class _AddServiceBookingSetupScreenState
                         ),
                       )
                     else
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: _slotPreview.map((slot) {
-                          return Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(
-                                color: AppColors.primary.withValues(
-                                  alpha: 0.10,
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < _slotPreview.length; i++) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: AppColors.primary.withValues(
+                                      alpha: 0.10,
+                                    ),
+                                  ),
+                                ),
+                                child: Text(
+                                  _slotPreview[i],
+                                  style: const TextStyle(
+                                    color: AppColors.textDark,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ),
-                            ),
-                            child: Text(
-                              slot,
-                              style: const TextStyle(
-                                color: AppColors.textDark,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          );
-                        }).toList(),
+                              if (i != _slotPreview.length - 1)
+                                const SizedBox(width: 10),
+                            ],
+                          ],
+                        ),
                       ),
                   ],
                 ),
@@ -855,66 +921,9 @@ class _AddServiceBookingSetupScreenState
                 ),
               ],
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              top: topInset + 10,
-              child: Align(
-                child: FractionallySizedBox(
-                  widthFactor: 0.85,
-                  child: GlassSurface(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 11,
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    backgroundColor: Colors.white.withValues(alpha: 0.72),
-                    blurSigma: 20,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.62),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.06),
-                        blurRadius: 22,
-                        offset: const Offset(0, 10),
-                      ),
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.56),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: IconButton(
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(Icons.arrow_back_rounded),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Booking Setup',
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textDark,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+            AddServiceFlowHeader(
+              title: 'Booking Setup',
+              onBack: () => Navigator.pop(context),
             ),
           ],
         ),
@@ -924,10 +933,9 @@ class _AddServiceBookingSetupScreenState
 }
 
 class _IntroCard extends StatelessWidget {
-  final String title;
   final String subtitle;
 
-  const _IntroCard({required this.title, required this.subtitle});
+  const _IntroCard({required this.subtitle});
 
   @override
   Widget build(BuildContext context) {
@@ -935,28 +943,12 @@ class _IntroCard extends StatelessWidget {
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(26),
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
-              color: AppColors.textDark,
-            ),
-          ),
-          const SizedBox(height: 8),
           Text(
             subtitle,
             style: const TextStyle(
@@ -1264,14 +1256,16 @@ class _TimePickerField extends StatelessWidget {
             onTap();
           },
           borderRadius: BorderRadius.circular(18),
-          child: Container(
+          child: GlassSurface(
+            borderRadius: BorderRadius.circular(18),
+            blurSigma: 20,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFCFBFA),
-              borderRadius: BorderRadius.circular(18),
-              border: isHighlighted
-                  ? Border.all(color: AppColors.primary, width: 1.6)
-                  : null,
+            backgroundColor: Colors.white.withValues(alpha: 0.60),
+            border: Border.all(
+              color: isHighlighted
+                  ? AppColors.primary
+                  : Colors.white.withValues(alpha: 0.64),
+              width: isHighlighted ? 1.6 : 1,
             ),
             child: Row(
               children: [
@@ -1290,93 +1284,6 @@ class _TimePickerField extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _SegmentedChoice extends StatelessWidget {
-  final bool isPrimarySelected;
-  final String primaryLabel;
-  final String secondaryLabel;
-  final VoidCallback onPrimaryTap;
-  final VoidCallback onSecondaryTap;
-
-  const _SegmentedChoice({
-    required this.isPrimarySelected,
-    required this.primaryLabel,
-    required this.secondaryLabel,
-    required this.onPrimaryTap,
-    required this.onSecondaryTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF3F4F6),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        children: [
-          _SegmentChoiceButton(
-            label: primaryLabel,
-            isActive: isPrimarySelected,
-            onTap: onPrimaryTap,
-          ),
-          _SegmentChoiceButton(
-            label: secondaryLabel,
-            isActive: !isPrimarySelected,
-            onTap: onSecondaryTap,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SegmentChoiceButton extends StatelessWidget {
-  final String label;
-  final bool isActive;
-  final VoidCallback onTap;
-
-  const _SegmentChoiceButton({
-    required this.label,
-    required this.isActive,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: isActive ? Colors.white : Colors.transparent,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: isActive
-                ? [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ]
-                : const [],
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: isActive ? AppColors.textDark : AppColors.textGrey,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

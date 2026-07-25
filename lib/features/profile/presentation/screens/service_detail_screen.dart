@@ -49,6 +49,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
 
   final ScrollController _scrollController = ScrollController();
   bool _isTopBarVisible = true;
+  bool _isResolvingBookingFlow = false;
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
   double? _resolvedDistanceKm;
@@ -151,7 +152,8 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
     }
   }
 
-  void _openBookingFlow(BuildContext context) {
+  Future<void> _openBookingFlow() async {
+    if (_isResolvingBookingFlow) return;
     if (service.isPausedByVerification) {
       AppSnackbar.warning(
         context,
@@ -163,6 +165,23 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
     if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
       return;
     }
+    setState(() => _isResolvingBookingFlow = true);
+    try {
+      _pushSlotSelection(context);
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackbar.showError(
+        context,
+        'We could not open booking right now. Please try again in a moment.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isResolvingBookingFlow = false);
+      }
+    }
+  }
+
+  void _pushSlotSelection(BuildContext context) {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -383,9 +402,10 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
       bottomNavigationBar: canBook
           ? _ServiceBottomActionBar(
               service: service,
-              enabled: canRequestBooking,
+              enabled: canRequestBooking && !_isResolvingBookingFlow,
               isVerificationPaused: isVerificationPaused,
-              onBookNow: () => _openBookingFlow(context),
+              isLoading: _isResolvingBookingFlow,
+              onBookNow: _openBookingFlow,
             )
           : null,
     );
@@ -520,12 +540,14 @@ class _ServiceBottomActionBar extends StatelessWidget {
   final ProfileServiceListing service;
   final bool enabled;
   final bool isVerificationPaused;
+  final bool isLoading;
   final VoidCallback onBookNow;
 
   const _ServiceBottomActionBar({
     required this.service,
     required this.enabled,
     required this.isVerificationPaused,
+    required this.isLoading,
     required this.onBookNow,
   });
 
@@ -595,8 +617,13 @@ class _ServiceBottomActionBar extends StatelessWidget {
                   child: SizedBox(
                     height: 50,
                     child: _BottomBookButton(
-                      label: isVerificationPaused ? 'Unavailable' : 'Book Now',
+                      label: isVerificationPaused
+                          ? 'Unavailable'
+                          : isLoading
+                          ? 'Checking...'
+                          : 'Book Now',
                       onPressed: enabled ? onBookNow : null,
+                      isLoading: isLoading,
                     ),
                   ),
                 ),
@@ -701,8 +728,13 @@ class _ServiceHero extends StatelessWidget {
 class _BottomBookButton extends StatelessWidget {
   final String label;
   final VoidCallback? onPressed;
+  final bool isLoading;
 
-  const _BottomBookButton({required this.label, required this.onPressed});
+  const _BottomBookButton({
+    required this.label,
+    required this.onPressed,
+    this.isLoading = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -732,25 +764,36 @@ class _BottomBookButton extends StatelessWidget {
             child: Center(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.calendar_month_rounded,
-                      color: Colors.white,
-                      size: 22,
-                    ),
-                    const SizedBox(width: 9),
-                    Text(
-                      label,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 19,
-                        fontWeight: FontWeight.w900,
+                child: isLoading
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.4,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.calendar_month_rounded,
+                            color: Colors.white,
+                            size: 22,
+                          ),
+                          const SizedBox(width: 9),
+                          Text(
+                            label,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 19,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
               ),
             ),
           ),

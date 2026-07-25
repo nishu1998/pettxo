@@ -11,7 +11,6 @@ import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
-import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../auth/data/services/user_service.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
@@ -23,6 +22,7 @@ import '../../domain/models/add_service_flow_draft.dart';
 import '../../domain/models/user_profile.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../../../services/domain/models/service_model.dart';
+import '../widgets/add_service_flow_header.dart';
 
 class AddServiceAdditionalDetailsScreen extends StatefulWidget {
   final AddServiceFlowDraft draft;
@@ -483,9 +483,9 @@ class _AddServiceAdditionalDetailsScreenState
 
   @override
   Widget build(BuildContext context) {
-    final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final topContentPadding = topInset + 108;
+    final topContentPadding =
+        MediaQuery.paddingOf(context).top + AddServiceFlowHeader.contentHeight;
 
     return Scaffold(
       backgroundColor: _screenBackground,
@@ -502,7 +502,6 @@ class _AddServiceAdditionalDetailsScreenState
               ),
               children: [
                 const _IntroCard(
-                  title: 'Additional Details',
                   subtitle:
                       'Add optional photos and private notes to make your service feel complete before publishing.',
                 ),
@@ -640,66 +639,9 @@ class _AddServiceAdditionalDetailsScreenState
                 ),
               ],
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              top: topInset + 10,
-              child: Align(
-                child: FractionallySizedBox(
-                  widthFactor: 0.85,
-                  child: GlassSurface(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 11,
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    backgroundColor: Colors.white.withValues(alpha: 0.72),
-                    blurSigma: 20,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.62),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.06),
-                        blurRadius: 22,
-                        offset: const Offset(0, 10),
-                      ),
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.56),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: IconButton(
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(Icons.arrow_back_rounded),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Additional Details',
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textDark,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+            AddServiceFlowHeader(
+              title: 'Additional Details',
+              onBack: () => Navigator.pop(context),
             ),
           ],
         ),
@@ -716,10 +658,9 @@ class _SelectedPhoto {
 }
 
 class _IntroCard extends StatelessWidget {
-  final String title;
   final String subtitle;
 
-  const _IntroCard({required this.title, required this.subtitle});
+  const _IntroCard({required this.subtitle});
 
   @override
   Widget build(BuildContext context) {
@@ -727,28 +668,12 @@ class _IntroCard extends StatelessWidget {
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(26),
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
-              color: AppColors.textDark,
-            ),
-          ),
-          const SizedBox(height: 8),
           Text(
             subtitle,
             style: const TextStyle(

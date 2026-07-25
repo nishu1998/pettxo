@@ -47,51 +47,67 @@ class _ProfileTypeSelectorSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final size = MediaQuery.sizeOf(context);
+    final compact = size.width < 380;
+    final maxHeight = size.height * 0.78;
 
     return Material(
       type: MaterialType.transparency,
       child: SafeArea(
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 18 : 24,
+              vertical: compact ? 16 : 24,
+            ),
             child: AppGlassDialogFrame(
               maxWidth: 430,
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+              padding: EdgeInsets.fromLTRB(
+                compact ? 16 : 20,
+                compact ? 16 : 20,
+                compact ? 16 : 20,
+                compact ? 16 : 20,
+              ),
               borderRadius: BorderRadius.circular(26),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Account Type',
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      color: isDark ? Colors.white : AppColors.textDark,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.4,
-                    ),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxHeight),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Account Type',
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          color: isDark ? Colors.white : AppColors.textDark,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.4,
+                        ),
+                      ),
+                      SizedBox(height: compact ? 6 : 8),
+                      Text(
+                        'Choose the tag that best describes how you identify on Pettxo.',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.76)
+                              : AppColors.textGrey,
+                          height: 1.4,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      SizedBox(height: compact ? 14 : 18),
+                      for (final type in ProfileType.values) ...[
+                        _ProfileTypeOptionTile(
+                          type: type,
+                          isSelected: type == selectedType,
+                          onTap: () => Navigator.of(context).pop(type),
+                        ),
+                        if (type != ProfileType.values.last)
+                          SizedBox(height: compact ? 8 : 10),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Choose the tag that best describes how you identify on Pettxo.',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: isDark
-                          ? Colors.white.withValues(alpha: 0.76)
-                          : AppColors.textGrey,
-                      height: 1.4,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  for (final type in ProfileType.values) ...[
-                    _ProfileTypeOptionTile(
-                      type: type,
-                      isSelected: type == selectedType,
-                      onTap: () => Navigator.of(context).pop(type),
-                    ),
-                    if (type != ProfileType.values.last)
-                      const SizedBox(height: 10),
-                  ],
-                ],
+                ),
               ),
             ),
           ),
@@ -120,11 +136,11 @@ class _ProfileTypeOptionTile extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(compact ? 20 : 22),
+        borderRadius: BorderRadius.circular(compact ? 18 : 22),
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.68),
-            borderRadius: BorderRadius.circular(compact ? 20 : 22),
+            borderRadius: BorderRadius.circular(compact ? 18 : 22),
             border: Border.all(
               color: isSelected
                   ? AppColors.primary.withValues(alpha: 0.50)
@@ -134,37 +150,38 @@ class _ProfileTypeOptionTile extends StatelessWidget {
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.04),
-                blurRadius: compact ? 18 : 20,
+                blurRadius: compact ? 14 : 20,
                 offset: const Offset(0, 8),
               ),
             ],
           ),
           child: Padding(
-            padding: EdgeInsets.all(compact ? 14 : 16),
+            padding: EdgeInsets.all(compact ? 12 : 16),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Container(
-                  width: compact ? 50 : 54,
-                  height: compact ? 50 : 54,
+                  width: compact ? 46 : 54,
+                  height: compact ? 46 : 54,
                   decoration: BoxDecoration(
                     gradient: AppColors.brandGradientDiagonal,
-                    borderRadius: BorderRadius.circular(compact ? 15 : 16),
+                    borderRadius: BorderRadius.circular(compact ? 14 : 16),
                   ),
                   child: Icon(
                     type.icon,
                     color: Colors.white,
-                    size: compact ? 24 : 26,
+                    size: compact ? 22 : 26,
                   ),
                 ),
-                SizedBox(width: compact ? 12 : 14),
+                SizedBox(width: compact ? 10 : 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Container(
                         padding: EdgeInsets.symmetric(
-                          horizontal: compact ? 9 : 10,
-                          vertical: compact ? 4 : 5,
+                          horizontal: compact ? 8 : 10,
+                          vertical: compact ? 3 : 5,
                         ),
                         decoration: BoxDecoration(
                           color: const Color(0xFFFFF4EE),
@@ -173,35 +190,35 @@ class _ProfileTypeOptionTile extends StatelessWidget {
                         child: Text(
                           type.badge,
                           style: TextStyle(
-                            fontSize: compact ? 10 : 11,
+                            fontSize: compact ? 9.5 : 11,
                             fontWeight: FontWeight.w700,
                             color: AppColors.primary,
                             letterSpacing: 0.3,
                           ),
                         ),
                       ),
-                      SizedBox(height: compact ? 7 : 8),
+                      SizedBox(height: compact ? 6 : 8),
                       Text(
                         type.label,
                         style: TextStyle(
                           fontWeight: FontWeight.w800,
-                          fontSize: compact ? 16.5 : 17,
+                          fontSize: compact ? 15.5 : 17,
                           color: AppColors.textDark,
                         ),
                       ),
-                      SizedBox(height: compact ? 4 : 5),
+                      SizedBox(height: compact ? 3 : 5),
                       Text(
                         type.description,
                         style: TextStyle(
                           color: AppColors.textGrey,
-                          height: 1.35,
-                          fontSize: compact ? 13 : 13.5,
+                          height: 1.32,
+                          fontSize: compact ? 12.5 : 13.5,
                         ),
                       ),
                     ],
                   ),
                 ),
-                SizedBox(width: compact ? 10 : 12),
+                SizedBox(width: compact ? 8 : 12),
                 Container(
                   width: compact ? 28 : 30,
                   height: compact ? 28 : 30,
