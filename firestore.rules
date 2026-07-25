@@ -1484,6 +1484,16 @@ service cloud.firestore {
         allow write: if isAdmin();
       }
 
+      match /paymentAttempts/{paymentAttemptId} {
+        allow read: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
+            isAdmin()
+          );
+        allow write: if false;
+      }
+
       match /statusHistory/{historyId} {
         allow read: if signedIn() &&
           (
@@ -1503,6 +1513,56 @@ service cloud.firestore {
           );
         allow update, delete: if isAdmin();
       }
+    }
+
+    match /bookingPrivate/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          (
+            (
+              resource.data.parentId == request.auth.uid
+            ) &&
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' &&
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
+          ) ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /bookingPrivateParticipants/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          (
+            (
+              resource.data.parentId == request.auth.uid ||
+              resource.data.providerId == request.auth.uid
+            ) &&
+            (
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS'
+            ) &&
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
+          ) ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /bookingChats/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          (
+            request.auth.uid in resource.data.participantIds &&
+            (
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS'
+            ) &&
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
+          ) ||
+          isAdmin()
+        );
+      allow write: if false;
     }
 
     match /payoutReadiness/{bookingId} {
@@ -1555,6 +1615,52 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /bookingCancellations/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.actorId == request.auth.uid ||
+          resource.data.bookingId == bookingId &&
+          (
+            (
+              exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
+              (
+                get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
+                get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+                get(/databases/$(database)/documents/bookings/$(bookingId)).data.providerId == request.auth.uid ||
+                get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid
+              )
+            )
+          ) ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /bookingFinancialAdjustments/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.userId == request.auth.uid ||
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /capacityReleases/{bookingId} {
+      allow read: if signedIn() &&
+        (
+          exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
+          (
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.providerId == request.auth.uid ||
+            get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
+            isAdmin()
+          )
+        );
+      allow write: if false;
+    }
+
     match /providerEarnings/{earningId} {
       allow read: if signedIn() &&
         (
@@ -1564,12 +1670,44 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /services/{serviceId}/slotOccupancy/{slotId} {
+      allow read, write: if false;
+    }
+
+    match /services/{serviceId}/occupancy/{dateKey} {
+      allow read, write: if false;
+    }
+
     match /payouts/{payoutId} {
       allow read: if signedIn() &&
         (
           resource.data.providerId == request.auth.uid ||
           isAdmin()
         );
+      allow write: if false;
+    }
+
+    match /providerPayouts/{payoutId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.providerId == request.auth.uid ||
+          isAdmin()
+        );
+      allow write: if false;
+    }
+
+    match /bookingFinancialLedger/{entryId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /bookingDisputeResolutions/{resolutionId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /bookingFinancialReconciliation/{bookingId} {
+      allow read: if isAdmin();
       allow write: if false;
     }
 

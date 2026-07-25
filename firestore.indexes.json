@@ -119,6 +119,48 @@
       ]
     },
     {
+      "collectionGroup": "bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING" },
+        { "fieldPath": "stateQueryValue", "order": "ASCENDING" },
+        { "fieldPath": "serviceAnchorAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "serviceOwnerId", "order": "ASCENDING" },
+        { "fieldPath": "stateQueryValue", "order": "ASCENDING" },
+        { "fieldPath": "serviceAnchorAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "stateQueryValue", "order": "ASCENDING" },
+        { "fieldPath": "payDeadlineAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "paymentAttempts",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "state", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "paymentAttempts",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "state", "order": "ASCENDING" },
+        { "fieldPath": "lastReconciledAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "slots",
       "queryScope": "COLLECTION",
       "fields": [
