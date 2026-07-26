@@ -45,6 +45,7 @@ function buildPlan(params: Omit<BookingNotificationPlan, "idempotencyKey"> & {bo
     title: params.title,
     body: params.body,
     data: {
+      ...params.data,
       bookingId: params.bookingId,
       bookingType: params.data.bookingType ?? "",
       state: params.data.state ?? "",
@@ -65,7 +66,13 @@ export function buildQueuedRequestCreatedNotification(params: {
     channels: ["in_app"],
     title: "New request queued",
     body: "A new booking request is waiting for your next working window.",
-    data: {bookingType: params.bookingType, state: params.state},
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "provider",
+      navigationIntent: "provider_request",
+      bookingFlowVersion: "3.2",
+    },
   });
 }
 
@@ -82,7 +89,13 @@ export function buildProviderActionRequiredNotification(params: {
     channels: ["push", "in_app"],
     title: "New booking request",
     body: "A pet parent sent a request. Review and respond within 60 minutes.",
-    data: {bookingType: params.bookingType, state: params.state},
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "provider",
+      navigationIntent: "provider_request",
+      bookingFlowVersion: "3.2",
+    },
   });
 }
 
@@ -99,7 +112,13 @@ export function buildPaymentRequiredNotification(params: {
     channels: ["push", "in_app"],
     title: "Provider accepted your request",
     body: "Complete payment within 60 minutes. Availability will be confirmed when payment succeeds.",
-    data: {bookingType: params.bookingType, state: params.state},
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "customer",
+      navigationIntent: "payment",
+      bookingFlowVersion: "3.2",
+    },
   });
 }
 
@@ -108,6 +127,7 @@ export function buildPaymentOrderReadyNotification(params: {
   parentId: string;
   bookingType: string;
   state: string;
+  paymentAttemptId?: string;
 }): BookingNotificationPlan[] {
   return [
     buildPlan({
@@ -117,7 +137,14 @@ export function buildPaymentOrderReadyNotification(params: {
       channels: ["push", "in_app"],
       title: "Payment ready",
       body: "Checkout is ready. Complete payment before the 60-minute window ends.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "payment",
+        bookingFlowVersion: "3.2",
+        paymentAttemptId: params.paymentAttemptId ?? "",
+      },
     }),
   ];
 }
@@ -136,7 +163,13 @@ export function buildPaymentCapturedProcessingNotification(params: {
       channels: ["in_app"],
       title: "Payment received",
       body: "We are finalizing your booking confirmation now.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "booking_detail",
+        bookingFlowVersion: "3.2",
+      },
     }),
   ];
 }
@@ -156,7 +189,13 @@ export function buildBookingConfirmedNotification(params: {
       channels: ["push", "in_app"],
       title: "Booking confirmed",
       body: "Your booking is confirmed. OTP, contact, and chat are now available in booking details.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "booking_detail",
+        bookingFlowVersion: "3.2",
+      },
     }),
     buildPlan({
       bookingId: params.bookingId,
@@ -165,7 +204,13 @@ export function buildBookingConfirmedNotification(params: {
       channels: ["push", "in_app"],
       title: "Booking confirmed",
       body: "Payment is complete. You can now view paid-only booking details inside Pettxo.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "provider",
+        navigationIntent: "booking_detail",
+        bookingFlowVersion: "3.2",
+      },
     }),
   ];
 }
@@ -185,7 +230,13 @@ export function buildPaymentRefundRequiredNotification(params: {
       channels: ["push", "in_app"],
       title: "Payment captured, refund initiated",
       body: "This booking could not be confirmed. A full refund has been initiated.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "request_status",
+        bookingFlowVersion: "3.2",
+      },
     }),
     buildPlan({
       bookingId: params.bookingId,
@@ -194,7 +245,13 @@ export function buildPaymentRefundRequiredNotification(params: {
       channels: ["in_app"],
       title: "Capacity race resolved",
       body: "A captured payment could not be confirmed because availability was exhausted first.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "provider",
+        navigationIntent: "provider_request",
+        bookingFlowVersion: "3.2",
+      },
     }),
   ];
 }
@@ -214,7 +271,13 @@ export function buildPaymentFailedNotification(params: {
       channels: ["push", "in_app"],
       title: "Payment could not be confirmed",
       body: "This payment attempt could not be completed within the allowed booking window.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "request_status",
+        bookingFlowVersion: "3.2",
+      },
     }),
     buildPlan({
       bookingId: params.bookingId,
@@ -223,7 +286,13 @@ export function buildPaymentFailedNotification(params: {
       channels: ["in_app"],
       title: "Payment not completed",
       body: "The booking did not advance to paid confirmation.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "provider",
+        navigationIntent: "provider_request",
+        bookingFlowVersion: "3.2",
+      },
     }),
   ];
 }
@@ -243,7 +312,13 @@ export function buildZeroPayableConfirmationNotification(params: {
       channels: ["push", "in_app"],
       title: "Booking confirmed",
       body: "Your Pettxo promotion covered the full amount and the booking is confirmed.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "booking_detail",
+        bookingFlowVersion: "3.2",
+      },
     }),
     buildPlan({
       bookingId: params.bookingId,
@@ -252,7 +327,13 @@ export function buildZeroPayableConfirmationNotification(params: {
       channels: ["in_app"],
       title: "Booking confirmed",
       body: "A Pettxo-funded promotion confirmed this booking without customer checkout.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "provider",
+        navigationIntent: "booking_detail",
+        bookingFlowVersion: "3.2",
+      },
     }),
   ];
 }
@@ -270,7 +351,13 @@ export function buildDeclinedNotification(params: {
     channels: ["push", "in_app"],
     title: "Request declined",
     body: "The provider declined your booking request.",
-    data: {bookingType: params.bookingType, state: params.state},
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "customer",
+      navigationIntent: "request_status",
+      bookingFlowVersion: "3.2",
+    },
   });
 }
 
@@ -287,7 +374,13 @@ export function buildRequestExpiredNotification(params: {
     channels: ["push", "in_app"],
     title: "Request expired",
     body: "The provider did not respond within the 60-minute window.",
-    data: {bookingType: params.bookingType, state: params.state},
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "customer",
+      navigationIntent: "request_status",
+      bookingFlowVersion: "3.2",
+    },
   });
 }
 
@@ -304,7 +397,13 @@ export function buildCancelledByParentNotification(params: {
     channels: ["push", "in_app"],
     title: "Request cancelled",
     body: "The pet parent cancelled this request before payment.",
-    data: {bookingType: params.bookingType, state: params.state},
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "provider",
+      navigationIntent: "provider_request",
+      bookingFlowVersion: "3.2",
+    },
   });
 }
 
@@ -323,7 +422,13 @@ export function buildPaymentExpiredNotification(params: {
       channels: ["push", "in_app"],
       title: "Payment window expired",
       body: "This request expired because payment was not completed in time.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "request_status",
+        bookingFlowVersion: "3.2",
+      },
     }),
     buildPlan({
       bookingId: params.bookingId,
@@ -332,7 +437,13 @@ export function buildPaymentExpiredNotification(params: {
       channels: ["push", "in_app"],
       title: "Payment not completed",
       body: "The pet parent did not complete payment before the 60-minute deadline.",
-      data: {bookingType: params.bookingType, state: params.state},
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "provider",
+        navigationIntent: "provider_request",
+        bookingFlowVersion: "3.2",
+      },
     }),
   ];
 }

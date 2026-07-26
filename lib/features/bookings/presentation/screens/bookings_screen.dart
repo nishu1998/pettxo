@@ -1108,10 +1108,21 @@ class _CanonicalBookingListCard extends StatelessWidget {
       case CanonicalBookingStateV3.completedFinal:
         return 'Booking finished successfully.';
       case CanonicalBookingStateV3.paymentExpired:
-        return 'The payment window expired before confirmation.';
+        if (_isAvailabilityLostAfterCapture(booking)) {
+          return 'Availability was no longer available after payment capture.';
+        }
+        if (_isPaymentFailureAfterCapture(booking)) {
+          return booking.payment.failureMessage.trim().isNotEmpty
+              ? booking.payment.failureMessage.trim()
+              : 'Payment could not be completed.';
+        }
+        return 'Payment was not completed within the allowed time.';
       case CanonicalBookingStateV3.cancelledByParent:
+        return 'Request cancelled by customer.';
       case CanonicalBookingStateV3.cancelled:
-        return 'This booking was cancelled.';
+        return booking.cancellation.cancelReasonText.trim().isNotEmpty
+            ? booking.cancellation.cancelReasonText.trim()
+            : 'This booking was cancelled.';
       case CanonicalBookingStateV3.declined:
         return 'The provider declined this request.';
       case CanonicalBookingStateV3.expired:
@@ -1123,6 +1134,21 @@ class _CanonicalBookingListCard extends StatelessWidget {
       case CanonicalBookingStateV3.serviceNotStarted:
         return 'The service did not start as scheduled.';
     }
+  }
+
+  static bool _isAvailabilityLostAfterCapture(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final failureCode = booking.payment.failureCode.trim().toUpperCase();
+    return failureCode == 'CAPACITY_EXHAUSTED' ||
+        failureCode == 'CAPACITY_UNAVAILABLE_AFTER_CAPTURE';
+  }
+
+  static bool _isPaymentFailureAfterCapture(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final failureCode = booking.payment.failureCode.trim().toUpperCase();
+    return failureCode.isNotEmpty && !_isAvailabilityLostAfterCapture(booking);
   }
 
   static String _dateLabel(DateTime value) {

@@ -10,6 +10,7 @@ import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
+import 'bookings_screen.dart';
 import 'canonical_booking_payment_screen.dart';
 
 class CanonicalBookingRequestStatusScreen extends StatefulWidget {
@@ -18,6 +19,7 @@ class CanonicalBookingRequestStatusScreen extends StatefulWidget {
   final String serviceName;
   final String providerName;
   final String serviceImageUrl;
+  final bool exitToBookingsOnClose;
 
   const CanonicalBookingRequestStatusScreen({
     super.key,
@@ -26,6 +28,7 @@ class CanonicalBookingRequestStatusScreen extends StatefulWidget {
     required this.serviceName,
     required this.providerName,
     required this.serviceImageUrl,
+    this.exitToBookingsOnClose = false,
   });
 
   @override
@@ -55,103 +58,135 @@ class _CanonicalBookingRequestStatusScreenState
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
+    return PopScope(
+      canPop: !widget.exitToBookingsOnClose,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !widget.exitToBookingsOnClose) return;
+        _closeToBookings();
+      },
+      child: Scaffold(
         backgroundColor: AppColors.background,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        title: const Text(
-          'Request status',
-          style: TextStyle(
-            color: AppColors.textDark,
-            fontWeight: FontWeight.w900,
+        appBar: AppBar(
+          backgroundColor: AppColors.background,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            onPressed: _handleClosePressed,
+            icon: const Icon(
+              Icons.arrow_back_rounded,
+              color: AppColors.textDark,
+            ),
+          ),
+          title: const Text(
+            'Request status',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontWeight: FontWeight.w900,
+            ),
           ),
         ),
-      ),
-      body: StreamBuilder<BookingReadModel?>(
-        stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
-        builder: (context, snapshot) {
-          final readModel = snapshot.data;
-          final status = _deriveStatus(readModel);
-          final canonicalBooking = readModel is CanonicalBookingReadModel
-              ? readModel.booking
-              : null;
-          final canOpenPayment = _canOpenCanonicalPayment(canonicalBooking);
-          return SafeArea(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 20),
-              children: [
-                _StatusHeroCard(
-                  serviceName: widget.serviceName,
-                  providerName: widget.providerName,
-                  serviceImageUrl: widget.serviceImageUrl,
-                  title: status.title,
-                  subtitle: status.subtitle,
-                  color: status.color,
-                ),
-                const SizedBox(height: 16),
-                if (status.countdownLabel != null)
-                  _DetailCard(
-                    title: 'Response window',
-                    body: status.countdownLabel!,
+        body: StreamBuilder<BookingReadModel?>(
+          stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
+          builder: (context, snapshot) {
+            final readModel = snapshot.data;
+            final status = _deriveStatus(readModel);
+            final canonicalBooking = readModel is CanonicalBookingReadModel
+                ? readModel.booking
+                : null;
+            final canOpenPayment = _canOpenCanonicalPayment(canonicalBooking);
+            return SafeArea(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(18, 8, 18, 20),
+                children: [
+                  _StatusHeroCard(
+                    serviceName: widget.serviceName,
+                    providerName: widget.providerName,
+                    serviceImageUrl: widget.serviceImageUrl,
+                    title: status.title,
+                    subtitle: status.subtitle,
+                    color: status.color,
                   ),
-                if (status.timerStartsAtLabel != null) ...[
                   const SizedBox(height: 12),
-                  _DetailCard(
-                    title: 'Timer starts',
-                    body: status.timerStartsAtLabel!,
-                  ),
-                ],
-                const SizedBox(height: 12),
-                const _DetailCard(
-                  title: 'Charges',
-                  body: 'Nothing has been charged.',
-                ),
-                const SizedBox(height: 12),
-                _DetailCard(title: 'Current state', body: status.stateLabel),
-                if (status.developmentNote != null) ...[
+                  if (status.countdownLabel != null)
+                    _DetailCard(
+                      title: 'Response window',
+                      body: status.countdownLabel!,
+                    ),
+                  if (status.timerStartsAtLabel != null) ...[
+                    const SizedBox(height: 12),
+                    _DetailCard(
+                      title: 'Timer starts',
+                      body: status.timerStartsAtLabel!,
+                    ),
+                  ],
                   const SizedBox(height: 12),
-                  _DetailCard(title: 'Payment', body: status.developmentNote!),
-                ],
-                const SizedBox(height: 20),
-                if (status.canCancel) ...[
-                  SecondaryButton(
-                    label: _isCancelling ? 'Cancelling...' : 'Cancel request',
-                    onPressed: _isCancelling ? null : _cancelRequest,
+                  const _DetailCard(
+                    title: 'Charges',
+                    body: 'Nothing has been charged.',
                   ),
                   const SizedBox(height: 10),
-                ],
-                if (canOpenPayment) ...[
-                  GradientButton(
-                    label:
-                        canonicalBooking!.payment.paymentAttemptId
-                            .trim()
-                            .isNotEmpty
-                        ? 'Resume payment'
-                        : 'Pay now',
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => CanonicalBookingPaymentScreen(
-                          bookingId: widget.bookingId,
-                          serviceName: widget.serviceName,
-                          providerName: widget.providerName,
-                          serviceImageUrl: widget.serviceImageUrl,
+                  _DetailCard(title: 'Current state', body: status.stateLabel),
+                  if (status.developmentNote != null) ...[
+                    const SizedBox(height: 12),
+                    _DetailCard(
+                      title: 'Payment',
+                      body: status.developmentNote!,
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  if (status.canCancel) ...[
+                    SecondaryButton(
+                      label: _isCancelling ? 'Cancelling...' : 'Cancel request',
+                      onPressed: _isCancelling ? null : _cancelRequest,
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  if (canOpenPayment) ...[
+                    GradientButton(
+                      label:
+                          canonicalBooking!.payment.paymentAttemptId
+                              .trim()
+                              .isNotEmpty
+                          ? 'Resume payment'
+                          : 'Pay now',
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => CanonicalBookingPaymentScreen(
+                            bookingId: widget.bookingId,
+                            serviceName: widget.serviceName,
+                            providerName: widget.providerName,
+                            serviceImageUrl: widget.serviceImageUrl,
+                          ),
                         ),
                       ),
                     ),
+                    const SizedBox(height: 10),
+                  ],
+                  SecondaryButton(
+                    label: 'Close',
+                    onPressed: _handleClosePressed,
                   ),
-                  const SizedBox(height: 10),
                 ],
-                SecondaryButton(
-                  label: 'Close',
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-          );
-        },
+              ),
+            );
+          },
+        ),
       ),
+    );
+  }
+
+  void _handleClosePressed() {
+    if (!widget.exitToBookingsOnClose) {
+      Navigator.pop(context);
+      return;
+    }
+    _closeToBookings();
+  }
+
+  void _closeToBookings() {
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const BookingsScreen()),
+      (route) => false,
     );
   }
 
@@ -205,31 +240,31 @@ class _CanonicalBookingRequestStatusScreenState
               : 'Your payment window is active. Complete payment to confirm availability.',
         );
       case CanonicalBookingStateV3.declined:
-        return const _RequestStatusViewData(
+        return _RequestStatusViewData(
           stateLabel: 'Declined',
-          title: 'The provider declined this request.',
-          subtitle: 'Nothing has been charged.',
+          title: _terminalTitleForBooking(booking),
+          subtitle: _terminalSubtitleForBooking(booking),
           color: Color(0xFFE24A4A),
         );
       case CanonicalBookingStateV3.expired:
-        return const _RequestStatusViewData(
+        return _RequestStatusViewData(
           stateLabel: 'Expired',
-          title: 'The provider did not respond in time.',
-          subtitle: 'Nothing has been charged.',
+          title: _terminalTitleForBooking(booking),
+          subtitle: _terminalSubtitleForBooking(booking),
           color: Color(0xFF6B7280),
         );
       case CanonicalBookingStateV3.cancelledByParent:
-        return const _RequestStatusViewData(
+        return _RequestStatusViewData(
           stateLabel: 'Cancelled',
-          title: 'This request was cancelled.',
-          subtitle: 'Nothing has been charged.',
+          title: _terminalTitleForBooking(booking),
+          subtitle: _terminalSubtitleForBooking(booking),
           color: Color(0xFF6B7280),
         );
       case CanonicalBookingStateV3.paymentExpired:
-        return const _RequestStatusViewData(
+        return _RequestStatusViewData(
           stateLabel: 'Payment expired',
-          title: 'The payment window expired.',
-          subtitle: 'No payment was completed.',
+          title: _terminalTitleForBooking(booking),
+          subtitle: _terminalSubtitleForBooking(booking),
           color: Color(0xFF6B7280),
         );
       default:
@@ -296,6 +331,66 @@ class _CanonicalBookingRequestStatusScreenState
       return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')} remaining';
     }
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')} remaining';
+  }
+
+  String _terminalTitleForBooking(CanonicalBookingDocumentV3 booking) {
+    switch (booking.state) {
+      case CanonicalBookingStateV3.declined:
+        return 'The provider declined this request.';
+      case CanonicalBookingStateV3.expired:
+        return 'The provider did not respond in time.';
+      case CanonicalBookingStateV3.cancelledByParent:
+        return 'The request was cancelled by the customer.';
+      case CanonicalBookingStateV3.paymentExpired:
+        if (_isAvailabilityLostAfterCapture(booking)) {
+          return 'Availability was no longer available.';
+        }
+        if (_isPaymentFailureAfterCapture(booking)) {
+          return 'Payment could not be completed.';
+        }
+        return 'The payment window expired.';
+      default:
+        return 'This request has ended.';
+    }
+  }
+
+  String _terminalSubtitleForBooking(CanonicalBookingDocumentV3 booking) {
+    final paymentFailureMessage = booking.payment.failureMessage.trim();
+    final cancelReasonText = booking.cancellation.cancelReasonText.trim();
+    if (paymentFailureMessage.isNotEmpty) {
+      return paymentFailureMessage;
+    }
+    if (cancelReasonText.isNotEmpty) {
+      return cancelReasonText;
+    }
+
+    switch (booking.state) {
+      case CanonicalBookingStateV3.declined:
+      case CanonicalBookingStateV3.expired:
+      case CanonicalBookingStateV3.cancelledByParent:
+        return 'Nothing has been charged.';
+      case CanonicalBookingStateV3.paymentExpired:
+        if (_isAvailabilityLostAfterCapture(booking)) {
+          return 'Any captured payment will follow the canonical refund and reconciliation flow.';
+        }
+        if (_isPaymentFailureAfterCapture(booking)) {
+          return 'The payment did not reach a confirmed booking state.';
+        }
+        return 'No payment was completed in time.';
+      default:
+        return 'Nothing has been charged.';
+    }
+  }
+
+  bool _isAvailabilityLostAfterCapture(CanonicalBookingDocumentV3 booking) {
+    final failureCode = booking.payment.failureCode.trim().toUpperCase();
+    return failureCode == 'CAPACITY_EXHAUSTED' ||
+        failureCode == 'CAPACITY_UNAVAILABLE_AFTER_CAPTURE';
+  }
+
+  bool _isPaymentFailureAfterCapture(CanonicalBookingDocumentV3 booking) {
+    final failureCode = booking.payment.failureCode.trim().toUpperCase();
+    return failureCode.isNotEmpty && !_isAvailabilityLostAfterCapture(booking);
   }
 
   String _dateTimeLabel(DateTime value) {

@@ -475,7 +475,7 @@ export function createBookingRequestV3(params: {
   const runway = validateCanonicalBookingRunway({
     bookingType: params.input.bookingType,
     schedule: params.input.schedule,
-    timerStartsAt: timerStart.timerStartsAt,
+    authoritativeNow: params.authoritativeNow,
     service: params.service,
     workingHours: normalizedHours.workingHours,
   });

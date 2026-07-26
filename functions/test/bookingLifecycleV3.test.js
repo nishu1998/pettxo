@@ -286,13 +286,13 @@ test("DST-observing timezone computes next opening correctly", () => {
 });
 
 test("runway validation accepts exact SLOT runway boundary", () => {
-  const timerStartsAt = new Date("2026-07-22T03:30:00.000Z");
-  const anchor = new Date(timerStartsAt.getTime() + 150 * 60 * 1000);
+  const authoritativeNow = new Date("2026-07-22T03:30:00.000Z");
+  const anchor = new Date(authoritativeNow.getTime() + 150 * 60 * 1000);
   const schedule = slotSchedule({startAt: anchor});
   const result = validateCanonicalBookingRunway({
     bookingType: "SLOT",
     schedule,
-    timerStartsAt,
+    authoritativeNow,
     service: baseService(),
     workingHours: normalizeServiceWorkingHours(baseService()).workingHours,
   });
@@ -300,13 +300,13 @@ test("runway validation accepts exact SLOT runway boundary", () => {
 });
 
 test("runway validation rejects SLOT one millisecond too early", () => {
-  const timerStartsAt = new Date("2026-07-22T03:30:00.000Z");
-  const anchor = new Date(timerStartsAt.getTime() + 150 * 60 * 1000 - 1);
+  const authoritativeNow = new Date("2026-07-22T03:30:00.000Z");
+  const anchor = new Date(authoritativeNow.getTime() + 150 * 60 * 1000 - 1);
   const schedule = slotSchedule({startAt: anchor});
   const result = validateCanonicalBookingRunway({
     bookingType: "SLOT",
     schedule,
-    timerStartsAt,
+    authoritativeNow,
     service: baseService(),
     workingHours: normalizeServiceWorkingHours(baseService()).workingHours,
   });
@@ -314,7 +314,7 @@ test("runway validation rejects SLOT one millisecond too early", () => {
   assert.equal(result.issues.some((entry) => entry.code === "RUNWAY_NOT_SATISFIED"), true);
 });
 
-test("runway validation accepts exact RANGE boundary and queued requests use next opening", () => {
+test("runway validation accepts exact RANGE boundary from authoritative now", () => {
   const requestedAt = new Date("2026-07-22T12:30:00.000Z");
   const normalized = normalizeServiceWorkingHours(baseService()).workingHours;
   const timerStart = computeTimerStartsAt({
@@ -322,16 +322,37 @@ test("runway validation accepts exact RANGE boundary and queued requests use nex
     timezone: "Asia/Kolkata",
     workingHours: normalized,
   });
-  const anchor = new Date(timerStart.timerStartsAt.getTime() + 150 * 60 * 1000);
+  const anchor = new Date(requestedAt.getTime() + 150 * 60 * 1000);
   const schedule = rangeSchedule({checkIn: anchor});
   const result = validateCanonicalBookingRunway({
     bookingType: "RANGE",
     schedule,
-    timerStartsAt: timerStart.timerStartsAt,
+    authoritativeNow: requestedAt,
     service: baseService(),
     workingHours: normalized,
   });
   assert.equal(timerStart.timerStartsAt.toISOString(), "2026-07-23T03:30:00.000Z");
+  assert.equal(result.ok, true);
+});
+
+test("queued requests still use authoritative now for runway validation", () => {
+  const requestedAt = new Date("2026-07-22T12:30:00.000Z");
+  const normalized = normalizeServiceWorkingHours(baseService()).workingHours;
+  const timerStart = computeTimerStartsAt({
+    requestedAt,
+    timezone: "Asia/Kolkata",
+    workingHours: normalized,
+  });
+  const anchor = new Date(requestedAt.getTime() + 150 * 60 * 1000);
+  const schedule = slotSchedule({startAt: anchor});
+  const result = validateCanonicalBookingRunway({
+    bookingType: "SLOT",
+    schedule,
+    authoritativeNow: requestedAt,
+    service: baseService(),
+    workingHours: normalized,
+  });
+  assert.equal(timerStart.wasQueuedOutsideWorkingHours, true);
   assert.equal(result.ok, true);
 });
 
@@ -845,4 +866,21 @@ test("notification payloads remain request-safe", () => {
     assert.equal(serialized.includes("razorpay_signature"), false);
     assert.equal(serialized.includes("key_secret"), false);
   }
+});
+
+test("payment-ready notifications include canonical payment identifiers for navigation", () => {
+  const [plan] = notifications.buildPaymentOrderReadyNotification({
+    bookingId: "booking-1",
+    parentId: "parent-1",
+    bookingType: "SLOT",
+    state: "ACCEPTED_AWAITING_PAYMENT",
+    paymentAttemptId: "attempt-123",
+  });
+
+  assert.equal(plan.recipientUserId, "parent-1");
+  assert.equal(plan.data.bookingId, "booking-1");
+  assert.equal(plan.data.navigationIntent, "payment");
+  assert.equal(plan.data.recipientRole, "customer");
+  assert.equal(plan.data.paymentAttemptId, "attempt-123");
+  assert.equal(plan.data.bookingFlowVersion, "3.2");
 });

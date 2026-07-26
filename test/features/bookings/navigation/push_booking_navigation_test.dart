@@ -25,6 +25,15 @@ void main() {
     },
   );
 
+  test('push booking helper supports nested data payloads', () {
+    final request = PushNotificationService.bookingOpenRequestFromPayload({
+      'data': {'bookingId': 'booking-3', 'recipientRole': 'provider'},
+    });
+
+    expect(request.bookingId, 'booking-3');
+    expect(request.fallbackContextMode, BookingContextMode.delivering);
+  });
+
   test('push booking helper keeps malformed payloads safe', () {
     final request = PushNotificationService.bookingOpenRequestFromPayload({
       'chatId': 'chat-1',

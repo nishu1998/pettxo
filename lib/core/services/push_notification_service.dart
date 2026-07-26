@@ -535,8 +535,11 @@ class PushNotificationService {
   static BookingOpenRequest bookingOpenRequestFromPayload(
     Map<String, dynamic> data,
   ) {
-    final bookingId = '${data['bookingId'] ?? ''}'.trim();
-    final recipientRole = '${data['recipientRole'] ?? ''}';
+    final nested = _payloadDataMap(data);
+    final bookingId = '${data['bookingId'] ?? nested['bookingId'] ?? ''}'
+        .trim();
+    final recipientRole =
+        '${data['recipientRole'] ?? nested['recipientRole'] ?? ''}';
     return BookingNavigationResolver.openRequestForExternalBooking(
       bookingId: bookingId,
       contextMode: recipientRole == 'provider'
@@ -550,12 +553,14 @@ class PushNotificationService {
     Map<String, dynamic> data, {
     PushPayloadDeliveryMode mode = PushPayloadDeliveryMode.backgroundTap,
   }) {
-    final type = '${data['type'] ?? ''}'.trim();
+    final nested = _payloadDataMap(data);
+    final type = '${data['type'] ?? nested['type'] ?? ''}'.trim();
     final bookingRequest = bookingOpenRequestFromPayload(data);
-    final chatId = '${data['chatId'] ?? ''}'.trim();
-    final senderId = '${data['senderId'] ?? ''}'.trim();
-    final recipientId = '${data['recipientId'] ?? ''}'.trim();
-    final category = '${data['category'] ?? ''}'.trim();
+    final chatId = '${data['chatId'] ?? nested['chatId'] ?? ''}'.trim();
+    final senderId = '${data['senderId'] ?? nested['senderId'] ?? ''}'.trim();
+    final recipientId = '${data['recipientId'] ?? nested['recipientId'] ?? ''}'
+        .trim();
+    final category = '${data['category'] ?? nested['category'] ?? ''}'.trim();
 
     if ((type == 'chat' || type == 'chatMessage' || category == 'chat') &&
         chatId.isNotEmpty) {
@@ -628,6 +633,13 @@ class PushNotificationService {
   String _stringValue(Object? value) {
     if (value == null) return '';
     return value.toString().trim();
+  }
+
+  static Map<String, dynamic> _payloadDataMap(Map<String, dynamic> data) {
+    final nested = data['data'];
+    if (nested is Map<String, dynamic>) return nested;
+    if (nested is Map) return Map<String, dynamic>.from(nested);
+    return const <String, dynamic>{};
   }
 
   String _firstNonEmpty(String? a, String? b, String fallback) {

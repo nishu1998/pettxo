@@ -14,7 +14,13 @@ import 'package:pettexo/features/bookings/presentation/screens/bookings_screen.d
 void main() {
   DateTime fixtureBaseUtc() {
     final now = DateTime.now().toUtc();
-    return DateTime.utc(now.year, now.month, now.day, 10);
+    return DateTime.utc(
+      now.year,
+      now.month,
+      now.day,
+      now.hour,
+      now.minute,
+    ).add(const Duration(hours: 1));
   }
 
   DateTime fixtureRequestedAtUtc() => fixtureBaseUtc();
@@ -609,6 +615,47 @@ void main() {
       isFalse,
     );
   });
+
+  for (final state in <CanonicalBookingStateV3>[
+    CanonicalBookingStateV3.declined,
+    CanonicalBookingStateV3.expired,
+    CanonicalBookingStateV3.paymentExpired,
+    CanonicalBookingStateV3.cancelledByParent,
+  ]) {
+    testWidgets(
+      'customer terminal $state booking appears in Past and stays tappable',
+      (tester) async {
+        final opener = RecordingBookingOpener(
+          latestBookings: {
+            'booking-1': buildCanonicalReadModel(state: state),
+          },
+        );
+
+        await pumpScreen(
+          tester,
+          opener: opener,
+          bookingStreamBuilder: (userId, contextMode) => Stream.value([
+            buildCanonicalReadModel(state: state),
+          ]),
+        );
+
+        expect(find.text('Dog Walking'), findsNothing);
+
+        await tester.tap(find.text('Past'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Dog Walking'), findsOneWidget);
+
+        await tester.tap(find.text('Dog Walking'));
+        await tester.pump();
+
+        expect(
+          opener.lastPlan?.target,
+          BookingNavigationTarget.canonicalRequestStatus,
+        );
+      },
+    );
+  }
 
   testWidgets('provider request card opens provider request detail', (
     tester,

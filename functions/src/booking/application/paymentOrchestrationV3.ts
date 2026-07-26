@@ -1427,6 +1427,7 @@ export async function createRazorpayPaymentOrderV3(params: {
       parentId: params.booking.parentId,
       bookingType: params.booking.bookingType,
       state: params.booking.state,
+      paymentAttemptId: nextAttempt.paymentAttemptId,
     }),
   };
 }

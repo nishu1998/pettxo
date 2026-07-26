@@ -50,11 +50,20 @@ void main() {
   }
 
   Map<String, dynamic> buildCanonicalSlotFixture() {
-    final requestedAt = DateTime.utc(2026, 7, 22, 10);
-    final timerStartsAt = DateTime.utc(2026, 7, 22, 10, 30);
-    final acceptDeadlineAt = DateTime.utc(2026, 7, 22, 11, 30);
-    final slotStart = DateTime.utc(2026, 7, 23, 6);
-    final slotEnd = DateTime.utc(2026, 7, 23, 7);
+    final now = DateTime.now().toUtc();
+    final requestedAt = DateTime.utc(
+      now.year,
+      now.month,
+      now.day,
+      now.hour,
+      now.minute,
+    ).add(const Duration(hours: 1));
+    final timerStartsAt = requestedAt.add(const Duration(minutes: 30));
+    final acceptDeadlineAt = requestedAt.add(
+      const Duration(hours: 1, minutes: 30),
+    );
+    final slotStart = requestedAt.add(const Duration(days: 1, hours: 20));
+    final slotEnd = slotStart.add(const Duration(hours: 1));
 
     return <String, dynamic>{
       'schemaVersion': canonicalBookingSchemaVersion,
@@ -247,8 +256,10 @@ void main() {
     String paymentAttemptId = '',
   }) {
     final map = buildCanonicalSlotFixture();
-    final requestedAt = DateTime.utc(2026, 7, 22, 10);
-    final payDeadlineAt = DateTime.utc(2026, 7, 22, 12, 30);
+    final requestedAt = map['createdAt'] as DateTime;
+    final payDeadlineAt = requestedAt.add(
+      const Duration(hours: 2, minutes: 30),
+    );
     final rawState = canonicalStateValue(state);
     map['state'] = rawState;
     map['stateQueryValue'] = rawState;
@@ -293,6 +304,15 @@ void main() {
   CanonicalPaymentAttemptReadModel buildAttempt(
     CanonicalPaymentAttemptState state,
   ) {
+    final now = DateTime.now().toUtc();
+    final orderCreatedAt = DateTime.utc(
+      now.year,
+      now.month,
+      now.day,
+      now.hour,
+      now.minute,
+    ).add(const Duration(minutes: 5));
+    final orderExpiresAt = orderCreatedAt.add(const Duration(hours: 1));
     return CanonicalPaymentAttemptReadModel.fromMap({
       'bookingId': 'booking-1',
       'paymentAttemptId': 'attempt-1',
@@ -304,8 +324,8 @@ void main() {
       'failureCode': '',
       'failureMessage': '',
       'retryCount': 0,
-      'orderExpiresAt': DateTime.utc(2026, 7, 22, 12, 30),
-      'orderCreatedAt': DateTime.utc(2026, 7, 22, 11, 30),
+      'orderExpiresAt': orderExpiresAt,
+      'orderCreatedAt': orderCreatedAt,
       'checkoutOpenedAt': null,
       'captureReportedAt': null,
       'confirmedAt': null,
@@ -393,6 +413,7 @@ void main() {
       CanonicalBookingStateV3.declined,
       CanonicalBookingStateV3.expired,
       CanonicalBookingStateV3.cancelledByParent,
+      CanonicalBookingStateV3.paymentExpired,
     ]) {
       test('$state opens request status', () {
         expect(
@@ -404,7 +425,6 @@ void main() {
 
     for (final state in const <CanonicalBookingStateV3>[
       CanonicalBookingStateV3.acceptedAwaitingPayment,
-      CanonicalBookingStateV3.paymentExpired,
     ]) {
       test('$state opens payment', () {
         expect(
@@ -421,7 +441,6 @@ void main() {
       CanonicalPaymentAttemptState.confirming,
       CanonicalPaymentAttemptState.capturedRequiresReconciliation,
       CanonicalPaymentAttemptState.failed,
-      CanonicalPaymentAttemptState.expired,
       CanonicalPaymentAttemptState.refundRequired,
       CanonicalPaymentAttemptState.refundPending,
       CanonicalPaymentAttemptState.refunded,
@@ -554,6 +573,17 @@ void main() {
     expect(plan.target, BookingNavigationTarget.canonicalPayment);
   });
 
+  test('customer payment-expired bookings open request status', () {
+    final plan = BookingNavigationResolver.resolveCanonicalPlan(
+      booking: buildCanonicalBooking(
+        state: CanonicalBookingStateV3.paymentExpired,
+      ),
+      contextMode: BookingContextMode.receiving,
+    );
+
+    expect(plan.target, BookingNavigationTarget.canonicalRequestStatus);
+  });
+
   test('customer processing attempts keep routing to payment', () {
     final plan = BookingNavigationResolver.resolveCanonicalPlan(
       booking: buildCanonicalBooking(
@@ -567,6 +597,19 @@ void main() {
     );
 
     expect(plan.target, BookingNavigationTarget.canonicalPayment);
+  });
+
+  test('expired attempts on customer requests route to request status', () {
+    final plan = BookingNavigationResolver.resolveCanonicalPlan(
+      booking: buildCanonicalBooking(
+        state: CanonicalBookingStateV3.pendingProvider,
+        paymentAttemptId: 'attempt-1',
+      ),
+      contextMode: BookingContextMode.receiving,
+      paymentAttempt: buildAttempt(CanonicalPaymentAttemptState.expired),
+    );
+
+    expect(plan.target, BookingNavigationTarget.canonicalRequestStatus);
   });
 
   test('customer refund states keep routing to payment', () {

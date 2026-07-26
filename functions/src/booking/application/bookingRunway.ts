@@ -70,13 +70,16 @@ export function isCanonicalServiceRequestable(
 export function validateCanonicalBookingRunway(params: {
   bookingType: BookingType;
   schedule: SlotBookingSelection | RangeBookingSelection;
-  timerStartsAt: Date;
+  authoritativeNow: Date;
   service: CanonicalServiceWorkingHoursSource;
   workingHours: NormalizedWeeklyWorkingHours | null;
 }): RunwayValidationResult {
   const issues: RunwayValidationIssue[] = [];
-  const runwayEndsAt = computeRunwayEndsAt(params.timerStartsAt);
-  const serviceStatus = isCanonicalServiceRequestable(params.service, params.timerStartsAt);
+  const runwayEndsAt = computeRunwayEndsAt(params.authoritativeNow);
+  const serviceStatus = isCanonicalServiceRequestable(
+    params.service,
+    params.authoritativeNow,
+  );
   if (!serviceStatus.ok) issues.push(...serviceStatus.issues);
   if (!params.workingHours) {
     issues.push(issue("INVALID_WORKING_HOURS", "Working hours could not be normalized."));
@@ -94,7 +97,7 @@ export function validateCanonicalBookingRunway(params: {
         ok: false,
         bookingType: params.bookingType,
         serviceAnchorAt: null,
-        timerStartsAt: params.timerStartsAt,
+        timerStartsAt: params.authoritativeNow,
         runwayEndsAt,
         issues,
       };
@@ -110,14 +113,14 @@ export function validateCanonicalBookingRunway(params: {
       ok: false,
       bookingType: params.bookingType,
       serviceAnchorAt: anchor,
-      timerStartsAt: params.timerStartsAt,
+      timerStartsAt: params.authoritativeNow,
       runwayEndsAt,
       issues,
     } : {
       ok: true,
       bookingType: params.bookingType,
       serviceAnchorAt: anchor,
-      timerStartsAt: params.timerStartsAt,
+      timerStartsAt: params.authoritativeNow,
       runwayEndsAt,
       issues: [],
     };
@@ -131,7 +134,7 @@ export function validateCanonicalBookingRunway(params: {
       ok: false,
       bookingType: params.bookingType,
       serviceAnchorAt: null,
-      timerStartsAt: params.timerStartsAt,
+      timerStartsAt: params.authoritativeNow,
       runwayEndsAt,
       issues,
     };
@@ -147,14 +150,14 @@ export function validateCanonicalBookingRunway(params: {
     ok: false,
     bookingType: params.bookingType,
     serviceAnchorAt: anchor,
-    timerStartsAt: params.timerStartsAt,
+    timerStartsAt: params.authoritativeNow,
     runwayEndsAt,
     issues,
   } : {
     ok: true,
     bookingType: params.bookingType,
     serviceAnchorAt: anchor,
-    timerStartsAt: params.timerStartsAt,
+    timerStartsAt: params.authoritativeNow,
     runwayEndsAt,
     issues: [],
   };

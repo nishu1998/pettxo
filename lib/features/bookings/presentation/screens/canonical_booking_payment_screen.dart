@@ -7,6 +7,8 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../offers/data/services/offer_service.dart';
+import '../../../offers/domain/models/claimed_offer.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../data/services/razorpay_checkout_service.dart';
 import '../../domain/models/booking_document_v3.dart';
@@ -39,6 +41,7 @@ class _CanonicalBookingPaymentScreenState
   final BookingRepository _bookingRepository = BookingRepository();
   final RazorpayCheckoutService _razorpayCheckoutService =
       RazorpayCheckoutService();
+  final OfferService _offerService = OfferService();
 
   StreamSubscription<BookingReadModel?>? _confirmationSubscription;
   StreamSubscription<CanonicalPaymentAttemptReadModel?>? _attemptSubscription;
@@ -50,6 +53,10 @@ class _CanonicalBookingPaymentScreenState
   bool _isCheckoutOpen = false;
   bool _isObservingConfirmation = false;
   bool _hasNavigatedToConfirmation = false;
+  bool _isRefreshingOfferPreview = false;
+  String _selectedClaimedOfferId = '';
+  OfferPreviewResult? _selectedOfferPreview;
+  String _selectedOfferMessage = '';
 
   @override
   void initState() {
@@ -88,93 +95,138 @@ class _CanonicalBookingPaymentScreenState
         stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
         builder: (context, snapshot) {
           final booking = _canonicalBookingFromReadModel(snapshot.data);
-          if (booking != null &&
-              booking.payment.paymentAttemptId.trim().isNotEmpty &&
-              booking.payment.paymentAttemptId.trim() != _paymentAttemptId) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              _bindAttemptStream(booking.payment.paymentAttemptId.trim());
-            });
-          }
+          return StreamBuilder<List<ClaimedOffer>>(
+            stream: _offerService.watchClaimedOffers(),
+            builder: (context, offerSnapshot) {
+              final claimedOffers =
+                  offerSnapshot.data ?? const <ClaimedOffer>[];
+              ClaimedOffer? selectedOffer;
+              for (final offer in claimedOffers) {
+                if (offer.id == _selectedClaimedOfferId) {
+                  selectedOffer = offer;
+                  break;
+                }
+              }
+              if (_selectedClaimedOfferId.isNotEmpty && selectedOffer == null) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  _clearSelectedOffer(showFeedback: false);
+                });
+              }
+              if (booking != null &&
+                  booking.payment.paymentAttemptId.trim().isNotEmpty &&
+                  booking.payment.paymentAttemptId.trim() !=
+                      _paymentAttemptId) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  _bindAttemptStream(booking.payment.paymentAttemptId.trim());
+                });
+              }
 
-          final pricingSummary = _resolvePricingSummary(booking);
-          final payDeadline =
-              booking?.lifecycle.payDeadlineAt ??
-              _latestAttempt?.orderExpiresAt;
-          final isExpired =
-              payDeadline != null && !payDeadline.isAfter(DateTime.now());
-          final canPay =
-              booking != null &&
-              booking.state ==
-                  CanonicalBookingStateV3.acceptedAwaitingPayment &&
-              !isExpired &&
-              !_isPreparingOrder &&
-              !_isCheckoutOpen &&
-              !_isObservingConfirmation &&
-              (_latestAttempt == null ||
-                  _latestAttempt!.canRetryWithSameAttempt ||
-                  _latestAttempt!.state ==
-                      CanonicalPaymentAttemptState.notStarted ||
-                  _latestAttempt!.state ==
-                      CanonicalPaymentAttemptState.unknown);
-          final payableBooking = canPay ? booking : null;
+              final pricingSummary = _resolvePricingSummary(booking);
+              final payDeadline =
+                  booking?.lifecycle.payDeadlineAt ??
+                  _latestAttempt?.orderExpiresAt;
+              final isExpired =
+                  payDeadline != null && !payDeadline.isAfter(DateTime.now());
+              final canPay =
+                  booking != null &&
+                  booking.state ==
+                      CanonicalBookingStateV3.acceptedAwaitingPayment &&
+                  !isExpired &&
+                  !_isPreparingOrder &&
+                  !_isCheckoutOpen &&
+                  !_isObservingConfirmation &&
+                  (_latestAttempt == null ||
+                      _latestAttempt!.canRetryWithSameAttempt ||
+                      _latestAttempt!.state ==
+                          CanonicalPaymentAttemptState.notStarted ||
+                      _latestAttempt!.state ==
+                          CanonicalPaymentAttemptState.unknown);
+              final payableBooking = canPay ? booking : null;
 
-          return SafeArea(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
-              children: [
-                _PaymentHeroCard(
-                  serviceName: widget.serviceName,
-                  providerName: widget.providerName,
-                  serviceImageUrl: widget.serviceImageUrl,
-                  headline: _headlineForState(booking, isExpired),
-                  subheadline: _subheadlineForState(booking, isExpired),
+              return SafeArea(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
+                  children: [
+                    _PaymentHeroCard(
+                      serviceName: widget.serviceName,
+                      providerName: widget.providerName,
+                      serviceImageUrl: widget.serviceImageUrl,
+                      headline: _headlineForState(booking, isExpired),
+                      subheadline: _subheadlineForState(booking, isExpired),
+                    ),
+                    const SizedBox(height: 16),
+                    _DetailCard(
+                      title: 'Payment window',
+                      body: payDeadline == null
+                          ? 'Waiting for the server to sync the payment window.'
+                          : _remainingLabel(payDeadline),
+                    ),
+                    const SizedBox(height: 12),
+                    _DetailCard(
+                      title: 'Availability',
+                      body:
+                          'Availability is confirmed only after payment succeeds.',
+                    ),
+                    const SizedBox(height: 12),
+                    _DetailCard(
+                      title: 'Status',
+                      body: _paymentStatusText(
+                        booking,
+                        _latestAttempt,
+                        isExpired,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _PricingCard(pricingSummary: pricingSummary),
+                    const SizedBox(height: 12),
+                    _CouponCard(
+                      selectedOffer: selectedOffer,
+                      selectionMessage: _selectedOfferMessage,
+                      isRefreshing: _isRefreshingOfferPreview,
+                      offersAvailable: claimedOffers.isNotEmpty,
+                      onChoose: booking == null
+                          ? null
+                          : () => _showCouponSheet(booking, claimedOffers),
+                      onRemove: _selectedClaimedOfferId.isEmpty
+                          ? null
+                          : () => _clearSelectedOffer(),
+                      onRefresh: booking == null || selectedOffer == null
+                          ? null
+                          : () => _previewClaimedOffer(
+                              booking,
+                              selectedOffer!,
+                              selectOffer: true,
+                            ),
+                    ),
+                    if (_latestAttempt != null) ...[
+                      const SizedBox(height: 12),
+                      _DetailCard(
+                        title: 'Latest payment attempt',
+                        body: _attemptStatusDescription(_latestAttempt!),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    if (payableBooking != null)
+                      GradientButton(
+                        label: _primaryButtonLabel(_latestAttempt),
+                        onPressed: () => _startPaymentFlow(payableBooking),
+                      )
+                    else
+                      SecondaryButton(
+                        label: _secondaryButtonLabel(booking, isExpired),
+                        onPressed: null,
+                      ),
+                    const SizedBox(height: 10),
+                    SecondaryButton(
+                      label: 'Close',
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                _DetailCard(
-                  title: 'Payment window',
-                  body: payDeadline == null
-                      ? 'Waiting for the server to sync the payment window.'
-                      : _remainingLabel(payDeadline),
-                ),
-                const SizedBox(height: 12),
-                _DetailCard(
-                  title: 'Availability',
-                  body:
-                      'Availability is confirmed only after payment succeeds.',
-                ),
-                const SizedBox(height: 12),
-                _DetailCard(
-                  title: 'Status',
-                  body: _paymentStatusText(booking, _latestAttempt, isExpired),
-                ),
-                const SizedBox(height: 12),
-                _PricingCard(pricingSummary: pricingSummary),
-                if (_latestAttempt != null) ...[
-                  const SizedBox(height: 12),
-                  _DetailCard(
-                    title: 'Latest payment attempt',
-                    body: _attemptStatusDescription(_latestAttempt!),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                if (payableBooking != null)
-                  GradientButton(
-                    label: _primaryButtonLabel(_latestAttempt),
-                    onPressed: () => _startPaymentFlow(payableBooking),
-                  )
-                else
-                  SecondaryButton(
-                    label: _secondaryButtonLabel(booking, isExpired),
-                    onPressed: null,
-                  ),
-                const SizedBox(height: 10),
-                SecondaryButton(
-                  label: 'Close',
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
+              );
+            },
           );
         },
       ),
@@ -193,6 +245,26 @@ class _CanonicalBookingPaymentScreenState
   CanonicalPaymentPricingSummary? _resolvePricingSummary(
     CanonicalBookingDocumentV3? booking,
   ) {
+    if (_selectedOfferPreview != null && booking != null) {
+      final serviceSubtotalPaise = _serviceSubtotalPaise(booking);
+      final customerPaidPaise = (_selectedOfferPreview!.finalAmount * 100)
+          .round();
+      final couponDiscountPaise = (_selectedOfferPreview!.discountAmount * 100)
+          .round();
+      return CanonicalPaymentPricingSummary(
+        serviceSubtotalPaise: serviceSubtotalPaise,
+        couponDiscountPaise: couponDiscountPaise,
+        customerPaidPaise: customerPaidPaise.clamp(0, serviceSubtotalPaise),
+        providerPayoutPaise:
+            booking.financials?.providerPayoutPaise ??
+            _latestAttempt?.pricingSummary.providerPayoutPaise ??
+            0,
+        currency:
+            booking.financials?.currency ??
+            _latestAttempt?.pricingSummary.currency ??
+            'INR',
+      );
+    }
     final financials = booking?.financials;
     if (_latestAttempt != null) return _latestAttempt!.pricingSummary;
     if (financials == null) {
@@ -221,6 +293,7 @@ class _CanonicalBookingPaymentScreenState
       return;
     }
 
+    var checkoutSucceeded = false;
     setState(() => _isPreparingOrder = true);
     AppLoader.showWithMessage('Preparing secure payment...');
 
@@ -228,6 +301,9 @@ class _CanonicalBookingPaymentScreenState
       final orderResult = await _bookingRepository.createPaymentOrderV3(
         bookingId: widget.bookingId,
         paymentAttemptId: _paymentAttemptId.isEmpty ? null : _paymentAttemptId,
+        claimedOfferId: _selectedClaimedOfferId.isEmpty
+            ? null
+            : _selectedClaimedOfferId,
       );
       _bindAttemptStream(orderResult.paymentAttemptId);
 
@@ -257,6 +333,7 @@ class _CanonicalBookingPaymentScreenState
         customerPhone: user?.phoneNumber?.trim() ?? '',
         description: widget.serviceName,
       );
+      checkoutSucceeded = true;
 
       if (!mounted) return;
 
@@ -310,6 +387,12 @@ class _CanonicalBookingPaymentScreenState
     } on CanonicalPaymentException catch (error) {
       AppLoader.hide();
       if (!mounted) return;
+      if (checkoutSucceeded && _shouldObserveAfterVerificationError(error)) {
+        _beginAuthoritativeObservation(
+          message: _observationMessageForVerificationError(error),
+        );
+        return;
+      }
       AppFeedback.show(
         context,
         message: error.message,
@@ -318,6 +401,13 @@ class _CanonicalBookingPaymentScreenState
     } catch (_) {
       AppLoader.hide();
       if (!mounted) return;
+      if (checkoutSucceeded) {
+        _beginAuthoritativeObservation(
+          message:
+              'Payment callback succeeded. We are syncing the final booking state securely.',
+        );
+        return;
+      }
       AppFeedback.show(
         context,
         message: 'We could not continue this payment right now.',
@@ -351,6 +441,14 @@ class _CanonicalBookingPaymentScreenState
           ? AppFeedbackTone.warning
           : AppFeedbackTone.error,
     );
+  }
+
+  void _beginAuthoritativeObservation({
+    required String message,
+    AppFeedbackTone tone = AppFeedbackTone.info,
+  }) {
+    setState(() => _isObservingConfirmation = true);
+    AppFeedback.show(context, message: message, tone: tone);
   }
 
   void _bindConfirmationStream() {
@@ -500,6 +598,435 @@ class _CanonicalBookingPaymentScreenState
       return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')} remaining';
     }
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')} remaining';
+  }
+
+  int _serviceSubtotalPaise(CanonicalBookingDocumentV3 booking) {
+    final financials = booking.financials;
+    if (financials != null && financials.serviceSubtotalPaise > 0) {
+      return financials.serviceSubtotalPaise;
+    }
+    if (booking.schedule is CanonicalSlotBookingScheduleV3) {
+      final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
+      return schedule.slots.fold<int>(
+        0,
+        (sum, slot) => sum + slot.unitPricePaise,
+      );
+    }
+    final schedule = booking.schedule as CanonicalRangeBookingScheduleV3;
+    return (booking.service.pricePerNightPaise ?? 0) * schedule.nights;
+  }
+
+  Future<void> _showCouponSheet(
+    CanonicalBookingDocumentV3 booking,
+    List<ClaimedOffer> offers,
+  ) async {
+    if (offers.isEmpty) {
+      AppFeedback.show(
+        context,
+        message: 'No claimed coupons are available for this booking yet.',
+      );
+      return;
+    }
+    final serviceSubtotalPaise = _serviceSubtotalPaise(booking);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SafeArea(
+          child: Container(
+            margin: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(28),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Choose coupon',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Pettxo-funded discounts update your payable amount from the backend before checkout starts.',
+                  style: TextStyle(
+                    color: AppColors.textGrey,
+                    height: 1.45,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: offers.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    itemBuilder: (context, index) {
+                      final offer = offers[index];
+                      final issue = _localOfferIssue(
+                        offer,
+                        booking,
+                        serviceSubtotalPaise,
+                      );
+                      final isSelected = offer.id == _selectedClaimedOfferId;
+                      return _CouponOptionTile(
+                        offer: offer,
+                        issue: issue,
+                        isSelected: isSelected,
+                        onTap: () async {
+                          if (issue != null) {
+                            AppFeedback.show(
+                              context,
+                              message: issue,
+                              tone: AppFeedbackTone.warning,
+                            );
+                            return;
+                          }
+                          Navigator.pop(context);
+                          await _previewClaimedOffer(
+                            booking,
+                            offer,
+                            selectOffer: true,
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _previewClaimedOffer(
+    CanonicalBookingDocumentV3 booking,
+    ClaimedOffer offer, {
+    required bool selectOffer,
+  }) async {
+    final issue = _localOfferIssue(
+      offer,
+      booking,
+      _serviceSubtotalPaise(booking),
+    );
+    if (issue != null) {
+      AppFeedback.show(context, message: issue, tone: AppFeedbackTone.warning);
+      return;
+    }
+    setState(() => _isRefreshingOfferPreview = true);
+    try {
+      final preview = await _offerService.previewOfferForBooking(
+        claimedOfferId: offer.id,
+        bookingAmount: _serviceSubtotalPaise(booking) / 100,
+        serviceId: booking.serviceId,
+        category: booking.service.category,
+      );
+      if (!mounted) return;
+      if (!preview.ok || !preview.isValid) {
+        AppFeedback.show(
+          context,
+          message: preview.message.isEmpty
+              ? 'This coupon can no longer be applied.'
+              : preview.message,
+          tone: AppFeedbackTone.warning,
+        );
+        return;
+      }
+      setState(() {
+        if (selectOffer) {
+          _selectedClaimedOfferId = offer.id;
+          _selectedOfferPreview = preview;
+          _selectedOfferMessage = preview.message.isEmpty
+              ? '${offer.couponCode} applied.'
+              : preview.message;
+          _paymentAttemptId = '';
+          _latestAttempt = null;
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: 'We could not refresh this coupon right now.',
+        tone: AppFeedbackTone.error,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isRefreshingOfferPreview = false);
+      }
+    }
+  }
+
+  void _clearSelectedOffer({bool showFeedback = true}) {
+    setState(() {
+      _selectedClaimedOfferId = '';
+      _selectedOfferPreview = null;
+      _selectedOfferMessage = '';
+      _paymentAttemptId = '';
+      _latestAttempt = null;
+    });
+    if (showFeedback) {
+      AppFeedback.show(
+        context,
+        message:
+            'Coupon removed. Authoritative pricing will refresh on the next payment start.',
+      );
+    }
+  }
+
+  String? _localOfferIssue(
+    ClaimedOffer offer,
+    CanonicalBookingDocumentV3 booking,
+    int serviceSubtotalPaise,
+  ) {
+    if (offer.isExpired) {
+      return 'This coupon has expired.';
+    }
+    if (offer.isUsed) {
+      return 'This coupon has already been used.';
+    }
+    final minBookingAmountPaise = ((offer.minBookingAmount ?? 0) * 100).round();
+    if (minBookingAmountPaise > 0 &&
+        serviceSubtotalPaise < minBookingAmountPaise) {
+      return 'This coupon requires a higher booking amount.';
+    }
+    final campaign = offer.campaignSnapshot;
+    final serviceIds = (campaign['serviceIds'] as List<dynamic>? ?? const [])
+        .map((entry) => '$entry'.trim())
+        .where((entry) => entry.isNotEmpty)
+        .toSet();
+    if (serviceIds.isNotEmpty && !serviceIds.contains(booking.serviceId)) {
+      return 'This coupon does not apply to this service.';
+    }
+    final providerIds = (campaign['providerIds'] as List<dynamic>? ?? const [])
+        .map((entry) => '$entry'.trim())
+        .where((entry) => entry.isNotEmpty)
+        .toSet();
+    if (providerIds.isNotEmpty && !providerIds.contains(booking.providerId)) {
+      return 'This coupon does not apply to this provider.';
+    }
+    final categoryRestrictions =
+        (campaign['categoryRestrictions'] as List<dynamic>? ?? const [])
+            .map((entry) => '$entry'.trim())
+            .where((entry) => entry.isNotEmpty)
+            .toSet();
+    if (categoryRestrictions.isNotEmpty &&
+        !categoryRestrictions.contains(booking.service.category)) {
+      return 'This coupon does not apply to this category.';
+    }
+    return null;
+  }
+
+  bool _shouldObserveAfterVerificationError(CanonicalPaymentException error) {
+    return error.code == CanonicalPaymentFailureCode.unknown ||
+        error.code == CanonicalPaymentFailureCode.paymentAlreadyConfirmed ||
+        error.code == CanonicalPaymentFailureCode.paymentReconciliationRequired;
+  }
+
+  String _observationMessageForVerificationError(
+    CanonicalPaymentException error,
+  ) {
+    switch (error.code) {
+      case CanonicalPaymentFailureCode.paymentAlreadyConfirmed:
+        return 'This payment was already verified. We are syncing the booking now.';
+      case CanonicalPaymentFailureCode.paymentReconciliationRequired:
+        return 'Payment was captured and is being reconciled securely.';
+      default:
+        return 'Payment succeeded at checkout. We are waiting for authoritative booking confirmation.';
+    }
+  }
+}
+
+class _CouponCard extends StatelessWidget {
+  const _CouponCard({
+    required this.selectedOffer,
+    required this.selectionMessage,
+    required this.isRefreshing,
+    required this.offersAvailable,
+    required this.onChoose,
+    required this.onRemove,
+    required this.onRefresh,
+  });
+
+  final ClaimedOffer? selectedOffer;
+  final String selectionMessage;
+  final bool isRefreshing;
+  final bool offersAvailable;
+  final VoidCallback? onChoose;
+  final VoidCallback? onRemove;
+  final VoidCallback? onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Coupons',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            selectedOffer == null
+                ? offersAvailable
+                      ? 'Apply a claimed coupon to refresh the authoritative total before checkout.'
+                      : 'Claimed coupons will appear here when available for this account.'
+                : '${selectedOffer!.couponCode} · ${selectedOffer!.discountSummary}',
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              height: 1.45,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (selectionMessage.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              selectionMessage,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: SecondaryButton(
+                  label: isRefreshing ? 'Refreshing...' : 'Choose coupon',
+                  onPressed: isRefreshing ? null : onChoose,
+                  size: AppButtonSize.compact,
+                ),
+              ),
+              if (selectedOffer != null) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: SecondaryButton(
+                    label: 'Remove',
+                    onPressed: isRefreshing ? null : onRemove,
+                    size: AppButtonSize.compact,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (selectedOffer != null) ...[
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: isRefreshing ? 'Refreshing...' : 'Refresh total',
+              onPressed: isRefreshing ? null : onRefresh,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CouponOptionTile extends StatelessWidget {
+  const _CouponOptionTile({
+    required this.offer,
+    required this.issue,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final ClaimedOffer offer;
+  final String? issue;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isUnavailable = issue != null;
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? const Color(0xFFFFF4EC)
+              : isUnavailable
+              ? const Color(0xFFF7F7F7)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : const Color(0xFFE8E3DC),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    offer.couponCode,
+                    style: const TextStyle(
+                      color: AppColors.textDark,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Text(
+                  offer.discountSummary,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            if (offer.title.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                offer.title,
+                style: const TextStyle(
+                  color: AppColors.textGrey,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+            const SizedBox(height: 6),
+            Text(
+              issue ??
+                  (isSelected
+                      ? 'Applied to this checkout.'
+                      : 'Tap to apply and refresh the backend total.'),
+              style: TextStyle(
+                color: isUnavailable
+                    ? const Color(0xFFB45309)
+                    : AppColors.textGrey,
+                height: 1.4,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -278,8 +278,8 @@ class BookingNavigationResolver {
     CanonicalBookingDocumentV3 booking,
     CanonicalPaymentAttemptReadModel? paymentAttempt,
   ) {
-    if (booking.state == CanonicalBookingStateV3.acceptedAwaitingPayment ||
-        booking.state == CanonicalBookingStateV3.paymentExpired) {
+    if (booking.state == CanonicalBookingStateV3.acceptedAwaitingPayment &&
+        _hasActivePaymentWindow(booking)) {
       return true;
     }
 
@@ -294,17 +294,25 @@ class BookingNavigationResolver {
       case CanonicalPaymentAttemptState.confirming:
       case CanonicalPaymentAttemptState.capturedRequiresReconciliation:
       case CanonicalPaymentAttemptState.failed:
-      case CanonicalPaymentAttemptState.expired:
       case CanonicalPaymentAttemptState.refundRequired:
       case CanonicalPaymentAttemptState.refundPending:
       case CanonicalPaymentAttemptState.refunded:
         return true;
+      case CanonicalPaymentAttemptState.expired:
+        return booking.state ==
+                CanonicalBookingStateV3.acceptedAwaitingPayment &&
+            _hasActivePaymentWindow(booking);
       case CanonicalPaymentAttemptState.notStarted:
       case CanonicalPaymentAttemptState.orderCreating:
       case CanonicalPaymentAttemptState.confirmed:
       case CanonicalPaymentAttemptState.unknown:
         return false;
     }
+  }
+
+  static bool _hasActivePaymentWindow(CanonicalBookingDocumentV3 booking) {
+    final deadline = booking.lifecycle.payDeadlineAt;
+    return deadline == null || deadline.isAfter(DateTime.now());
   }
 
   CanonicalBookingRequestResult _requestResultFromBooking(

@@ -56,6 +56,7 @@ class _CanonicalBookingRequestReviewScreenState
             serviceName: widget.serviceName,
             providerName: widget.providerName,
             serviceImageUrl: widget.serviceImageUrl,
+            exitToBookingsOnClose: true,
           ),
         ),
       );
