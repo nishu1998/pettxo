@@ -82,5 +82,6 @@ class CanonicalProviderBookingRequestView {
       state == CanonicalBookingStateV3.pendingProvider;
   bool get isAcceptedAwaitingPayment =>
       state == CanonicalBookingStateV3.acceptedAwaitingPayment;
-  bool get isActionable => isPendingProvider;
+  bool get isAwaitingProviderDecision => isQueuedRequest || isPendingProvider;
+  bool get isActionable => isAwaitingProviderDecision;
 }

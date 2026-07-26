@@ -27,7 +27,12 @@ const TERMINAL_STATES = new Set<CanonicalBookingState>([
 ]);
 
 const ALLOWED_TRANSITIONS: Record<CanonicalBookingState, CanonicalBookingState[]> = {
-  REQUESTED: ["PENDING_PROVIDER", "CANCELLED_BY_PARENT"],
+  REQUESTED: [
+    "PENDING_PROVIDER",
+    "ACCEPTED_AWAITING_PAYMENT",
+    "DECLINED",
+    "CANCELLED_BY_PARENT",
+  ],
   PENDING_PROVIDER: [
     "ACCEPTED_AWAITING_PAYMENT",
     "DECLINED",
@@ -54,6 +59,10 @@ function allowedActorsForTransition(
   toState: CanonicalBookingState,
 ): BookingActor[] {
   if (fromState === "REQUESTED" && toState === "PENDING_PROVIDER") return ["system", "admin"];
+  if (fromState === "REQUESTED" && toState === "ACCEPTED_AWAITING_PAYMENT") {
+    return ["provider", "admin"];
+  }
+  if (fromState === "REQUESTED" && toState === "DECLINED") return ["provider", "admin"];
   if (fromState === "REQUESTED" && toState === "CANCELLED_BY_PARENT") return ["parent", "admin"];
   if (fromState === "PENDING_PROVIDER" && toState === "ACCEPTED_AWAITING_PAYMENT") {
     return ["provider", "admin"];
@@ -144,7 +153,7 @@ export function evaluateBookingTransition(params: {
     };
   }
   if (
-    fromState === "PENDING_PROVIDER" &&
+    (fromState === "REQUESTED" || fromState === "PENDING_PROVIDER") &&
     (toState === "ACCEPTED_AWAITING_PAYMENT" || toState === "DECLINED") &&
     acceptDeadlineAt instanceof Date &&
     now.getTime() > acceptDeadlineAt.getTime()

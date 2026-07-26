@@ -35,6 +35,9 @@ const {
   applyParentStatsMutation,
 } = require("../lib/booking/application/bookingStats.js");
 const notifications = require("../lib/booking/application/bookingNotificationsV3.js");
+const {
+  validatePreCheckoutAvailabilityV3,
+} = require("../lib/booking/application/paymentOrchestrationV3.js");
 
 test("constants remain locked to the 60/60/30/150 model", () => {
   assert.equal(ACCEPT_WINDOW_MINUTES, 60);
@@ -357,7 +360,12 @@ test("queued requests still use authoritative now for runway validation", () => 
 });
 
 test("transition table matches the Block 3 state machine", () => {
-  assert.deepEqual(transitionTable().REQUESTED, ["PENDING_PROVIDER", "CANCELLED_BY_PARENT"]);
+  assert.deepEqual(transitionTable().REQUESTED, [
+    "PENDING_PROVIDER",
+    "ACCEPTED_AWAITING_PAYMENT",
+    "DECLINED",
+    "CANCELLED_BY_PARENT",
+  ]);
   assert.deepEqual(transitionTable().PENDING_PROVIDER, [
     "ACCEPTED_AWAITING_PAYMENT",
     "DECLINED",
@@ -663,6 +671,82 @@ test("provider accept and decline commands are deadline-checked and consume no c
   });
   assert.equal(declined.ok, true);
   assert.equal(declined.booking.state, "DECLINED");
+});
+
+test("queued outside-working-hours requests remain actionable before the official timer starts", () => {
+  const created = createBookingRequestV3({
+    parent: parent(),
+    service: baseService(),
+    input: {
+      requestAttemptId: "attempt-queued-early-action",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule({startAt: new Date("2026-07-27T06:30:00.000Z")}),
+    },
+    authoritativeNow: new Date("2026-07-26T12:30:00.000Z"),
+    generatedBookingId: "booking-queued-early-action",
+  });
+
+  assert.equal(created.ok, true);
+  assert.equal(created.booking.state, "REQUESTED");
+  assert.equal(created.booking.lifecycle.wasQueuedOutsideWorkingHours, true);
+  assert.equal(
+    created.booking.lifecycle.timerStartsAt.toISOString(),
+    "2026-07-27T03:30:00.000Z",
+  );
+  assert.equal(
+    created.booking.lifecycle.acceptDeadlineAt.toISOString(),
+    "2026-07-27T04:30:00.000Z",
+  );
+
+  const accepted = acceptBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date("2026-07-26T13:00:00.000Z"),
+    existingProviderStats: created.providerStats,
+  });
+
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.booking.state, "ACCEPTED_AWAITING_PAYMENT");
+  assert.equal(
+    accepted.booking.lifecycle.respondedAt.toISOString(),
+    "2026-07-26T13:00:00.000Z",
+  );
+  assert.equal(
+    accepted.booking.lifecycle.payDeadlineAt.toISOString(),
+    "2026-07-27T04:30:00.000Z",
+  );
+  assert.equal(accepted.notifications.length, 1);
+  assert.equal(accepted.notifications[0].type, "payment_required");
+
+  const payableEarly = validatePreCheckoutAvailabilityV3({
+    booking: accepted.booking,
+    service: {
+      serviceId: "service-1",
+      providerId: "provider-1",
+      bookingType: "SLOT",
+      timezone: "Asia/Kolkata",
+      slotCapacity: 1,
+      rangeCapacity: null,
+      isActive: true,
+      isDeleted: false,
+      isPaused: false,
+    },
+    authoritativeNow: new Date("2026-07-26T13:05:00.000Z"),
+  });
+  assert.equal(payableEarly.ok, true);
+
+  const declined = declineBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date("2026-07-26T13:10:00.000Z"),
+    existingProviderStats: created.providerStats,
+  });
+
+  assert.equal(declined.ok, true);
+  assert.equal(declined.booking.state, "DECLINED");
+  assert.equal(declined.notifications.length, 1);
+  assert.equal(declined.notifications[0].type, "request_declined");
 });
 
 test("pre-payment parent cancellation is only allowed from REQUESTED and PENDING_PROVIDER", () => {

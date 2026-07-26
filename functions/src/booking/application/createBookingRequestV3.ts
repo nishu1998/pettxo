@@ -605,6 +605,21 @@ function responseSecondsFromTimer(booking: CanonicalBookingDocumentV3, at: Date)
   return Math.max(Math.round((at.getTime() - timerStartsAt.getTime()) / 1000), 0);
 }
 
+function paymentDeadlineAnchorForResponse(
+  booking: CanonicalBookingDocumentV3,
+  respondedAt: Date,
+): Date {
+  const timerStartsAt = booking.lifecycle.timerStartsAt;
+  if (
+    booking.lifecycle.wasQueuedOutsideWorkingHours &&
+    timerStartsAt instanceof Date &&
+    respondedAt.getTime() < timerStartsAt.getTime()
+  ) {
+    return new Date(timerStartsAt.getTime());
+  }
+  return new Date(respondedAt.getTime());
+}
+
 export function activateQueuedBookingRequestV3(params: {
   bookingId: string;
   booking: CanonicalBookingDocumentV3;
@@ -778,7 +793,11 @@ function applyProviderResponse(params: {
   );
 
   if (params.targetState === "ACCEPTED_AWAITING_PAYMENT") {
-    next.lifecycle.payDeadlineAt = computePayDeadlineAt(params.authoritativeNow);
+    const paymentDeadlineAnchor = paymentDeadlineAnchorForResponse(
+      params.booking,
+      params.authoritativeNow,
+    );
+    next.lifecycle.payDeadlineAt = computePayDeadlineAt(paymentDeadlineAnchor);
     next.payDeadlineAt = next.lifecycle.payDeadlineAt;
     const notifications = [
       buildPaymentRequiredNotification({

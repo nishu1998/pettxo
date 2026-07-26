@@ -105,11 +105,11 @@ class CanonicalProviderRequestCard extends StatelessWidget {
               ),
             ),
           ),
-          if (request.isPendingProvider) ...[
+          if (request.isActionable) ...[
             const SizedBox(height: 16),
-            const Text(
-              'Accepting gives the customer 60 minutes to pay. Availability is confirmed only after payment succeeds.',
-              style: TextStyle(
+            Text(
+              _actionHint,
+              style: const TextStyle(
                 color: Color(0xFF8E8479),
                 fontSize: 12,
                 height: 1.45,
@@ -182,16 +182,23 @@ class CanonicalProviderRequestCard extends StatelessWidget {
     if (request.isQueuedRequest) {
       final timerStartsAt = request.timerStartsAt;
       if (timerStartsAt == null) {
-        return 'Waiting for your working hours. The official response window has not started yet.';
+        return 'This request was received outside your working hours. You can accept or decline it now. The official response window will start when your schedule opens.';
       }
-      return 'Waiting for your working hours. The response window starts on ${_dateLabel(timerStartsAt)} at ${_timeLabel(timerStartsAt)}.';
+      return 'This request was received outside your working hours. You can accept or decline it now. Your official response window starts on ${_dateLabel(timerStartsAt)} at ${_timeLabel(timerStartsAt)}.';
     }
     if (request.isPendingProvider) {
       return countdownText == null
           ? 'The official 60-minute response window is active.'
           : 'The official 60-minute response window is active. $countdownText remaining.';
     }
-    return 'Accepted, awaiting payment. No payment action is exposed in this slice.';
+    return 'Accepted, awaiting payment. The customer can pay now and the booking will confirm as soon as payment succeeds.';
+  }
+
+  String get _actionHint {
+    if (request.isQueuedRequest) {
+      return 'You can respond now even though the official working-hours clock has not started yet.';
+    }
+    return 'Accepting lets the customer pay now. Availability is confirmed only after payment succeeds.';
   }
 
   String _dateLabel(DateTime value) {

@@ -13,10 +13,12 @@ import '../../domain/models/booking_v3_models.dart';
 
 class CanonicalProviderBookingRequestDetailScreen extends StatefulWidget {
   final CanonicalProviderBookingRequestView initialRequest;
+  final BookingRepository? bookingRepository;
 
   const CanonicalProviderBookingRequestDetailScreen({
     super.key,
     required this.initialRequest,
+    this.bookingRepository,
   });
 
   @override
@@ -26,10 +28,12 @@ class CanonicalProviderBookingRequestDetailScreen extends StatefulWidget {
 
 class _CanonicalProviderBookingRequestDetailScreenState
     extends State<CanonicalProviderBookingRequestDetailScreen> {
-  final BookingRepository _bookingRepository = BookingRepository();
   bool _hasAttemptedViewedWrite = false;
   bool _isAccepting = false;
   bool _isDeclining = false;
+
+  BookingRepository get _bookingRepository =>
+      widget.bookingRepository ?? BookingRepository();
 
   @override
   void initState() {
@@ -95,17 +99,16 @@ class _CanonicalProviderBookingRequestDetailScreenState
                         '${_remainingLabel(currentRequest.acceptDeadlineAt!)} remaining to respond.',
                   ),
                 ],
-                if (currentRequest.isPendingProvider ||
+                if (currentRequest.isActionable ||
                     currentRequest.isAcceptedAwaitingPayment) ...[
                   const SizedBox(height: 12),
-                  const _RequestInfoCard(
+                  _RequestInfoCard(
                     title: 'Important',
-                    body:
-                        'Accepting gives the customer 60 minutes to pay. Availability is confirmed only after payment succeeds.',
+                    body: _importantMessage(currentRequest),
                   ),
                 ],
                 const SizedBox(height: 22),
-                if (currentRequest.isPendingProvider) ...[
+                if (currentRequest.isActionable) ...[
                   Row(
                     children: [
                       Expanded(
@@ -126,16 +129,8 @@ class _CanonicalProviderBookingRequestDetailScreenState
                       ),
                     ],
                   ),
-                ] else if (currentRequest.isQueuedRequest) ...[
-                  const _PassiveNoticeCard(
-                    text:
-                        'This request is queued outside working hours. You can review it now, but actions stay locked until the official response window begins.',
-                  ),
                 ] else if (currentRequest.isAcceptedAwaitingPayment) ...[
-                  const _PassiveNoticeCard(
-                    text:
-                        'The provider response is complete. Payment support for this canonical flow remains intentionally inactive in this slice.',
-                  ),
+                  _PassiveNoticeCard(text: _acceptedMessage(currentRequest)),
                 ] else ...[
                   const _PassiveNoticeCard(
                     text:
@@ -204,7 +199,7 @@ class _CanonicalProviderBookingRequestDetailScreenState
       if (!mounted) return;
       AppSnackbar.showSuccess(
         context,
-        'Request accepted. The customer now has 60 minutes to pay.',
+        'Request accepted. The customer can pay now.',
       );
     } on CanonicalBookingRequestException catch (error) {
       if (!mounted) return;
@@ -266,15 +261,33 @@ class _CanonicalProviderBookingRequestDetailScreenState
 
   String _stateDescription(CanonicalProviderBookingRequestView request) {
     if (request.isQueuedRequest) {
-      return 'Waiting for your working hours. The official 60-minute response clock has not started yet.';
+      if (request.timerStartsAt != null) {
+        return 'This request was received outside your working hours. You can accept or decline it now. Your official 60-minute response window starts on ${_dateTimeLabel(request.timerStartsAt!)}.';
+      }
+      return 'This request was received outside your working hours. You can accept or decline it now. The official response clock will start when your schedule opens.';
     }
     if (request.isPendingProvider) {
       return 'The official response window is active. Review safely and respond within the countdown.';
     }
     if (request.isAcceptedAwaitingPayment) {
-      return 'You accepted this request. The customer can continue only after canonical payment support is activated later.';
+      return _acceptedMessage(request);
     }
     return 'This request already moved forward and is shown here only for safe read compatibility.';
+  }
+
+  String _importantMessage(CanonicalProviderBookingRequestView request) {
+    if (request.isQueuedRequest) {
+      return 'This request was received outside your working hours. You can accept or decline it now. The official payment and response windows will still anchor to your next working-hours opening.';
+    }
+    return 'Accepting lets the customer pay now. Availability is confirmed only after payment succeeds.';
+  }
+
+  String _acceptedMessage(CanonicalProviderBookingRequestView request) {
+    final timerStartsAt = request.timerStartsAt;
+    if (timerStartsAt != null && timerStartsAt.isAfter(DateTime.now())) {
+      return 'This request was accepted before your working hours opened. The customer can pay now. The official payment deadline is still anchored to ${_dateTimeLabel(timerStartsAt)}.';
+    }
+    return 'This request has been accepted. The customer can pay now and the booking will confirm as soon as payment succeeds.';
   }
 
   String _scheduleLabel(CanonicalProviderBookingRequestView request) {
