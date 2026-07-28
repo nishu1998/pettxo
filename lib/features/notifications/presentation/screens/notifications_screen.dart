@@ -43,6 +43,38 @@ class NotificationsScreen extends StatelessWidget {
         .snapshots();
   }
 
+  bool _isUnreadNotification(Map<String, dynamic> data) {
+    return data['read'] != true && data['isRead'] != true;
+  }
+
+  Future<void> _markAllNotificationsRead(
+    BuildContext context,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) async {
+    final unreadDocs = docs
+        .where((doc) => _isUnreadNotification(doc.data()))
+        .toList(growable: false);
+    if (unreadDocs.isEmpty) return;
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      for (final doc in unreadDocs) {
+        batch.update(doc.reference, {
+          'read': true,
+          'isRead': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    } catch (_) {
+      if (!context.mounted) return;
+      AppSnackbar.warning(
+        context,
+        message: 'Unable to mark notifications as read right now.',
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -68,14 +100,18 @@ class NotificationsScreen extends StatelessWidget {
                   final docs = _sortNotificationsByLatestFirst(
                     snapshot.data?.docs ?? const [],
                   );
-                  final unreadCount = docs.where((doc) {
-                    final data = doc.data();
-                    return data['read'] != true && data['isRead'] != true;
-                  }).length;
+                  final unreadCount = docs
+                      .where((doc) => _isUnreadNotification(doc.data()))
+                      .length;
 
                   return Column(
                     children: [
-                      _NotificationsHeader(unreadCount: unreadCount),
+                      _NotificationsHeader(
+                        unreadCount: unreadCount,
+                        onUnreadTap: unreadCount > 0
+                            ? () => _markAllNotificationsRead(context, docs)
+                            : null,
+                      ),
                       Expanded(
                         child: () {
                           if (snapshot.hasError) {
@@ -148,7 +184,7 @@ class NotificationsScreen extends StatelessWidget {
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
   ) async {
     final data = doc.data();
-    final isUnread = data['read'] != true && data['isRead'] != true;
+    final isUnread = _isUnreadNotification(data);
     if (isUnread) {
       try {
         await doc.reference.update({
@@ -228,8 +264,9 @@ class NotificationsScreen extends StatelessWidget {
 
 class _NotificationsHeader extends StatelessWidget {
   final int unreadCount;
+  final VoidCallback? onUnreadTap;
 
-  const _NotificationsHeader({required this.unreadCount});
+  const _NotificationsHeader({required this.unreadCount, this.onUnreadTap});
 
   @override
   Widget build(BuildContext context) {
@@ -270,27 +307,40 @@ class _NotificationsHeader extends StatelessWidget {
           ),
           const Spacer(),
           if (unreadCount > 0) ...[
-            Container(
-              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.94),
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onUnreadTap,
                 borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.07),
-                    blurRadius: 20,
-                    offset: const Offset(0, 10),
+                child: Container(
+                  constraints: const BoxConstraints(
+                    minWidth: 40,
+                    minHeight: 40,
                   ),
-                ],
-              ),
-              child: Text(
-                '$unreadCount',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.94),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withValues(alpha: 0.07),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    '$unreadCount',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary,
+                    ),
+                  ),
                 ),
               ),
             ),
