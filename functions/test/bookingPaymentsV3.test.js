@@ -8,15 +8,25 @@ const {
 const {
   resolveCanonicalPricingV3,
   validatePreCheckoutAvailabilityV3,
+  previewCanonicalPaymentPricingV3,
   finalizeCapturedBookingPaymentV3,
+  finalizeCapturedCanonicalPaymentV3,
   persistFinalizePaymentResultV3,
+  reconcilePaymentAttemptsV3,
   submitRefundInstructionV3,
 } = require("../lib/booking/application/paymentOrchestrationV3.js");
+const {Timestamp} = require("firebase-admin/firestore");
 const razorpayGateway = require("../lib/booking/application/razorpayGateway.js");
+const sharedFirebase = require("../lib/shared/firebase.js");
 const {
   buildCanonicalPaymentRaceFixture,
   assertNoPrivateLeakage,
 } = require("./helpers/canonicalPaymentRaceFixture.js");
+
+const BOOKING_CHAT_SAFETY_NOTICE =
+  "For your protection, keep payments and booking changes inside Pettxo.";
+const LEGACY_BOOKING_CHAT_SAFETY_NOTICE =
+  "Bookings made outside Pettxo are not covered by OTP verification, dispute protection, or refunds.";
 
 function parentIdentity() {
   return {
@@ -25,6 +35,13 @@ function parentIdentity() {
     fullName: "Nisha Gautam",
     email: "nisha@example.com",
     phoneNumber: "+919999999999",
+  };
+}
+
+function providerPrivateIdentity(phoneNumber = "+918888888888") {
+  return {
+    uid: "provider-1",
+    phoneNumber,
   };
 }
 
@@ -43,6 +60,91 @@ function liveService() {
     },
   };
 }
+
+function buildFutureAcceptedAwaitingPaymentBookingFixture() {
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const startAt = new Date("2026-08-02T06:00:00.000Z");
+  const endAt = new Date("2026-08-02T07:00:00.000Z");
+  const payDeadlineAt = new Date("2026-08-01T10:30:00.000Z");
+  booking.schedule.slots[0].dateKey = "2026-08-02";
+  booking.schedule.slots[0].startAt = startAt;
+  booking.schedule.slots[0].endAt = endAt;
+  booking.schedule.scheduledStartAt = startAt;
+  booking.schedule.scheduledEndAt = endAt;
+  booking.schedule.serviceAnchorAt = startAt;
+  booking.serviceAnchorAt = startAt;
+  booking.scheduledStartAt = startAt;
+  booking.lifecycle.payDeadlineAt = payDeadlineAt;
+  booking.payDeadlineAt = payDeadlineAt;
+  return booking;
+}
+
+test("previewCanonicalPaymentPricingV3 returns the authoritative pricing summary before order creation", () => {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+
+  const preview = previewCanonicalPaymentPricingV3({
+    bookingId: "booking-preview-1",
+    parentId: booking.parentId,
+    service: liveService(),
+    booking,
+    authoritativeNow: new Date("2026-07-31T10:30:00.000Z"),
+  });
+
+  assert.equal(preview.ok, true);
+  assert.equal(preview.code, "READY");
+  if (!preview.ok) return;
+
+  const resolved = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  assert.deepEqual(preview.pricing, resolved);
+  assert.equal(
+    preview.payDeadlineAt?.toISOString(),
+    booking.lifecycle.payDeadlineAt?.toISOString(),
+  );
+});
+
+test("previewCanonicalPaymentPricingV3 applies valid coupons and supports zero-payable totals", () => {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+  const claimedOffer = {
+    id: "claimed-free",
+    claimedOfferId: "claimed-free",
+    offerId: "campaign-free",
+    couponCode: "FREEWALK",
+    discountType: "flat",
+    discountValue: 250,
+    maxDiscountAmount: null,
+    minBookingAmount: 0,
+    validUntil: new Date("2026-08-01T00:00:00.000Z"),
+    usageLimit: 1,
+    usedCount: 0,
+    status: "claimed",
+    serviceIds: [booking.serviceId],
+    providerIds: [booking.providerId],
+    categoryRestrictions: [booking.service.category],
+    campaignSnapshot: {
+      title: "Free walk",
+      description: "Makes the booking free.",
+      serviceIds: [booking.serviceId],
+      providerIds: [booking.providerId],
+      categoryRestrictions: [booking.service.category],
+    },
+  };
+
+  const preview = previewCanonicalPaymentPricingV3({
+    bookingId: "booking-preview-2",
+    parentId: booking.parentId,
+    service: liveService(),
+    booking,
+    claimedOffer,
+    authoritativeNow: new Date("2026-07-31T10:30:00.000Z"),
+  });
+
+  assert.equal(preview.ok, true);
+  if (!preview.ok) return;
+
+  assert.equal(preview.pricing.serviceSubtotalPaise, 25000);
+  assert.equal(preview.pricing.couponDiscountPaise, 25000);
+  assert.equal(preview.pricing.customerPaidPaise, 0);
+});
 
 function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
   return {
@@ -191,10 +293,15 @@ function assertChatCompatibilityExactlyOnce(firestore, bookingId, {
   assert.equal(bookingChat.unreadCountProvider, 0);
   assert.equal(inboxChat.unreadCountCustomer, 0);
   assert.equal(inboxChat.unreadCountProvider, 0);
+  assert.equal(bookingChat.safetyNotice, BOOKING_CHAT_SAFETY_NOTICE);
+  assert.equal(inboxChat.safetyNotice, BOOKING_CHAT_SAFETY_NOTICE);
+  assert.notEqual(bookingChat.safetyNotice, LEGACY_BOOKING_CHAT_SAFETY_NOTICE);
+  assert.notEqual(inboxChat.safetyNotice, LEGACY_BOOKING_CHAT_SAFETY_NOTICE);
 }
 
 class FakeDocSnapshot {
-  constructor(path, data) {
+  constructor(firestore, path, data) {
+    this.ref = new FakeDocRef(firestore, path);
     this.path = path;
     this.id = path.split("/").pop();
     this._data = data;
@@ -226,7 +333,7 @@ class FakeDocRef {
   }
 
   async get() {
-    return new FakeDocSnapshot(this.path, this.firestore.store.get(this.path));
+    return new FakeDocSnapshot(this.firestore, this.path, this.firestore.store.get(this.path));
   }
 
   async set(data, options) {
@@ -241,8 +348,42 @@ class FakeCollectionRef {
     this.id = path.split("/").pop();
   }
 
+  get parent() {
+    const segments = this.path.split("/");
+    if (segments.length < 2) return null;
+    return new FakeDocRef(this.firestore, segments.slice(0, -1).join("/"));
+  }
+
   doc(id) {
     return new FakeDocRef(this.firestore, `${this.path}/${id}`);
+  }
+}
+
+class FakeQuery {
+  constructor(docs) {
+    this.docs = docs;
+  }
+
+  where(field, operator, value) {
+    const filtered = this.docs.filter((doc) => {
+      const fieldValue = doc.data()?.[field];
+      if (operator === "in") {
+        return Array.isArray(value) && value.includes(fieldValue);
+      }
+      if (operator === "==") {
+        return fieldValue === value;
+      }
+      return false;
+    });
+    return new FakeQuery(filtered);
+  }
+
+  limit(count) {
+    return new FakeQuery(this.docs.slice(0, count));
+  }
+
+  async get() {
+    return {docs: this.docs};
   }
 }
 
@@ -273,6 +414,14 @@ class FakeFirestore {
     return new FakeDocRef(this, path);
   }
 
+  collectionGroup(path) {
+    const suffix = `/${path}/`;
+    const docs = [...this.store.entries()]
+      .filter(([docPath]) => docPath.includes(suffix))
+      .map(([docPath, data]) => new FakeDocSnapshot(this, docPath, data));
+    return new FakeQuery(docs);
+  }
+
   async runTransaction(handler) {
     return handler(new FakeTransaction(this));
   }
@@ -281,6 +430,115 @@ class FakeFirestore {
     const existing = this.store.get(path) ?? {};
     this.store.set(path, options.merge ? {...existing, ...data} : {...data});
   }
+}
+
+function toSerializedTimestamp(date) {
+  return {
+    seconds: Math.floor(date.getTime() / 1000),
+    nanoseconds: (date.getTime() % 1000) * 1000000,
+  };
+}
+
+function setPath(target, path, value) {
+  const segments = path.split(".");
+  let cursor = target;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    cursor = cursor[segments[index]];
+  }
+  cursor[segments[segments.length - 1]] = value;
+}
+
+function buildPersistedFinalizationSeed({
+  bookingId,
+  paymentAttemptId,
+  timestampFactory,
+}) {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+  const pricing = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  booking.financials = pricing.financialSnapshot;
+  booking.createdAt = new Date("2026-07-28T09:00:00.000Z");
+  booking.updatedAt = new Date("2026-07-28T09:05:00.000Z");
+  booking.lifecycle.respondedAt = new Date("2026-07-28T09:10:00.000Z");
+  booking.lifecycle.payDeadlineAt = new Date("2026-07-28T10:30:00.000Z");
+  booking.payDeadlineAt = booking.lifecycle.payDeadlineAt;
+  booking.schedule.slots[0].startAt = new Date("2026-07-29T06:00:00.000Z");
+  booking.schedule.slots[0].endAt = new Date("2026-07-29T07:00:00.000Z");
+  booking.schedule.scheduledStartAt = new Date("2026-07-29T06:00:00.000Z");
+  booking.schedule.scheduledEndAt = new Date("2026-07-29T07:00:00.000Z");
+  booking.schedule.serviceAnchorAt = new Date("2026-07-29T06:00:00.000Z");
+  booking.serviceAnchorAt = booking.schedule.serviceAnchorAt;
+  booking.scheduledStartAt = booking.schedule.scheduledStartAt;
+
+  const attempt = buildAttempt({
+    booking,
+    pricing,
+    paymentAttemptId,
+    razorpayOrderId: `order_${paymentAttemptId}`,
+  });
+  attempt.bookingId = bookingId;
+  attempt.createdAt = new Date("2026-07-28T09:11:00.000Z");
+  attempt.orderCreatedAt = new Date("2026-07-28T09:12:00.000Z");
+  attempt.checkoutOpenedAt = new Date("2026-07-28T09:13:00.000Z");
+  attempt.updatedAt = new Date("2026-07-28T09:13:00.000Z");
+  attempt.orderExpiresAt = booking.lifecycle.payDeadlineAt;
+
+  const persistedBooking = structuredClone(booking);
+  const persistedAttempt = structuredClone(attempt);
+  for (const path of [
+    "createdAt",
+    "updatedAt",
+    "serviceAnchorAt",
+    "scheduledStartAt",
+    "payDeadlineAt",
+    "lifecycle.respondedAt",
+    "lifecycle.payDeadlineAt",
+    "schedule.serviceAnchorAt",
+    "schedule.scheduledStartAt",
+    "schedule.scheduledEndAt",
+    "schedule.slots.0.startAt",
+    "schedule.slots.0.endAt",
+  ]) {
+    setPath(persistedBooking, path, timestampFactory(path, path.split(".").reduce((value, segment) => value[segment], booking)));
+  }
+  for (const path of [
+    "orderExpiresAt",
+    "createdAt",
+    "orderCreatedAt",
+    "checkoutOpenedAt",
+    "updatedAt",
+  ]) {
+    setPath(persistedAttempt, path, timestampFactory(path, path.split(".").reduce((value, segment) => value[segment], attempt)));
+  }
+
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: persistedBooking,
+    [`bookings/${bookingId}/paymentAttempts/${paymentAttemptId}`]: persistedAttempt,
+    [`users/${booking.parentId}`]: {
+      displayName: "Nisha Gautam",
+      photoUrl: "https://example.com/nisha.jpg",
+      ratingAverage: 4.9,
+      completedBookingCount: 5,
+    },
+    [`services/${booking.serviceId}`]: {
+      serviceId: booking.serviceId,
+      ownerUserId: booking.providerId,
+      isActive: true,
+      isDeleted: false,
+      isPaused: false,
+      isVisibleToMarketplace: true,
+      isPausedByVerification: false,
+      status: "active",
+      currency: "INR",
+      timezone: "Asia/Kolkata",
+      location: {
+        displayAddress: "Andheri West, Mumbai",
+        latitude: 19.136,
+        longitude: 72.829,
+      },
+    },
+  });
+
+  return {firestore, booking, attempt};
 }
 
 test("resolveCanonicalPricingV3 keeps provider payout unaffected by Pettxo coupon", () => {
@@ -407,6 +665,253 @@ test("finalizeCapturedBookingPaymentV3 confirms a paid SLOT booking once", () =>
   });
   assert.equal(result.booking.financials.customerPaidPaise, 25000);
   assert.equal(result.booking.payment.razorpayPaymentId, "pay_slot_1");
+  assert.equal(result.notifications.length, 2);
+  assert.equal(
+    result.notifications.some((notification) =>
+      notification.type === "booking_confirmed" &&
+      notification.recipientUserId === booking.providerId &&
+      notification.data.bookingId === "booking-slot-1"),
+    true,
+  );
+});
+
+test("reconcilePaymentAttemptsV3 persists shared confirmation notifications exactly once", async () => {
+  const bookingId = "booking-reconcile-notification-1";
+  const paymentAttemptId = "attempt-reconcile-notification-1";
+  const {firestore, booking, attempt} = buildPersistedFinalizationSeed({
+    bookingId,
+    paymentAttemptId,
+    timestampFactory: (_path, value) => value,
+  });
+  attempt.state = "CAPTURE_REPORTED";
+  attempt.razorpayPaymentId = "pay_reconcile_notification_1";
+  attempt.razorpayOrderId = `order_${paymentAttemptId}`;
+  firestore.store.set(
+    `bookings/${bookingId}/paymentAttempts/${paymentAttemptId}`,
+    {...firestore.store.get(`bookings/${bookingId}/paymentAttempts/${paymentAttemptId}`), ...attempt},
+  );
+  const originalGetUser = sharedFirebase.auth.getUser;
+  sharedFirebase.auth.getUser = async () => ({
+    displayName: "Nisha Gautam",
+    email: "nisha@example.com",
+    phoneNumber: "+919999999999",
+    photoURL: "https://example.com/nisha.jpg",
+  });
+
+  const recordedNotifications = [];
+
+  try {
+    const processed = await reconcilePaymentAttemptsV3({
+      firestore,
+      keyId: "rzp_test_key",
+      keySecret: "rzp_test_secret",
+      authoritativeNow: new Date("2026-07-28T09:30:00.000Z"),
+      deps: {
+        verifyCapturedPayment: async () => ({
+          ok: true,
+          code: "CONFIRMED",
+          paymentAttempt: {
+            ...attempt,
+            state: "CONFIRMED",
+          },
+          notifications: [
+            {
+              idempotencyKey: `booking_confirmed:${bookingId}:${booking.parentId}`,
+              recipientUserId: booking.parentId,
+              type: "booking_confirmed",
+              channels: ["push", "in_app"],
+              title: "Booking confirmed",
+              body: "Customer notification",
+              data: {
+                bookingId,
+                recipientRole: "customer",
+              },
+            },
+            {
+              idempotencyKey: `booking_confirmed:${bookingId}:${booking.providerId}`,
+              recipientUserId: booking.providerId,
+              type: "booking_confirmed",
+              channels: ["push", "in_app"],
+              title: "Booking confirmed",
+              body: "Provider notification",
+              data: {
+                bookingId,
+                recipientRole: "provider",
+              },
+            },
+          ],
+        }),
+        persistNotifications: async ({notifications}) => {
+          recordedNotifications.push(...notifications);
+        },
+      },
+    });
+
+    assert.equal(processed, 1);
+    assert.equal(recordedNotifications.length, 2);
+    assert.equal(
+      recordedNotifications.some((notification) =>
+        notification.type === "booking_confirmed" &&
+        notification.recipientUserId === booking.providerId &&
+        notification.data.bookingId === bookingId),
+      true,
+    );
+  } finally {
+    sharedFirebase.auth.getUser = originalGetUser;
+  }
+});
+
+test("finalizeCapturedCanonicalPaymentV3 normalizes Firestore Timestamp deadlines at the persistence boundary", async () => {
+  const bookingId = "booking-boundary-timestamp-1";
+  const paymentAttemptId = "attempt-boundary-timestamp-1";
+  const {firestore, booking, attempt} = buildPersistedFinalizationSeed({
+    bookingId,
+    paymentAttemptId,
+    timestampFactory: (_path, value) => Timestamp.fromDate(value),
+  });
+  const originalGetUser = sharedFirebase.auth.getUser;
+  sharedFirebase.auth.getUser = async () => ({
+    displayName: "Nisha Gautam",
+    email: "nisha@example.com",
+    phoneNumber: "+919999999999",
+    photoURL: "https://example.com/nisha.jpg",
+  });
+
+  try {
+    const result = await finalizeCapturedCanonicalPaymentV3({
+      firestore,
+      facts: {
+        bookingId,
+        paymentAttemptId,
+        razorpayOrderId: attempt.razorpayOrderId,
+        razorpayPaymentId: "pay_boundary_timestamp_1",
+        capturedAmountPaise: attempt.amountPaise,
+        currency: attempt.currency,
+        capturedAt: new Date("2026-07-28T09:20:00.000Z"),
+        verificationSource: "webhook",
+      },
+      authoritativeNow: new Date("2026-07-28T09:20:05.000Z"),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.booking.state, "CONFIRMED");
+    assert.equal(result.paymentAttempt.state, "CONFIRMED");
+    assert.equal(
+      result.bookingPrivateParticipants.providerPrivate.phoneNumber,
+      "+919999999999",
+    );
+    assert.equal(
+      result.booking.lifecycle.payDeadlineAt?.toISOString(),
+      booking.lifecycle.payDeadlineAt?.toISOString(),
+    );
+    assert.equal(
+      result.paymentAttempt.orderExpiresAt?.toISOString(),
+      booking.lifecycle.payDeadlineAt?.toISOString(),
+    );
+  } finally {
+    sharedFirebase.auth.getUser = originalGetUser;
+  }
+});
+
+test("finalizeCapturedCanonicalPaymentV3 normalizes serialized timestamp-like deadlines and stays idempotent on replay", async () => {
+  const bookingId = "booking-boundary-serialized-1";
+  const paymentAttemptId = "attempt-boundary-serialized-1";
+  const {firestore, booking, attempt} = buildPersistedFinalizationSeed({
+    bookingId,
+    paymentAttemptId,
+    timestampFactory: (_path, value) => toSerializedTimestamp(value),
+  });
+  const originalGetUser = sharedFirebase.auth.getUser;
+  sharedFirebase.auth.getUser = async () => ({
+    displayName: "Nisha Gautam",
+    email: "nisha@example.com",
+    phoneNumber: "+919999999999",
+    photoURL: "https://example.com/nisha.jpg",
+  });
+
+  try {
+    const first = await finalizeCapturedCanonicalPaymentV3({
+      firestore,
+      facts: {
+        bookingId,
+        paymentAttemptId,
+        razorpayOrderId: attempt.razorpayOrderId,
+        razorpayPaymentId: "pay_boundary_serialized_1",
+        capturedAmountPaise: attempt.amountPaise,
+        currency: attempt.currency,
+        capturedAt: new Date("2026-07-28T09:21:00.000Z"),
+        verificationSource: "reconciliation",
+      },
+      authoritativeNow: new Date("2026-07-28T09:21:05.000Z"),
+    });
+    assert.equal(first.ok, true);
+    await persistFinalizePaymentResultV3({firestore, result: first, bookingId});
+
+    const replay = await finalizeCapturedCanonicalPaymentV3({
+      firestore,
+      facts: {
+        bookingId,
+        paymentAttemptId,
+        razorpayOrderId: attempt.razorpayOrderId,
+        razorpayPaymentId: "pay_boundary_serialized_1",
+        capturedAmountPaise: attempt.amountPaise,
+        currency: attempt.currency,
+        capturedAt: new Date("2026-07-28T09:21:00.000Z"),
+        verificationSource: "reconciliation",
+      },
+      authoritativeNow: new Date("2026-07-28T09:22:05.000Z"),
+    });
+
+    assert.equal(replay.ok, true);
+    assert.equal(replay.code, "IDEMPOTENT_REPLAY");
+    assert.equal(
+      replay.booking.lifecycle.payDeadlineAt?.toISOString(),
+      booking.lifecycle.payDeadlineAt?.toISOString(),
+    );
+  } finally {
+    sharedFirebase.auth.getUser = originalGetUser;
+  }
+});
+
+test("finalizeCapturedCanonicalPaymentV3 turns invalid persisted payDeadlineAt into a controlled malformed-booking result", async () => {
+  const bookingId = "booking-boundary-invalid-1";
+  const paymentAttemptId = "attempt-boundary-invalid-1";
+  const {firestore, attempt} = buildPersistedFinalizationSeed({
+    bookingId,
+    paymentAttemptId,
+    timestampFactory: (path, value) =>
+      path.includes("payDeadlineAt") ? {seconds: "not-a-number"} : value,
+  });
+  const originalGetUser = sharedFirebase.auth.getUser;
+  sharedFirebase.auth.getUser = async () => ({
+    displayName: "Nisha Gautam",
+    email: "nisha@example.com",
+    phoneNumber: "+919999999999",
+    photoURL: "https://example.com/nisha.jpg",
+  });
+
+  try {
+    const result = await finalizeCapturedCanonicalPaymentV3({
+      firestore,
+      facts: {
+        bookingId,
+        paymentAttemptId,
+        razorpayOrderId: attempt.razorpayOrderId,
+        razorpayPaymentId: "pay_boundary_invalid_1",
+        capturedAmountPaise: attempt.amountPaise,
+        currency: attempt.currency,
+        capturedAt: new Date("2026-07-28T09:23:00.000Z"),
+        verificationSource: "webhook",
+      },
+      authoritativeNow: new Date("2026-07-28T09:23:05.000Z"),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "MALFORMED_BOOKING");
+    assert.equal(result.message, "Canonical payment deadline is missing.");
+  } finally {
+    sharedFirebase.auth.getUser = originalGetUser;
+  }
 });
 
 test("finalizeCapturedBookingPaymentV3 creates refund-required outcome when capacity is lost", () => {
@@ -511,13 +1016,16 @@ test("finalizer keeps existing private data on idempotent replay", () => {
     bookingId: "booking-confirmed-1",
     parentId: booking.parentId,
     providerId: booking.providerId,
-    fullParentName: "Nisha Gautam",
-    phoneNumber: "+919999999999",
-    serviceAddress: "Andheri West, Mumbai",
-    latitude: 19.136,
-    longitude: 72.829,
     parentOtpCode: "482913",
-    providerOtpHash: "hash",
+    providerOtpHash: "a".repeat(64),
+    otpState: "ACTIVE",
+    failedAttemptCount: 0,
+    lastFailedAttemptAt: null,
+    lockedUntil: null,
+    verifiedAt: null,
+    successfulAttemptNumber: null,
+    lastVerificationAttemptId: "",
+    lastVerificationOutcome: "",
     contactUnlockedAt: new Date("2026-07-22T10:25:10.000Z"),
     createdAt: new Date("2026-07-22T10:25:10.000Z"),
     updatedAt: new Date("2026-07-22T10:25:10.000Z"),
@@ -538,6 +1046,7 @@ test("finalizer keeps existing private data on idempotent replay", () => {
       confirmedAt: new Date("2026-07-22T10:25:10.000Z"),
     },
     parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
     service: liveService(),
     existingBookingPrivate: existingPrivate,
     slotOccupancy: {},
@@ -562,8 +1071,55 @@ test("finalizer keeps existing private data on idempotent replay", () => {
     paymentAttemptId: "attempt-confirmed-1",
   });
   assert.equal(result.bookingPrivate.parentOtpCode, "482913");
+  assert.equal(result.privateWritePlan.writeBookingPrivate, false);
   assert.equal(result.otpCode, "");
   assert.deepEqual(result.occupancyWrites, {});
+});
+
+test("finalizer reports repair-required when a confirmed booking is missing its OTP private document", () => {
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const pricing = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  booking.financials = pricing.financialSnapshot;
+  booking.state = "CONFIRMED";
+  booking.stateQueryValue = "CONFIRMED";
+  booking.lifecycle.paidAt = new Date("2026-07-22T10:25:10.000Z");
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId: "booking-confirmed-missing-private-1",
+    booking,
+    paymentAttempt: {
+      ...buildAttempt({
+        booking,
+        pricing,
+        paymentAttemptId: "attempt-confirmed-missing-private-1",
+        razorpayOrderId: "order_confirmed_missing_private_1",
+      }),
+      state: "CONFIRMED",
+      razorpayPaymentId: "pay_confirmed_missing_private_1",
+      confirmedAt: new Date("2026-07-22T10:25:10.000Z"),
+    },
+    parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
+    service: liveService(),
+    existingBookingPrivate: null,
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_confirmed_missing_private_1",
+      orderId: "order_confirmed_missing_private_1",
+      status: "captured",
+      amountPaise: pricing.financialSnapshot.customerPaidPaise,
+      currency: "INR",
+      createdAt: new Date("2026-07-22T10:25:00.000Z"),
+      capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+    },
+    authoritativeNow: new Date("2026-07-22T10:26:00.000Z"),
+    verificationSource: "webhook",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "PRIVATE_REPAIR_REQUIRED");
+  assert.equal(result.refundInstruction, null);
 });
 
 test("finalizer allows captures received after deadline when trusted capture happened in-window", () => {
@@ -744,6 +1300,7 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
       bookingId,
     },
     parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
     service: liveService(),
     slotOccupancy: {},
     rangeOccupancy: {},
@@ -761,12 +1318,21 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
   });
 
   assert.equal(result.ok, true);
+  assert.equal(
+    result.financialWrites.bookingChat.safetyNotice,
+    BOOKING_CHAT_SAFETY_NOTICE,
+  );
+  assert.notEqual(
+    result.financialWrites.bookingChat.safetyNotice,
+    LEGACY_BOOKING_CHAT_SAFETY_NOTICE,
+  );
   const firestore = new FakeFirestore();
 
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
 
   assert.equal(firestore.store.has(`bookingPrivate/${bookingId}`), true);
+  assert.equal(firestore.store.has(`bookingPrivateParticipants/${bookingId}`), true);
   assert.equal(firestore.store.has(`bookingChats/${bookingId}`), true);
   assert.equal(firestore.store.has(`chats/${bookingId}`), true);
   assert.equal(firestore.store.has(`bookingFinancials/${bookingId}`), true);
@@ -787,6 +1353,14 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
     path.startsWith(`bookings/${bookingId}/events/`),
   );
   assert.equal(eventPaths.length, 1);
+  assert.equal(
+    firestore.store.get(`bookingPrivateParticipants/${bookingId}`).providerPrivate.phoneNumber,
+    "+918888888888",
+  );
+  assert.equal(
+    firestore.store.get(`bookingPrivateParticipants/${bookingId}`).parentOtpCode,
+    undefined,
+  );
 });
 
 test("persistFinalizePaymentResultV3 keeps paid-only unlock docs absent for refund-required outcomes", async () => {
@@ -917,6 +1491,7 @@ test("confirmed persistence keeps OTP and participant contact data in separate p
     booking: fixture.booking,
     paymentAttempt: fixture.paymentAttempt,
     parent: fixture.parent,
+    providerPrivate: providerPrivateIdentity(""),
     service: fixture.service,
     slotOccupancy: fixture.slotOccupancy,
     rangeOccupancy: fixture.rangeOccupancy,
@@ -948,6 +1523,10 @@ test("confirmed persistence keeps OTP and participant contact data in separate p
     firestore.store.get(`bookingPrivateParticipants/${fixture.ids.bookingId}`).parentPrivate.exactAddress,
     "Andheri West, Mumbai",
   );
+  assert.equal(
+    firestore.store.get(`bookingPrivateParticipants/${fixture.ids.bookingId}`).providerPrivate,
+    undefined,
+  );
   assertNoPrivateLeakage(
     firestore.store.get(`bookings/${fixture.ids.bookingId}`),
   );
@@ -969,6 +1548,46 @@ test("confirmed persistence keeps OTP and participant contact data in separate p
       )
       .map(([, value]) => value),
   );
+});
+
+test("participant-private writer omits providerPrivate.phoneNumber safely when unavailable", () => {
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const pricing = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  booking.financials = pricing.financialSnapshot;
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId: "booking-no-provider-phone-1",
+    booking,
+    paymentAttempt: {
+      ...buildAttempt({
+        booking,
+        pricing,
+        paymentAttemptId: "attempt-no-provider-phone-1",
+        razorpayOrderId: "order_no_provider_phone_1",
+      }),
+      bookingId: "booking-no-provider-phone-1",
+    },
+    parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(""),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_no_provider_phone_1",
+      orderId: "order_no_provider_phone_1",
+      status: "captured",
+      amountPaise: pricing.financialSnapshot.customerPaidPaise,
+      currency: "INR",
+      createdAt: new Date("2026-07-22T10:25:00.000Z"),
+      capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+    },
+    authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+    verificationSource: "callable",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.bookingPrivateParticipants.providerPrivate, undefined);
+  assert.equal(result.bookingPrivateParticipants.parentPrivate.phoneNumber, "+919999999999");
 });
 
 test("submitRefundInstructionV3 updates the existing refund document without creating duplicates", async () => {

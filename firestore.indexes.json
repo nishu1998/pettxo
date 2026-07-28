@@ -145,6 +145,14 @@
       ]
     },
     {
+      "collectionGroup": "bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "stateQueryValue", "order": "ASCENDING" },
+        { "fieldPath": "acceptDeadlineAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "paymentAttempts",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

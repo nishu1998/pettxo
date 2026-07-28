@@ -13,8 +13,11 @@ import {
   RAZORPAY_WEBHOOK_SECRET,
 } from "../config/secrets";
 import {auth, db} from "../shared/firebase";
+import {ACCEPT_WINDOW_MS} from "./domain/bookingConstants";
 import {
   acceptBookingRequestV3 as acceptBookingRequestApplicationV3,
+  buildCustomerPaymentReminderIfDueV3,
+  buildProviderRequestReminderIfDueV3,
   cancelBookingRequestByParentV3 as cancelBookingRequestByParentApplicationV3,
   createBookingRequestV3 as createBookingRequestApplicationV3,
   declineBookingRequestV3 as declineBookingRequestApplicationV3,
@@ -30,6 +33,7 @@ import {
   canonicalPaymentOrderMappingRef,
   createRazorpayPaymentOrderV3 as createRazorpayPaymentOrderApplicationV3,
   persistFinalizePaymentResultV3,
+  previewCanonicalPaymentPricingV3,
   reconcilePaymentAttemptsV3,
   verifyCapturedBookingPaymentV3,
 } from "./application/paymentOrchestrationV3";
@@ -146,6 +150,14 @@ type CanonicalPaymentVerificationResponse = {
   state: CanonicalBookingDocumentV3["state"] | null;
   confirmedAt: string | null;
   payDeadlineAt: string | null;
+  idempotentReplay: boolean;
+};
+
+type CanonicalPaymentPricingPreviewResponse = {
+  bookingId: string;
+  pricingSummary: CanonicalPaymentPricingSummaryResponse;
+  payDeadlineAt: string | null;
+  claimedOfferId: string;
   idempotentReplay: boolean;
 };
 
@@ -778,6 +790,22 @@ function buildPaymentVerificationResponse(params: {
   };
 }
 
+function buildPaymentPricingPreviewResponse(params: {
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  pricingSummary: CanonicalPaymentPricingSummaryResponse;
+  claimedOfferId?: string;
+  idempotentReplay: boolean;
+}): CanonicalPaymentPricingPreviewResponse {
+  return {
+    bookingId: params.bookingId,
+    pricingSummary: params.pricingSummary,
+    payDeadlineAt: params.booking.lifecycle.payDeadlineAt?.toISOString() ?? null,
+    claimedOfferId: params.claimedOfferId?.trim() ?? "",
+    idempotentReplay: params.idempotentReplay,
+  };
+}
+
 function buildCancellationPreviewResponse(params: {
   bookingId: string;
   preview: ReturnType<typeof buildCanonicalCancellationPreviewV3>;
@@ -1084,6 +1112,62 @@ async function applySchedulerLifecycleMutation(params: {
     writeNotifications(transaction, params.lifecycleResult.notifications, "system");
   });
   return true;
+}
+
+async function createProviderRequestReminderIfDue(params: {
+  bookingRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  authoritativeNow: Date;
+}): Promise<"created" | "duplicate" | "not_due"> {
+  return db.runTransaction(async (transaction) => {
+    const bookingSnapshot = await transaction.get(params.bookingRef);
+    if (!bookingSnapshot.exists) {
+      return "not_due";
+    }
+    const booking = ensureCanonicalBooking(bookingSnapshot.data());
+    const notification = buildProviderRequestReminderIfDueV3({
+      bookingId: params.bookingRef.id,
+      booking,
+      authoritativeNow: params.authoritativeNow,
+    });
+    if (!notification) {
+      return "not_due";
+    }
+    const notificationRef = db.collection("notifications").doc(notification.idempotencyKey);
+    const existingNotification = await transaction.get(notificationRef);
+    if (existingNotification.exists) {
+      return "duplicate";
+    }
+    writeNotifications(transaction, [notification], "system");
+    return "created";
+  });
+}
+
+async function createCustomerPaymentReminderIfDue(params: {
+  bookingRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  authoritativeNow: Date;
+}): Promise<"created" | "duplicate" | "not_due"> {
+  return db.runTransaction(async (transaction) => {
+    const bookingSnapshot = await transaction.get(params.bookingRef);
+    if (!bookingSnapshot.exists) {
+      return "not_due";
+    }
+    const booking = ensureCanonicalBooking(bookingSnapshot.data());
+    const notification = buildCustomerPaymentReminderIfDueV3({
+      bookingId: params.bookingRef.id,
+      booking,
+      authoritativeNow: params.authoritativeNow,
+    });
+    if (!notification) {
+      return "not_due";
+    }
+    const notificationRef = db.collection("notifications").doc(notification.idempotencyKey);
+    const existingNotification = await transaction.get(notificationRef);
+    if (existingNotification.exists) {
+      return "duplicate";
+    }
+    writeNotifications(transaction, [notification], "system");
+    return "created";
+  });
 }
 
 function isPaymentAttemptUncertainOrCaptured(state: string): boolean {
@@ -1419,6 +1503,11 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
       matchedRule: authorization.metadata.matchedRule,
     });
   }
+
+  await persistNotifications({
+    notifications: result.notifications,
+    actorId: uid,
+  });
 
   return buildRequestResponse(
     result.bookingId,
@@ -1842,6 +1931,53 @@ export const createRazorpayPaymentOrderV3 = onCall({
   });
 });
 
+export const previewBookingPaymentPricingV3 = onCall({
+  invoker: "private",
+}, async (request) => {
+  const authoritativeNow = new Date();
+  const uid = requireUid(request.auth);
+  const bookingId = asString(request.data?.bookingId);
+  const claimedOfferId = asString(request.data?.claimedOfferId);
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+
+  const authorized = await authorizeCanonicalPaymentCommand({
+    bookingId,
+    authenticatedUserId: uid,
+    command: "create_order",
+    now: authoritativeNow,
+  });
+  const claimedOffer = await loadClaimedOffer(uid, claimedOfferId);
+  const preview = previewCanonicalPaymentPricingV3({
+    bookingId,
+    parentId: uid,
+    service: authorized.service,
+    booking: authorized.booking,
+    claimedOffer: claimedOffer ?? undefined,
+    authoritativeNow,
+  });
+  if (!preview.ok) {
+    throw new HttpsError("failed-precondition", preview.message, {
+      code: preview.code,
+    });
+  }
+
+  return buildPaymentPricingPreviewResponse({
+    bookingId,
+    booking: authorized.booking,
+    pricingSummary: {
+      serviceSubtotalPaise: preview.pricing.serviceSubtotalPaise,
+      couponDiscountPaise: preview.pricing.couponDiscountPaise,
+      customerPaidPaise: preview.pricing.customerPaidPaise,
+      providerPayoutPaise: preview.pricing.financialSnapshot.providerPayoutPaise,
+      currency: preview.pricing.financialSnapshot.currency,
+    },
+    claimedOfferId,
+    idempotentReplay: false,
+  });
+});
+
 export const verifyBookingPaymentV3 = onCall({
   invoker: "private",
   secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
@@ -1911,6 +2047,15 @@ export const verifyBookingPaymentV3 = onCall({
         booking: result.booking,
         idempotentReplay: result.code === "IDEMPOTENT_REPLAY",
       });
+    }
+    if (result.code === "PRIVATE_REPAIR_REQUIRED") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Canonical private booking data requires server-side repair.",
+        {
+          code: result.code,
+        },
+      );
     }
     return buildPaymentVerificationResponse({
       bookingId,
@@ -2760,6 +2905,68 @@ export const expirePendingProviderBookingsV3 = onSchedule(
     console.info("bookingV3.scheduler.providerExpiry", {
       processed,
       scanned: dueSnapshot.size,
+      authoritativeAt: authoritativeNow.toISOString(),
+    });
+  },
+);
+
+export const sendProviderRequestRemindersV3 = onSchedule(
+  {schedule: "every 5 minutes", timeZone: "Asia/Kolkata"},
+  async () => {
+    const authoritativeNow = new Date();
+    const providerReminderDeadline = new Date(authoritativeNow.getTime() + (ACCEPT_WINDOW_MS / 2));
+    const customerReminderDeadline = new Date(authoritativeNow.getTime() + (ACCEPT_WINDOW_MS / 2));
+    const actionableStates = ["REQUESTED", "PENDING_PROVIDER"] as const;
+    let scanned = 0;
+    let created = 0;
+    let duplicates = 0;
+
+    for (const state of actionableStates) {
+      const snapshot = await db
+        .collection("bookings")
+        .where("stateQueryValue", "==", state)
+        .where("acceptDeadlineAt", ">", Timestamp.fromDate(authoritativeNow))
+        .where("acceptDeadlineAt", "<=", Timestamp.fromDate(providerReminderDeadline))
+        .limit(100)
+        .get();
+      scanned += snapshot.size;
+      for (const doc of snapshot.docs) {
+        const result = await createProviderRequestReminderIfDue({
+          bookingRef: doc.ref,
+          authoritativeNow,
+        });
+        if (result === "created") {
+          created += 1;
+        } else if (result === "duplicate") {
+          duplicates += 1;
+        }
+      }
+    }
+
+    const paymentSnapshot = await db
+      .collection("bookings")
+      .where("stateQueryValue", "==", "ACCEPTED_AWAITING_PAYMENT")
+      .where("payDeadlineAt", ">", Timestamp.fromDate(authoritativeNow))
+      .where("payDeadlineAt", "<=", Timestamp.fromDate(customerReminderDeadline))
+      .limit(100)
+      .get();
+    scanned += paymentSnapshot.size;
+    for (const doc of paymentSnapshot.docs) {
+      const result = await createCustomerPaymentReminderIfDue({
+        bookingRef: doc.ref,
+        authoritativeNow,
+      });
+      if (result === "created") {
+        created += 1;
+      } else if (result === "duplicate") {
+        duplicates += 1;
+      }
+    }
+
+    console.info("bookingV3.scheduler.providerRequestReminders", {
+      scanned,
+      created,
+      duplicates,
       authoritativeAt: authoritativeNow.toISOString(),
     });
   },

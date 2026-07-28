@@ -236,6 +236,9 @@ export type BookingPrivateParticipantsDocumentV3 = {
     latitude: number | null;
     longitude: number | null;
   };
+  providerPrivate?: {
+    phoneNumber: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 };

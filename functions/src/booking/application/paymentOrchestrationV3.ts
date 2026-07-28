@@ -20,7 +20,12 @@ import type {
   CanonicalPaymentAttemptDocumentV3,
   CanonicalCouponSnapshotV3,
 } from "../schema/paymentAttemptDocumentV3";
-import {CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION} from "../schema/paymentAttemptDocumentV3";
+import {
+  CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION,
+  parseCanonicalPaymentAttemptDocumentV3,
+} from "../schema/paymentAttemptDocumentV3";
+import {parseCanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
+import {normalizeTimestampLike} from "../schema/timestampNormalization";
 import type {AuthenticatedParentIdentity, CanonicalServiceSource} from "./createBookingRequestV3";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import {
@@ -148,11 +153,15 @@ export type FinalizePaymentSuccess = {
   events: BookingEventWritePlan[];
   notifications: BookingNotificationPlan[];
   parentStats: ParentStatsV3;
+  privateWritePlan?: {
+    writeBookingPrivate: boolean;
+    writeBookingPrivateParticipants: boolean;
+  };
 };
 
 export type FinalizePaymentFailure = {
   ok: false;
-  code: "REFUND_REQUIRED" | "PAYMENT_EXPIRED" | "CAPACITY_EXHAUSTED" | "MALFORMED_BOOKING";
+  code: "REFUND_REQUIRED" | "PAYMENT_EXPIRED" | "CAPACITY_EXHAUSTED" | "MALFORMED_BOOKING" | "PRIVATE_REPAIR_REQUIRED";
   booking: CanonicalBookingDocumentV3;
   paymentAttempt: CanonicalPaymentAttemptDocumentV3;
   refundInstruction: Record<string, unknown> | null;
@@ -197,6 +206,11 @@ export type LiveServiceSnapshot = {
   };
 };
 
+type AuthenticatedProviderPrivateIdentity = {
+  uid: string;
+  phoneNumber?: string;
+};
+
 type ClaimedOfferDocument = Record<string, unknown> | null;
 
 type SlotOccupancyDocument = {
@@ -226,19 +240,77 @@ function asFiniteNumber(value: unknown, fallback = 0): number {
 }
 
 function asNullableDate(value: unknown): Date | null {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
-  if (typeof value === "object" && value != null && "toDate" in value) {
-    try {
-      return (value as {toDate: () => Date}).toDate();
-    } catch (_) {
-      return null;
-    }
-  }
-  return null;
+  return normalizeTimestampLike(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value != null ? value as Record<string, unknown> : {};
+}
+
+function logMalformedPaymentSnapshot(params: {
+  kind: "booking" | "payment_attempt";
+  bookingId: string;
+  paymentAttemptId: string;
+  issues: ReadonlyArray<{code: string; path: string; message: string}>;
+}): void {
+  console.error("[CanonicalPaymentFinalization] malformed_snapshot", {
+    kind: params.kind,
+    bookingId: params.bookingId,
+    paymentAttemptId: params.paymentAttemptId,
+    issues: params.issues.map((issue) => ({
+      code: issue.code,
+      path: issue.path,
+      message: issue.message,
+    })),
+  });
+}
+
+function requireCanonicalBookingForPaymentFinalization(params: {
+  rawBooking: unknown;
+  bookingId: string;
+  paymentAttemptId: string;
+}): CanonicalBookingDocumentV3 {
+  const parsed = parseCanonicalBookingDocumentV3(params.rawBooking);
+  if (parsed.ok) return parsed.booking;
+  logMalformedPaymentSnapshot({
+    kind: "booking",
+    bookingId: params.bookingId,
+    paymentAttemptId: params.paymentAttemptId,
+    issues: parsed.issues,
+  });
+  throw new HttpsError(
+    "failed-precondition",
+    "Canonical booking snapshot is malformed for payment finalization.",
+    {
+      code: "MALFORMED_BOOKING",
+      bookingId: params.bookingId,
+      paymentAttemptId: params.paymentAttemptId,
+    },
+  );
+}
+
+function requireCanonicalPaymentAttemptForFinalization(params: {
+  rawAttempt: unknown;
+  bookingId: string;
+  paymentAttemptId: string;
+}): CanonicalPaymentAttemptDocumentV3 {
+  const parsed = parseCanonicalPaymentAttemptDocumentV3(params.rawAttempt);
+  if (parsed.ok) return parsed.value;
+  logMalformedPaymentSnapshot({
+    kind: "payment_attempt",
+    bookingId: params.bookingId,
+    paymentAttemptId: params.paymentAttemptId,
+    issues: parsed.issues,
+  });
+  throw new HttpsError(
+    "failed-precondition",
+    "Canonical payment attempt snapshot is malformed for payment finalization.",
+    {
+      code: "MALFORMED_PAYMENT_ATTEMPT",
+      bookingId: params.bookingId,
+      paymentAttemptId: params.paymentAttemptId,
+    },
+  );
 }
 
 function cloneBooking(booking: CanonicalBookingDocumentV3): CanonicalBookingDocumentV3 {
@@ -825,7 +897,7 @@ function buildBookingFinancialWrite(params: {
       status: "unlocked",
       unlockedAt: Timestamp.fromDate(params.paidAt),
       linkedBookingId: params.bookingId,
-      safetyNotice: "Bookings made outside Pettxo are not covered by OTP verification, dispute protection, or refunds.",
+      safetyNotice: "For your protection, keep payments and booking changes inside Pettxo.",
       createdBy: "system",
       createdAt: Timestamp.fromDate(params.paidAt),
       updatedAt: FieldValue.serverTimestamp(),
@@ -864,9 +936,11 @@ function buildBookingPrivateParticipantsDocument(params: {
   bookingId: string;
   booking: CanonicalBookingDocumentV3;
   parent: AuthenticatedParentIdentity;
+  providerPrivate: AuthenticatedProviderPrivateIdentity | null;
   service: LiveServiceSnapshot | null;
   paidAt: Date;
 }): BookingPrivateParticipantsDocumentV3 {
+  const providerPhoneNumber = asString(params.providerPrivate?.phoneNumber);
   return {
     schemaVersion: 3,
     bookingModelVersion: "3.2",
@@ -884,6 +958,11 @@ function buildBookingPrivateParticipantsDocument(params: {
       latitude: params.service?.location?.latitude ?? null,
       longitude: params.service?.location?.longitude ?? null,
     },
+    providerPrivate: providerPhoneNumber ?
+      {
+        phoneNumber: providerPhoneNumber,
+      } :
+      undefined,
     createdAt: new Date(params.paidAt.getTime()),
     updatedAt: new Date(params.paidAt.getTime()),
   };
@@ -925,6 +1004,35 @@ function buildConfirmedBooking(params: {
   return next;
 }
 
+function hasReusableBookingPrivateForConfirmedReplay(
+  bookingPrivate: CanonicalBookingPrivateDocumentV3 | null | undefined,
+): bookingPrivate is CanonicalBookingPrivateDocumentV3 {
+  if (!bookingPrivate) return false;
+  return /^\d{6}$/.test(asString(bookingPrivate.parentOtpCode)) &&
+    /^[a-f0-9]{64}$/i.test(asString(bookingPrivate.providerOtpHash)) &&
+    asString(bookingPrivate.otpState).toUpperCase() === "ACTIVE";
+}
+
+function hasExistingProviderPrivatePhone(
+  bookingPrivateParticipants: BookingPrivateParticipantsDocumentV3 | null | undefined,
+): boolean {
+  return asString(bookingPrivateParticipants?.providerPrivate?.phoneNumber).length > 0;
+}
+
+function hasReusableBookingPrivateParticipants(
+  bookingPrivateParticipants: BookingPrivateParticipantsDocumentV3 | null | undefined,
+  providerPrivate: AuthenticatedProviderPrivateIdentity | null,
+): bookingPrivateParticipants is BookingPrivateParticipantsDocumentV3 {
+  if (!bookingPrivateParticipants) return false;
+  if (asString(bookingPrivateParticipants.bookingId).length === 0) return false;
+  if (asString(bookingPrivateParticipants.parentId).length === 0) return false;
+  if (asString(bookingPrivateParticipants.providerId).length === 0) return false;
+  if (providerPrivate?.phoneNumber?.trim().length) {
+    return hasExistingProviderPrivatePhone(bookingPrivateParticipants);
+  }
+  return true;
+}
+
 function buildRefundRequiredBooking(params: {
   booking: CanonicalBookingDocumentV3;
   paymentAttempt: CanonicalPaymentAttemptDocumentV3;
@@ -952,29 +1060,45 @@ export function finalizeCapturedBookingPaymentV3(params: {
   booking: CanonicalBookingDocumentV3;
   paymentAttempt: CanonicalPaymentAttemptDocumentV3;
   parent: AuthenticatedParentIdentity;
+  providerPrivate?: AuthenticatedProviderPrivateIdentity | null;
   service: LiveServiceSnapshot | null;
   existingBookingPrivate?: CanonicalBookingPrivateDocumentV3 | null;
+  existingBookingPrivateParticipants?: BookingPrivateParticipantsDocumentV3 | null;
   slotOccupancy: Record<string, SlotOccupancyDocument>;
   rangeOccupancy: Record<string, RangeOccupancyDocument>;
   razorpayPayment: RazorpayPaymentRecord | null;
   authoritativeNow: Date;
   verificationSource: CanonicalPaymentFinalizeSource;
 }): FinalizePaymentResult {
+  const providerPrivate = params.providerPrivate ?? null;
   if (params.booking.state === "CONFIRMED" && params.paymentAttempt.state === "CONFIRMED") {
     const paidAt = params.booking.lifecycle.paidAt ?? params.authoritativeNow;
-    const bookingPrivate = params.existingBookingPrivate ?? buildBookingPrivateDocument({
-      bookingId: params.bookingId,
-      booking: params.booking,
-      otpCode: "",
-      paidAt,
-    });
-    const bookingPrivateParticipants = buildBookingPrivateParticipantsDocument({
-      bookingId: params.bookingId,
-      booking: params.booking,
-      parent: params.parent,
-      service: params.service,
-      paidAt,
-    });
+    if (!hasReusableBookingPrivateForConfirmedReplay(params.existingBookingPrivate)) {
+      return {
+        ok: false,
+        code: "PRIVATE_REPAIR_REQUIRED",
+        booking: cloneBooking(params.booking),
+        paymentAttempt: cloneAttempt(params.paymentAttempt),
+        refundInstruction: null,
+        notifications: [],
+        events: [],
+        message: "Confirmed booking is missing its canonical private OTP document and requires server-side repair.",
+      };
+    }
+    const bookingPrivate = structuredClone(params.existingBookingPrivate);
+    const bookingPrivateParticipants = hasReusableBookingPrivateParticipants(
+      params.existingBookingPrivateParticipants,
+      providerPrivate,
+    ) ?
+      structuredClone(params.existingBookingPrivateParticipants) :
+      buildBookingPrivateParticipantsDocument({
+        bookingId: params.bookingId,
+        booking: params.booking,
+        parent: params.parent,
+        providerPrivate,
+        service: params.service,
+        paidAt,
+      });
     return {
       ok: true,
       code: "IDEMPOTENT_REPLAY",
@@ -995,6 +1119,13 @@ export function finalizeCapturedBookingPaymentV3(params: {
       events: [],
       notifications: [],
       parentStats: emptyParentStatsV3(),
+      privateWritePlan: {
+        writeBookingPrivate: false,
+        writeBookingPrivateParticipants: !hasReusableBookingPrivateParticipants(
+          params.existingBookingPrivateParticipants,
+          providerPrivate,
+        ),
+      },
     };
   }
 
@@ -1195,6 +1326,7 @@ export function finalizeCapturedBookingPaymentV3(params: {
       bookingId: params.bookingId,
       booking: confirmedBooking,
       parent: params.parent,
+      providerPrivate,
       service: params.service,
       paidAt,
     });
@@ -1236,6 +1368,7 @@ export function finalizeCapturedBookingPaymentV3(params: {
         providerId: confirmedBooking.providerId,
         bookingType: confirmedBooking.bookingType,
         state: confirmedBooking.state,
+        serviceName: confirmedBooking.service.serviceTitle,
       }) :
       buildBookingConfirmedNotification({
         bookingId: params.bookingId,
@@ -1243,6 +1376,7 @@ export function finalizeCapturedBookingPaymentV3(params: {
         providerId: confirmedBooking.providerId,
         bookingType: confirmedBooking.bookingType,
         state: confirmedBooking.state,
+        serviceName: confirmedBooking.service.serviceTitle,
       });
     const parentStats = applyParentStatsMutation(emptyParentStatsV3(), {
       type: "payment_completed",
@@ -1263,6 +1397,10 @@ export function finalizeCapturedBookingPaymentV3(params: {
       events,
       notifications,
       parentStats,
+      privateWritePlan: {
+        writeBookingPrivate: true,
+        writeBookingPrivateParticipants: true,
+      },
     };
   } catch (error) {
     const failureMessage = error instanceof HttpsError ?
@@ -1432,6 +1570,53 @@ export async function createRazorpayPaymentOrderV3(params: {
   };
 }
 
+export function previewCanonicalPaymentPricingV3(params: {
+  bookingId: string;
+  parentId: string;
+  service: LiveServiceSnapshot | null;
+  booking: CanonicalBookingDocumentV3;
+  claimedOffer?: ClaimedOfferDocument | null;
+  authoritativeNow?: Date;
+}):
+  | {
+    ok: true;
+    code: "READY";
+    pricing: CanonicalPricingResolution;
+    payDeadlineAt: Date | null;
+  }
+  | {
+    ok: false;
+    code: string;
+    message: string;
+  } {
+  const authoritativeNow = params.authoritativeNow ?? new Date();
+  if (params.parentId !== params.booking.parentId) {
+    return {
+      ok: false,
+      code: "ACTOR_NOT_AUTHORIZED",
+      message: "Only the booking parent can preview payment pricing.",
+    };
+  }
+  const availability = validatePreCheckoutAvailabilityV3({
+    booking: params.booking,
+    service: params.service,
+    authoritativeNow,
+  });
+  if (!availability.ok) {
+    return {ok: false, code: availability.code, message: availability.message};
+  }
+  const pricing = resolveCanonicalPricingV3({
+    booking: params.booking,
+    claimedOffer: params.claimedOffer ?? null,
+  });
+  return {
+    ok: true,
+    code: "READY",
+    pricing,
+    payDeadlineAt: params.booking.lifecycle.payDeadlineAt ?? null,
+  };
+}
+
 export async function persistFinalizePaymentResultV3(params: {
   firestore: Firestore;
   result: FinalizePaymentResult;
@@ -1440,24 +1625,32 @@ export async function persistFinalizePaymentResultV3(params: {
   await params.firestore.runTransaction(async (transaction) => {
     if (params.result.ok) {
       const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
+      const privateWritePlan = params.result.privateWritePlan ?? {
+        writeBookingPrivate: true,
+        writeBookingPrivateParticipants: true,
+      };
       transaction.set(bookingRef, serializeBookingForFirestore(params.result.booking), {merge: true});
       transaction.set(
         bookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId),
         serializePaymentAttemptForFirestore(params.result.paymentAttempt),
         {merge: true},
       );
-      transaction.set(
-        params.firestore.collection("bookingPrivate").doc(params.bookingId),
-        serializeBookingPrivateForFirestore(params.result.bookingPrivate),
-        {merge: true},
-      );
-      transaction.set(
-        params.firestore.collection("bookingPrivateParticipants").doc(params.bookingId),
-        serializeBookingPrivateParticipantsForFirestore(
-          params.result.bookingPrivateParticipants,
-        ),
-        {merge: true},
-      );
+      if (privateWritePlan.writeBookingPrivate) {
+        transaction.set(
+          params.firestore.collection("bookingPrivate").doc(params.bookingId),
+          serializeBookingPrivateForFirestore(params.result.bookingPrivate),
+          {merge: true},
+        );
+      }
+      if (privateWritePlan.writeBookingPrivateParticipants) {
+        transaction.set(
+          params.firestore.collection("bookingPrivateParticipants").doc(params.bookingId),
+          serializeBookingPrivateParticipantsForFirestore(
+            params.result.bookingPrivateParticipants,
+          ),
+          {merge: true},
+        );
+      }
       for (const [path, data] of Object.entries(params.result.occupancyWrites)) {
         transaction.set(pathToDoc(params.firestore, path), data, {merge: true});
       }
@@ -1518,6 +1711,35 @@ export async function persistFinalizePaymentResultV3(params: {
   });
 }
 
+async function persistCanonicalNotificationsV3(params: {
+  firestore: Firestore;
+  notifications: ReadonlyArray<BookingNotificationPlan>;
+  actorId: string;
+}): Promise<void> {
+  if (params.notifications.length === 0) return;
+  const batch = params.firestore.batch();
+  for (const notification of params.notifications) {
+    batch.set(params.firestore.collection("notifications").doc(notification.idempotencyKey), {
+      userId: notification.recipientUserId,
+      category: "booking",
+      type: notification.type,
+      title: notification.title,
+      body: notification.body,
+      read: false,
+      isRead: false,
+      actorId: params.actorId,
+      bookingId: notification.data.bookingId ?? "",
+      serviceId: notification.data.serviceId ?? "",
+      recipientRole: notification.data.recipientRole ?? "",
+      data: notification.data,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      source: "canonical_v3",
+    }, {merge: true});
+  }
+  await batch.commit();
+}
+
 function pathToDoc(firestore: Firestore, path: string) {
   const segments = path.split("/").filter(Boolean);
   if (segments.length % 2 !== 0) {
@@ -1569,6 +1791,23 @@ async function loadParentIdentityForPaymentV3(params: {
       0,
     completedBookingCount: asInt(user.completedBookingCount, asInt(user.completedBookingsCount, 0)),
   };
+}
+
+async function loadProviderPrivateIdentityForPaymentV3(params: {
+  providerId: string;
+}): Promise<AuthenticatedProviderPrivateIdentity | null> {
+  try {
+    const authRecord = await auth.getUser(params.providerId);
+    return {
+      uid: params.providerId,
+      phoneNumber: asString(authRecord.phoneNumber) || undefined,
+    };
+  } catch {
+    return {
+      uid: params.providerId,
+      phoneNumber: undefined,
+    };
+  }
 }
 
 async function loadLiveServiceSnapshotForPaymentV3(params: {
@@ -1759,6 +1998,8 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
   const bookingRef = params.firestore.collection("bookings").doc(params.facts.bookingId);
   const paymentAttemptRef = bookingRef.collection("paymentAttempts").doc(params.facts.paymentAttemptId);
   const bookingPrivateRef = params.firestore.collection("bookingPrivate").doc(params.facts.bookingId);
+  const bookingPrivateParticipantsRef =
+    params.firestore.collection("bookingPrivateParticipants").doc(params.facts.bookingId);
   const loaded = await params.firestore.runTransaction(async (transaction) => {
     const bookingSnapshot = await transaction.get(bookingRef);
     if (!bookingSnapshot.exists) {
@@ -1768,9 +2009,20 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     if (!attemptSnapshot.exists) {
       throw new HttpsError("not-found", "Payment attempt not found.");
     }
-    const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
-    const paymentAttempt = attemptSnapshot.data() as CanonicalPaymentAttemptDocumentV3;
-    const bookingPrivateSnapshot = await transaction.get(bookingPrivateRef);
+    const booking = requireCanonicalBookingForPaymentFinalization({
+      rawBooking: bookingSnapshot.data(),
+      bookingId: params.facts.bookingId,
+      paymentAttemptId: params.facts.paymentAttemptId,
+    });
+    const paymentAttempt = requireCanonicalPaymentAttemptForFinalization({
+      rawAttempt: attemptSnapshot.data(),
+      bookingId: params.facts.bookingId,
+      paymentAttemptId: params.facts.paymentAttemptId,
+    });
+    const [bookingPrivateSnapshot, bookingPrivateParticipantsSnapshot] = await Promise.all([
+      transaction.get(bookingPrivateRef),
+      transaction.get(bookingPrivateParticipantsRef),
+    ]);
     const slotOccupancy = await loadSlotOccupancyMap({
       transaction,
       firestore: params.firestore,
@@ -1787,6 +2039,9 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
       bookingPrivate: bookingPrivateSnapshot.exists ?
         bookingPrivateSnapshot.data() as CanonicalBookingPrivateDocumentV3 :
         null,
+      bookingPrivateParticipants: bookingPrivateParticipantsSnapshot.exists ?
+        bookingPrivateParticipantsSnapshot.data() as BookingPrivateParticipantsDocumentV3 :
+        null,
       slotOccupancy,
       rangeOccupancy,
     };
@@ -1800,14 +2055,19 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     firestore: params.firestore,
     serviceId: loaded.booking.serviceId,
   });
+  const providerPrivate = await loadProviderPrivateIdentityForPaymentV3({
+    providerId: loaded.booking.providerId,
+  });
 
   const result = finalizeCapturedBookingPaymentV3({
     bookingId: params.facts.bookingId,
     booking: loaded.booking,
     paymentAttempt: loaded.paymentAttempt,
     parent,
+    providerPrivate,
     service,
     existingBookingPrivate: loaded.bookingPrivate,
+    existingBookingPrivateParticipants: loaded.bookingPrivateParticipants,
     slotOccupancy: loaded.slotOccupancy,
     rangeOccupancy: loaded.rangeOccupancy,
     razorpayPayment: {
@@ -1963,6 +2223,7 @@ export async function reconcilePaymentAttemptsV3(params: {
   deps?: {
     verifyCapturedPayment?: typeof verifyCapturedBookingPaymentV3;
     submitRefundInstruction?: typeof submitRefundInstructionV3;
+    persistNotifications?: typeof persistCanonicalNotificationsV3;
   };
 }): Promise<number> {
   const authoritativeNow = params.authoritativeNow ?? new Date();
@@ -1970,6 +2231,8 @@ export async function reconcilePaymentAttemptsV3(params: {
     params.deps?.verifyCapturedPayment ?? verifyCapturedBookingPaymentV3;
   const submitRefundInstruction =
     params.deps?.submitRefundInstruction ?? submitRefundInstructionV3;
+  const persistNotifications =
+    params.deps?.persistNotifications ?? persistCanonicalNotificationsV3;
   const query = await params.firestore.collectionGroup("paymentAttempts")
     .where("state", "in", [...CANONICAL_RECONCILIATION_ATTEMPT_STATES])
     .limit(Math.max(params.limit ?? DEFAULT_RECONCILIATION_LIMIT, 1))
@@ -2025,6 +2288,11 @@ export async function reconcilePaymentAttemptsV3(params: {
           razorpayOrderId: attempt.razorpayOrderId,
           razorpayPaymentId: attempt.razorpayPaymentId,
           authoritativeNow,
+        });
+        await persistNotifications({
+          firestore: params.firestore,
+          notifications: result.notifications,
+          actorId: "system",
         });
         await doc.ref.set({
           nextReconciliationAt: null,

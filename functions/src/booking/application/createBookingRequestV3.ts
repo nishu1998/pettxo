@@ -14,11 +14,12 @@ import type {SlotBookingSelection} from "../domain/slotBooking";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import {
   buildCancelledByParentNotification,
+  buildCustomerPaymentReminderNotification,
   buildDeclinedNotification,
   buildPaymentExpiredNotification,
   buildPaymentRequiredNotification,
   buildProviderActionRequiredNotification,
-  buildQueuedRequestCreatedNotification,
+  buildProviderRequestReminderNotification,
   buildRequestExpiredNotification,
   type BookingNotificationPlan,
 } from "./bookingNotificationsV3";
@@ -115,6 +116,8 @@ export type RequestLifecycleCommandResult =
       code: string;
       message: string;
     };
+
+export type ProviderRequestReminderStage = "halfway" | "ten_minute";
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -549,6 +552,7 @@ export function createBookingRequestV3(params: {
         providerId: booking.providerId,
         bookingType: booking.bookingType,
         state: booking.state,
+        serviceName: booking.service.serviceTitle,
       }),
     );
     providerStats = applyProviderStatsMutation(providerStats, {
@@ -558,11 +562,12 @@ export function createBookingRequestV3(params: {
     });
   } else {
     notifications.push(
-      buildQueuedRequestCreatedNotification({
+      buildProviderActionRequiredNotification({
         bookingId: params.generatedBookingId,
         providerId: booking.providerId,
         bookingType: booking.bookingType,
         state: booking.state,
+        serviceName: booking.service.serviceTitle,
       }),
     );
   }
@@ -603,6 +608,105 @@ function responseSecondsFromTimer(booking: CanonicalBookingDocumentV3, at: Date)
   const timerStartsAt = booking.lifecycle.timerStartsAt;
   if (!timerStartsAt) return null;
   return Math.max(Math.round((at.getTime() - timerStartsAt.getTime()) / 1000), 0);
+}
+
+function actionableProviderRequestState(state: CanonicalBookingDocumentV3["state"]): boolean {
+  return state === "REQUESTED" || state === "PENDING_PROVIDER";
+}
+
+function actionableCustomerPaymentState(state: CanonicalBookingDocumentV3["state"]): boolean {
+  return state === "ACCEPTED_AWAITING_PAYMENT";
+}
+
+export function buildProviderRequestReminderIfDueV3(params: {
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  authoritativeNow: Date;
+}): BookingNotificationPlan | null {
+  const {booking, authoritativeNow} = params;
+  if (!actionableProviderRequestState(booking.state)) {
+    return null;
+  }
+  const timerStartsAt = booking.lifecycle.timerStartsAt;
+  const acceptDeadlineAt = booking.acceptDeadlineAt ?? booking.lifecycle.acceptDeadlineAt;
+  if (!(timerStartsAt instanceof Date) || !(acceptDeadlineAt instanceof Date)) {
+    return null;
+  }
+  const windowMs = acceptDeadlineAt.getTime() - timerStartsAt.getTime();
+  if (windowMs <= 0) {
+    return null;
+  }
+  const deadlineMs = acceptDeadlineAt.getTime();
+  const nowMs = authoritativeNow.getTime();
+  if (nowMs >= deadlineMs) {
+    return null;
+  }
+  const halfwayAtMs = timerStartsAt.getTime() + Math.floor(windowMs / 2);
+  const tenMinuteAtMs = deadlineMs - (10 * 60 * 1000);
+  const stage: ProviderRequestReminderStage | null =
+    nowMs >= tenMinuteAtMs ?
+      "ten_minute" :
+      nowMs >= halfwayAtMs ?
+        "halfway" :
+        null;
+  if (!stage) {
+    return null;
+  }
+  const minutesRemaining = Math.max(Math.ceil((deadlineMs - nowMs) / (60 * 1000)), 1);
+  return buildProviderRequestReminderNotification({
+    bookingId: params.bookingId,
+    providerId: booking.providerId,
+    bookingType: booking.bookingType,
+    state: booking.state,
+    serviceName: booking.service.serviceTitle,
+    minutesRemaining,
+    stage,
+  });
+}
+
+export function buildCustomerPaymentReminderIfDueV3(params: {
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  authoritativeNow: Date;
+}): BookingNotificationPlan | null {
+  const {booking, authoritativeNow} = params;
+  if (!actionableCustomerPaymentState(booking.state)) {
+    return null;
+  }
+  const paymentWindowStartAt = booking.lifecycle.respondedAt;
+  const payDeadlineAt = booking.payDeadlineAt ?? booking.lifecycle.payDeadlineAt;
+  if (!(paymentWindowStartAt instanceof Date) || !(payDeadlineAt instanceof Date)) {
+    return null;
+  }
+  const windowMs = payDeadlineAt.getTime() - paymentWindowStartAt.getTime();
+  if (windowMs <= 0) {
+    return null;
+  }
+  const deadlineMs = payDeadlineAt.getTime();
+  const nowMs = authoritativeNow.getTime();
+  if (nowMs >= deadlineMs) {
+    return null;
+  }
+  const halfwayAtMs = paymentWindowStartAt.getTime() + Math.floor(windowMs / 2);
+  const tenMinuteAtMs = deadlineMs - (10 * 60 * 1000);
+  const stage: ProviderRequestReminderStage | null =
+    nowMs >= tenMinuteAtMs ?
+      "ten_minute" :
+      nowMs >= halfwayAtMs ?
+        "halfway" :
+        null;
+  if (!stage) {
+    return null;
+  }
+  const minutesRemaining = Math.max(Math.ceil((deadlineMs - nowMs) / (60 * 1000)), 1);
+  return buildCustomerPaymentReminderNotification({
+    bookingId: params.bookingId,
+    parentId: booking.parentId,
+    bookingType: booking.bookingType,
+    state: booking.state,
+    minutesRemaining,
+    stage,
+  });
 }
 
 function paymentDeadlineAnchorForResponse(
@@ -663,14 +767,7 @@ export function activateQueuedBookingRequestV3(params: {
       meta: {acceptDeadlineAt: params.booking.acceptDeadlineAt?.toISOString() ?? ""},
     }),
   ];
-  const notifications = [
-    buildProviderActionRequiredNotification({
-      bookingId: params.bookingId,
-      providerId: params.booking.providerId,
-      bookingType: params.booking.bookingType,
-      state: next.state,
-    }),
-  ];
+  const notifications: BookingNotificationPlan[] = [];
   const providerStats = applyProviderStatsMutation(
     params.existingProviderStats ?? emptyProviderStatsV3(),
     {

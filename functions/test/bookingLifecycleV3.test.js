@@ -423,6 +423,10 @@ test("createBookingRequestV3 creates canonical SLOT request inside working hours
   assert.equal(result.booking.financials, null);
   assert.equal(result.booking.participants.parent.phoneNumber, undefined);
   assert.equal(result.notifications[0].type, "provider_action_required");
+  assert.deepEqual(result.notifications[0].channels, ["push", "in_app"]);
+  assert.equal(result.notifications[0].recipientUserId, "provider-1");
+  assert.equal(result.notifications[0].data.bookingId, "booking-1");
+  assert.match(result.notifications[0].body, /Dog Walking/i);
 });
 
 test("createBookingRequestV3 creates canonical multi-slot request", () => {
@@ -572,6 +576,8 @@ test("queued requests can be activated once and only once", () => {
   });
   assert.equal(created.ok, true);
   assert.equal(created.booking.state, "REQUESTED");
+  assert.equal(created.notifications[0].type, "provider_action_required");
+  assert.deepEqual(created.notifications[0].channels, ["push", "in_app"]);
 
   const activated = activateQueuedBookingRequestV3({
     booking: created.booking,
@@ -580,6 +586,7 @@ test("queued requests can be activated once and only once", () => {
   });
   assert.equal(activated.ok, true);
   assert.equal(activated.booking.state, "PENDING_PROVIDER");
+  assert.equal(activated.notifications.length, 0);
 
   const replay = activateQueuedBookingRequestV3({
     booking: activated.booking,

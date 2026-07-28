@@ -9,6 +9,7 @@ export {
   cancelConfirmedBookingByCustomerV3,
   cancelConfirmedBookingByProviderV3,
   createRazorpayPaymentOrderV3,
+  previewBookingPaymentPricingV3,
   verifyBookingStartOtpV3,
   verifyBookingPaymentV3,
   completeBookingServiceV3,
@@ -26,6 +27,7 @@ export {
   expirePendingProviderBookingsV3,
   expireAwaitingPaymentsV3,
   reconcileBookingPaymentsV3,
+  sendProviderRequestRemindersV3,
   finalizeCanonicalNoShowsV3,
   finalizeCompletedBookingsV3,
 } from "./bookingV3FlowFunctions";

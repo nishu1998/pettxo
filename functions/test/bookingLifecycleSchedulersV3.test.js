@@ -7,6 +7,11 @@ const {
   buildRequestedSingleSlotBookingFixture,
 } = require("../lib/booking/schema/bookingFixtures.js");
 const {
+  buildCustomerPaymentReminderIfDueV3,
+  buildProviderRequestReminderIfDueV3,
+  cancelBookingRequestByParentV3,
+  declineBookingRequestV3,
+  acceptBookingRequestV3,
   expireAwaitingPaymentBookingV3,
   expirePendingProviderBookingV3,
 } = require("../lib/booking/application/createBookingRequestV3.js");
@@ -102,6 +107,208 @@ function buildPendingProviderBooking() {
   booking.stateQueryValue = "PENDING_PROVIDER";
   return booking;
 }
+
+function buildAwaitingPaymentBooking() {
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  booking.state = "ACCEPTED_AWAITING_PAYMENT";
+  booking.stateQueryValue = "ACCEPTED_AWAITING_PAYMENT";
+  return booking;
+}
+
+test("halfway reminder sends exactly one provider reminder for actionable requests", () => {
+  const booking = buildPendingProviderBooking();
+  const result = buildProviderRequestReminderIfDueV3({
+    bookingId: "booking-provider-halfway-1",
+    booking,
+    authoritativeNow: new Date(
+      booking.lifecycle.timerStartsAt.getTime() + (30 * 60 * 1000),
+    ),
+  });
+
+  assert.ok(result);
+  assert.equal(result.type, "provider_request_halfway");
+  assert.equal(result.recipientUserId, booking.providerId);
+  assert.equal(result.data.bookingId, "booking-provider-halfway-1");
+});
+
+test("delayed scheduler sends only the ten-minute reminder once the halfway window is obsolete", () => {
+  const booking = buildPendingProviderBooking();
+  const result = buildProviderRequestReminderIfDueV3({
+    bookingId: "booking-provider-ten-minute-1",
+    booking,
+    authoritativeNow: new Date(booking.acceptDeadlineAt.getTime() - (9 * 60 * 1000)),
+  });
+
+  assert.ok(result);
+  assert.equal(result.type, "provider_request_ten_minute");
+  assert.match(result.body, /9 minutes remain/i);
+});
+
+test("provider reminders stop after accept, decline, cancellation, or expiry", () => {
+  const booking = buildPendingProviderBooking();
+  const reminderAt = new Date(
+    booking.lifecycle.timerStartsAt.getTime() + (30 * 60 * 1000),
+  );
+
+  const accepted = acceptBookingRequestV3({
+    bookingId: "booking-reminder-accept",
+    booking,
+    providerUid: booking.providerId,
+    authoritativeNow: new Date(booking.lifecycle.timerStartsAt.getTime() + (5 * 60 * 1000)),
+  });
+  assert.equal(
+    buildProviderRequestReminderIfDueV3({
+      bookingId: "booking-reminder-accept",
+      booking: accepted.booking,
+      authoritativeNow: reminderAt,
+    }),
+    null,
+  );
+
+  const declined = declineBookingRequestV3({
+    bookingId: "booking-reminder-decline",
+    booking,
+    providerUid: booking.providerId,
+    authoritativeNow: new Date(booking.lifecycle.timerStartsAt.getTime() + (5 * 60 * 1000)),
+  });
+  assert.equal(
+    buildProviderRequestReminderIfDueV3({
+      bookingId: "booking-reminder-decline",
+      booking: declined.booking,
+      authoritativeNow: reminderAt,
+    }),
+    null,
+  );
+
+  const cancelled = cancelBookingRequestByParentV3({
+    bookingId: "booking-reminder-cancel",
+    booking,
+    parentUid: booking.parentId,
+    authoritativeNow: new Date(booking.lifecycle.timerStartsAt.getTime() + (5 * 60 * 1000)),
+  });
+  assert.equal(
+    buildProviderRequestReminderIfDueV3({
+      bookingId: "booking-reminder-cancel",
+      booking: cancelled.booking,
+      authoritativeNow: reminderAt,
+    }),
+    null,
+  );
+
+  const expired = expirePendingProviderBookingV3({
+    bookingId: "booking-reminder-expired",
+    booking,
+    authoritativeNow: new Date(booking.acceptDeadlineAt.getTime() + 1),
+  });
+  assert.equal(
+    buildProviderRequestReminderIfDueV3({
+      bookingId: "booking-reminder-expired",
+      booking: expired.booking,
+      authoritativeNow: new Date(booking.acceptDeadlineAt.getTime() + 2),
+    }),
+    null,
+  );
+});
+
+test("halfway payment reminder sends exactly one customer reminder for actionable unpaid bookings", () => {
+  const booking = buildAwaitingPaymentBooking();
+  const result = buildCustomerPaymentReminderIfDueV3({
+    bookingId: "booking-payment-halfway-1",
+    booking,
+    authoritativeNow: new Date(
+      booking.lifecycle.respondedAt.getTime() + (30 * 60 * 1000),
+    ),
+  });
+
+  assert.ok(result);
+  assert.equal(result.type, "customer_payment_halfway");
+  assert.equal(result.recipientUserId, booking.parentId);
+  assert.equal(result.data.bookingId, "booking-payment-halfway-1");
+});
+
+test("delayed payment reminder catch-up sends only the ten-minute reminder", () => {
+  const booking = buildAwaitingPaymentBooking();
+  const result = buildCustomerPaymentReminderIfDueV3({
+    bookingId: "booking-payment-ten-minute-1",
+    booking,
+    authoritativeNow: new Date(booking.payDeadlineAt.getTime() - (9 * 60 * 1000)),
+  });
+
+  assert.ok(result);
+  assert.equal(result.type, "customer_payment_ten_minute");
+  assert.match(result.body, /9 minutes remain/i);
+});
+
+test("customer payment reminders stop after payment expiry, cancellation, or state changes away from awaiting payment", () => {
+  const booking = buildAwaitingPaymentBooking();
+  const reminderAt = new Date(
+    booking.lifecycle.respondedAt.getTime() + (30 * 60 * 1000),
+  );
+
+  const expired = expireAwaitingPaymentBookingV3({
+    bookingId: "booking-payment-reminder-expired",
+    booking,
+    authoritativeNow: new Date(booking.payDeadlineAt.getTime() + 1),
+  });
+  assert.equal(
+    buildCustomerPaymentReminderIfDueV3({
+      bookingId: "booking-payment-reminder-expired",
+      booking: expired.booking,
+      authoritativeNow: new Date(booking.payDeadlineAt.getTime() + 2),
+    }),
+    null,
+  );
+
+  const cancelledByParent = structuredClone(booking);
+  cancelledByParent.state = "CANCELLED_BY_PARENT";
+  cancelledByParent.stateQueryValue = "CANCELLED_BY_PARENT";
+  assert.equal(
+    buildCustomerPaymentReminderIfDueV3({
+      bookingId: "booking-payment-reminder-cancelled",
+      booking: cancelledByParent,
+      authoritativeNow: reminderAt,
+    }),
+    null,
+  );
+
+  const confirmed = structuredClone(booking);
+  confirmed.state = "CONFIRMED";
+  confirmed.stateQueryValue = "CONFIRMED";
+  confirmed.lifecycle.paidAt = new Date(
+    booking.lifecycle.respondedAt.getTime() + (15 * 60 * 1000),
+  );
+  assert.equal(
+    buildCustomerPaymentReminderIfDueV3({
+      bookingId: "booking-payment-reminder-confirmed",
+      booking: confirmed,
+      authoritativeNow: reminderAt,
+    }),
+    null,
+  );
+});
+
+test("customer payment reminders are idempotent across repeated scheduler executions", () => {
+  const booking = buildAwaitingPaymentBooking();
+  const authoritativeNow = new Date(
+    booking.lifecycle.respondedAt.getTime() + (30 * 60 * 1000),
+  );
+
+  const first = buildCustomerPaymentReminderIfDueV3({
+    bookingId: "booking-payment-idempotent-1",
+    booking,
+    authoritativeNow,
+  });
+  const second = buildCustomerPaymentReminderIfDueV3({
+    bookingId: "booking-payment-idempotent-1",
+    booking,
+    authoritativeNow,
+  });
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.idempotencyKey, second.idempotencyKey);
+  assert.equal(first.type, "customer_payment_halfway");
+});
 
 test("provider-response expiry updates an eligible pending provider booking exactly once", () => {
   const booking = buildPendingProviderBooking();

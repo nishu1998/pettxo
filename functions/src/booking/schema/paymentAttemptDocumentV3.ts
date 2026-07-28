@@ -3,6 +3,7 @@ import {
   isCanonicalPaymentState,
   isPaymentVerificationSource,
 } from "../domain/paymentContracts";
+import {normalizeTimestampLike} from "./timestampNormalization";
 
 export const CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION = 1;
 
@@ -103,16 +104,7 @@ function asString(value: unknown): string {
 }
 
 function asNullableDate(value: unknown): Date | null {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
-  if (typeof value === "object" && value != null && "toDate" in value) {
-    try {
-      const converted = (value as {toDate: () => Date}).toDate();
-      return Number.isNaN(converted.getTime()) ? null : converted;
-    } catch (_) {
-      return null;
-    }
-  }
-  return null;
+  return normalizeTimestampLike(value);
 }
 
 function asInteger(value: unknown): number | null {
@@ -228,4 +220,14 @@ export function parseCanonicalPaymentAttemptDocumentV3(
     },
     issues: [],
   };
+}
+
+export function assertValidCanonicalPaymentAttemptDocumentV3(
+  rawValue: unknown,
+): CanonicalPaymentAttemptDocumentV3 {
+  const parsed = parseCanonicalPaymentAttemptDocumentV3(rawValue);
+  if (!parsed.ok) {
+    throw new Error(parsed.issues.map((entry) => `${entry.code}:${entry.path}`).join(", "));
+  }
+  return parsed.value;
 }

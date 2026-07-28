@@ -3,7 +3,11 @@ export type BookingNotificationChannel = "push" | "in_app";
 export type BookingNotificationType =
   | "queued_request_created"
   | "provider_action_required"
+  | "provider_request_halfway"
+  | "provider_request_ten_minute"
   | "payment_required"
+  | "customer_payment_halfway"
+  | "customer_payment_ten_minute"
   | "payment_order_ready"
   | "payment_captured_processing"
   | "booking_confirmed"
@@ -36,9 +40,15 @@ export type BookingNotificationPlan = {
   data: Record<string, string>;
 };
 
-function buildPlan(params: Omit<BookingNotificationPlan, "idempotencyKey"> & {bookingId: string}): BookingNotificationPlan {
+function buildPlan(
+  params: Omit<BookingNotificationPlan, "idempotencyKey"> & {
+    bookingId: string;
+    idempotencyKey?: string;
+  },
+): BookingNotificationPlan {
   return {
-    idempotencyKey: `${params.type}:${params.bookingId}:${params.recipientUserId}`,
+    idempotencyKey:
+      params.idempotencyKey ?? `${params.type}:${params.bookingId}:${params.recipientUserId}`,
     recipientUserId: params.recipientUserId,
     type: params.type,
     channels: params.channels,
@@ -51,6 +61,11 @@ function buildPlan(params: Omit<BookingNotificationPlan, "idempotencyKey"> & {bo
       state: params.data.state ?? "",
     },
   };
+}
+
+function serviceNameOrFallback(serviceName: string | undefined): string {
+  const trimmed = serviceName?.trim() ?? "";
+  return trimmed || "your service";
 }
 
 export function buildQueuedRequestCreatedNotification(params: {
@@ -81,14 +96,56 @@ export function buildProviderActionRequiredNotification(params: {
   providerId: string;
   bookingType: string;
   state: string;
+  serviceName?: string;
 }): BookingNotificationPlan {
+  const serviceName = serviceNameOrFallback(params.serviceName);
   return buildPlan({
     bookingId: params.bookingId,
     recipientUserId: params.providerId,
     type: "provider_action_required",
     channels: ["push", "in_app"],
     title: "New booking request",
-    body: "A pet parent sent a request. Review and respond within 60 minutes.",
+    body: `You received a booking request for ${serviceName}. Review it before the request expires.`,
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "provider",
+      navigationIntent: "provider_request",
+      bookingFlowVersion: "3.2",
+    },
+  });
+}
+
+export function buildProviderRequestReminderNotification(params: {
+  bookingId: string;
+  providerId: string;
+  bookingType: string;
+  state: string;
+  serviceName?: string;
+  minutesRemaining: number;
+  stage: "halfway" | "ten_minute";
+}): BookingNotificationPlan {
+  const serviceName = serviceNameOrFallback(params.serviceName);
+  const safeMinutesRemaining = Math.max(Math.trunc(params.minutesRemaining), 1);
+  const type =
+    params.stage === "halfway" ?
+      "provider_request_halfway" :
+      "provider_request_ten_minute";
+  const title =
+    params.stage === "halfway" ?
+      "Booking request waiting" :
+      "Booking request expires soon";
+  const body =
+    params.stage === "halfway" ?
+      `A booking request for ${serviceName} is still waiting for your response. ${safeMinutesRemaining} minutes remain.` :
+      `Only ${safeMinutesRemaining} minutes remain to accept or decline the booking request for ${serviceName}.`;
+  return buildPlan({
+    bookingId: params.bookingId,
+    recipientUserId: params.providerId,
+    type,
+    channels: ["push", "in_app"],
+    title,
+    body,
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -112,6 +169,44 @@ export function buildPaymentRequiredNotification(params: {
     channels: ["push", "in_app"],
     title: "Provider accepted your request",
     body: "Complete payment within 60 minutes. Availability will be confirmed when payment succeeds.",
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "customer",
+      navigationIntent: "payment",
+      bookingFlowVersion: "3.2",
+    },
+  });
+}
+
+export function buildCustomerPaymentReminderNotification(params: {
+  bookingId: string;
+  parentId: string;
+  bookingType: string;
+  state: string;
+  minutesRemaining: number;
+  stage: "halfway" | "ten_minute";
+}): BookingNotificationPlan {
+  const safeMinutesRemaining = Math.max(Math.trunc(params.minutesRemaining), 1);
+  const type =
+    params.stage === "halfway" ?
+      "customer_payment_halfway" :
+      "customer_payment_ten_minute";
+  const title =
+    params.stage === "halfway" ?
+      "Payment reminder" :
+      "Payment expires soon";
+  const body =
+    params.stage === "halfway" ?
+      `Complete payment to confirm your booking. ${safeMinutesRemaining} minutes remain before this booking request expires.` :
+      `Only ${safeMinutesRemaining} minutes remain to complete payment before your booking request expires.`;
+  return buildPlan({
+    bookingId: params.bookingId,
+    recipientUserId: params.parentId,
+    type,
+    channels: ["push", "in_app"],
+    title,
+    body,
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -180,7 +275,9 @@ export function buildBookingConfirmedNotification(params: {
   providerId: string;
   bookingType: string;
   state: string;
+  serviceName?: string;
 }): BookingNotificationPlan[] {
+  const serviceName = serviceNameOrFallback(params.serviceName);
   return [
     buildPlan({
       bookingId: params.bookingId,
@@ -203,7 +300,7 @@ export function buildBookingConfirmedNotification(params: {
       type: "booking_confirmed",
       channels: ["push", "in_app"],
       title: "Booking confirmed",
-      body: "Payment is complete. You can now view paid-only booking details inside Pettxo.",
+      body: `Payment was successful. Your booking for ${serviceName} is now confirmed.`,
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -303,7 +400,9 @@ export function buildZeroPayableConfirmationNotification(params: {
   providerId: string;
   bookingType: string;
   state: string;
+  serviceName?: string;
 }): BookingNotificationPlan[] {
+  const serviceName = serviceNameOrFallback(params.serviceName);
   return [
     buildPlan({
       bookingId: params.bookingId,
@@ -324,9 +423,9 @@ export function buildZeroPayableConfirmationNotification(params: {
       bookingId: params.bookingId,
       recipientUserId: params.providerId,
       type: "zero_payable_confirmed",
-      channels: ["in_app"],
+      channels: ["push", "in_app"],
       title: "Booking confirmed",
-      body: "A Pettxo-funded promotion confirmed this booking without customer checkout.",
+      body: `Your booking for ${serviceName} is now confirmed.`,
       data: {
         bookingType: params.bookingType,
         state: params.state,

@@ -19,6 +19,7 @@ export type CanonicalWebhookOutcome =
   | "ALREADY_CONFIRMED"
   | "RECONCILIATION_REQUIRED"
   | "REFUND_REQUIRED"
+  | "PRIVATE_REPAIR_REQUIRED"
   | "REFUND_UPDATED"
   | "IGNORED_UNMAPPED"
   | "INVALID_CANONICAL_MAPPING"
@@ -363,19 +364,21 @@ export async function routeCanonicalWebhookEventV3(params: {
       firestore: params.firestore,
       notifications: result.ok ?
         result.notifications :
-        buildPaymentRefundRequiredNotification({
-          bookingId: mapping.bookingId,
-          parentId: loaded.booking.parentId,
-          providerId: loaded.booking.providerId,
-          bookingType: loaded.booking.bookingType,
-          state: result.booking.state,
-        }),
+        result.code === "PRIVATE_REPAIR_REQUIRED" ?
+          [] :
+          buildPaymentRefundRequiredNotification({
+            bookingId: mapping.bookingId,
+            parentId: loaded.booking.parentId,
+            providerId: loaded.booking.providerId,
+            bookingType: loaded.booking.bookingType,
+            state: result.booking.state,
+          }),
       actorId: "payment_gateway",
     });
     return {
       outcome: result.ok ?
         (result.code === "IDEMPOTENT_REPLAY" ? "ALREADY_CONFIRMED" : "CONFIRMED") :
-        "REFUND_REQUIRED",
+        (result.code === "PRIVATE_REPAIR_REQUIRED" ? "PRIVATE_REPAIR_REQUIRED" : "REFUND_REQUIRED"),
       bookingId: mapping.bookingId,
       paymentAttemptId: mapping.paymentAttemptId,
       retryable: false,
