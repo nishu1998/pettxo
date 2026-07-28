@@ -1,6 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ChatModel {
+  static const String legacyBookingSafetyNotice =
+      'Bookings made outside Pettxo are not covered by OTP verification, dispute protection, or refunds.';
+  static const String bookingSafetyNotice =
+      'For your protection, keep payments and booking changes inside Pettxo.';
+
   final String id;
   final String customerId;
   final String providerId;
@@ -21,6 +26,9 @@ class ChatModel {
   final DateTime? customerLastReadAt;
   final DateTime? providerLastReadAt;
   final String status;
+  final String chatType;
+  final String linkedBookingId;
+  final String safetyNotice;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -45,6 +53,9 @@ class ChatModel {
     required this.customerLastReadAt,
     required this.providerLastReadAt,
     required this.status,
+    required this.chatType,
+    required this.linkedBookingId,
+    required this.safetyNotice,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -84,6 +95,11 @@ class ChatModel {
       customerLastReadAt: _readDate(data['customerLastReadAt']),
       providerLastReadAt: _readDate(data['providerLastReadAt']),
       status: (data['status'] as String? ?? 'active').trim(),
+      chatType: (data['chatType'] as String? ?? '').trim(),
+      linkedBookingId: (data['linkedBookingId'] as String? ?? '').trim(),
+      safetyNotice: _normalizeSafetyNotice(
+        (data['safetyNotice'] as String? ?? '').trim(),
+      ),
       createdAt: _readDate(data['createdAt']),
       updatedAt: _readDate(data['updatedAt']),
     );
@@ -125,11 +141,20 @@ class ChatModel {
 
   bool get isClosed => status == 'closed';
 
+  bool get isBookingChat => chatType == 'booking' || linkedBookingId.isNotEmpty;
+
   static DateTime? _readDate(Object? value) {
     if (value == null) return null;
     if (value is Timestamp) return value.toDate();
     if (value is DateTime) return value;
     if (value is String) return DateTime.tryParse(value)?.toLocal();
     return null;
+  }
+
+  static String _normalizeSafetyNotice(String value) {
+    if (value == legacyBookingSafetyNotice) {
+      return bookingSafetyNotice;
+    }
+    return value;
   }
 }
