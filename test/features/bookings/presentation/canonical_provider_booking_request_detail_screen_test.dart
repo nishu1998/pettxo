@@ -11,7 +11,14 @@ import 'package:pettexo/features/bookings/presentation/widgets/canonical_provide
 void main() {
   CanonicalProviderBookingRequestView buildRequest({
     required CanonicalBookingStateV3 state,
+    int? estimatedProviderPayoutPaise = 20000,
+    DateTime? payDeadlineAt,
   }) {
+    final now = DateTime.now().toUtc();
+    final timerStartsAt = now.add(const Duration(minutes: 15));
+    final acceptDeadlineAt = timerStartsAt.add(const Duration(hours: 1));
+    final scheduledStartAt = now.add(const Duration(days: 1, hours: 2));
+    final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
     return CanonicalProviderBookingRequestView(
       bookingId: 'booking-1',
       bookingType: BookingV3Type.slot,
@@ -22,26 +29,31 @@ void main() {
       maskedParentDisplayName: 'Nisha G.',
       parentRating: 4.8,
       completedBookingCount: 4,
-      scheduledStartAt: DateTime.utc(2026, 7, 27, 6, 30),
-      scheduledEndAt: DateTime.utc(2026, 7, 27, 7, 30),
+      scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
       slotCount: 1,
       totalDurationMinutes: 60,
-      timerStartsAt: DateTime.utc(2026, 7, 27, 3, 30),
-      acceptDeadlineAt: DateTime.utc(2026, 7, 27, 4, 30),
+      timerStartsAt: timerStartsAt,
+      acceptDeadlineAt: acceptDeadlineAt,
+      payDeadlineAt: payDeadlineAt ?? now.add(const Duration(minutes: 45)),
       timezone: 'Asia/Kolkata',
-      estimatedProviderPayoutPaise: 20000,
+      estimatedProviderPayoutPaise: estimatedProviderPayoutPaise,
     );
   }
 
   Future<void> pumpScreen(
     WidgetTester tester, {
     required CanonicalProviderBookingRequestView request,
+    double textScaleFactor = 1,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
-        home: CanonicalProviderBookingRequestDetailScreen(
-          initialRequest: request,
-          bookingRepository: _FakeBookingRepository(),
+        home: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(textScaleFactor)),
+          child: CanonicalProviderBookingRequestDetailScreen(
+            initialRequest: request,
+            bookingRepository: _FakeBookingRepository(),
+          ),
         ),
       ),
     );
@@ -62,7 +74,7 @@ void main() {
       );
       expect(
         find.textContaining(
-          'You can accept or decline it now',
+          'You can still accept or decline it now',
           findRichText: true,
         ),
         findsWidgets,
@@ -82,11 +94,34 @@ void main() {
 
     expect(
       find.textContaining('The customer can pay now', findRichText: true),
-      findsWidgets,
-    );
-    expect(
-      find.textContaining('actions stay locked', findRichText: true),
       findsNothing,
+    );
+    expect(find.text('Accepted, awaiting payment'), findsWidgets);
+    expect(find.text('Time remaining'), findsOneWidget);
+  });
+
+  testWidgets('expired accepted request shows expired provider messaging', (
+    tester,
+  ) async {
+    await pumpScreen(
+      tester,
+      request: buildRequest(
+        state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+        payDeadlineAt: DateTime.now().toUtc().subtract(
+          const Duration(minutes: 5),
+        ),
+      ),
+    );
+
+    expect(find.text('Expired'), findsWidgets);
+    expect(find.text('Waiting for customer payment'), findsNothing);
+    expect(find.text('Time remaining'), findsNothing);
+    expect(
+      find.textContaining(
+        'did not complete payment within the allowed time',
+        findRichText: true,
+      ),
+      findsWidgets,
     );
   });
 
@@ -115,6 +150,37 @@ void main() {
         ),
         findsWidgets,
       );
+    },
+  );
+
+  testWidgets(
+    'request hero payout copy wraps safely on narrow screens with larger text',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await pumpScreen(
+        tester,
+        request: buildRequest(
+          state: CanonicalBookingStateV3.pendingProvider,
+          estimatedProviderPayoutPaise: null,
+        ),
+        textScaleFactor: 1.3,
+      );
+
+      expect(
+        find.text('Payout shown after payment flow activation'),
+        findsOneWidget,
+      );
+      expect(
+        find.byIcon(Icons.account_balance_wallet_outlined),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
     },
   );
 }

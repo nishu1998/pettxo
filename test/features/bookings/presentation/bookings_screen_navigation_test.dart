@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pettexo/core/widgets/app_buttons.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_document_v3.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_flow_models.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_payment_order.dart';
@@ -278,10 +279,11 @@ void main() {
   CanonicalBookingDocumentV3 buildCanonicalBooking({
     required CanonicalBookingStateV3 state,
     String paymentAttemptId = '',
+    DateTime? payDeadlineAtOverride,
   }) {
     final map = buildCanonicalSlotFixture();
     final requestedAt = fixtureRequestedAtUtc();
-    final payDeadlineAt = fixturePayDeadlineUtc();
+    final payDeadlineAt = payDeadlineAtOverride ?? fixturePayDeadlineUtc();
     final rawState = canonicalStateValue(state);
     map['state'] = rawState;
     map['stateQueryValue'] = rawState;
@@ -355,12 +357,14 @@ void main() {
   CanonicalBookingReadModel buildCanonicalReadModel({
     CanonicalBookingStateV3 state = CanonicalBookingStateV3.requested,
     String paymentAttemptId = '',
+    DateTime? payDeadlineAtOverride,
   }) {
     return CanonicalBookingReadModel(
       documentId: 'booking-1',
       booking: buildCanonicalBooking(
         state: state,
         paymentAttemptId: paymentAttemptId,
+        payDeadlineAtOverride: payDeadlineAtOverride,
       ),
     );
   }
@@ -371,20 +375,84 @@ void main() {
     required BookingStreamBuilder bookingStreamBuilder,
     ProviderRequestStreamBuilder? providerRequestStreamBuilder,
     String currentUserIdOverride = 'parent-1',
+    double textScaleFactor = 1,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
-        home: BookingsScreen(
-          currentUserIdOverride: currentUserIdOverride,
-          bookingStreamBuilder: bookingStreamBuilder,
-          providerRequestStreamBuilder: providerRequestStreamBuilder,
-          bookingRequestOpener: opener.call,
-          useLiveIdentity: false,
+        home: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(textScaleFactor)),
+          child: BookingsScreen(
+            currentUserIdOverride: currentUserIdOverride,
+            bookingStreamBuilder: bookingStreamBuilder,
+            providerRequestStreamBuilder: providerRequestStreamBuilder,
+            bookingRequestOpener: opener.call,
+            useLiveIdentity: false,
+          ),
         ),
       ),
     );
     await tester.pump();
   }
+
+  Finder canonicalBookingCard(String bookingId) {
+    return find.byKey(ValueKey('canonical-booking-card-$bookingId'));
+  }
+
+  testWidgets(
+    'provider subtabs keep Requests label and badge visible on narrow screens',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final opener = RecordingBookingOpener(
+        latestBookings: {
+          'booking-1': buildCanonicalReadModel(
+            state: CanonicalBookingStateV3.pendingProvider,
+          ),
+        },
+      );
+      final canonical = buildCanonicalBooking(
+        state: CanonicalBookingStateV3.pendingProvider,
+      );
+
+      await pumpScreen(
+        tester,
+        opener: opener,
+        currentUserIdOverride: 'provider-1',
+        textScaleFactor: 1.3,
+        bookingStreamBuilder: (userId, contextMode) => Stream.value(const []),
+        providerRequestStreamBuilder: (_) => Stream.value([
+          CanonicalProviderBookingRequestView.fromBooking(
+            'booking-1',
+            canonical,
+          ),
+        ]),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Requests'), findsOneWidget);
+      expect(find.text('Confirmed'), findsOneWidget);
+      expect(find.text('Past'), findsOneWidget);
+      expect(find.text('1'), findsWidgets);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.text('Confirmed'));
+      await tester.pumpAndSettle();
+      expect(find.text('Dog Walking'), findsNothing);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.text('Requests'));
+      await tester.pumpAndSettle();
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'customer requested booking card opens canonical request status',
@@ -400,7 +468,7 @@ void main() {
             Stream.value([buildCanonicalReadModel()]),
       );
 
-      await tester.tap(find.text('Dog Walking').first);
+      await tester.tap(canonicalBookingCard('booking-1'));
       await tester.pump();
 
       expect(opener.lastRequest?.bookingId, 'booking-1');
@@ -432,7 +500,7 @@ void main() {
         ]),
       );
 
-      await tester.tap(find.text('Dog Walking').first);
+      await tester.tap(canonicalBookingCard('booking-1'));
       await tester.pump();
 
       expect(
@@ -470,7 +538,7 @@ void main() {
         ]),
       );
 
-      await tester.tap(find.text('Dog Walking').first);
+      await tester.tap(canonicalBookingCard('booking-1'));
       await tester.pump();
 
       expect(opener.lastPlan?.target, BookingNavigationTarget.canonicalPayment);
@@ -505,10 +573,58 @@ void main() {
         ]),
       );
 
-      await tester.tap(find.text('Dog Walking').first);
+      expect(find.text('Time remaining'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is GradientButton && widget.label == 'Pay now',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(canonicalBookingCard('booking-1'));
       await tester.pump();
 
       expect(opener.lastPlan?.target, BookingNavigationTarget.canonicalPayment);
+    },
+  );
+
+  testWidgets(
+    'customer expired payment card moves to Past and hides payment actions',
+    (tester) async {
+      final expiredDeadline = DateTime.now().toUtc().subtract(
+        const Duration(minutes: 5),
+      );
+      final expiredAwaitingPayment = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+        payDeadlineAtOverride: expiredDeadline,
+      );
+      final opener = RecordingBookingOpener(
+        latestBookings: {'booking-1': expiredAwaitingPayment},
+      );
+
+      await pumpScreen(
+        tester,
+        opener: opener,
+        bookingStreamBuilder: (userId, contextMode) =>
+            Stream.value([expiredAwaitingPayment]),
+      );
+
+      expect(canonicalBookingCard('booking-1'), findsNothing);
+      expect(find.text('Awaiting payment'), findsNothing);
+      expect(find.text('Time remaining'), findsNothing);
+
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(find.text('Expired'), findsOneWidget);
+      expect(find.text('Time remaining'), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is GradientButton && widget.label == 'Pay now',
+        ),
+        findsNothing,
+      );
     },
   );
 
@@ -542,7 +658,7 @@ void main() {
 
     await tester.tap(find.text('Past'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Dog Walking').first);
+    await tester.tap(canonicalBookingCard('booking-1'));
     await tester.pump();
 
     expect(opener.lastPlan?.target, BookingNavigationTarget.canonicalPayment);
@@ -567,7 +683,14 @@ void main() {
       ]),
     );
 
-    await tester.tap(find.text('Dog Walking').first);
+    expect(
+      find.text(
+        'Payment confirmed. Tap to view booking details and service OTP.',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(canonicalBookingCard('booking-1'));
     await tester.pump();
 
     expect(
@@ -626,17 +749,14 @@ void main() {
       'customer terminal $state booking appears in Past and stays tappable',
       (tester) async {
         final opener = RecordingBookingOpener(
-          latestBookings: {
-            'booking-1': buildCanonicalReadModel(state: state),
-          },
+          latestBookings: {'booking-1': buildCanonicalReadModel(state: state)},
         );
 
         await pumpScreen(
           tester,
           opener: opener,
-          bookingStreamBuilder: (userId, contextMode) => Stream.value([
-            buildCanonicalReadModel(state: state),
-          ]),
+          bookingStreamBuilder: (userId, contextMode) =>
+              Stream.value([buildCanonicalReadModel(state: state)]),
         );
 
         expect(find.text('Dog Walking'), findsNothing);
@@ -646,7 +766,7 @@ void main() {
 
         expect(find.text('Dog Walking'), findsOneWidget);
 
-        await tester.tap(find.text('Dog Walking'));
+        await tester.tap(canonicalBookingCard('booking-1'));
         await tester.pump();
 
         expect(
@@ -681,7 +801,7 @@ void main() {
       ]),
     );
 
-    await tester.tap(find.text('Delivering'));
+    await tester.tap(find.text('I Provide'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Dog Walking').first);
     await tester.pumpAndSettle();
@@ -723,11 +843,11 @@ void main() {
         providerRequestStreamBuilder: (_) => Stream.value(const []),
       );
 
-      await tester.tap(find.text('Delivering'));
+      await tester.tap(find.text('I Provide'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Confirmed'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Dog Walking').first);
+      await tester.tap(canonicalBookingCard('booking-1'));
       await tester.pumpAndSettle();
 
       expect(
@@ -736,6 +856,129 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'provider accepted-awaiting-payment booking stays out of Confirmed tab',
+    (tester) async {
+      final acceptedAwaitingPayment = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+        paymentAttemptId: 'attempt-1',
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(
+          latestBookings: {'booking-1': acceptedAwaitingPayment},
+        ),
+        currentUserIdOverride: 'provider-1',
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.delivering
+              ? [acceptedAwaitingPayment]
+              : const [],
+        ),
+        providerRequestStreamBuilder: (_) => Stream.value([
+          CanonicalProviderBookingRequestView.fromBooking(
+            'booking-1',
+            acceptedAwaitingPayment.booking,
+          ),
+        ]),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+
+      await tester.tap(find.text('Confirmed'));
+      await tester.pumpAndSettle();
+
+      expect(canonicalBookingCard('booking-1'), findsNothing);
+      expect(find.text('Dog Walking'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'provider accepted-awaiting-payment booking stays in Requests while deadline is active',
+    (tester) async {
+      final acceptedAwaitingPayment = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+        paymentAttemptId: 'attempt-1',
+        payDeadlineAtOverride: DateTime.now().toUtc().add(
+          const Duration(minutes: 30),
+        ),
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(
+          latestBookings: {'booking-1': acceptedAwaitingPayment},
+        ),
+        currentUserIdOverride: 'provider-1',
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.delivering
+              ? [acceptedAwaitingPayment]
+              : const [],
+        ),
+        providerRequestStreamBuilder: (_) => Stream.value([
+          CanonicalProviderBookingRequestView.fromBooking(
+            'booking-1',
+            acceptedAwaitingPayment.booking,
+          ),
+        ]),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(find.text('Time remaining'), findsOneWidget);
+      expect(find.text('Expired'), findsNothing);
+    },
+  );
+
+  testWidgets('provider expired unpaid booking moves from Requests to Past', (
+    tester,
+  ) async {
+    final expiredAwaitingPayment = buildCanonicalReadModel(
+      state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+      paymentAttemptId: 'attempt-1',
+      payDeadlineAtOverride: DateTime.now().toUtc().subtract(
+        const Duration(minutes: 5),
+      ),
+    );
+
+    await pumpScreen(
+      tester,
+      opener: RecordingBookingOpener(
+        latestBookings: {'booking-1': expiredAwaitingPayment},
+      ),
+      currentUserIdOverride: 'provider-1',
+      bookingStreamBuilder: (_, contextMode) => Stream.value(
+        contextMode == BookingContextMode.delivering
+            ? [expiredAwaitingPayment]
+            : const [],
+      ),
+      providerRequestStreamBuilder: (_) => Stream.value([
+        CanonicalProviderBookingRequestView.fromBooking(
+          'booking-1',
+          expiredAwaitingPayment.booking,
+        ),
+      ]),
+    );
+
+    await tester.tap(find.text('I Provide'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dog Walking'), findsNothing);
+    expect(find.text('Time remaining'), findsNothing);
+
+    await tester.tap(find.text('Past'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dog Walking'), findsOneWidget);
+    expect(find.text('Expired'), findsOneWidget);
+    expect(find.text('Time remaining'), findsNothing);
+  });
 }
 
 class RecordingBookingOpener {

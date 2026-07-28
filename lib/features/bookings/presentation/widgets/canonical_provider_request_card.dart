@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
+import 'booking_deadline_countdown.dart';
 
 class CanonicalProviderRequestCard extends StatelessWidget {
   final CanonicalProviderBookingRequestView request;
@@ -105,6 +106,18 @@ class CanonicalProviderRequestCard extends StatelessWidget {
               ),
             ),
           ),
+          if (request.isAcceptedAwaitingPayment &&
+              request.payDeadlineAt != null) ...[
+            const SizedBox(height: 16),
+            BookingDeadlineCountdown(
+              deadline: request.payDeadlineAt,
+              valueFontSize: 18,
+              labelFontSize: 11,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              textAlign: TextAlign.center,
+              centerLabelRow: true,
+            ),
+          ],
           if (request.isActionable) ...[
             const SizedBox(height: 16),
             Text(
@@ -156,6 +169,7 @@ class CanonicalProviderRequestCard extends StatelessWidget {
     if (request.isQueuedRequest) return 'Queued';
     if (request.isPendingProvider) return 'Action required';
     if (request.isAcceptedAwaitingPayment) return 'Accepted';
+    if (request.isPaymentExpired) return 'Expired';
     return 'Request';
   }
 
@@ -163,6 +177,7 @@ class CanonicalProviderRequestCard extends StatelessWidget {
     if (request.isQueuedRequest) return const Color(0xFFFFE8D4);
     if (request.isPendingProvider) return const Color(0xFFFFE1D2);
     if (request.isAcceptedAwaitingPayment) return const Color(0xFFDDF7E3);
+    if (request.isPaymentExpired) return const Color(0xFFF3F4F6);
     return const Color(0xFFF3F4F6);
   }
 
@@ -191,7 +206,13 @@ class CanonicalProviderRequestCard extends StatelessWidget {
           ? 'The official 60-minute response window is active.'
           : 'The official 60-minute response window is active. $countdownText remaining.';
     }
-    return 'Accepted, awaiting payment. The customer can pay now and the booking will confirm as soon as payment succeeds.';
+    if (request.isAcceptedAwaitingPayment) {
+      return 'Accepted, awaiting payment. The customer can complete payment during the active window.';
+    }
+    if (request.isPaymentExpired) {
+      return 'The customer did not complete payment within the allowed time. This booking request has expired.';
+    }
+    return 'This request is now read-only here.';
   }
 
   String get _actionHint {

@@ -20,6 +20,8 @@ import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../navigation/booking_navigation_resolver.dart';
 import '../../../services/data/repositories/services_repository.dart';
+import '../utils/canonical_booking_presentation_state.dart';
+import '../widgets/booking_deadline_countdown.dart';
 import '../widgets/canonical_provider_request_card.dart';
 
 typedef BookingStreamBuilder =
@@ -76,6 +78,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
   Stream<List<BookingReadModel>>? _cachedReadModelStream;
   String? _canonicalActionBookingId;
   String? _canonicalActionType;
+  String? _openingCanonicalBookingId;
 
   @override
   void initState() {
@@ -90,6 +93,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
 
   @override
   void dispose() {
+    _openingCanonicalBookingId = null;
     _timer.cancel();
     super.dispose();
   }
@@ -121,7 +125,9 @@ class _BookingsScreenState extends State<BookingsScreen> {
     final canonical = bookings.whereType<CanonicalBookingReadModel>();
     final filtered = canonical
         .where((entry) {
-          final state = entry.booking.state;
+          final state = effectiveCanonicalBookingPresentationState(
+            entry.booking,
+          );
           if (_context == BookingContextMode.receiving) {
             return _activeTab == BookingTab.upcoming
                 ? !_isPastCustomerState(state)
@@ -132,7 +138,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
             BookingTab.requests =>
               state == CanonicalBookingStateV3.requested ||
                   state == CanonicalBookingStateV3.pendingProvider,
-            BookingTab.confirmed => _isProviderActiveState(state),
+            BookingTab.confirmed => _isProviderConfirmedState(state),
             BookingTab.pastDeliveries => _isPastProviderState(state),
             _ => false,
           };
@@ -157,17 +163,6 @@ class _BookingsScreenState extends State<BookingsScreen> {
       BookingTab.confirmed => '$count confirmed',
       BookingTab.pastDeliveries => 'Past deliveries',
     };
-  }
-
-  String _formatCountdown(int seconds) {
-    final remaining = seconds.clamp(0, 99999);
-    final hours = remaining ~/ 3600;
-    final minutes = (remaining % 3600) ~/ 60;
-    final secs = remaining % 60;
-    if (hours > 0) {
-      return '$hours:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
-    }
-    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
   void _showToast(
@@ -205,17 +200,32 @@ class _BookingsScreenState extends State<BookingsScreen> {
     await _bookingNavigationResolver.openBookingRequest(context, openRequest);
   }
 
-  Future<void> _openCanonicalBooking(String bookingId) async {
-    final openRequest = BookingNavigationResolver.openRequestForExternalBooking(
-      bookingId: bookingId,
-      contextMode: _context,
-    );
+  Future<void> _openCanonicalBooking(BookingReadModel booking) async {
+    final safeBookingId = booking.bookingId.trim();
+    if (safeBookingId.isEmpty || _openingCanonicalBookingId != null) return;
+    setState(() => _openingCanonicalBookingId = safeBookingId);
     final opener = widget.bookingRequestOpener;
-    if (opener != null) {
-      await opener(context, openRequest);
-      return;
+    try {
+      if (opener != null) {
+        await opener(
+          context,
+          BookingNavigationResolver.openRequestForExternalBooking(
+            bookingId: safeBookingId,
+            contextMode: _context,
+          ),
+        );
+        return;
+      }
+      await _bookingNavigationResolver.openBookingReadModel(
+        context,
+        booking: booking,
+        fallbackContextMode: _context,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _openingCanonicalBookingId = null);
+      }
     }
-    await _bookingNavigationResolver.openBookingRequest(context, openRequest);
   }
 
   Future<void> _openCanonicalRebookService(
@@ -272,7 +282,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
         .difference(DateTime.now())
         .inSeconds;
     if (remaining <= 0) return '00:00';
-    return _formatCountdown(remaining);
+    return BookingDeadlineCountdown.formatClock(request.acceptDeadlineAt);
   }
 
   bool _isCanonicalAccepting(CanonicalProviderBookingRequestView request) {
@@ -402,8 +412,15 @@ class _BookingsScreenState extends State<BookingsScreen> {
               : Stream.value(const []),
           builder: (context, canonicalSnapshot) {
             final canonicalRequests = _activeTab == BookingTab.requests
-                ? canonicalSnapshot.data ??
-                      const <CanonicalProviderBookingRequestView>[]
+                ? (canonicalSnapshot.data ??
+                          const <CanonicalProviderBookingRequestView>[])
+                      .where(
+                        (request) =>
+                            request.isQueuedRequest ||
+                            request.isPendingProvider ||
+                            request.isAcceptedAwaitingPayment,
+                      )
+                      .toList(growable: false)
                 : const <CanonicalProviderBookingRequestView>[];
 
             final bodyChildren = _activeTab == BookingTab.requests
@@ -513,9 +530,14 @@ class _BookingsScreenState extends State<BookingsScreen> {
         (booking) => Padding(
           padding: const EdgeInsets.only(bottom: 16),
           child: _CanonicalBookingListCard(
+            bookingId: booking.bookingId,
             booking: booking.booking,
+            displayState: effectiveCanonicalBookingPresentationState(
+              booking.booking,
+            ),
             contextMode: _context,
-            onTap: () => _openCanonicalBooking(booking.bookingId),
+            onTap: () => _openCanonicalBooking(booking),
+            paymentDeadlineAt: booking.booking.lifecycle.payDeadlineAt,
             onBookAgain:
                 _context == BookingContextMode.receiving &&
                     _activeTab == BookingTab.past
@@ -559,15 +581,14 @@ class _BookingsScreenState extends State<BookingsScreen> {
         state == CanonicalBookingStateV3.disputed;
   }
 
-  bool _isProviderActiveState(CanonicalBookingStateV3 state) {
-    return state == CanonicalBookingStateV3.acceptedAwaitingPayment ||
-        state == CanonicalBookingStateV3.confirmed ||
+  bool _isProviderConfirmedState(CanonicalBookingStateV3 state) {
+    return state == CanonicalBookingStateV3.confirmed ||
         state == CanonicalBookingStateV3.inProgress ||
         state == CanonicalBookingStateV3.completedPendingReview;
   }
 
   bool _isPastProviderState(CanonicalBookingStateV3 state) {
-    return !_isProviderActiveState(state) &&
+    return !_isProviderConfirmedState(state) &&
         state != CanonicalBookingStateV3.requested &&
         state != CanonicalBookingStateV3.pendingProvider;
   }
@@ -575,8 +596,9 @@ class _BookingsScreenState extends State<BookingsScreen> {
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
-    final topContentPadding = topInset + 118;
-    final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
+    final topContentPadding = topInset + 72;
+    final bottomContentPadding =
+        SocialBottomNav.contentBottomPadding(context) + 16;
     final currentUserId =
         widget.currentUserIdOverride ?? FirebaseAuth.instance.currentUser?.uid;
 
@@ -739,12 +761,12 @@ class _ContextToggle extends StatelessWidget {
         child: Row(
           children: [
             _ContextButton(
-              label: 'Receiving',
+              label: 'I Booked',
               isActive: contextMode == BookingContextMode.receiving,
               onTap: () => onChanged(BookingContextMode.receiving),
             ),
             _ContextButton(
-              label: 'Delivering',
+              label: 'I Provide',
               isActive: contextMode == BookingContextMode.delivering,
               onTap: () => onChanged(BookingContextMode.delivering),
             ),
@@ -827,31 +849,40 @@ class _SubtabBar extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: tabs.map((tab) {
-          final isActive = tab.$1 == activeTab;
-          final hasRequestBadge =
-              contextMode == BookingContextMode.delivering &&
-              tab.$1 == BookingTab.requests &&
-              requestCount > 0;
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final requiredWidth = tabs.fold<double>(
+            0,
+            (sum, tab) => sum + _estimatedTabWidth(context, tab.$2, tab.$1),
+          );
+          final shouldScroll = requiredWidth > constraints.maxWidth;
+          final row = Row(
+            mainAxisAlignment: shouldScroll
+                ? MainAxisAlignment.start
+                : MainAxisAlignment.center,
+            mainAxisSize: shouldScroll ? MainAxisSize.min : MainAxisSize.max,
+            children: tabs.map((tab) {
+              final isActive = tab.$1 == activeTab;
+              final hasRequestBadge =
+                  contextMode == BookingContextMode.delivering &&
+                  tab.$1 == BookingTab.requests &&
+                  requestCount > 0;
 
-          return Flexible(
-            child: GestureDetector(
-              onTap: () => onChanged(tab.$1),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(
-                          child: Text(
+              return GestureDetector(
+                onTap: () => onChanged(tab.$1),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 8,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
                             tab.$2,
-                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: isActive
                                   ? AppColors.primary
@@ -860,185 +891,255 @@ class _SubtabBar extends StatelessWidget {
                               fontWeight: FontWeight.w800,
                             ),
                           ),
-                        ),
-                        if (hasRequestBadge) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            constraints: const BoxConstraints(minWidth: 18),
-                            height: 18,
-                            padding: const EdgeInsets.symmetric(horizontal: 5),
-                            alignment: Alignment.center,
-                            decoration: const BoxDecoration(
-                              color: AppColors.primary,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Text(
-                              requestCount > 9 ? '9+' : '$requestCount',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 9,
-                                fontWeight: FontWeight.w800,
+                          if (hasRequestBadge) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              constraints: const BoxConstraints(minWidth: 18),
+                              height: 18,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                              ),
+                              alignment: Alignment.center,
+                              decoration: const BoxDecoration(
+                                color: AppColors.primary,
+                                shape: BoxShape.circle,
+                              ),
+                              child: Text(
+                                requestCount > 9 ? '9+' : '$requestCount',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ),
-                          ),
+                          ],
                         ],
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 260),
-                      curve: Curves.easeOutCubic,
-                      width: isActive ? 40 : 0,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: isActive
-                            ? AppColors.primary
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(999),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-}
-
-class _CanonicalBookingListCard extends StatelessWidget {
-  const _CanonicalBookingListCard({
-    required this.booking,
-    required this.contextMode,
-    required this.onTap,
-    this.onBookAgain,
-  });
-
-  final CanonicalBookingDocumentV3 booking;
-  final BookingContextMode contextMode;
-  final VoidCallback onTap;
-  final VoidCallback? onBookAgain;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(28),
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primary.withValues(alpha: 0.08),
-              blurRadius: 24,
-              offset: const Offset(0, 12),
-            ),
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        booking.service.serviceTitle,
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        contextMode == BookingContextMode.receiving
-                            ? booking.participants.provider.displayName
-                            : '${booking.participants.parent.displayFirstName} ${booking.participants.parent.lastInitial}'
-                                  .trim(),
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF8E8479),
-                          fontWeight: FontWeight.w500,
+                      const SizedBox(height: 10),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 260),
+                        curve: Curves.easeOutCubic,
+                        width: isActive ? 40 : 0,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? AppColors.primary
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _pillColor(booking.state),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    _stateLabel(booking.state),
-                    style: const TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Text(
-              _scheduleLabel(booking),
-              style: const TextStyle(
-                fontSize: 15,
-                color: Color(0xFF5F5650),
-                fontWeight: FontWeight.w600,
+              );
+            }).toList(),
+          );
+
+          if (!shouldScroll) return row;
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: row,
+          );
+        },
+      ),
+    );
+  }
+
+  double _estimatedTabWidth(
+    BuildContext context,
+    String label,
+    BookingTab tab,
+  ) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+      ),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    final hasRequestBadge =
+        contextMode == BookingContextMode.delivering &&
+        tab == BookingTab.requests &&
+        requestCount > 0;
+    final badgeWidth = hasRequestBadge ? 24.0 : 0.0;
+    final badgeSpacing = hasRequestBadge ? 6.0 : 0.0;
+    return painter.width + badgeWidth + badgeSpacing + 24.0;
+  }
+}
+
+class _CanonicalBookingListCard extends StatelessWidget {
+  const _CanonicalBookingListCard({
+    required this.bookingId,
+    required this.booking,
+    required this.displayState,
+    required this.contextMode,
+    required this.onTap,
+    required this.paymentDeadlineAt,
+    this.onBookAgain,
+  });
+
+  final String bookingId;
+  final CanonicalBookingDocumentV3 booking;
+  final CanonicalBookingStateV3 displayState;
+  final BookingContextMode contextMode;
+  final VoidCallback onTap;
+  final DateTime? paymentDeadlineAt;
+  final VoidCallback? onBookAgain;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      key: ValueKey('canonical-booking-card-$bookingId'),
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(28),
+        onTap: onTap,
+        child: Ink(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.primary.withValues(alpha: 0.08),
+                blurRadius: 24,
+                offset: const Offset(0, 12),
               ),
-            ),
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF7F1),
-                borderRadius: BorderRadius.circular(16),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.03),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
               ),
-              child: Text(
-                _supportingLine(booking),
-                style: const TextStyle(
-                  color: AppColors.textDark,
-                  fontSize: 12,
-                  height: 1.45,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            if (onBookAgain != null) ...[
-              const SizedBox(height: 16),
+            ],
+          ),
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
-                    child: SecondaryButton(
-                      label: 'Book again',
-                      onPressed: onBookAgain,
-                      size: AppButtonSize.compact,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          booking.service.serviceTitle,
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          contextMode == BookingContextMode.receiving
+                              ? booking.participants.provider.displayName
+                              : '${booking.participants.parent.displayFirstName} ${booking.participants.parent.lastInitial}'
+                                    .trim(),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Color(0xFF8E8479),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _pillColor(displayState),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      _stateLabel(displayState),
+                      style: const TextStyle(
+                        color: AppColors.textDark,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ],
               ),
+              const SizedBox(height: 16),
+              Text(
+                _scheduleLabel(booking),
+                style: const TextStyle(
+                  fontSize: 15,
+                  color: Color(0xFF5F5650),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF7F1),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  _supportingLine(booking, displayState),
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 12,
+                    height: 1.45,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (displayState ==
+                      CanonicalBookingStateV3.acceptedAwaitingPayment &&
+                  paymentDeadlineAt != null) ...[
+                const SizedBox(height: 16),
+                BookingDeadlineCountdown(
+                  deadline: paymentDeadlineAt,
+                  valueFontSize: 18,
+                  labelFontSize: 11,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  textAlign: TextAlign.center,
+                  centerLabelRow: true,
+                  showSideDividers: true,
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GradientButton(
+                        label: 'Pay now',
+                        onPressed: onTap,
+                        size: AppButtonSize.compact,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              if (onBookAgain != null) ...[
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: SecondaryButton(
+                        label: 'Book again',
+                        onPressed: onBookAgain,
+                        size: AppButtonSize.compact,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -1065,12 +1166,12 @@ class _CanonicalBookingListCard extends StatelessWidget {
     return switch (state) {
       CanonicalBookingStateV3.requested => 'Queued',
       CanonicalBookingStateV3.pendingProvider => 'Pending',
-      CanonicalBookingStateV3.acceptedAwaitingPayment => 'Pay now',
+      CanonicalBookingStateV3.acceptedAwaitingPayment => 'Awaiting payment',
       CanonicalBookingStateV3.confirmed => 'Confirmed',
       CanonicalBookingStateV3.inProgress => 'In progress',
       CanonicalBookingStateV3.completedPendingReview => 'Review pending',
       CanonicalBookingStateV3.completedFinal => 'Completed',
-      CanonicalBookingStateV3.paymentExpired => 'Payment expired',
+      CanonicalBookingStateV3.paymentExpired => 'Expired',
       CanonicalBookingStateV3.cancelledByParent ||
       CanonicalBookingStateV3.cancelled => 'Cancelled',
       CanonicalBookingStateV3.declined => 'Declined',
@@ -1092,15 +1193,18 @@ class _CanonicalBookingListCard extends StatelessWidget {
     return '$day · $startTime to ${_timeLabel(end)}';
   }
 
-  static String _supportingLine(CanonicalBookingDocumentV3 booking) {
-    switch (booking.state) {
+  static String _supportingLine(
+    CanonicalBookingDocumentV3 booking,
+    CanonicalBookingStateV3 displayState,
+  ) {
+    switch (displayState) {
       case CanonicalBookingStateV3.requested:
       case CanonicalBookingStateV3.pendingProvider:
         return 'Waiting for provider response. Nothing has been charged.';
       case CanonicalBookingStateV3.acceptedAwaitingPayment:
-        return 'Provider accepted. Complete payment to confirm availability.';
+        return 'Provider accepted. Complete payment before the timer expires.';
       case CanonicalBookingStateV3.confirmed:
-        return 'Payment confirmed. OTP and private booking details unlock in the booking screen.';
+        return 'Payment confirmed. Tap to view booking details and service OTP.';
       case CanonicalBookingStateV3.inProgress:
         return 'Service is currently in progress.';
       case CanonicalBookingStateV3.completedPendingReview:

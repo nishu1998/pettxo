@@ -1,5 +1,6 @@
 import 'booking_document_v3.dart';
 import 'booking_v3_models.dart';
+import '../../presentation/utils/canonical_booking_presentation_state.dart';
 
 class CanonicalProviderBookingRequestView {
   final String bookingId;
@@ -17,6 +18,7 @@ class CanonicalProviderBookingRequestView {
   final int totalDurationMinutes;
   final DateTime? timerStartsAt;
   final DateTime? acceptDeadlineAt;
+  final DateTime? payDeadlineAt;
   final String timezone;
   final int? estimatedProviderPayoutPaise;
 
@@ -36,6 +38,7 @@ class CanonicalProviderBookingRequestView {
     required this.totalDurationMinutes,
     required this.timerStartsAt,
     required this.acceptDeadlineAt,
+    required this.payDeadlineAt,
     required this.timezone,
     required this.estimatedProviderPayoutPaise,
   });
@@ -72,16 +75,23 @@ class CanonicalProviderBookingRequestView {
       totalDurationMinutes: slotSchedule?.totalDurationMinutes ?? 0,
       timerStartsAt: booking.lifecycle.timerStartsAt,
       acceptDeadlineAt: booking.lifecycle.acceptDeadlineAt,
+      payDeadlineAt: booking.lifecycle.payDeadlineAt,
       timezone: booking.schedule.timezone,
       estimatedProviderPayoutPaise: booking.financials?.providerPayoutPaise,
     );
   }
 
-  bool get isQueuedRequest => state == CanonicalBookingStateV3.requested;
+  CanonicalBookingStateV3 get effectiveState =>
+      effectiveCanonicalBookingPresentationStateFromRaw(state, payDeadlineAt);
+
+  bool get isQueuedRequest =>
+      effectiveState == CanonicalBookingStateV3.requested;
   bool get isPendingProvider =>
-      state == CanonicalBookingStateV3.pendingProvider;
+      effectiveState == CanonicalBookingStateV3.pendingProvider;
   bool get isAcceptedAwaitingPayment =>
-      state == CanonicalBookingStateV3.acceptedAwaitingPayment;
+      effectiveState == CanonicalBookingStateV3.acceptedAwaitingPayment;
+  bool get isPaymentExpired =>
+      effectiveState == CanonicalBookingStateV3.paymentExpired;
   bool get isAwaitingProviderDecision => isQueuedRequest || isPendingProvider;
   bool get isActionable => isAwaitingProviderDecision;
 }
