@@ -66,6 +66,7 @@ class CanonicalBookingPrivateParticipantsData {
   final String exactAddress;
   final double? latitude;
   final double? longitude;
+  final String providerPhoneNumber;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -80,6 +81,7 @@ class CanonicalBookingPrivateParticipantsData {
     required this.exactAddress,
     required this.latitude,
     required this.longitude,
+    required this.providerPhoneNumber,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -89,6 +91,9 @@ class CanonicalBookingPrivateParticipantsData {
   ) {
     final parentPrivate = Map<String, dynamic>.from(
       map['parentPrivate'] as Map? ?? const {},
+    );
+    final providerPrivate = Map<String, dynamic>.from(
+      map['providerPrivate'] as Map? ?? const {},
     );
     return CanonicalBookingPrivateParticipantsData(
       bookingId: (map['bookingId'] as String? ?? '').trim(),
@@ -101,6 +106,8 @@ class CanonicalBookingPrivateParticipantsData {
       exactAddress: (parentPrivate['exactAddress'] as String? ?? '').trim(),
       latitude: _readDouble(parentPrivate['latitude']),
       longitude: _readDouble(parentPrivate['longitude']),
+      providerPhoneNumber:
+          (providerPrivate['phoneNumber'] as String? ?? '').trim(),
       createdAt: CanonicalBookingPrivateData._readDate(map['createdAt']),
       updatedAt: CanonicalBookingPrivateData._readDate(map['updatedAt']),
     );
@@ -108,6 +115,8 @@ class CanonicalBookingPrivateParticipantsData {
 
   bool get hasPhoneNumber => phoneNumber.isNotEmpty;
   bool get hasAddress => exactAddress.isNotEmpty;
+  bool get hasProviderPhoneNumber => providerPhoneNumber.isNotEmpty;
+  bool get hasCoordinates => latitude != null && longitude != null;
 
   static double? _readDouble(Object? value) {
     if (value is num) return value.toDouble();

@@ -212,6 +212,36 @@ class CanonicalPaymentOrderResult {
   }
 }
 
+class CanonicalPaymentPricingPreviewResult {
+  final String bookingId;
+  final CanonicalPaymentPricingSummary pricingSummary;
+  final DateTime? payDeadlineAt;
+  final String claimedOfferId;
+  final bool idempotentReplay;
+
+  const CanonicalPaymentPricingPreviewResult({
+    required this.bookingId,
+    required this.pricingSummary,
+    required this.payDeadlineAt,
+    required this.claimedOfferId,
+    required this.idempotentReplay,
+  });
+
+  factory CanonicalPaymentPricingPreviewResult.fromMap(
+    Map<String, dynamic> data,
+  ) {
+    return CanonicalPaymentPricingPreviewResult(
+      bookingId: _CanonicalPaymentParsing.asString(data['bookingId']),
+      pricingSummary: CanonicalPaymentPricingSummary.fromMap(
+        _CanonicalPaymentParsing.asMap(data['pricingSummary']),
+      ),
+      payDeadlineAt: _CanonicalPaymentParsing.readDate(data['payDeadlineAt']),
+      claimedOfferId: _CanonicalPaymentParsing.asString(data['claimedOfferId']),
+      idempotentReplay: data['idempotentReplay'] == true,
+    );
+  }
+}
+
 class CanonicalPaymentVerificationResult {
   final String bookingId;
   final String paymentAttemptId;

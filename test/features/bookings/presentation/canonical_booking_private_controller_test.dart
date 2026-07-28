@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pettexo/features/bookings/data/repositories/booking_repository.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_private.dart';
 import 'package:pettexo/features/bookings/presentation/controllers/canonical_booking_private_controller.dart';
 
@@ -27,6 +28,28 @@ void main() {
   }
 
   group('CanonicalBookingPrivateController', () {
+    test('participant-private parsing accepts providerPrivate.phoneNumber', () {
+      final parsed = CanonicalBookingPrivateParticipantsData.fromMap({
+        'bookingId': 'booking-1',
+        'parentId': 'parent-1',
+        'providerId': 'provider-1',
+        'unlockedAfterPaidOnly': true,
+        'parentPrivate': {
+          'fullName': 'Nisha Gautam',
+          'phoneNumber': '9123456789',
+          'email': 'nisha@example.com',
+          'exactAddress': 'Andheri West, Mumbai',
+          'latitude': 19.136,
+          'longitude': 72.829,
+        },
+        'providerPrivate': {'phoneNumber': '+918888888888'},
+      });
+
+      expect(parsed.providerPhoneNumber, '+918888888888');
+      expect(parsed.phoneNumber, '9123456789');
+      expect(parsed.exactAddress, 'Andheri West, Mumbai');
+    });
+
     test(
       'bookingPrivate loads only when booking access is confirmed',
       () async {
@@ -213,6 +236,32 @@ void main() {
       controller.dispose();
     });
 
+    test('repository-classified private load errors stay user-safe', () async {
+      final privateStream =
+          StreamController<CanonicalBookingPrivateData?>.broadcast();
+      final controller = CanonicalBookingPrivateController(
+        privateLoader: (_) => privateStream.stream,
+      );
+
+      controller.bind(bookingId: 'booking-1', shouldLoadPrivate: true);
+      privateStream.addError(
+        const CanonicalPrivateDataLoadException(
+          kind: CanonicalPrivateDataLoadFailureKind.documentNotFound,
+          collection: 'bookingPrivate',
+          bookingId: 'booking-1',
+        ),
+      );
+      await flushAsync();
+
+      expect(
+        controller.state.errorMessage,
+        'Paid-only booking details could not be loaded right now.',
+      );
+
+      await privateStream.close();
+      controller.dispose();
+    });
+
     test('error text excludes OTP, phone, address, and coordinates', () async {
       final privateStream =
           StreamController<CanonicalBookingPrivateData?>.broadcast();
@@ -301,6 +350,49 @@ void main() {
         await firstStream.close();
         await secondStream.close();
         secondController.dispose();
+      },
+    );
+
+    test(
+      'retry re-reads bookingPrivate and does not mutate cached OTP data',
+      () async {
+        final firstStream =
+            StreamController<CanonicalBookingPrivateData?>.broadcast();
+        final secondStream =
+            StreamController<CanonicalBookingPrivateData?>.broadcast();
+        final queuedStreams = <StreamController<CanonicalBookingPrivateData?>>[
+          firstStream,
+          secondStream,
+        ];
+        var loadCount = 0;
+        final controller = CanonicalBookingPrivateController(
+          privateLoader: (_) {
+            final stream = queuedStreams[loadCount];
+            loadCount += 1;
+            return stream.stream;
+          },
+        );
+
+        controller.bind(bookingId: 'booking-1', shouldLoadPrivate: true);
+        firstStream.add(
+          privateData(bookingId: 'booking-1', parentOtpCode: '482913'),
+        );
+        await flushAsync();
+        expect(controller.state.privateData?.parentOtpCode, '482913');
+
+        controller.retry();
+        expect(loadCount, 2);
+        expect(controller.state.privateData, isNull);
+
+        secondStream.add(
+          privateData(bookingId: 'booking-1', parentOtpCode: '482913'),
+        );
+        await flushAsync();
+        expect(controller.state.privateData?.parentOtpCode, '482913');
+
+        await firstStream.close();
+        await secondStream.close();
+        controller.dispose();
       },
     );
 

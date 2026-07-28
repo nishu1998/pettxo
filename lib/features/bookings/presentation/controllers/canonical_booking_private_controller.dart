@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/canonical_booking_private.dart';
 
 @immutable
@@ -68,6 +69,27 @@ class CanonicalBookingPrivateController extends ChangeNotifier {
   CanonicalBookingPrivateState get state => _state;
 
   void bind({required String bookingId, required bool shouldLoadPrivate}) {
+    _bindInternal(
+      bookingId: bookingId,
+      shouldLoadPrivate: shouldLoadPrivate,
+      forceReload: false,
+    );
+  }
+
+  void retry() {
+    if (_activeBookingId.isEmpty || !_activeReadPermission) return;
+    _bindInternal(
+      bookingId: _activeBookingId,
+      shouldLoadPrivate: true,
+      forceReload: true,
+    );
+  }
+
+  void _bindInternal({
+    required String bookingId,
+    required bool shouldLoadPrivate,
+    required bool forceReload,
+  }) {
     final safeBookingId = bookingId.trim();
     _ensureAuthSubscription();
 
@@ -91,7 +113,9 @@ class CanonicalBookingPrivateController extends ChangeNotifier {
       return;
     }
 
-    if (_activeReadPermission && _activeBookingId == safeBookingId) {
+    if (!forceReload &&
+        _activeReadPermission &&
+        _activeBookingId == safeBookingId) {
       return;
     }
 
@@ -119,6 +143,15 @@ class CanonicalBookingPrivateController extends ChangeNotifier {
         );
       },
       onError: (error, stackTrace) {
+        if (error is CanonicalPrivateDataLoadException) {
+          debugPrint(
+            '[CanonicalBookingPrivate] load_failed bookingId=${error.bookingId} collection=${error.collection} kind=${error.kind.name}',
+          );
+        } else {
+          debugPrint(
+            '[CanonicalBookingPrivate] load_failed bookingId=$safeBookingId kind=unknown',
+          );
+        }
         _setState(
           CanonicalBookingPrivateState(
             bookingId: safeBookingId,

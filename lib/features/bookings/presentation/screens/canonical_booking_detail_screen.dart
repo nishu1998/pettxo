@@ -1,5 +1,9 @@
+import 'dart:async';
+
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -21,11 +25,19 @@ class CanonicalBookingDetailScreen extends StatefulWidget {
     required this.bookingId,
     this.repository,
     this.privateController,
+    this.currentUserIdOverride,
+    this.onOpenChatOverride,
+    this.canLaunchUrlOverride,
+    this.launchUrlOverride,
   });
 
   final String bookingId;
   final BookingRepository? repository;
   final CanonicalBookingPrivateController? privateController;
+  final String? currentUserIdOverride;
+  final Future<void> Function(String bookingId)? onOpenChatOverride;
+  final Future<bool> Function(Uri uri)? canLaunchUrlOverride;
+  final Future<bool> Function(Uri uri, {LaunchMode mode})? launchUrlOverride;
 
   @override
   State<CanonicalBookingDetailScreen> createState() =>
@@ -49,7 +61,10 @@ class _CanonicalBookingDetailScreenState
   bool _isCompletingService = false;
   bool _isSubmittingReview = false;
   bool _isSubmittingDispute = false;
+  bool _isOpeningChat = false;
   bool _reviewSubmittedLocally = false;
+  int _privateRetryTick = 0;
+  StreamSubscription<BookingReadModel?>? _serviceStartStateSubscription;
   final TextEditingController _reviewCommentController =
       TextEditingController();
   final TextEditingController _disputeReasonController =
@@ -58,11 +73,17 @@ class _CanonicalBookingDetailScreenState
       TextEditingController();
   int _reviewRating = 0;
 
+  String get _currentUserId =>
+      widget.currentUserIdOverride?.trim().isNotEmpty == true
+      ? widget.currentUserIdOverride!.trim()
+      : FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+
   @override
   void dispose() {
     _reviewCommentController.dispose();
     _disputeReasonController.dispose();
     _disputeDescriptionController.dispose();
+    _serviceStartStateSubscription?.cancel();
     if (_ownsPrivateController) {
       _privateController.dispose();
     }
@@ -98,8 +119,7 @@ class _CanonicalBookingDetailScreenState
             );
           }
 
-          final currentUid =
-              FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+          final currentUid = _currentUserId;
           final isParent = booking.parentId == currentUid;
           final userIsProvider = booking.providerId == currentUid;
           final canReadPrivate =
@@ -116,6 +136,9 @@ class _CanonicalBookingDetailScreenState
           );
 
           return StreamBuilder<CanonicalBookingPrivateParticipantsData?>(
+            key: ValueKey(
+              'canonical-private-participants-${widget.bookingId}-$_privateRetryTick',
+            ),
             stream: canReadParticipantPrivate
                 ? _repository.watchCanonicalBookingPrivateParticipants(
                     widget.bookingId,
@@ -129,7 +152,7 @@ class _CanonicalBookingDetailScreenState
                   return ListView(
                     padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
                     children: [
-                      _HeroCard(booking: booking),
+                      _HeroCard(booking: booking, currentUid: currentUid),
                       const SizedBox(height: 14),
                       _CancellationStatusSection(
                         bookingId: widget.bookingId,
@@ -179,6 +202,8 @@ class _CanonicalBookingDetailScreenState
                             'Provider',
                             booking.participants.provider.displayName,
                           ),
+                          _InfoRow('Status', _statusLabel(booking)),
+                          _InfoRow('Payment', _paymentStatusLabel(booking)),
                           _InfoRow('Amount paid', _money(booking)),
                           _InfoRow(
                             'Confirmed at',
@@ -194,27 +219,44 @@ class _CanonicalBookingDetailScreenState
                       const SizedBox(height: 14),
                       _InfoCard(
                         title: 'Schedule',
-                        rows: [
-                          _InfoRow(
-                            'Type',
-                            booking.bookingType.name.toUpperCase(),
-                          ),
-                          _InfoRow('When', _scheduleLabel(booking)),
-                        ],
+                        rows: _scheduleRows(booking),
                       ),
                       const SizedBox(height: 14),
                       _PrivateSection(
                         booking: booking,
                         otpPrivateData: privateState.privateData,
                         participantPrivateData: participantSnapshot.data,
-                        isLoading: privateState.isLoading,
-                        errorMessage: privateState.errorMessage,
+                        isOtpLoading: privateState.isLoading,
+                        otpErrorMessage: privateState.errorMessage,
+                        participantErrorMessage: participantSnapshot.hasError
+                            ? 'Paid-only booking details could not be loaded right now.'
+                            : null,
                         currentUid: currentUid,
+                        onRetry: _retryPrivateReads,
+                        onCallPhone: (phone) => _openPhone(phone),
+                        onOpenMap: (details) => _openMap(details),
                       ),
+                      if (userIsProvider &&
+                          booking.state == CanonicalBookingStateV3.confirmed &&
+                          booking.lifecycle.paidAt != null) ...[
+                        const SizedBox(height: 14),
+                        _ProviderServiceStartSection(
+                          isVerifying: _isStartingService,
+                          onEnterOtp: _isStartingService
+                              ? null
+                              : () => _startServiceFlow(
+                                  bookingId: widget.bookingId,
+                                ),
+                        ),
+                      ],
                       const SizedBox(height: 14),
                       _ChatSection(
-                        bookingId: widget.bookingId,
+                        isParent: isParent,
                         isUnlocked: booking.privacy.chatUnlockedAt != null,
+                        isOpening: _isOpeningChat,
+                        onOpenChat: booking.privacy.chatUnlockedAt != null
+                            ? () => _openBookingChat(widget.bookingId)
+                            : null,
                       ),
                       const SizedBox(height: 16),
                       _buildActions(booking),
@@ -240,43 +282,155 @@ class _CanonicalBookingDetailScreenState
     return '${local.day}/${local.month}/${local.year} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 
-  static String _scheduleLabel(CanonicalBookingDocumentV3 booking) {
+  static List<Widget> _scheduleRows(CanonicalBookingDocumentV3 booking) {
+    final rows = <Widget>[_InfoRow('Type', _bookingTypeLabel(booking))];
     final schedule = booking.schedule;
     if (schedule is CanonicalSlotBookingScheduleV3) {
-      return _dateTime(schedule.scheduledStartAt);
+      if (!_hasValidSlotWindow(schedule)) {
+        rows.add(const _InfoRow('Window', 'Schedule unavailable'));
+        return rows;
+      }
+      rows.add(_InfoRow('Date', _calendarDate(schedule.scheduledStartAt)));
+      rows.add(
+        _InfoRow(
+          'Time',
+          '${_timeOnly(schedule.scheduledStartAt)} to ${_timeOnly(schedule.scheduledEndAt)}',
+        ),
+      );
+      rows.add(
+        _InfoRow(
+          'Duration',
+          _minutesLabel(
+            schedule.totalDurationMinutes > 0
+                ? schedule.totalDurationMinutes
+                : booking.statistics.totalDurationMinutes,
+          ),
+        ),
+      );
+      if (schedule.slotCount > 1) {
+        rows.add(_InfoRow('Slots', '${schedule.slotCount} continuous slots'));
+      }
+      return rows;
     }
     if (schedule is CanonicalRangeBookingScheduleV3) {
-      return '${_dateTime(schedule.checkInDateTime)} to ${_dateTime(schedule.checkOutDateTime)}';
+      if (!_hasValidRangeWindow(schedule)) {
+        rows.add(const _InfoRow('Window', 'Schedule unavailable'));
+        return rows;
+      }
+      rows.add(
+        _InfoRow('Check-in', _dateTimeWithMeridiem(schedule.checkInDateTime)),
+      );
+      rows.add(
+        _InfoRow('Check-out', _dateTimeWithMeridiem(schedule.checkOutDateTime)),
+      );
+      rows.add(_InfoRow('Duration', _nightsLabel(schedule.nights)));
+      return rows;
     }
-    return 'Schedule unavailable';
+    rows.add(const _InfoRow('Window', 'Schedule unavailable'));
+    return rows;
+  }
+
+  static String _bookingTypeLabel(CanonicalBookingDocumentV3 booking) {
+    return switch (booking.bookingType) {
+      BookingV3Type.slot => 'Single visit',
+      BookingV3Type.range => 'Stay booking',
+    };
+  }
+
+  static bool _hasValidSlotWindow(CanonicalSlotBookingScheduleV3 schedule) {
+    return schedule.scheduledEndAt.isAfter(schedule.scheduledStartAt);
+  }
+
+  static bool _hasValidRangeWindow(CanonicalRangeBookingScheduleV3 schedule) {
+    return schedule.checkOutDateTime.isAfter(schedule.checkInDateTime);
+  }
+
+  static String _calendarDate(DateTime value) {
+    final local = value.toLocal();
+    return '${local.day} ${_monthLabel(local.month)} ${local.year}';
+  }
+
+  static String _dateTimeWithMeridiem(DateTime value) {
+    return '${_calendarDate(value)} ${_timeOnly(value)}';
+  }
+
+  static String _monthLabel(int month) {
+    const months = <String>[
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    if (month < 1 || month > 12) return month.toString();
+    return months[month - 1];
+  }
+
+  static String _minutesLabel(int? minutes) {
+    if (minutes == null || minutes <= 0) return 'Pending';
+    return '$minutes min';
+  }
+
+  static String _nightsLabel(int nights) {
+    if (nights <= 0) return 'Pending';
+    return nights == 1 ? '1 night' : '$nights nights';
+  }
+
+  static String _timeOnly(DateTime value) {
+    final local = value.toLocal();
+    final hour = local.hour > 12
+        ? local.hour - 12
+        : (local.hour == 0 ? 12 : local.hour);
+    final minutes = local.minute.toString().padLeft(2, '0');
+    final meridiem = local.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minutes $meridiem';
+  }
+
+  static String _statusLabel(CanonicalBookingDocumentV3 booking) {
+    return switch (booking.state) {
+      CanonicalBookingStateV3.confirmed => 'Confirmed',
+      CanonicalBookingStateV3.inProgress => 'In progress',
+      CanonicalBookingStateV3.completedPendingReview => 'Completed',
+      CanonicalBookingStateV3.completedFinal => 'Completed',
+      CanonicalBookingStateV3.noShow => 'No show',
+      _ => booking.state.name,
+    };
+  }
+
+  static String _paymentStatusLabel(CanonicalBookingDocumentV3 booking) {
+    return booking.lifecycle.paidAt != null
+        ? 'Payment confirmed'
+        : 'Payment pending';
+  }
+
+  void _retryPrivateReads() {
+    if (!mounted) return;
+    setState(() => _privateRetryTick += 1);
+    _privateController.retry();
   }
 
   Widget _buildActions(CanonicalBookingDocumentV3 booking) {
-    final currentUid = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    final currentUid = _currentUserId;
     final isParent = booking.parentId == currentUid;
     final isProvider = booking.providerId == currentUid;
     final canCancel =
         booking.state == CanonicalBookingStateV3.confirmed &&
         (isParent || isProvider);
-    final canStart =
-        booking.state == CanonicalBookingStateV3.confirmed && isProvider;
     final canComplete =
         booking.state == CanonicalBookingStateV3.inProgress && isProvider;
-    if (!canCancel && !canStart && !canComplete) {
+    if (!canCancel && !canComplete) {
       return const SizedBox.shrink();
     }
     final label = isProvider ? 'Cancel as provider' : 'Cancel booking';
     return Column(
       children: [
-        if (canStart)
-          GradientButton(
-            label: _isStartingService ? 'Starting...' : 'Start service',
-            onPressed: _isStartingService
-                ? null
-                : () => _startServiceFlow(bookingId: widget.bookingId),
-            size: AppButtonSize.compact,
-          ),
-        if (canStart && (canCancel || canComplete)) const SizedBox(height: 10),
         if (canComplete)
           GradientButton(
             label: _isCompletingService ? 'Completing...' : 'Complete service',
@@ -303,6 +457,8 @@ class _CanonicalBookingDetailScreenState
   }
 
   Future<void> _startServiceFlow({required String bookingId}) async {
+    if (_isStartingService) return;
+    final screenContext = context;
     try {
       final latest = await _repository.fetchCanonicalBooking(bookingId);
       if (latest is! CanonicalBookingReadModel ||
@@ -316,120 +472,262 @@ class _CanonicalBookingDetailScreenState
       }
 
       if (!mounted) return;
-      final controller = TextEditingController();
-      final confirmed = await showModalBottomSheet<String>(
+      await showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.white,
-        builder: (context) {
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 20,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Enter service OTP',
-                  style: TextStyle(
-                    color: AppColors.textDark,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
+        builder: (sheetContext) {
+          var otpValue = '';
+          var otpInputResetVersion = 0;
+          return StatefulBuilder(
+            builder: (context, setSheetState) {
+              final canSubmit =
+                  RegExp(r'^\d{6}$').hasMatch(otpValue) && !_isStartingService;
+              Future<void> submitOtp() async {
+                if (!canSubmit || _isStartingService) return;
+                FocusScope.of(context).unfocus();
+                final otp = otpValue.trim();
+                setState(() => _isStartingService = true);
+                setSheetState(() {});
+                try {
+                  await _repository.verifyBookingStartOtpV3(
+                    bookingId: bookingId,
+                    otp: otp,
+                    requestAttemptId:
+                        BookingRequestAttemptIdController.generate(),
+                  );
+                  await _waitForBookingState(
+                    bookingId: bookingId,
+                    expectedState: CanonicalBookingStateV3.inProgress,
+                  );
+                  if (sheetContext.mounted) {
+                    Navigator.of(sheetContext).pop();
+                  }
+                  if (!mounted || !screenContext.mounted) return;
+                  AppSnackbar.showSuccess(
+                    screenContext,
+                    'Service is now in progress.',
+                  );
+                } catch (error) {
+                  if (!mounted || !screenContext.mounted) return;
+                  final message = _serviceStartErrorMessage(error);
+                  final shouldClearOtp = _shouldResetProviderOtpInput(error);
+                  if (shouldClearOtp) {
+                    otpValue = '';
+                    otpInputResetVersion += 1;
+                    if (sheetContext.mounted) {
+                      setSheetState(() {});
+                    }
+                  }
+                  AppSnackbar.showError(screenContext, message);
+                } finally {
+                  if (mounted) {
+                    setState(() => _isStartingService = false);
+                  }
+                  if (sheetContext.mounted) {
+                    setSheetState(() {});
+                  }
+                }
+              }
+
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 20,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 20,
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Ask the pet parent for the six-digit OTP shown in their confirmed booking details.',
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                    fontWeight: FontWeight.w600,
-                    height: 1.4,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: controller,
-                  keyboardType: TextInputType.number,
-                  maxLength: 6,
-                  decoration: const InputDecoration(
-                    counterText: '',
-                    hintText: 'Enter OTP',
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SecondaryButton(
-                        label: 'Cancel',
-                        onPressed: () => Navigator.of(context).pop(),
-                        size: AppButtonSize.compact,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Enter customer OTP',
+                        style: TextStyle(
+                          color: AppColors.textDark,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: GradientButton(
-                        label: 'Verify OTP',
-                        onPressed: () =>
-                            Navigator.of(context).pop(controller.text.trim()),
-                        size: AppButtonSize.compact,
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Ask the customer for the 6-digit OTP shown in their confirmed booking details. Entering the correct OTP starts the service.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                          height: 1.4,
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        key: ValueKey(
+                          'provider-otp-input-$otpInputResetVersion',
+                        ),
+                        initialValue: otpValue,
+                        keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.done,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(6),
+                        ],
+                        onChanged: (value) {
+                          otpValue = value.trim();
+                          setSheetState(() {});
+                        },
+                        onTapOutside: (_) => FocusScope.of(context).unfocus(),
+                        decoration: const InputDecoration(
+                          counterText: '',
+                          hintText: 'Enter 6-digit OTP',
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SecondaryButton(
+                              label: 'Cancel',
+                              onPressed: _isStartingService
+                                  ? null
+                                  : () => Navigator.of(context).pop(),
+                              size: AppButtonSize.compact,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: GradientButton(
+                              label: _isStartingService
+                                  ? 'Verifying...'
+                                  : 'Verify OTP',
+                              onPressed: canSubmit ? submitOtp : null,
+                              size: AppButtonSize.compact,
+                              isLoading: _isStartingService,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-            ),
+              );
+            },
           );
         },
       );
-      controller.dispose();
-      if (!mounted || confirmed == null) return;
-      final otp = confirmed.trim();
-      if (!RegExp(r'^\d{6}$').hasMatch(otp)) {
-        AppSnackbar.showError(context, 'Enter a valid 6-digit OTP.');
-        return;
-      }
-      setState(() => _isStartingService = true);
-      await _repository.verifyBookingStartOtpV3(
-        bookingId: bookingId,
-        otp: otp,
-        requestAttemptId: BookingRequestAttemptIdController.generate(),
-      );
-      if (!mounted) return;
-      AppSnackbar.showSuccess(context, 'Service started successfully.');
     } catch (error) {
       if (!mounted) return;
-      final message = '$error';
-      if (message.contains('resource-exhausted')) {
-        AppSnackbar.showError(
-          context,
-          'Too many incorrect OTP attempts. Please wait before trying again.',
-        );
-      } else if (message.contains('permission-denied')) {
-        AppSnackbar.showError(context, 'The OTP is invalid.');
-      } else if (message.contains('AFTER_SERVICE_END') ||
-          message.contains('service-start window has already passed')) {
-        AppSnackbar.showError(
-          context,
-          'This service can no longer be started because the service window has ended.',
-        );
-      } else {
-        AppSnackbar.showError(
-          context,
-          message.trim().isEmpty
-              ? 'Could not start this service right now.'
-              : message,
-        );
-      }
+      AppSnackbar.showError(context, _serviceStartErrorMessage(error));
     } finally {
       if (mounted) {
         setState(() => _isStartingService = false);
       }
     }
+  }
+
+  Future<void> _waitForBookingState({
+    required String bookingId,
+    required CanonicalBookingStateV3 expectedState,
+  }) async {
+    final current = await _repository.fetchCanonicalBooking(bookingId);
+    if (current is CanonicalBookingReadModel &&
+        current.booking.state == expectedState) {
+      return;
+    }
+    _serviceStartStateSubscription?.cancel();
+    final completer = Completer<void>();
+    _serviceStartStateSubscription = _repository
+        .watchCanonicalBooking(bookingId)
+        .listen((readModel) {
+          if (readModel is CanonicalBookingReadModel &&
+              readModel.booking.state == expectedState &&
+              !completer.isCompleted) {
+            completer.complete();
+          }
+        });
+    try {
+      await completer.future.timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      final latest = await _repository.fetchCanonicalBooking(bookingId);
+      if (latest is! CanonicalBookingReadModel ||
+          latest.booking.state != expectedState) {
+        rethrow;
+      }
+    } finally {
+      await _serviceStartStateSubscription?.cancel();
+      _serviceStartStateSubscription = null;
+    }
+  }
+
+  String _serviceStartErrorMessage(Object error) {
+    if (error is TimeoutException) {
+      return 'We verified the OTP, but the booking status is still refreshing. Please wait a moment.';
+    }
+    if (error is FirebaseFunctionsException) {
+      final code = error.code.trim().toLowerCase();
+      final message = error.message?.trim() ?? '';
+      final details = '${error.details}';
+      if (code == 'resource-exhausted' ||
+          details.contains('TEMPORARILY_LOCKED') ||
+          details.contains('ATTEMPTS_EXCEEDED')) {
+        return 'Too many incorrect attempts. Please wait before trying again.';
+      }
+      if (message.contains('already been cancelled')) {
+        return 'This booking is no longer available for service start.';
+      }
+      if (message.contains('service-start window has already passed') ||
+          details.contains('AFTER_SERVICE_END')) {
+        return 'This service can no longer be started because the scheduled service window has ended.';
+      }
+      if (message.contains('not eligible for service start') ||
+          details.contains('INVALID_STATE') ||
+          details.contains('PAYMENT_NOT_CONFIRMED')) {
+        return 'This booking is not ready for service start right now.';
+      }
+      if (message.contains('OTP verification is not available')) {
+        return 'The service OTP is not available right now. Ask the customer to reopen their confirmed booking details.';
+      }
+      if (code == 'permission-denied' ||
+          message.contains('OTP is invalid') ||
+          details.contains('INVALID_OTP')) {
+        return 'The OTP is incorrect. Ask the customer to confirm the code and try again.';
+      }
+      if (code == 'unavailable' ||
+          code == 'deadline-exceeded' ||
+          code == 'internal' ||
+          message.contains('network')) {
+        return 'We could not verify the OTP right now. Please try again.';
+      }
+    }
+    final text = '$error';
+    if (text.contains('AFTER_SERVICE_END') ||
+        text.contains('service-start window has already passed')) {
+      return 'This service can no longer be started because the scheduled service window has ended.';
+    }
+    if (text.contains('resource-exhausted')) {
+      return 'Too many incorrect attempts. Please wait before trying again.';
+    }
+    if (text.contains('permission-denied')) {
+      return 'The OTP is incorrect. Ask the customer to confirm the code and try again.';
+    }
+    if (text.contains('network-request-failed') ||
+        text.contains('deadline-exceeded') ||
+        text.contains('unavailable')) {
+      return 'We could not verify the OTP right now. Please try again.';
+    }
+    return 'We could not verify the OTP right now. Please try again.';
+  }
+
+  bool _shouldResetProviderOtpInput(Object error) {
+    if (error is FirebaseFunctionsException) {
+      final code = error.code.trim().toLowerCase();
+      final message = error.message?.trim() ?? '';
+      final details = '${error.details}';
+      return code == 'permission-denied' ||
+          message.contains('OTP is invalid') ||
+          details.contains('INVALID_OTP');
+    }
+    final text = '$error';
+    return text.contains('permission-denied') || text.contains('INVALID_OTP');
   }
 
   Future<void> _startCancellationFlow({
@@ -816,15 +1114,92 @@ class _CanonicalBookingDetailScreenState
         return timingBand.replaceAll('_', ' ');
     }
   }
+
+  Future<void> _openBookingChat(String bookingId) async {
+    if (_isOpeningChat) return;
+    setState(() => _isOpeningChat = true);
+    try {
+      if (widget.onOpenChatOverride != null) {
+        await widget.onOpenChatOverride!(bookingId);
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: bookingId)),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isOpeningChat = false);
+      }
+    }
+  }
+
+  Future<void> _openPhone(String phone) async {
+    final uri = Uri(scheme: 'tel', path: phone.trim());
+    final canLaunch = widget.canLaunchUrlOverride == null
+        ? await canLaunchUrl(uri)
+        : await widget.canLaunchUrlOverride!(uri);
+    if (!canLaunch) {
+      if (!mounted) return;
+      AppSnackbar.showError(context, 'Could not open the phone dialer.');
+      return;
+    }
+    final opened = widget.launchUrlOverride == null
+        ? await launchUrl(uri)
+        : await widget.launchUrlOverride!(uri);
+    if (!opened && mounted) {
+      AppSnackbar.showError(context, 'Could not open the phone dialer.');
+    }
+  }
+
+  Future<void> _openMap(CanonicalBookingPrivateParticipantsData details) async {
+    final latitude = details.latitude;
+    final longitude = details.longitude;
+    final address = details.exactAddress.trim();
+    final query = latitude != null && longitude != null
+        ? '$latitude,$longitude'
+        : address;
+    if (query.isEmpty) {
+      if (!mounted) return;
+      AppSnackbar.showError(
+        context,
+        'Location is not available for this booking.',
+      );
+      return;
+    }
+    final uri = Uri.parse(
+      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}',
+    );
+    final canLaunch = widget.canLaunchUrlOverride == null
+        ? await canLaunchUrl(uri)
+        : await widget.canLaunchUrlOverride!(uri);
+    if (!canLaunch) {
+      if (!mounted) return;
+      AppSnackbar.showError(context, 'Could not open maps for this booking.');
+      return;
+    }
+    final opened = widget.launchUrlOverride == null
+        ? await launchUrl(uri, mode: LaunchMode.externalApplication)
+        : await widget.launchUrlOverride!(
+            uri,
+            mode: LaunchMode.externalApplication,
+          );
+    if (!opened && mounted) {
+      AppSnackbar.showError(context, 'Could not open maps for this booking.');
+    }
+  }
 }
 
 class _HeroCard extends StatelessWidget {
-  const _HeroCard({required this.booking});
+  const _HeroCard({required this.booking, required this.currentUid});
 
   final CanonicalBookingDocumentV3 booking;
+  final String currentUid;
 
   @override
   Widget build(BuildContext context) {
+    final isParent = booking.parentId == currentUid;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -872,7 +1247,9 @@ class _HeroCard extends StatelessWidget {
                 ? 'The provider has started this service. OTP reuse is disabled and cancellation is no longer available.'
                 : booking.state == CanonicalBookingStateV3.noShow
                 ? 'This booking was marked as no-show because the service OTP was not entered before the service window ended.'
-                : 'OTP, contact access, and booking chat are available only after Pettxo confirms payment in Firestore.',
+                : isParent
+                ? 'Your payment is confirmed. Use this screen for your service OTP, provider contact, directions, and booking chat.'
+                : 'Paid booking details, customer contact access, and booking chat are available here after payment confirmation.',
             style: TextStyle(
               color: AppColors.textGrey.withValues(alpha: 0.92),
               height: 1.45,
@@ -890,36 +1267,44 @@ class _PrivateSection extends StatelessWidget {
     required this.booking,
     required this.otpPrivateData,
     required this.participantPrivateData,
-    required this.isLoading,
-    required this.errorMessage,
+    required this.isOtpLoading,
+    required this.otpErrorMessage,
+    required this.participantErrorMessage,
     required this.currentUid,
+    required this.onRetry,
+    required this.onCallPhone,
+    required this.onOpenMap,
   });
 
   final CanonicalBookingDocumentV3 booking;
   final CanonicalBookingPrivateData? otpPrivateData;
   final CanonicalBookingPrivateParticipantsData? participantPrivateData;
-  final bool isLoading;
-  final String? errorMessage;
+  final bool isOtpLoading;
+  final String? otpErrorMessage;
+  final String? participantErrorMessage;
   final String currentUid;
+  final VoidCallback onRetry;
+  final Future<void> Function(String phone) onCallPhone;
+  final Future<void> Function(CanonicalBookingPrivateParticipantsData details)
+  onOpenMap;
 
   @override
   Widget build(BuildContext context) {
     final isParent = booking.parentId == currentUid;
-    if (isLoading) {
-      return const _InfoCard(
-        title: 'Private access',
-        rows: [_InfoRow('Status', 'Loading paid-only details...')],
-      );
-    }
-    if (errorMessage != null && errorMessage!.trim().isNotEmpty) {
+    final otpDetails = otpPrivateData;
+    final participantDetails = participantPrivateData;
+    final hasOtpError =
+        otpErrorMessage != null && otpErrorMessage!.trim().isNotEmpty;
+    final hasParticipantError =
+        participantErrorMessage != null &&
+        participantErrorMessage!.trim().isNotEmpty;
+    if (otpDetails == null &&
+        participantDetails == null &&
+        !isOtpLoading &&
+        !hasOtpError &&
+        !hasParticipantError) {
       return _InfoCard(
-        title: 'Private access',
-        rows: [_InfoRow('Status', errorMessage!)],
-      );
-    }
-    if (otpPrivateData == null && participantPrivateData == null) {
-      return _InfoCard(
-        title: 'Private access',
+        title: isParent ? 'Customer service access' : 'Paid booking details',
         rows: [
           _InfoRow(
             'Status',
@@ -930,42 +1315,101 @@ class _PrivateSection extends StatelessWidget {
         ],
       );
     }
-    final otpDetails = otpPrivateData;
-    final participantDetails = participantPrivateData;
-    return _InfoCard(
-      title: 'Paid-only details',
-      rows: [
-        if (isParent &&
-            booking.state == CanonicalBookingStateV3.confirmed &&
-            otpDetails?.isOtpActive == true)
+    final rows = <Widget>[
+      if (isParent) ...[
+        if (booking.state == CanonicalBookingStateV3.inProgress ||
+            booking.lifecycle.otpEnteredAt != null ||
+            otpDetails?.otpState.toUpperCase() == 'USED')
+          const _InfoRow(
+            'Service status',
+            'Service started. Your booking OTP has already been used for this booking.',
+          )
+        else if (otpDetails?.isOtpActive == true) ...[
           _InfoRow('Service OTP', otpDetails!.parentOtpCode),
-        if (participantDetails?.hasPhoneNumber == true)
-          _ActionInfoRow(
-            label: 'Phone',
-            value: participantDetails!.phoneNumber,
-            actionLabel: 'Call',
-            onTap: () => _launchPhone(context, participantDetails.phoneNumber),
+          const _InfoRow(
+            'How to use it',
+            'Share this 6-digit OTP with the provider when the service begins.',
           ),
-        if (participantDetails?.hasAddress == true)
-          _InfoRow('Address', participantDetails!.exactAddress),
-        _InfoRow(
-          'Chat',
-          booking.privacy.chatUnlockedAt != null
-              ? 'Booking chat is unlocked inside Pettxo.'
-              : 'Chat is still locked.',
-        ),
+        ] else if (isOtpLoading)
+          const _InfoRow('Service OTP', 'Loading your service OTP...')
+        else if (hasOtpError)
+          _InfoRow(
+            'Service OTP',
+            'Your service OTP could not be loaded right now.',
+          ),
       ],
+      if (!isParent && participantDetails?.hasPhoneNumber == true)
+        _InfoRow('Phone', participantDetails!.phoneNumber),
+      if (participantDetails?.hasAddress == true)
+        _ActionInfoRow(
+          label: 'Service address',
+          value: participantDetails!.exactAddress,
+          actionLabel: 'Get directions',
+          onTap: () => onOpenMap(participantDetails),
+        )
+      else if (hasParticipantError)
+        _InfoRow(
+          'Service address',
+          'Directions could not be loaded right now.',
+        ),
+      if (participantDetails?.hasProviderPhoneNumber == true)
+        _ActionInfoRow(
+          label: 'Provider contact',
+          value: participantDetails!.providerPhoneNumber,
+          actionLabel: 'Call provider',
+          onTap: () => onCallPhone(participantDetails.providerPhoneNumber),
+        )
+      else if (hasParticipantError)
+        _InfoRow(
+          'Provider contact',
+          'Provider phone could not be loaded right now.',
+        ),
+    ];
+    final needsRetry = hasOtpError || hasParticipantError;
+    return _InfoCard(
+      title: isParent ? 'Customer service access' : 'Paid booking details',
+      rows: rows,
+      footer: needsRetry
+          ? SecondaryButton(
+              label: 'Retry details',
+              onPressed: onRetry,
+              size: AppButtonSize.compact,
+            )
+          : null,
     );
   }
+}
 
-  Future<void> _launchPhone(BuildContext context, String phone) async {
-    final uri = Uri(scheme: 'tel', path: phone.trim());
-    if (!await canLaunchUrl(uri)) {
-      if (!context.mounted) return;
-      AppSnackbar.showError(context, 'Could not open the phone dialer.');
-      return;
-    }
-    await launchUrl(uri);
+class _ProviderServiceStartSection extends StatelessWidget {
+  const _ProviderServiceStartSection({
+    required this.isVerifying,
+    required this.onEnterOtp,
+  });
+
+  final bool isVerifying;
+  final VoidCallback? onEnterOtp;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InfoCard(
+      title: 'Service start',
+      rows: const [
+        _InfoRow(
+          'OTP required',
+          'Ask the customer for their 6-digit service OTP when you begin the booking.',
+        ),
+        _InfoRow(
+          'What happens next',
+          'Entering the correct OTP starts the service and moves this booking to Service in progress.',
+        ),
+      ],
+      footer: GradientButton(
+        label: isVerifying ? 'Verifying...' : 'Enter customer OTP',
+        onPressed: onEnterOtp,
+        size: AppButtonSize.compact,
+        isLoading: isVerifying,
+      ),
+    );
   }
 }
 
@@ -1230,10 +1674,17 @@ class _CancellationStatusSection extends StatelessWidget {
 }
 
 class _ChatSection extends StatelessWidget {
-  const _ChatSection({required this.bookingId, required this.isUnlocked});
+  const _ChatSection({
+    required this.isParent,
+    required this.isUnlocked,
+    required this.isOpening,
+    required this.onOpenChat,
+  });
 
-  final String bookingId;
+  final bool isParent;
   final bool isUnlocked;
+  final bool isOpening;
+  final VoidCallback? onOpenChat;
 
   @override
   Widget build(BuildContext context) {
@@ -1241,25 +1692,22 @@ class _ChatSection extends StatelessWidget {
       title: 'Booking chat',
       rows: [
         _InfoRow(
-          'Notice',
-          'Bookings made outside Pettxo are not covered by OTP verification, dispute protection, or refunds.',
+          'About',
+          'Use this chat to coordinate details for this booking.',
         ),
       ],
       footer: isUnlocked
           ? GradientButton(
-              label: 'Open booking chat',
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ChatDetailScreen(chatId: bookingId),
-                  ),
-                );
-              },
+              label: isOpening
+                  ? 'Opening...'
+                  : (isParent ? 'Message provider' : 'Message customer'),
+              onPressed: isOpening ? null : onOpenChat,
               size: AppButtonSize.compact,
             )
-          : const SecondaryButton(
-              label: 'Chat unlocks after confirmation',
+          : SecondaryButton(
+              label: isParent
+                  ? 'Message provider after confirmation'
+                  : 'Message customer after confirmation',
               onPressed: null,
               size: AppButtonSize.compact,
             ),

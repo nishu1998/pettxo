@@ -48,11 +48,7 @@ class ServiceSlotModel {
 
   bool get isOpen => isBookable && status == 'open' && !isFull;
 
-  bool get isTooSoon {
-    return startAt.difference(DateTime.now()) < const Duration(hours: 1);
-  }
-
-  bool get canRequest => isOpen && !isTooSoon;
+  bool get canRequest => isOpen;
 
   int get remainingCapacity => (capacity - acceptedCount).clamp(0, capacity);
 

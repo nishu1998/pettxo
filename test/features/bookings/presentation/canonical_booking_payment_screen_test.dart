@@ -1,0 +1,579 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:pettexo/core/widgets/app_buttons.dart';
+import 'package:pettexo/core/widgets/legal_consent_checkbox.dart';
+import 'package:pettexo/features/bookings/data/repositories/booking_repository.dart';
+import 'package:pettexo/features/bookings/domain/models/booking_document_v3.dart';
+import 'package:pettexo/features/bookings/domain/models/booking_payment_order.dart';
+import 'package:pettexo/features/bookings/domain/models/booking_read_model.dart';
+import 'package:pettexo/features/bookings/domain/models/booking_v3_models.dart';
+import 'package:pettexo/features/bookings/presentation/screens/canonical_booking_payment_screen.dart';
+import 'package:pettexo/features/offers/data/services/offer_service.dart';
+import 'package:pettexo/features/offers/domain/models/claimed_offer.dart';
+import 'package:pettexo/features/offers/domain/models/offer_types.dart';
+
+void main() {
+  late _FakeBookingRepository bookingRepository;
+  late CanonicalBookingDocumentV3 booking;
+  late List<ClaimedOffer> offers;
+
+  setUp(() {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    bookingRepository = _FakeBookingRepository();
+    booking = _buildBookingFixture();
+    offers = const <ClaimedOffer>[];
+    bookingRepository.emitBooking(booking);
+  });
+
+  Future<OfferPreviewResult> previewOfferForBooking({
+    required String claimedOfferId,
+    required double bookingAmount,
+    String? serviceId,
+    String? category,
+  }) async {
+    return OfferPreviewResult(
+      ok: true,
+      isValid: true,
+      discountAmount: 50,
+      finalAmount: 200,
+      message: 'SAVE50 applied.',
+      claimedOfferId: claimedOfferId,
+      campaignId: 'campaign-1',
+    );
+  }
+
+  Future<void> pumpScreen(WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CanonicalBookingPaymentScreen(
+          bookingId: booking.bookingIdForTest,
+          serviceName: booking.service.serviceTitle,
+          providerName: booking.participants.provider.displayName,
+          serviceImageUrl: '',
+          bookingRepository: bookingRepository,
+          claimedOffersStream: Stream.value(offers),
+          previewOfferForBooking: previewOfferForBooking,
+        ),
+      ),
+    );
+  }
+
+  void useTallViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1;
+  }
+
+  testWidgets(
+    'loads authoritative pricing on open and hides internal allocation rows',
+    (tester) async {
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      expect(bookingRepository.previewRequests, ['']);
+      expect(_textFinder('PRICE DETAILS'), findsOneWidget);
+      expect(_textFinder('Price details'), findsOneWidget);
+      expect(_textFinder('Service amount'), findsOneWidget);
+      expect(_textFinder('Total payable'), findsWidgets);
+      expect(_textFinder('₹250.00'), findsWidgets);
+      expect(_textFinder('Offer discount'), findsOneWidget);
+      expect(_textFinder('Time remaining'), findsOneWidget);
+      expect(find.textContaining('Provider payout'), findsNothing);
+      expect(find.textContaining('Pettxo'), findsNothing);
+      expect(find.text('Calculating your total...'), findsNothing);
+    },
+  );
+
+  testWidgets('shows retry state when pricing preview fails', (tester) async {
+    bookingRepository.previewErrorByOfferId[''] =
+        const CanonicalPaymentException(
+          code: CanonicalPaymentFailureCode.bookingNotPayable,
+          message: 'Not payable',
+        );
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+
+    expect(_textFinder('We couldn’t load the payment total.'), findsOneWidget);
+    expect(_textFinder('Retry'), findsOneWidget);
+  });
+
+  testWidgets(
+    'payment stays disabled until cancellation policy consent is checked',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.byType(LegalConsentCheckbox, skipOffstage: false),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(Checkbox, skipOffstage: false), findsOneWidget);
+      expect(_gradientButtonFinder('Pay ₹250.00'), findsNothing);
+      expect(_secondaryButtonFinder('Pay ₹250.00'), findsOneWidget);
+
+      await tester.tap(find.byType(Checkbox, skipOffstage: false));
+      await tester.pumpAndSettle();
+
+      expect(_gradientButtonFinder('Pay ₹250.00'), findsOneWidget);
+      expect(_secondaryButtonFinder('Pay ₹250.00'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'payment remains disabled after consent when the payment window is expired',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+        payDeadlineAt: DateTime.now().toUtc().subtract(
+          const Duration(minutes: 1),
+        ),
+      );
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.byType(LegalConsentCheckbox, skipOffstage: false),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(Checkbox, skipOffstage: false));
+      await tester.pumpAndSettle();
+
+      expect(_gradientButtonFinder('Pay ₹250.00'), findsNothing);
+      expect(_secondaryButtonFinder('Payment window expired'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'coupon picker shows empty state when no eligible coupons are available',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+      offers = [
+        _buildClaimedOffer(
+          id: 'offer-ineligible',
+          couponCode: 'SAVE50',
+          discountValue: 50,
+          minBookingAmount: 400,
+        ),
+      ];
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(_secondaryButtonFinder('My offers'), 300);
+      await tester.tap(_secondaryButtonFinder('My offers'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('No coupons are currently available for this booking.'),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
+    'applying a coupon refreshes authoritative pricing and updates coupon state',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      const claimedOfferId = 'offer-1';
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+      bookingRepository.previewResultsByOfferId[claimedOfferId] =
+          _previewResult(
+            serviceSubtotalPaise: 25000,
+            couponDiscountPaise: 5000,
+            customerPaidPaise: 20000,
+            claimedOfferId: claimedOfferId,
+          );
+      offers = [
+        _buildClaimedOffer(
+          id: claimedOfferId,
+          couponCode: 'SAVE50',
+          discountValue: 50,
+        ),
+      ];
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(_secondaryButtonFinder('My offers'), 300);
+      await tester.tap(_secondaryButtonFinder('My offers'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('SAVE50'), findsOneWidget);
+      await tester.tap(find.text('SAVE50'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(bookingRepository.previewRequests, ['', claimedOfferId]);
+      expect(find.text('Offer discount'), findsOneWidget);
+      expect(find.text('-₹50.00'), findsOneWidget);
+      expect(find.text('₹200.00'), findsWidgets);
+      expect(find.text('My offers'), findsWidgets);
+      expect(find.text('Remove offer'), findsOneWidget);
+    },
+  );
+}
+
+Finder _secondaryButtonFinder(String label) {
+  return find.byWidgetPredicate(
+    (widget) => widget is SecondaryButton && widget.label == label,
+  );
+}
+
+Finder _gradientButtonFinder(String label) {
+  return find.byWidgetPredicate(
+    (widget) => widget is GradientButton && widget.label == label,
+  );
+}
+
+Finder _textFinder(String text) {
+  return find.byWidgetPredicate(
+    (widget) => widget is Text && widget.data == text,
+    skipOffstage: false,
+  );
+}
+
+class _FakeBookingRepository extends BookingRepository {
+  BookingReadModel? _booking;
+  final Map<String, CanonicalPaymentPricingPreviewResult>
+  previewResultsByOfferId = <String, CanonicalPaymentPricingPreviewResult>{};
+  final Map<String, Object> previewErrorByOfferId = <String, Object>{};
+  final List<String> previewRequests = <String>[];
+
+  void emitBooking(CanonicalBookingDocumentV3 booking) {
+    _booking = CanonicalBookingReadModel(
+      documentId: booking.bookingIdForTest,
+      booking: booking,
+    );
+  }
+
+  @override
+  Stream<BookingReadModel?> watchCanonicalBooking(String bookingId) =>
+      Stream.value(_booking);
+
+  @override
+  Stream<BookingReadModel?> watchCanonicalBookingConfirmation(
+    String bookingId,
+  ) => const Stream<BookingReadModel?>.empty();
+
+  @override
+  Stream<CanonicalPaymentAttemptReadModel?> watchPaymentAttempt({
+    required String bookingId,
+    required String paymentAttemptId,
+  }) => const Stream<CanonicalPaymentAttemptReadModel?>.empty();
+
+  @override
+  Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
+    required String bookingId,
+    String? claimedOfferId,
+  }) async {
+    final key = claimedOfferId?.trim() ?? '';
+    previewRequests.add(key);
+    final error = previewErrorByOfferId[key];
+    if (error is CanonicalPaymentException) throw error;
+    if (error != null) throw error;
+    final result = previewResultsByOfferId[key];
+    if (result == null) {
+      throw StateError('Missing preview result for "$key".');
+    }
+    return result;
+  }
+}
+
+CanonicalBookingDocumentV3 _buildBookingFixture() {
+  final base = DateTime.now().toUtc().add(const Duration(hours: 2));
+  final scheduledStartAt = base.add(const Duration(days: 1));
+  final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
+  final respondedAt = base;
+  final payDeadlineAt = base.add(const Duration(minutes: 30));
+
+  return CanonicalBookingDocumentV3(
+    schemaVersion: canonicalBookingSchemaVersion,
+    bookingModelVersion: canonicalBookingModelVersion,
+    documentFormat: canonicalBookingDocumentFormat,
+    bookingType: BookingV3Type.slot,
+    state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+    participants: const CanonicalBookingParticipantsV3(
+      parent: CanonicalPublicParentParticipantV3(
+        parentId: 'parent-1',
+        displayFirstName: 'Nisha',
+        lastInitial: 'G',
+        photoUrl: '',
+        completedBookingCount: 4,
+        rating: 4.8,
+      ),
+      provider: CanonicalPublicProviderParticipantV3(
+        providerId: 'provider-1',
+        displayName: 'Prakash Gautam',
+        username: 'prakashg',
+        photoUrl: '',
+        completedBookingCount: 12,
+        rating: 4.9,
+      ),
+    ),
+    service: const BookingServiceSnapshotV3(
+      serviceId: 'service-1',
+      providerId: 'provider-1',
+      serviceTitle: 'Daily Dog Walk',
+      animalType: 'Dog',
+      category: 'Walking',
+      bookingType: BookingV3Type.slot,
+      timezone: 'Asia/Kolkata',
+      serviceUnitPricePaise: 25000,
+      durationMinutes: 60,
+      pricePerNightPaise: null,
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      checkInDateTime: null,
+      checkOutDateTime: null,
+      capacitySnapshot: 1,
+      serviceLocationType: 'provider_location',
+      currency: 'INR',
+      snapshotVersion: 1,
+    ),
+    schedule: CanonicalSlotBookingScheduleV3(
+      serviceAnchorAt: scheduledStartAt,
+      timezone: 'Asia/Kolkata',
+      slots: [
+        CanonicalBookingSlotSegmentV3(
+          slotId: 'slot-1',
+          dateKey: '2026-07-27',
+          startAt: scheduledStartAt,
+          endAt: scheduledEndAt,
+          durationMinutes: 60,
+          unitPricePaise: 25000,
+          serviceId: 'service-1',
+          providerId: 'provider-1',
+          timezone: 'Asia/Kolkata',
+        ),
+      ],
+      slotCount: 1,
+      scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
+      totalDurationMinutes: 60,
+    ),
+    lifecycle: CanonicalBookingLifecycleV3(
+      requestedAt: DateTime.utc(2026, 7, 26, 10),
+      timerStartsAt: DateTime.utc(2026, 7, 26, 10, 5),
+      wasQueuedOutsideWorkingHours: false,
+      notifiedAt: DateTime.utc(2026, 7, 26, 10, 6),
+      acceptDeadlineAt: DateTime.utc(2026, 7, 26, 11),
+      viewedByProviderAt: DateTime.utc(2026, 7, 26, 10, 15),
+      respondedAt: respondedAt,
+      providerResponseType: ProviderResponseTypeV3.accept,
+      responseSeconds: 3300,
+      payDeadlineAt: payDeadlineAt,
+      paymentStartedAt: null,
+      paidAt: null,
+      paymentSeconds: null,
+      otpGeneratedAt: null,
+      otpEnteredAt: null,
+      noShowAt: null,
+      serviceEndedAt: null,
+      disputeDeadlineAt: null,
+      completedAt: null,
+      reviewWindowEndsAt: null,
+      finalizedAt: null,
+      cancelledAt: null,
+    ),
+    payment: const CanonicalBookingPaymentV3(
+      status: 'awaiting_customer_payment',
+      razorpayOrderId: '',
+      razorpayPaymentId: '',
+      razorpayRefundId: '',
+      paymentAttemptId: '',
+      orderCreatedAt: null,
+      paymentStartedAt: null,
+      capturedAt: null,
+      verifiedAt: null,
+      verificationSource: '',
+      webhookEventIds: <String>[],
+      failureCode: '',
+      failureMessage: '',
+    ),
+    financials: null,
+    privacy: const CanonicalBookingPrivacyV3(
+      isPaidContactUnlocked: false,
+      contactUnlockedAt: null,
+      chatUnlockedAt: null,
+      otpVisibleToParent: false,
+      exactAddressUnlocked: false,
+      privacyVersion: 1,
+      privateParticipantsRefPath: 'bookingPrivateParticipants/booking-1',
+    ),
+    cancellation: const CanonicalBookingCancellationV3(
+      cancelledAt: null,
+      cancelledBy: null,
+      cancelReasonCode: '',
+      cancelReasonText: '',
+      hoursBeforeServiceAtCancel: null,
+      refundBand: '',
+      refundBasisPoints: null,
+      refundAmountPaise: 0,
+      providerCompensationPaise: 0,
+      pettxoRetainedPaise: 0,
+      cancellationType: null,
+    ),
+    dispute: const CanonicalBookingDisputeV3(
+      disputeId: '',
+      status: 'none',
+      raisedAt: null,
+      raisedBy: null,
+      reasonCode: '',
+      description: '',
+      evidenceRefs: <String>[],
+      resolvedAt: null,
+      resolvedBy: null,
+      resolution: '',
+      resolutionVersion: 0,
+      financialAdjustmentId: '',
+      refundInstructionId: '',
+      customerRefundPaise: 0,
+      providerReleasePaise: 0,
+    ),
+    payout: const CanonicalBookingPayoutV3(
+      status: 'not_eligible',
+      holdReason: '',
+      eligibleAt: null,
+      readyAt: null,
+      processingAt: null,
+      releasedAt: null,
+      failedAt: null,
+      providerPayoutPaise: 0,
+      priorPaidPaise: 0,
+      remainingPayablePaise: 0,
+      payoutReference: '',
+      externalTransactionId: '',
+      failureCode: '',
+      retryCount: 0,
+    ),
+    statistics: const CanonicalBookingStatisticsV3(
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      nights: null,
+    ),
+    audit: const CanonicalBookingAuditV3(
+      createdBy: BookingActorV3.system,
+      lastUpdatedBy: BookingActorV3.system,
+      source: 'test',
+    ),
+    parentId: 'parent-1',
+    providerId: 'provider-1',
+    serviceId: 'service-1',
+    stateQueryValue: CanonicalBookingStateV3.acceptedAwaitingPayment,
+    bookingTypeQueryValue: BookingV3Type.slot,
+    serviceAnchorAt: scheduledStartAt,
+    scheduledStartAt: scheduledStartAt,
+    checkInDateTime: null,
+    acceptDeadlineAt: DateTime.utc(2026, 7, 26, 11),
+    payDeadlineAt: payDeadlineAt,
+    completedAt: null,
+    customerId: 'parent-1',
+    serviceOwnerId: 'provider-1',
+    createdAt: DateTime.utc(2026, 7, 26, 10),
+    updatedAt: DateTime.utc(2026, 7, 26, 12, 5),
+  );
+}
+
+CanonicalPaymentPricingPreviewResult _previewResult({
+  required int serviceSubtotalPaise,
+  required int couponDiscountPaise,
+  required int customerPaidPaise,
+  String claimedOfferId = '',
+  DateTime? payDeadlineAt,
+}) {
+  return CanonicalPaymentPricingPreviewResult(
+    bookingId: 'booking-1',
+    pricingSummary: CanonicalPaymentPricingSummary(
+      serviceSubtotalPaise: serviceSubtotalPaise,
+      couponDiscountPaise: couponDiscountPaise,
+      customerPaidPaise: customerPaidPaise,
+      providerPayoutPaise: 20000,
+      currency: 'INR',
+    ),
+    payDeadlineAt:
+        payDeadlineAt ??
+        DateTime.now().toUtc().add(const Duration(minutes: 30)),
+    claimedOfferId: claimedOfferId,
+    idempotentReplay: false,
+  );
+}
+
+ClaimedOffer _buildClaimedOffer({
+  required String id,
+  required String couponCode,
+  required double discountValue,
+  double? minBookingAmount,
+}) {
+  return ClaimedOffer(
+    id: id,
+    offerId: 'campaign-1',
+    couponCode: couponCode,
+    discountType: OfferDiscountType.flat,
+    discountValue: discountValue,
+    maxDiscountAmount: 50,
+    minBookingAmount: minBookingAmount ?? 0,
+    claimedAt: DateTime.utc(2026, 7, 26, 11),
+    validUntil: DateTime.utc(2026, 8, 1),
+    usageLimit: 1,
+    usedCount: 0,
+    status: ClaimedOfferStatus.claimed,
+    sourceDisplayType: OfferDisplayType.offerWall,
+    campaignSnapshot: const <String, dynamic>{
+      'title': 'Save on this walk',
+      'description': 'A simple coupon for testing.',
+      'serviceIds': <String>['service-1'],
+      'providerIds': <String>['provider-1'],
+      'categoryRestrictions': <String>['Walking'],
+    },
+  );
+}
+
+extension on CanonicalBookingDocumentV3 {
+  String get bookingIdForTest => 'booking-1';
+}

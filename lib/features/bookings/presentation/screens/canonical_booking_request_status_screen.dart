@@ -20,6 +20,7 @@ class CanonicalBookingRequestStatusScreen extends StatefulWidget {
   final String providerName;
   final String serviceImageUrl;
   final bool exitToBookingsOnClose;
+  final BookingRepository? bookingRepository;
 
   const CanonicalBookingRequestStatusScreen({
     super.key,
@@ -29,6 +30,7 @@ class CanonicalBookingRequestStatusScreen extends StatefulWidget {
     required this.providerName,
     required this.serviceImageUrl,
     this.exitToBookingsOnClose = false,
+    this.bookingRepository,
   });
 
   @override
@@ -38,7 +40,8 @@ class CanonicalBookingRequestStatusScreen extends StatefulWidget {
 
 class _CanonicalBookingRequestStatusScreenState
     extends State<CanonicalBookingRequestStatusScreen> {
-  final BookingRepository _bookingRepository = BookingRepository();
+  late final BookingRepository _bookingRepository =
+      widget.bookingRepository ?? BookingRepository();
   Timer? _ticker;
   bool _isCancelling = false;
 
@@ -200,14 +203,13 @@ class _CanonicalBookingRequestStatusScreenState
   _RequestStatusViewData _fromCanonicalBooking(
     CanonicalBookingDocumentV3 booking,
   ) {
-    final state = booking.state;
+    final state = _effectiveDisplayState(booking);
     switch (state) {
       case CanonicalBookingStateV3.requested:
         return _RequestStatusViewData(
           stateLabel: 'Requested',
           title: 'Your request has been created.',
-          subtitle:
-              'Nothing has been charged. We are waiting for the provider response window to begin.',
+          subtitle: 'We are waiting for the provider response window to begin.',
           color: const Color(0xFFFFB36B),
           canCancel: true,
           timerStartsAtLabel: booking.lifecycle.timerStartsAt == null
@@ -218,8 +220,7 @@ class _CanonicalBookingRequestStatusScreenState
         return _RequestStatusViewData(
           stateLabel: 'Pending provider',
           title: 'Waiting for provider response.',
-          subtitle:
-              'Nothing has been charged while the provider reviews your request.',
+          subtitle: 'The provider is reviewing your request.',
           color: AppColors.primary,
           canCancel: true,
           countdownLabel: _remainingLabel(booking.lifecycle.acceptDeadlineAt),
@@ -234,7 +235,7 @@ class _CanonicalBookingRequestStatusScreenState
           subtitle:
               'Pay within the active window to confirm availability and unlock the booking.',
           color: Color(0xFF2F9E44),
-          countdownLabel: _remainingLabel(booking.lifecycle.payDeadlineAt),
+          countdownLabel: 'Response window ended.',
           developmentNote: hasResumableAttempt
               ? 'Your payment state will be confirmed from Firestore after checkout completes.'
               : 'Your payment window is active. Complete payment to confirm availability.',
@@ -261,11 +262,26 @@ class _CanonicalBookingRequestStatusScreenState
           color: Color(0xFF6B7280),
         );
       case CanonicalBookingStateV3.paymentExpired:
+        if (booking.state == CanonicalBookingStateV3.acceptedAwaitingPayment ||
+            (!_isAvailabilityLostAfterCapture(booking) &&
+                !_isPaymentFailureAfterCapture(booking))) {
+          return const _RequestStatusViewData(
+            stateLabel: 'Payment window expired',
+            title: 'Payment window expired',
+            subtitle:
+                'You did not complete payment within the active payment window. This booking request has expired.',
+            color: Color(0xFF6B7280),
+            countdownLabel: 'Response window ended.',
+            developmentNote:
+                'Payment was not completed within the active payment window. This booking request has expired.',
+          );
+        }
         return _RequestStatusViewData(
           stateLabel: 'Payment expired',
           title: _terminalTitleForBooking(booking),
           subtitle: _terminalSubtitleForBooking(booking),
           color: Color(0xFF6B7280),
+          countdownLabel: 'Response window ended.',
         );
       default:
         return _fromInitialResult(widget.initialResult);
@@ -274,7 +290,8 @@ class _CanonicalBookingRequestStatusScreenState
 
   bool _canOpenCanonicalPayment(CanonicalBookingDocumentV3? booking) {
     if (booking == null ||
-        booking.state != CanonicalBookingStateV3.acceptedAwaitingPayment) {
+        _effectiveDisplayState(booking) !=
+            CanonicalBookingStateV3.acceptedAwaitingPayment) {
       return false;
     }
     final deadline = booking.lifecycle.payDeadlineAt;
@@ -294,7 +311,9 @@ class _CanonicalBookingRequestStatusScreenState
           title: result.wasQueuedOutsideWorkingHours
               ? 'Your request is queued for working hours.'
               : 'Your request has been sent.',
-          subtitle: 'Nothing has been charged.',
+          subtitle: result.wasQueuedOutsideWorkingHours
+              ? 'We are waiting for the provider response window to begin.'
+              : 'The provider can review your request now.',
           color: AppColors.primary,
           canCancel: true,
           timerStartsAtLabel: result.timerStartsAt == null
@@ -305,7 +324,7 @@ class _CanonicalBookingRequestStatusScreenState
         return _RequestStatusViewData(
           stateLabel: 'Pending provider',
           title: 'Waiting for provider response.',
-          subtitle: 'Nothing has been charged.',
+          subtitle: 'The provider is reviewing your request.',
           color: AppColors.primary,
           canCancel: true,
           countdownLabel: _remainingLabel(result.acceptDeadlineAt),
@@ -314,7 +333,7 @@ class _CanonicalBookingRequestStatusScreenState
         return const _RequestStatusViewData(
           stateLabel: 'Request sent',
           title: 'Your request has been sent.',
-          subtitle: 'Nothing has been charged.',
+          subtitle: 'The provider will review your request shortly.',
           color: AppColors.primary,
         );
     }
@@ -323,7 +342,7 @@ class _CanonicalBookingRequestStatusScreenState
   String? _remainingLabel(DateTime? deadline) {
     if (deadline == null) return null;
     final remaining = deadline.difference(DateTime.now());
-    if (remaining.isNegative) return 'Response window ended';
+    if (remaining.isNegative) return 'Response window ended.';
     final hours = remaining.inHours;
     final minutes = remaining.inMinutes.remainder(60);
     final seconds = remaining.inSeconds.remainder(60);
@@ -331,6 +350,18 @@ class _CanonicalBookingRequestStatusScreenState
       return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')} remaining';
     }
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')} remaining';
+  }
+
+  CanonicalBookingStateV3 _effectiveDisplayState(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final deadline = booking.lifecycle.payDeadlineAt;
+    if (booking.state == CanonicalBookingStateV3.acceptedAwaitingPayment &&
+        deadline != null &&
+        !deadline.isAfter(DateTime.now())) {
+      return CanonicalBookingStateV3.paymentExpired;
+    }
+    return booking.state;
   }
 
   String _terminalTitleForBooking(CanonicalBookingDocumentV3 booking) {
@@ -368,7 +399,7 @@ class _CanonicalBookingRequestStatusScreenState
       case CanonicalBookingStateV3.declined:
       case CanonicalBookingStateV3.expired:
       case CanonicalBookingStateV3.cancelledByParent:
-        return 'Nothing has been charged.';
+        return '';
       case CanonicalBookingStateV3.paymentExpired:
         if (_isAvailabilityLostAfterCapture(booking)) {
           return 'Any captured payment will follow the canonical refund and reconciliation flow.';
@@ -378,7 +409,7 @@ class _CanonicalBookingRequestStatusScreenState
         }
         return 'No payment was completed in time.';
       default:
-        return 'Nothing has been charged.';
+        return '';
     }
   }
 

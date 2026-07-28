@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 
 import '../mappers/booking_document_mapper.dart';
 import '../../domain/models/booking_payment_order.dart';
@@ -11,6 +14,28 @@ import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/provider_earning_record.dart';
 import '../../domain/models/service_slot_model.dart';
+
+enum CanonicalPrivateDataLoadFailureKind {
+  documentNotFound,
+  permissionDenied,
+  malformedDocument,
+  network,
+  unknown,
+}
+
+class CanonicalPrivateDataLoadException implements Exception {
+  const CanonicalPrivateDataLoadException({
+    required this.kind,
+    required this.collection,
+    required this.bookingId,
+    this.cause,
+  });
+
+  final CanonicalPrivateDataLoadFailureKind kind;
+  final String collection;
+  final String bookingId;
+  final Object? cause;
+}
 
 class BookingRepository {
   final FirebaseFirestore? _providedFirestore;
@@ -280,6 +305,47 @@ class BookingRepository {
     }
   }
 
+  Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
+    required String bookingId,
+    String? claimedOfferId,
+  }) async {
+    const callableName = 'previewBookingPaymentPricingV3';
+    final safeBookingId = bookingId.trim();
+    final safeClaimedOfferId = claimedOfferId?.trim();
+    debugPrint(
+      '[CanonicalPaymentPreview] request callable=$callableName bookingId=$safeBookingId hasCoupon=${safeClaimedOfferId?.isNotEmpty == true}',
+    );
+    final callable = _functions.httpsCallable(callableName);
+    try {
+      final result = await callable.call<Map<String, dynamic>>({
+        'bookingId': safeBookingId,
+        'claimedOfferId': safeClaimedOfferId,
+      });
+      final preview = CanonicalPaymentPricingPreviewResult.fromMap(
+        Map<String, dynamic>.from(result.data),
+      );
+      debugPrint(
+        '[CanonicalPaymentPreview] success callable=$callableName bookingId=${preview.bookingId} payablePaise=${preview.pricingSummary.customerPaidPaise} discountPaise=${preview.pricingSummary.couponDiscountPaise}',
+      );
+      return preview;
+    } on FirebaseFunctionsException catch (error) {
+      debugPrint(
+        '[CanonicalPaymentPreview] firebase_error callable=$callableName bookingId=$safeBookingId code=${error.code} message=${error.message ?? ''} details=${error.details}',
+      );
+      throw _mapCanonicalPaymentError(error);
+    } on FormatException catch (error) {
+      debugPrint(
+        '[CanonicalPaymentPreview] parse_error callable=$callableName bookingId=$safeBookingId error=${error.message}',
+      );
+      rethrow;
+    } catch (error) {
+      debugPrint(
+        '[CanonicalPaymentPreview] unknown_error callable=$callableName bookingId=$safeBookingId error=$error',
+      );
+      rethrow;
+    }
+  }
+
   Future<CanonicalPaymentVerificationResult> verifyPaymentV3({
     required String bookingId,
     required String paymentAttemptId,
@@ -354,14 +420,44 @@ class BookingRepository {
     final id = bookingId.trim();
     if (id.isEmpty) return Stream.value(null);
 
-    return _firestore.collection('bookingPrivate').doc(id).snapshots().map((
-      snapshot,
-    ) {
-      if (!snapshot.exists) return null;
-      return CanonicalBookingPrivateData.fromMap(
-        Map<String, dynamic>.from(snapshot.data() ?? const {}),
-      );
-    });
+    final stream = _firestore
+        .collection('bookingPrivate')
+        .doc(id)
+        .snapshots()
+        .map((snapshot) {
+          if (!snapshot.exists) {
+            throw CanonicalPrivateDataLoadException(
+              kind: CanonicalPrivateDataLoadFailureKind.documentNotFound,
+              collection: 'bookingPrivate',
+              bookingId: id,
+            );
+          }
+          try {
+            final data = CanonicalBookingPrivateData.fromMap(
+              Map<String, dynamic>.from(snapshot.data() ?? const {}),
+            );
+            if (data.bookingId.isEmpty ||
+                data.parentId.isEmpty ||
+                data.providerId.isEmpty) {
+              throw const FormatException(
+                'bookingPrivate missing required ids.',
+              );
+            }
+            return data;
+          } catch (error) {
+            throw CanonicalPrivateDataLoadException(
+              kind: CanonicalPrivateDataLoadFailureKind.malformedDocument,
+              collection: 'bookingPrivate',
+              bookingId: id,
+              cause: error,
+            );
+          }
+        });
+    return _normalizeCanonicalPrivateStream(
+      stream,
+      collection: 'bookingPrivate',
+      bookingId: id,
+    );
   }
 
   Future<CanonicalBookingPrivateData?> fetchCanonicalBookingPrivate(
@@ -385,16 +481,44 @@ class BookingRepository {
     final id = bookingId.trim();
     if (id.isEmpty) return Stream.value(null);
 
-    return _firestore
+    final stream = _firestore
         .collection('bookingPrivateParticipants')
         .doc(id)
         .snapshots()
         .map((snapshot) {
-          if (!snapshot.exists) return null;
-          return CanonicalBookingPrivateParticipantsData.fromMap(
-            Map<String, dynamic>.from(snapshot.data() ?? const {}),
-          );
+          if (!snapshot.exists) {
+            throw CanonicalPrivateDataLoadException(
+              kind: CanonicalPrivateDataLoadFailureKind.documentNotFound,
+              collection: 'bookingPrivateParticipants',
+              bookingId: id,
+            );
+          }
+          try {
+            final data = CanonicalBookingPrivateParticipantsData.fromMap(
+              Map<String, dynamic>.from(snapshot.data() ?? const {}),
+            );
+            if (data.bookingId.isEmpty ||
+                data.parentId.isEmpty ||
+                data.providerId.isEmpty) {
+              throw const FormatException(
+                'bookingPrivateParticipants missing required ids.',
+              );
+            }
+            return data;
+          } catch (error) {
+            throw CanonicalPrivateDataLoadException(
+              kind: CanonicalPrivateDataLoadFailureKind.malformedDocument,
+              collection: 'bookingPrivateParticipants',
+              bookingId: id,
+              cause: error,
+            );
+          }
         });
+    return _normalizeCanonicalPrivateStream(
+      stream,
+      collection: 'bookingPrivateParticipants',
+      bookingId: id,
+    );
   }
 
   Future<CanonicalBookingPrivateParticipantsData?>
@@ -868,5 +992,72 @@ class BookingRepository {
     return '${local.year.toString().padLeft(4, '0')}-'
         '${local.month.toString().padLeft(2, '0')}-'
         '${local.day.toString().padLeft(2, '0')}';
+  }
+
+  Stream<T?> _normalizeCanonicalPrivateStream<T>(
+    Stream<T?> source, {
+    required String collection,
+    required String bookingId,
+  }) {
+    return source.transform(
+      StreamTransformer<T?, T?>.fromHandlers(
+        handleData: (data, sink) => sink.add(data),
+        handleError: (error, stackTrace, sink) {
+          sink.addError(
+            _normalizeCanonicalPrivateLoadError(
+              error,
+              collection: collection,
+              bookingId: bookingId,
+            ),
+            stackTrace,
+          );
+        },
+      ),
+    );
+  }
+
+  CanonicalPrivateDataLoadException _normalizeCanonicalPrivateLoadError(
+    Object error, {
+    required String collection,
+    required String bookingId,
+  }) {
+    if (error is CanonicalPrivateDataLoadException) {
+      return error;
+    }
+    if (error is FirebaseException) {
+      final code = error.code.trim().toLowerCase();
+      if (code == 'permission-denied') {
+        return CanonicalPrivateDataLoadException(
+          kind: CanonicalPrivateDataLoadFailureKind.permissionDenied,
+          collection: collection,
+          bookingId: bookingId,
+          cause: error,
+        );
+      }
+      if (code == 'unavailable' ||
+          code == 'deadline-exceeded' ||
+          code == 'network-request-failed') {
+        return CanonicalPrivateDataLoadException(
+          kind: CanonicalPrivateDataLoadFailureKind.network,
+          collection: collection,
+          bookingId: bookingId,
+          cause: error,
+        );
+      }
+    }
+    if (error is FormatException) {
+      return CanonicalPrivateDataLoadException(
+        kind: CanonicalPrivateDataLoadFailureKind.malformedDocument,
+        collection: collection,
+        bookingId: bookingId,
+        cause: error,
+      );
+    }
+    return CanonicalPrivateDataLoadException(
+      kind: CanonicalPrivateDataLoadFailureKind.unknown,
+      collection: collection,
+      bookingId: bookingId,
+      cause: error,
+    );
   }
 }

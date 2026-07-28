@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -7,6 +9,7 @@ import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/service_slot_model.dart';
+import '../../domain/utils/booking_runway.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
 import 'canonical_booking_request_review_screen.dart';
 
@@ -38,12 +41,14 @@ class SlotSelectionScreen extends StatefulWidget {
 
 class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   static const Color _screenBackground = Color(0xFFFCF8F5);
+  static const Duration _availabilityRefreshInterval = Duration(minutes: 1);
   late DateTime _selectedDate;
   late DateTime _focusedMonth;
   final List<ServiceSlotModel> _selectedCanonicalSlots = <ServiceSlotModel>[];
   final BookingRequestAttemptIdController _requestAttemptIdController =
       BookingRequestAttemptIdController();
   String? _slotError;
+  Timer? _availabilityTicker;
 
   @override
   void initState() {
@@ -69,12 +74,18 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
         Navigator.maybePop(context);
       }
     });
+    _availabilityTicker = Timer.periodic(_availabilityRefreshInterval, (_) {
+      if (!mounted) return;
+      setState(() {});
+    });
   }
 
   DateTime get _today {
-    final now = DateTime.now();
+    final now = _authoritativeNow;
     return DateTime(now.year, now.month, now.day);
   }
+
+  DateTime get _authoritativeNow => DateTime.now();
 
   DateTime get _lastSelectableDate => _today.add(const Duration(days: 30));
 
@@ -124,6 +135,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(context)) {
       return;
     }
+    if (!_hasValidSelection) {
+      setState(() {
+        _slotError = 'Choose at least one available slot.';
+      });
+      return;
+    }
     final selection = _buildCanonicalSelection(_selectedCanonicalSlots);
     if (selection == null || selection.slots.isEmpty) {
       setState(() => _slotError = 'Choose at least one available slot.');
@@ -165,6 +182,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _availabilityTicker?.cancel();
+    super.dispose();
   }
 
   @override
@@ -264,7 +287,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
           ),
           _SlotBottomBar(
             bottomInset: bottomInset,
-            isReady: _selectedCanonicalSlots.isNotEmpty,
+            isReady: _hasValidSelection,
             label: 'Review request',
             onContinue: _continue,
           ),
@@ -291,6 +314,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     }
 
     final slots = snapshot.data ?? const <ServiceSlotModel>[];
+    _pruneInvalidSelection(slots);
     _selectSuggestedSlotIfNeeded(slots);
 
     if (slots.isEmpty) {
@@ -311,6 +335,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               .map((slot) => slot.id)
               .toSet(),
           allowMultiSelect: true,
+          isSlotBookable: _isSlotBookable,
           onSlotSelected: _handleSlotTapped,
         ),
         const SizedBox(height: 12),
@@ -357,7 +382,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     final suggestedSlot = slots
         .where((slot) {
           final slotLocal = slot.startAt.toLocal();
-          return slot.canRequest &&
+          return _isSlotBookable(slot) &&
               slotLocal.year == suggestedLocal.year &&
               slotLocal.month == suggestedLocal.month &&
               slotLocal.day == suggestedLocal.day &&
@@ -383,6 +408,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   void _handleSlotTapped(ServiceSlotModel slot) {
+    if (!_isSlotBookable(slot)) return;
     _toggleCanonicalSlot(slot);
   }
 
@@ -403,6 +429,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     }
 
     nextSelection.add(slot);
+    if (!_isSelectionStillBookable(nextSelection)) {
+      setState(() {
+        _slotError = 'Please choose a slot that is still available to request.';
+      });
+      return;
+    }
     final selection = _buildCanonicalSelection(nextSelection);
     if (selection == null) {
       setState(() {
@@ -479,6 +511,48 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
 
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  bool get _hasValidSelection =>
+      _selectedCanonicalSlots.isNotEmpty &&
+      _isSelectionStillBookable(_selectedCanonicalSlots);
+
+  bool _isSlotBookable(ServiceSlotModel slot) {
+    return slot.isOpen &&
+        isCanonicalBookingAnchorBookable(
+          anchorAt: slot.startAt,
+          authoritativeNow: _authoritativeNow,
+        );
+  }
+
+  bool _isSelectionStillBookable(List<ServiceSlotModel> slots) {
+    if (slots.isEmpty) return false;
+    final sorted = [...slots]..sort((a, b) => a.startAt.compareTo(b.startAt));
+    if (!_isSlotBookable(sorted.first)) {
+      return false;
+    }
+    return sorted.every((slot) => slot.isOpen);
+  }
+
+  void _pruneInvalidSelection(List<ServiceSlotModel> availableSlots) {
+    if (_selectedCanonicalSlots.isEmpty) return;
+    final currentSlotsById = {for (final slot in availableSlots) slot.id: slot};
+    final refreshedSelection = _selectedCanonicalSlots
+        .map((slot) => currentSlotsById[slot.id])
+        .whereType<ServiceSlotModel>()
+        .toList(growable: false);
+    if (_isSelectionStillBookable(refreshedSelection) &&
+        refreshedSelection.length == _selectedCanonicalSlots.length) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _selectedCanonicalSlots.clear();
+        _slotError =
+            'Your selected slot is no longer available. Please choose another slot.';
+      });
+    });
   }
 }
 
@@ -961,6 +1035,7 @@ class _SlotRail extends StatefulWidget {
   final String? selectedSlotId;
   final Set<String> selectedSlotIds;
   final bool allowMultiSelect;
+  final bool Function(ServiceSlotModel slot) isSlotBookable;
   final ValueChanged<ServiceSlotModel> onSlotSelected;
 
   const _SlotRail({
@@ -968,6 +1043,7 @@ class _SlotRail extends StatefulWidget {
     required this.selectedSlotId,
     required this.selectedSlotIds,
     required this.allowMultiSelect,
+    required this.isSlotBookable,
     required this.onSlotSelected,
   });
 
@@ -1021,11 +1097,14 @@ class _SlotRailState extends State<_SlotRail> {
             width: _slotWidth,
             child: _SlotTile(
               slot: slot,
+              isBookable: widget.isSlotBookable(slot),
               isSelected: widget.allowMultiSelect
                   ? widget.selectedSlotIds.contains(slot.id)
                   : widget.selectedSlotId == slot.id,
               isMultiSelect: widget.allowMultiSelect,
-              onTap: slot.canRequest ? () => widget.onSlotSelected(slot) : null,
+              onTap: widget.isSlotBookable(slot)
+                  ? () => widget.onSlotSelected(slot)
+                  : null,
             ),
           );
         },
@@ -1036,7 +1115,7 @@ class _SlotRailState extends State<_SlotRail> {
   void _jumpToNextAvailable() {
     if (!_controller.hasClients || widget.slots.isEmpty) return;
     final preferredIndex = widget.selectedSlotId == null
-        ? widget.slots.indexWhere((slot) => slot.canRequest)
+        ? widget.slots.indexWhere((slot) => widget.isSlotBookable(slot))
         : widget.slots.indexWhere((slot) => slot.id == widget.selectedSlotId);
     final index = preferredIndex < 0 ? 0 : preferredIndex;
     final target = index * (_slotWidth + _slotGap);
@@ -1048,12 +1127,14 @@ class _SlotRailState extends State<_SlotRail> {
 
 class _SlotTile extends StatelessWidget {
   final ServiceSlotModel slot;
+  final bool isBookable;
   final bool isSelected;
   final bool isMultiSelect;
   final VoidCallback? onTap;
 
   const _SlotTile({
     required this.slot,
+    required this.isBookable,
     required this.isSelected,
     required this.isMultiSelect,
     required this.onTap,
@@ -1062,14 +1143,8 @@ class _SlotTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDisabled = onTap == null;
-    final label = slot.isTooSoon
-        ? 'Starts in under 1 hour'
-        : slot.isFull
-        ? '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}'
-        : !slot.isOpen
-        ? '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}'
-        : '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}';
-    final helper = slot.canRequest
+    final label = '${_formatTime(slot.startAt)} - ${_formatTime(slot.endAt)}';
+    final helper = isBookable
         ? '${slot.remainingCapacity} spot${slot.remainingCapacity == 1 ? '' : 's'} left'
         : slot.isFull
         ? 'Fully booked'
