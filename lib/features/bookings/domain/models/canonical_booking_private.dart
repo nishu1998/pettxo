@@ -32,7 +32,12 @@ class CanonicalBookingPrivateData {
       bookingId: (map['bookingId'] as String? ?? '').trim(),
       parentId: (map['parentId'] as String? ?? '').trim(),
       providerId: (map['providerId'] as String? ?? '').trim(),
-      parentOtpCode: (map['parentOtpCode'] as String? ?? '').trim(),
+      parentOtpCode:
+          (map['parentOtpCode'] as String? ??
+                  map['otpCode'] as String? ??
+                  map['serviceOtp'] as String? ??
+                  '')
+              .trim(),
       otpState: (map['otpState'] as String? ?? '').trim(),
       failedAttemptCount: (map['failedAttemptCount'] as num?)?.toInt() ?? 0,
       lockedUntil: _readDate(map['lockedUntil']),
@@ -95,19 +100,49 @@ class CanonicalBookingPrivateParticipantsData {
     final providerPrivate = Map<String, dynamic>.from(
       map['providerPrivate'] as Map? ?? const {},
     );
+    final legacyAddress =
+        (map['serviceAddress'] as String? ??
+                map['exactAddress'] as String? ??
+                map['address'] as String? ??
+                '')
+            .trim();
+    final legacyPhoneNumber =
+        (map['phoneNumber'] as String? ??
+                map['customerPhoneNumber'] as String? ??
+                '')
+            .trim();
+    final legacyProviderPhoneNumber =
+        (map['providerPhoneNumber'] as String? ??
+                map['providerContactNumber'] as String? ??
+                '')
+            .trim();
     return CanonicalBookingPrivateParticipantsData(
       bookingId: (map['bookingId'] as String? ?? '').trim(),
       parentId: (map['parentId'] as String? ?? '').trim(),
       providerId: (map['providerId'] as String? ?? '').trim(),
       unlockedAfterPaidOnly: map['unlockedAfterPaidOnly'] as bool? ?? false,
-      fullName: (parentPrivate['fullName'] as String? ?? '').trim(),
-      phoneNumber: (parentPrivate['phoneNumber'] as String? ?? '').trim(),
-      email: (parentPrivate['email'] as String? ?? '').trim(),
-      exactAddress: (parentPrivate['exactAddress'] as String? ?? '').trim(),
-      latitude: _readDouble(parentPrivate['latitude']),
-      longitude: _readDouble(parentPrivate['longitude']),
+      fullName:
+          (parentPrivate['fullName'] as String? ??
+                  map['fullName'] as String? ??
+                  '')
+              .trim(),
+      phoneNumber:
+          (parentPrivate['phoneNumber'] as String? ?? legacyPhoneNumber).trim(),
+      email:
+          (parentPrivate['email'] as String? ?? map['email'] as String? ?? '')
+              .trim(),
+      exactAddress: (parentPrivate['exactAddress'] as String? ?? legacyAddress)
+          .trim(),
+      latitude:
+          _readDouble(parentPrivate['latitude']) ??
+          _readDouble(map['latitude']),
+      longitude:
+          _readDouble(parentPrivate['longitude']) ??
+          _readDouble(map['longitude']),
       providerPhoneNumber:
-          (providerPrivate['phoneNumber'] as String? ?? '').trim(),
+          (providerPrivate['phoneNumber'] as String? ??
+                  legacyProviderPhoneNumber)
+              .trim(),
       createdAt: CanonicalBookingPrivateData._readDate(map['createdAt']),
       updatedAt: CanonicalBookingPrivateData._readDate(map['updatedAt']),
     );

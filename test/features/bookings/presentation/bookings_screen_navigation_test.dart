@@ -516,7 +516,7 @@ void main() {
       final opener = RecordingBookingOpener(
         latestBookings: {
           'booking-1': buildCanonicalReadModel(
-            state: CanonicalBookingStateV3.pendingProvider,
+            state: CanonicalBookingStateV3.acceptedAwaitingPayment,
             paymentAttemptId: 'attempt-1',
           ),
         },
@@ -532,7 +532,7 @@ void main() {
         opener: opener,
         bookingStreamBuilder: (userId, contextMode) => Stream.value([
           buildCanonicalReadModel(
-            state: CanonicalBookingStateV3.pendingProvider,
+            state: CanonicalBookingStateV3.acceptedAwaitingPayment,
             paymentAttemptId: 'attempt-1',
           ),
         ]),
@@ -628,7 +628,7 @@ void main() {
     },
   );
 
-  testWidgets('customer refunded tap remains on canonical payment flow', (
+  testWidgets('customer refunded tap stays on terminal booking details', (
     tester,
   ) async {
     final opener = RecordingBookingOpener(
@@ -661,7 +661,10 @@ void main() {
     await tester.tap(canonicalBookingCard('booking-1'));
     await tester.pump();
 
-    expect(opener.lastPlan?.target, BookingNavigationTarget.canonicalPayment);
+    expect(
+      opener.lastPlan?.target,
+      BookingNavigationTarget.canonicalRequestStatus,
+    );
   });
 
   testWidgets('customer confirmed tap uses latest repository result', (
@@ -699,45 +702,50 @@ void main() {
     );
   });
 
-  testWidgets('customer refund-required tap never opens confirmed detail', (
-    tester,
-  ) async {
-    final opener = RecordingBookingOpener(
-      latestBookings: {
-        'booking-1': buildCanonicalReadModel(
-          state: CanonicalBookingStateV3.cancelled,
-          paymentAttemptId: 'attempt-1',
-        ),
-      },
-      paymentAttempts: {
-        'booking-1:attempt-1': buildAttempt(
-          CanonicalPaymentAttemptState.refundRequired,
-        ),
-      },
-    );
+  testWidgets(
+    'customer refund-required tap stays on terminal booking details',
+    (tester) async {
+      final opener = RecordingBookingOpener(
+        latestBookings: {
+          'booking-1': buildCanonicalReadModel(
+            state: CanonicalBookingStateV3.cancelled,
+            paymentAttemptId: 'attempt-1',
+          ),
+        },
+        paymentAttempts: {
+          'booking-1:attempt-1': buildAttempt(
+            CanonicalPaymentAttemptState.refundRequired,
+          ),
+        },
+      );
 
-    await pumpScreen(
-      tester,
-      opener: opener,
-      bookingStreamBuilder: (userId, contextMode) => Stream.value([
-        buildCanonicalReadModel(
-          state: CanonicalBookingStateV3.cancelled,
-          paymentAttemptId: 'attempt-1',
-        ),
-      ]),
-    );
+      await pumpScreen(
+        tester,
+        opener: opener,
+        bookingStreamBuilder: (userId, contextMode) => Stream.value([
+          buildCanonicalReadModel(
+            state: CanonicalBookingStateV3.cancelled,
+            paymentAttemptId: 'attempt-1',
+          ),
+        ]),
+      );
 
-    await tester.tap(find.text('Past'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Dog Walking').first);
-    await tester.pump();
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Dog Walking').first);
+      await tester.pump();
 
-    expect(opener.lastPlan?.target, BookingNavigationTarget.canonicalPayment);
-    expect(
-      opener.lastPlan?.target == BookingNavigationTarget.canonicalBookingDetail,
-      isFalse,
-    );
-  });
+      expect(
+        opener.lastPlan?.target,
+        BookingNavigationTarget.canonicalRequestStatus,
+      );
+      expect(
+        opener.lastPlan?.target ==
+            BookingNavigationTarget.canonicalBookingDetail,
+        isFalse,
+      );
+    },
+  );
 
   for (final state in <CanonicalBookingStateV3>[
     CanonicalBookingStateV3.declined,
@@ -854,6 +862,100 @@ void main() {
         opener.lastPlan?.target,
         BookingNavigationTarget.canonicalBookingDetail,
       );
+    },
+  );
+
+  testWidgets(
+    'customer confirmed booking tap still opens detail when payment attempt lookup would fail',
+    (tester) async {
+      final opener = RecordingBookingOpener(
+        latestBookings: {
+          'booking-1': buildCanonicalReadModel(
+            state: CanonicalBookingStateV3.confirmed,
+            paymentAttemptId: 'attempt-1',
+          ),
+        },
+        paymentAttemptLoaderOverride:
+            ({
+              required String bookingId,
+              required String paymentAttemptId,
+            }) async {
+              throw StateError('payment attempt lookup should be skipped');
+            },
+      );
+
+      await pumpScreen(
+        tester,
+        opener: opener,
+        bookingStreamBuilder: (userId, contextMode) => Stream.value([
+          buildCanonicalReadModel(
+            state: CanonicalBookingStateV3.confirmed,
+            paymentAttemptId: 'attempt-1',
+          ),
+        ]),
+      );
+
+      await tester.tap(canonicalBookingCard('booking-1'));
+      await tester.pump();
+
+      expect(opener.lastRequest?.bookingId, 'booking-1');
+      expect(
+        opener.lastPlan?.target,
+        BookingNavigationTarget.canonicalBookingDetail,
+      );
+      expect(opener.lastError, isNull);
+    },
+  );
+
+  testWidgets(
+    'provider confirmed booking tap still opens detail when payment attempt lookup would fail',
+    (tester) async {
+      final opener = RecordingBookingOpener(
+        latestBookings: {
+          'booking-1': buildCanonicalReadModel(
+            state: CanonicalBookingStateV3.confirmed,
+            paymentAttemptId: 'attempt-1',
+          ),
+        },
+        paymentAttemptLoaderOverride:
+            ({
+              required String bookingId,
+              required String paymentAttemptId,
+            }) async {
+              throw StateError('payment attempt lookup should be skipped');
+            },
+      );
+
+      await pumpScreen(
+        tester,
+        opener: opener,
+        currentUserIdOverride: 'provider-1',
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.delivering
+              ? [
+                  buildCanonicalReadModel(
+                    state: CanonicalBookingStateV3.confirmed,
+                    paymentAttemptId: 'attempt-1',
+                  ),
+                ]
+              : const [],
+        ),
+        providerRequestStreamBuilder: (_) => Stream.value(const []),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Confirmed'));
+      await tester.pumpAndSettle();
+      await tester.tap(canonicalBookingCard('booking-1'));
+      await tester.pump();
+
+      expect(opener.lastRequest?.bookingId, 'booking-1');
+      expect(
+        opener.lastPlan?.target,
+        BookingNavigationTarget.canonicalBookingDetail,
+      );
+      expect(opener.lastError, isNull);
     },
   );
 
@@ -985,10 +1087,16 @@ class RecordingBookingOpener {
   RecordingBookingOpener({
     required this.latestBookings,
     this.paymentAttempts = const {},
+    this.paymentAttemptLoaderOverride,
   });
 
   final Map<String, BookingReadModel> latestBookings;
   final Map<String, CanonicalPaymentAttemptReadModel> paymentAttempts;
+  final Future<CanonicalPaymentAttemptReadModel?> Function({
+    required String bookingId,
+    required String paymentAttemptId,
+  })?
+  paymentAttemptLoaderOverride;
 
   BookingOpenRequest? lastRequest;
   BookingNavigationPlan? lastPlan;
@@ -1004,6 +1112,12 @@ class RecordingBookingOpener {
             required String bookingId,
             required String paymentAttemptId,
           }) async {
+            if (paymentAttemptLoaderOverride != null) {
+              return paymentAttemptLoaderOverride!(
+                bookingId: bookingId,
+                paymentAttemptId: paymentAttemptId,
+              );
+            }
             return paymentAttempts['$bookingId:$paymentAttemptId'];
           },
     );

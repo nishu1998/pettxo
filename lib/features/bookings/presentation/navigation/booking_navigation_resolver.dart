@@ -13,6 +13,7 @@ import '../screens/canonical_booking_detail_screen.dart';
 import '../screens/canonical_booking_payment_screen.dart';
 import '../screens/canonical_booking_request_status_screen.dart';
 import '../screens/canonical_provider_booking_request_detail_screen.dart';
+import '../utils/canonical_booking_presentation_state.dart';
 
 enum BookingNavigationTarget {
   canonicalRequestStatus,
@@ -158,6 +159,13 @@ class BookingNavigationResolver {
     final contextMode =
         fallbackContextMode ??
         _inferContextMode(canonical.providerId, canonical.parentId);
+    if (_isCanonicalConfirmedOrLaterState(canonical.state)) {
+      return BookingNavigationPlan(
+        target: BookingNavigationTarget.canonicalBookingDetail,
+        contextMode: contextMode,
+      );
+    }
+
     CanonicalPaymentAttemptReadModel? paymentAttempt;
     final paymentAttemptId = canonical.payment.paymentAttemptId.trim();
     if (paymentAttemptId.isNotEmpty) {
@@ -184,9 +192,20 @@ class BookingNavigationResolver {
     required BookingContextMode contextMode,
     CanonicalPaymentAttemptReadModel? paymentAttempt,
   }) {
-    if (_isCanonicalConfirmedOrLaterState(booking.state)) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    if (_isCanonicalConfirmedOrLaterState(effectiveState)) {
       return BookingNavigationPlan(
         target: BookingNavigationTarget.canonicalBookingDetail,
+        contextMode: contextMode,
+        paymentAttempt: paymentAttempt,
+      );
+    }
+
+    if (_isCanonicalTerminalRequestState(effectiveState)) {
+      return BookingNavigationPlan(
+        target: contextMode == BookingContextMode.delivering
+            ? BookingNavigationTarget.canonicalProviderRequestDetail
+            : BookingNavigationTarget.canonicalRequestStatus,
         contextMode: contextMode,
         paymentAttempt: paymentAttempt,
       );
@@ -278,6 +297,11 @@ class BookingNavigationResolver {
     CanonicalBookingDocumentV3 booking,
     CanonicalPaymentAttemptReadModel? paymentAttempt,
   ) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    if (effectiveState != CanonicalBookingStateV3.acceptedAwaitingPayment) {
+      return false;
+    }
+
     if (booking.state == CanonicalBookingStateV3.acceptedAwaitingPayment &&
         _hasActivePaymentWindow(booking)) {
       return true;
@@ -310,6 +334,19 @@ class BookingNavigationResolver {
     }
   }
 
+  static bool _isCanonicalTerminalRequestState(CanonicalBookingStateV3 state) {
+    switch (state) {
+      case CanonicalBookingStateV3.cancelled:
+      case CanonicalBookingStateV3.cancelledByParent:
+      case CanonicalBookingStateV3.declined:
+      case CanonicalBookingStateV3.expired:
+      case CanonicalBookingStateV3.paymentExpired:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   static bool _hasActivePaymentWindow(CanonicalBookingDocumentV3 booking) {
     final deadline = booking.lifecycle.payDeadlineAt;
     return deadline == null || deadline.isAfter(DateTime.now());
@@ -324,7 +361,7 @@ class BookingNavigationResolver {
       source: 'canonical_v3',
       schemaVersion: booking.schemaVersion,
       bookingModelVersion: booking.bookingModelVersion,
-      state: booking.state,
+      state: effectiveCanonicalBookingPresentationState(booking),
       bookingType: booking.bookingType == BookingV3Type.slot
           ? BookingV3Type.slot
           : BookingV3Type.range,

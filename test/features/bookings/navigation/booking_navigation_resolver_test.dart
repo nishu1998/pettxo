@@ -254,12 +254,13 @@ void main() {
   CanonicalBookingDocumentV3 buildCanonicalBooking({
     required CanonicalBookingStateV3 state,
     String paymentAttemptId = '',
+    DateTime? payDeadlineAtOverride,
   }) {
     final map = buildCanonicalSlotFixture();
     final requestedAt = map['createdAt'] as DateTime;
-    final payDeadlineAt = requestedAt.add(
-      const Duration(hours: 2, minutes: 30),
-    );
+    final payDeadlineAt =
+        payDeadlineAtOverride ??
+        requestedAt.add(const Duration(hours: 2, minutes: 30));
     final rawState = canonicalStateValue(state);
     map['state'] = rawState;
     map['stateQueryValue'] = rawState;
@@ -388,11 +389,13 @@ void main() {
     CanonicalBookingStateV3 state, {
     CanonicalPaymentAttemptReadModel? paymentAttempt,
     String paymentAttemptId = '',
+    DateTime? payDeadlineAtOverride,
   }) {
     return BookingNavigationResolver.resolveCanonicalPlan(
       booking: buildCanonicalBooking(
         state: state,
         paymentAttemptId: paymentAttemptId,
+        payDeadlineAtOverride: payDeadlineAtOverride,
       ),
       contextMode: BookingContextMode.receiving,
       paymentAttempt: paymentAttempt,
@@ -445,17 +448,55 @@ void main() {
       CanonicalPaymentAttemptState.refundPending,
       CanonicalPaymentAttemptState.refunded,
     ]) {
-      test('attempt $attemptState keeps customer on payment flow', () {
+      test(
+        'attempt $attemptState does not bypass request-state routing before provider acceptance',
+        () {
+          expect(
+            customerTargetFor(
+              CanonicalBookingStateV3.pendingProvider,
+              paymentAttemptId: 'attempt-1',
+              paymentAttempt: buildAttempt(attemptState),
+            ),
+            BookingNavigationTarget.canonicalRequestStatus,
+          );
+        },
+      );
+    }
+
+    test(
+      'provider-cancelled-after-payment stays on terminal booking details instead of payment',
+      () {
         expect(
           customerTargetFor(
-            CanonicalBookingStateV3.pendingProvider,
+            CanonicalBookingStateV3.cancelled,
             paymentAttemptId: 'attempt-1',
-            paymentAttempt: buildAttempt(attemptState),
+            paymentAttempt: buildAttempt(
+              CanonicalPaymentAttemptState.refundPending,
+            ),
           ),
-          BookingNavigationTarget.canonicalPayment,
+          BookingNavigationTarget.canonicalRequestStatus,
         );
-      });
-    }
+      },
+    );
+
+    test(
+      'expired payment window stays on terminal booking details instead of payment',
+      () {
+        expect(
+          customerTargetFor(
+            CanonicalBookingStateV3.acceptedAwaitingPayment,
+            paymentAttemptId: 'attempt-1',
+            paymentAttempt: buildAttempt(
+              CanonicalPaymentAttemptState.orderCreated,
+            ),
+            payDeadlineAtOverride: DateTime.now().toUtc().subtract(
+              const Duration(minutes: 5),
+            ),
+          ),
+          BookingNavigationTarget.canonicalRequestStatus,
+        );
+      },
+    );
 
     for (final state in const <CanonicalBookingStateV3>[
       CanonicalBookingStateV3.confirmed,
@@ -545,7 +586,7 @@ void main() {
         fallbackContextMode: BookingContextMode.receiving,
       );
 
-      expect(plan.target, BookingNavigationTarget.canonicalPayment);
+      expect(plan.target, BookingNavigationTarget.canonicalRequestStatus);
       expect(loadedBookingId, 'booking-1');
       expect(loadedAttemptId, 'attempt-1');
     },
@@ -584,20 +625,23 @@ void main() {
     expect(plan.target, BookingNavigationTarget.canonicalRequestStatus);
   });
 
-  test('customer processing attempts keep routing to payment', () {
-    final plan = BookingNavigationResolver.resolveCanonicalPlan(
-      booking: buildCanonicalBooking(
-        state: CanonicalBookingStateV3.pendingProvider,
-        paymentAttemptId: 'attempt-1',
-      ),
-      contextMode: BookingContextMode.receiving,
-      paymentAttempt: buildAttempt(
-        CanonicalPaymentAttemptState.captureReported,
-      ),
-    );
+  test(
+    'customer accepted-awaiting-payment processing attempts keep routing to payment',
+    () {
+      final plan = BookingNavigationResolver.resolveCanonicalPlan(
+        booking: buildCanonicalBooking(
+          state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+          paymentAttemptId: 'attempt-1',
+        ),
+        contextMode: BookingContextMode.receiving,
+        paymentAttempt: buildAttempt(
+          CanonicalPaymentAttemptState.captureReported,
+        ),
+      );
 
-    expect(plan.target, BookingNavigationTarget.canonicalPayment);
-  });
+      expect(plan.target, BookingNavigationTarget.canonicalPayment);
+    },
+  );
 
   test('expired attempts on customer requests route to request status', () {
     final plan = BookingNavigationResolver.resolveCanonicalPlan(
@@ -612,7 +656,7 @@ void main() {
     expect(plan.target, BookingNavigationTarget.canonicalRequestStatus);
   });
 
-  test('customer refund states keep routing to payment', () {
+  test('customer refund states stay on terminal booking details', () {
     final plan = BookingNavigationResolver.resolveCanonicalPlan(
       booking: buildCanonicalBooking(
         state: CanonicalBookingStateV3.cancelled,
@@ -622,7 +666,7 @@ void main() {
       paymentAttempt: buildAttempt(CanonicalPaymentAttemptState.refundPending),
     );
 
-    expect(plan.target, BookingNavigationTarget.canonicalPayment);
+    expect(plan.target, BookingNavigationTarget.canonicalRequestStatus);
   });
 
   test('customer confirmed bookings open canonical detail', () {

@@ -1519,8 +1519,10 @@ service cloud.firestore {
       allow read: if signedIn() &&
         (
           (
+            exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
             (
-              resource.data.parentId == request.auth.uid
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid
             ) &&
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' &&
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
@@ -1534,9 +1536,12 @@ service cloud.firestore {
       allow read: if signedIn() &&
         (
           (
+            exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
             (
-              resource.data.parentId == request.auth.uid ||
-              resource.data.providerId == request.auth.uid
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.providerId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid
             ) &&
             (
               get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' ||
@@ -1619,16 +1624,13 @@ service cloud.firestore {
       allow read: if signedIn() &&
         (
           resource.data.actorId == request.auth.uid ||
-          resource.data.bookingId == bookingId &&
           (
+            exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
             (
-              exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
-              (
-                get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
-                get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
-                get(/databases/$(database)/documents/bookings/$(bookingId)).data.providerId == request.auth.uid ||
-                get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid
-              )
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.providerId == request.auth.uid ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid
             )
           ) ||
           isAdmin()

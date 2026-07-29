@@ -420,11 +420,11 @@ class BookingRepository {
     final id = bookingId.trim();
     if (id.isEmpty) return Stream.value(null);
 
-    final stream = _firestore
+    final Stream<CanonicalBookingPrivateData?> stream = _firestore
         .collection('bookingPrivate')
         .doc(id)
         .snapshots()
-        .map((snapshot) {
+        .map<CanonicalBookingPrivateData?>((snapshot) {
           if (!snapshot.exists) {
             throw CanonicalPrivateDataLoadException(
               kind: CanonicalPrivateDataLoadFailureKind.documentNotFound,
@@ -433,14 +433,17 @@ class BookingRepository {
             );
           }
           try {
-            final data = CanonicalBookingPrivateData.fromMap(
-              Map<String, dynamic>.from(snapshot.data() ?? const {}),
-            );
-            if (data.bookingId.isEmpty ||
-                data.parentId.isEmpty ||
-                data.providerId.isEmpty) {
+            final raw = Map<String, dynamic>.from(snapshot.data() ?? const {});
+            final data = CanonicalBookingPrivateData.fromMap({
+              ...raw,
+              if ((raw['bookingId'] as String? ?? '').trim().isEmpty)
+                'bookingId': id,
+            });
+            if (!data.hasOtp &&
+                data.otpState.trim().isEmpty &&
+                data.contactUnlockedAt == null) {
               throw const FormatException(
-                'bookingPrivate missing required ids.',
+                'bookingPrivate missing paid-only data.',
               );
             }
             return data;
@@ -481,11 +484,11 @@ class BookingRepository {
     final id = bookingId.trim();
     if (id.isEmpty) return Stream.value(null);
 
-    final stream = _firestore
+    final Stream<CanonicalBookingPrivateParticipantsData?> stream = _firestore
         .collection('bookingPrivateParticipants')
         .doc(id)
         .snapshots()
-        .map((snapshot) {
+        .map<CanonicalBookingPrivateParticipantsData?>((snapshot) {
           if (!snapshot.exists) {
             throw CanonicalPrivateDataLoadException(
               kind: CanonicalPrivateDataLoadFailureKind.documentNotFound,
@@ -494,14 +497,17 @@ class BookingRepository {
             );
           }
           try {
-            final data = CanonicalBookingPrivateParticipantsData.fromMap(
-              Map<String, dynamic>.from(snapshot.data() ?? const {}),
-            );
-            if (data.bookingId.isEmpty ||
-                data.parentId.isEmpty ||
-                data.providerId.isEmpty) {
+            final raw = Map<String, dynamic>.from(snapshot.data() ?? const {});
+            final data = CanonicalBookingPrivateParticipantsData.fromMap({
+              ...raw,
+              if ((raw['bookingId'] as String? ?? '').trim().isEmpty)
+                'bookingId': id,
+            });
+            if (!data.hasPhoneNumber &&
+                !data.hasAddress &&
+                !data.hasProviderPhoneNumber) {
               throw const FormatException(
-                'bookingPrivateParticipants missing required ids.',
+                'bookingPrivateParticipants missing participant-private data.',
               );
             }
             return data;
