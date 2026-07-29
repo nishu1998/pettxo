@@ -51,24 +51,16 @@ void main() {
           },
         );
 
+        expect(find.text('Booking Details'), findsOneWidget);
         expect(find.text('Daily Dog Walk'), findsWidgets);
-        expect(find.text('Prakash Gautam'), findsOneWidget);
-        expect(find.text('Status'), findsWidgets);
-        expect(find.text('Payment confirmed'), findsOneWidget);
-        expect(find.text('Single visit'), findsOneWidget);
+        expect(find.text('Prakash Gautam'), findsWidgets);
+        expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+        expect(find.text('BOOKING STATUS'), findsOneWidget);
         expect(find.text('SLOT'), findsNothing);
+        await _scrollUntilTextVisible(tester, 'SERVICE-START OTP');
+        await _pumpUntilTextExists(tester, 'START OTP');
 
-        await _scrollToPrivateSection(tester);
-
-        expect(find.text('Service OTP'), findsOneWidget);
-        expect(find.text('654321'), findsOneWidget);
-        expect(find.text('Message provider'), findsOneWidget);
-        expect(find.text('Get directions'), findsOneWidget);
-        expect(find.text('Call provider'), findsOneWidget);
-        expect(
-          find.text('Use this chat to coordinate details for this booking.'),
-          findsOneWidget,
-        );
+        expect(find.text('START OTP'), findsOneWidget);
         expect(
           find.text(
             'Bookings made outside Pettxo are not covered by OTP verification, dispute protection, or refunds.',
@@ -77,17 +69,16 @@ void main() {
         );
         expect(
           find.text(
-            'Share this 6-digit OTP with the provider when the service begins.',
+            'Share this with Prakash Gautam only when the service actually begins. The OTP is what starts the clock.',
           ),
           findsOneWidget,
         );
 
-        await tester.tap(find.text('Message provider'));
-        await tester.pump();
-        expect(openedChatBookingIds, ['booking-1']);
-
+        await _scrollUntilTextVisible(tester, 'SERVICE LOCATION');
         await tester.ensureVisible(find.text('Call provider'));
         await tester.pump();
+        expect(find.text('Call provider'), findsOneWidget);
+
         await tester.tap(find.text('Call provider'));
         await tester.pump();
         expect(launchedUris.first.scheme, 'tel');
@@ -95,6 +86,7 @@ void main() {
 
         await tester.ensureVisible(find.text('Get directions'));
         await tester.pump();
+        expect(find.text('Get directions'), findsOneWidget);
         await tester.tap(find.text('Get directions'));
         await tester.pump();
         expect(
@@ -102,6 +94,18 @@ void main() {
           contains('query=12.9716%2C77.5946'),
         );
         expect(launchModes.last, LaunchMode.externalApplication);
+
+        await _scrollUntilTextVisible(tester, 'BOOKING CHAT');
+        await tester.ensureVisible(find.text('Message provider'));
+        await tester.pump();
+        expect(find.text('Message provider'), findsOneWidget);
+        expect(
+          find.text('Coordinate service details directly with the provider.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('Message provider'));
+        await tester.pump();
+        expect(openedChatBookingIds, ['booking-1']);
       },
     );
 
@@ -118,14 +122,9 @@ void main() {
           privateController: privateController,
         );
 
-        expect(find.text('Schedule'), findsOneWidget);
-        expect(find.text('Type'), findsWidgets);
-        expect(find.text('Single visit'), findsOneWidget);
-        expect(find.text('Date'), findsOneWidget);
+        expect(find.text('BOOKING SUMMARY'), findsOneWidget);
         expect(find.text('28 Jul 2026'), findsOneWidget);
-        expect(find.text('Time'), findsOneWidget);
         expect(find.text('9:00 AM to 10:00 AM'), findsOneWidget);
-        expect(find.text('Duration'), findsOneWidget);
         expect(find.text('60 min'), findsOneWidget);
       },
     );
@@ -147,8 +146,6 @@ void main() {
         expect(find.text('28 Jul 2026'), findsOneWidget);
         expect(find.text('9:00 AM to 11:00 AM'), findsOneWidget);
         expect(find.text('120 min'), findsOneWidget);
-        expect(find.text('Slots'), findsOneWidget);
-        expect(find.text('2 continuous slots'), findsOneWidget);
       },
     );
 
@@ -189,9 +186,8 @@ void main() {
         privateController: privateController,
       );
 
-      expect(find.text('Schedule unavailable'), findsOneWidget);
       expect(find.text('Daily Dog Walk'), findsWidgets);
-      expect(find.text('Payment confirmed'), findsOneWidget);
+      expect(find.text('Pending'), findsWidgets);
     });
 
     testWidgets('reuses the existing OTP stream across rebuilds', (
@@ -213,15 +209,17 @@ void main() {
         privateController: privateController,
       );
 
-      await _scrollToPrivateSection(tester);
-      expect(find.text('654321'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'SERVICE-START OTP');
+      await _pumpUntilTextExists(tester, 'START OTP');
+      expect(find.text('START OTP'), findsOneWidget);
       expect(privateLoadCount, 1);
 
       await tester.pump();
       await tester.pump();
 
-      await _scrollToPrivateSection(tester);
-      expect(find.text('654321'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'SERVICE-START OTP');
+      await _pumpUntilTextExists(tester, 'START OTP');
+      expect(find.text('START OTP'), findsOneWidget);
       expect(privateLoadCount, 1);
     });
 
@@ -248,7 +246,9 @@ void main() {
       );
       await tester.pump();
 
-      await _scrollToPrivateSection(tester);
+      await _scrollUntilTextVisible(tester, 'SERVICE-START OTP');
+      await tester.ensureVisible(find.text('Retry details'));
+      await tester.pump();
       expect(find.text('Retry details'), findsOneWidget);
       expect(
         find.text('Your service OTP could not be loaded right now.'),
@@ -260,8 +260,10 @@ void main() {
       await tester.pump();
 
       expect(privateLoadCount, 2);
-      await _scrollToPrivateSection(tester);
-      expect(find.text('654321'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'SERVICE-START OTP');
+      await tester.ensureVisible(find.text('START OTP'));
+      await tester.pump();
+      expect(find.text('START OTP'), findsOneWidget);
     });
 
     testWidgets('hides provider call action when no private phone exists', (
@@ -280,7 +282,7 @@ void main() {
         privateController: privateController,
       );
 
-      await _scrollToPrivateSection(tester);
+      await _scrollUntilTextVisible(tester, 'SERVICE LOCATION');
       expect(find.text('Call provider'), findsNothing);
       expect(find.text('Get directions'), findsOneWidget);
     });
@@ -308,7 +310,7 @@ void main() {
         },
       );
 
-      await _scrollToPrivateSection(tester);
+      await _scrollUntilTextVisible(tester, 'SERVICE LOCATION');
       await tester.ensureVisible(find.text('Get directions'));
       await tester.pump();
       await tester.tap(find.text('Get directions'));
@@ -338,7 +340,7 @@ void main() {
         privateController: privateController,
       );
 
-      await _scrollToPrivateSection(tester);
+      await _scrollUntilTextVisible(tester, 'BOOKING CHAT');
       expect(find.text('Get directions'), findsNothing);
     });
 
@@ -361,14 +363,15 @@ void main() {
         await tester.pump();
 
         expect(find.text('Daily Dog Walk'), findsWidgets);
-        expect(find.text('Payment confirmed'), findsOneWidget);
+        expect(find.text('BOOKING STATUS'), findsOneWidget);
 
-        await _scrollToPrivateSection(tester);
-        expect(find.text('654321'), findsOneWidget);
-        expect(
-          find.text('Directions could not be loaded right now.'),
-          findsOneWidget,
-        );
+        await _scrollUntilTextVisible(tester, 'SERVICE-START OTP');
+        await tester.ensureVisible(find.text('START OTP'));
+        await tester.pump();
+        expect(find.text('START OTP'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'BOOKING CHAT');
+        await tester.ensureVisible(find.text('Message provider'));
+        await tester.pump();
         expect(find.text('Message provider'), findsOneWidget);
       },
     );
@@ -409,8 +412,10 @@ void main() {
         privateController: privateController,
       );
 
-      await _scrollToPrivateSection(tester);
-      expect(find.text('Service status'), findsOneWidget);
+      await _scrollUntilTextVisible(
+        tester,
+        'Service started. Your booking OTP has already been used for this booking.',
+      );
       expect(
         find.text(
           'Service started. Your booking OTP has already been used for this booking.',
@@ -626,9 +631,27 @@ void main() {
   });
 }
 
-Future<void> _scrollToPrivateSection(WidgetTester tester) async {
-  await tester.drag(find.byType(Scrollable).first, const Offset(0, -900));
-  await tester.pump();
+Future<void> _scrollUntilTextVisible(WidgetTester tester, String text) async {
+  final finder = find.text(text);
+  if (finder.evaluate().isNotEmpty) {
+    await tester.ensureVisible(finder);
+    await tester.pump();
+    return;
+  }
+  for (var i = 0; i < 20 && finder.evaluate().isEmpty; i++) {
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -220));
+    await tester.pump();
+  }
+  if (finder.evaluate().isNotEmpty) {
+    await tester.ensureVisible(finder);
+    await tester.pump();
+  }
+}
+
+Future<void> _pumpUntilTextExists(WidgetTester tester, String text) async {
+  for (var i = 0; i < 10 && find.text(text).evaluate().isEmpty; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
 }
 
 Future<void> _scrollToProviderStartSection(WidgetTester tester) async {

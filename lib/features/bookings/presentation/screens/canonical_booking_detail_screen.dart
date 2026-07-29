@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../controllers/canonical_booking_private_controller.dart';
 import '../../data/repositories/booking_repository.dart';
@@ -18,6 +19,7 @@ import '../../domain/models/canonical_booking_cancellation_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
+import '../widgets/canonical_booking_status_detail_template.dart';
 
 class CanonicalBookingDetailScreen extends StatefulWidget {
   const CanonicalBookingDetailScreen({
@@ -94,17 +96,8 @@ class _CanonicalBookingDetailScreenState
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.background,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        title: const Text(
-          'Booking details',
-          style: TextStyle(
-            color: AppColors.textDark,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
+      appBar: const CanonicalBookingStatusDetailTopBar(
+        title: 'Booking Details',
       ),
       body: StreamBuilder<BookingReadModel?>(
         stream: _repository.watchCanonicalBooking(widget.bookingId),
@@ -149,6 +142,21 @@ class _CanonicalBookingDetailScreenState
                 animation: _privateController,
                 builder: (context, _) {
                   final privateState = _privateController.state;
+                  if (_shouldUseRedesignedCustomerBookingDetails(
+                    booking,
+                    isParent,
+                  )) {
+                    return _buildCustomerBookingDetailsExperience(
+                      booking: booking,
+                      participantPrivateData: participantSnapshot.data,
+                      participantErrorMessage: participantSnapshot.hasError
+                          ? 'Paid-only booking details could not be loaded right now.'
+                          : null,
+                      otpPrivateData: privateState.privateData,
+                      isOtpLoading: privateState.isLoading,
+                      otpErrorMessage: privateState.errorMessage,
+                    );
+                  }
                   return ListView(
                     padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
                     children: [
@@ -202,6 +210,20 @@ class _CanonicalBookingDetailScreenState
                             'Provider',
                             booking.participants.provider.displayName,
                           ),
+                          if (isParent &&
+                              participantSnapshot
+                                      .data
+                                      ?.hasProviderPhoneNumber ==
+                                  true)
+                            _ActionInfoRow(
+                              label: 'Provider contact',
+                              value:
+                                  participantSnapshot.data!.providerPhoneNumber,
+                              actionLabel: 'Call provider',
+                              onTap: () => _openPhone(
+                                participantSnapshot.data!.providerPhoneNumber,
+                              ),
+                            ),
                           _InfoRow('Status', _statusLabel(booking)),
                           _InfoRow('Payment', _paymentStatusLabel(booking)),
                           _InfoRow('Amount paid', _money(booking)),
@@ -216,6 +238,15 @@ class _CanonicalBookingDetailScreenState
                             ),
                         ],
                       ),
+                      if (isParent &&
+                          participantSnapshot.data?.hasAddress == true) ...[
+                        const SizedBox(height: 14),
+                        _AddressCard(
+                          address: participantSnapshot.data!.exactAddress,
+                          onTapDirections: () =>
+                              _openMap(participantSnapshot.data!),
+                        ),
+                      ],
                       const SizedBox(height: 14),
                       _InfoCard(
                         title: 'Schedule',
@@ -414,6 +445,363 @@ class _CanonicalBookingDetailScreenState
     if (!mounted) return;
     setState(() => _privateRetryTick += 1);
     _privateController.retry();
+  }
+
+  bool _shouldUseRedesignedCustomerBookingDetails(
+    CanonicalBookingDocumentV3 booking,
+    bool isParent,
+  ) {
+    if (!isParent) return false;
+    return booking.state == CanonicalBookingStateV3.confirmed ||
+        booking.state == CanonicalBookingStateV3.inProgress ||
+        booking.state == CanonicalBookingStateV3.noShow;
+  }
+
+  Widget _buildCustomerBookingDetailsExperience({
+    required CanonicalBookingDocumentV3 booking,
+    required CanonicalBookingPrivateParticipantsData? participantPrivateData,
+    required String? participantErrorMessage,
+    required CanonicalBookingPrivateData? otpPrivateData,
+    required bool isOtpLoading,
+    required String? otpErrorMessage,
+  }) {
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+        children: [
+          const BookingDetailsSectionLabel('Booking summary'),
+          const SizedBox(height: 10),
+          BookingSummaryCard(rows: _buildCustomerSummaryRows(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking status'),
+          const SizedBox(height: 10),
+          BookingStatusCard(model: _buildCustomerStatusCard(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking timeline'),
+          const SizedBox(height: 10),
+          BookingTimelineCard(steps: _buildCustomerTimeline(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Service-start OTP'),
+          const SizedBox(height: 10),
+          _CustomerOtpSectionCard(
+            booking: booking,
+            otpPrivateData: otpPrivateData,
+            isLoading: isOtpLoading,
+            errorMessage: otpErrorMessage,
+            providerName: booking.participants.provider.displayName,
+            onRetry: _retryPrivateReads,
+          ),
+          if (_shouldShowLocationSection(
+            participantPrivateData,
+            participantErrorMessage,
+          )) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Service location'),
+            const SizedBox(height: 10),
+            _CustomerLocationCard(
+              participantPrivateData: participantPrivateData,
+              errorMessage: participantErrorMessage,
+              onOpenMap: _hasDirectionsData(participantPrivateData)
+                  ? () => _openMap(participantPrivateData!)
+                  : null,
+              onCallProvider:
+                  participantPrivateData?.hasProviderPhoneNumber == true
+                  ? () =>
+                        _openPhone(participantPrivateData!.providerPhoneNumber)
+                  : null,
+              onRetry: participantErrorMessage == null
+                  ? null
+                  : _retryPrivateReads,
+            ),
+          ],
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Payment summary'),
+          const SizedBox(height: 10),
+          FinancialSummaryCard(rows: _buildCustomerPaymentRows(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking chat'),
+          const SizedBox(height: 10),
+          _CustomerChatCard(
+            isOpening: _isOpeningChat,
+            isUnlocked: booking.privacy.chatUnlockedAt != null,
+            onOpenChat: booking.privacy.chatUnlockedAt != null
+                ? () => _openBookingChat(widget.bookingId)
+                : null,
+          ),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Cancellation'),
+          const SizedBox(height: 10),
+          _CustomerCancellationCard(
+            canCancel: booking.state == CanonicalBookingStateV3.confirmed,
+            isBusy: _isCancelling || _isLoadingPreview || _isStartingService,
+            onReadPolicy: () => Navigator.of(
+              context,
+            ).pushNamed(LegalPoliciesCatalog.cancellationPolicy.routeName),
+            onCancel: booking.state == CanonicalBookingStateV3.confirmed
+                ? () => _startCancellationFlow(
+                    bookingId: widget.bookingId,
+                    actorType: 'CUSTOMER',
+                    isProvider: false,
+                  )
+                : null,
+          ),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Important information'),
+          const SizedBox(height: 10),
+          ImportantInformationCard(
+            model: StatusImportantInformationModel(
+              title: booking.state == CanonicalBookingStateV3.inProgress
+                  ? 'Service in progress'
+                  : booking.state == CanonicalBookingStateV3.noShow
+                  ? 'OTP no longer available'
+                  : 'OTP verification required',
+              body: booking.state == CanonicalBookingStateV3.inProgress
+                  ? 'The service clock started after successful OTP verification.'
+                  : booking.state == CanonicalBookingStateV3.noShow
+                  ? 'The service window ended before OTP verification, so the booking was marked as no-show.'
+                  : 'OTP verification is required to start the service. The service clock starts only after successful OTP verification.',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<StatusSummaryRowModel> _buildCustomerSummaryRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final rows = <StatusSummaryRowModel>[
+      StatusSummaryRowModel(
+        label: 'Service',
+        value: booking.service.serviceTitle,
+        icon: Icons.pets_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Provider',
+        value: booking.participants.provider.displayName,
+        icon: Icons.person_outline_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Booking Date',
+        value: _bookingDateLabel(booking),
+        icon: Icons.calendar_today_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Time',
+        value: _bookingTimeLabel(booking),
+        icon: Icons.access_time_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Duration',
+        value: _bookingDurationLabel(booking),
+        icon: Icons.timelapse_outlined,
+      ),
+    ];
+    final category = booking.service.category.trim();
+    if (category.isNotEmpty) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Category',
+          value: category,
+          icon: Icons.category_outlined,
+        ),
+      );
+    }
+    rows.add(
+      StatusSummaryRowModel(
+        label: 'Booking ID',
+        value: widget.bookingId.toUpperCase(),
+        icon: Icons.confirmation_number_outlined,
+      ),
+    );
+    return rows;
+  }
+
+  StatusCardPresentationModel _buildCustomerStatusCard(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    if (booking.state == CanonicalBookingStateV3.inProgress) {
+      return const StatusCardPresentationModel(
+        icon: Icons.play_circle_outline_rounded,
+        title: 'Service Started',
+        explanation:
+            'The provider verified your OTP and the service is now in progress.',
+        accentColor: Color(0xFF2FA56A),
+        badgeLabel: 'Confirmed',
+      );
+    }
+    if (booking.state == CanonicalBookingStateV3.noShow) {
+      return const StatusCardPresentationModel(
+        icon: Icons.event_busy_outlined,
+        title: 'No Show',
+        explanation:
+            'The service window ended before OTP verification, so this booking was marked as no-show.',
+        accentColor: Color(0xFFE07A2D),
+        badgeLabel: 'Closed',
+      );
+    }
+    return const StatusCardPresentationModel(
+      icon: Icons.verified_outlined,
+      title: 'Confirmed',
+      explanation:
+          'Your booking is confirmed. Share the service-start OTP with the provider only when the service actually begins.',
+      accentColor: Color(0xFF2FA56A),
+      badgeLabel: 'Confirmed',
+    );
+  }
+
+  List<BookingTimelineStepModel> _buildCustomerTimeline(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final steps = <BookingTimelineStepModel>[];
+    if (booking.lifecycle.requestedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Request submitted',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.requestedAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.respondedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Provider accepted',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.respondedAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.paidAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Payment completed',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.paidAt!),
+        ),
+      );
+    }
+    final scheduledAt = _scheduledStartAt(booking);
+    if (scheduledAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Service scheduled',
+          timestamp: _timelineDateTimeLabel(scheduledAt),
+          tone: BookingTimelineStepTone.neutral,
+        ),
+      );
+    }
+    if (booking.lifecycle.otpEnteredAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Service started',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.otpEnteredAt!),
+          isHighlighted: true,
+        ),
+      );
+    }
+    return steps;
+  }
+
+  List<StatusFinancialRowModel> _buildCustomerPaymentRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final financials = booking.financials;
+    final rows = <StatusFinancialRowModel>[
+      StatusFinancialRowModel(
+        label: 'Service Price',
+        value: _moneyFromPaise(financials?.serviceSubtotalPaise ?? 0),
+      ),
+    ];
+    if ((financials?.couponDiscountPaise ?? 0) > 0) {
+      rows.add(
+        StatusFinancialRowModel(
+          label: 'Coupon Discount',
+          value: '-${_moneyFromPaise(financials!.couponDiscountPaise)}',
+        ),
+      );
+    }
+    rows.add(
+      StatusFinancialRowModel(
+        label: 'Customer Paid',
+        value: _moneyFromPaise(financials?.customerPaidPaise ?? 0),
+      ),
+    );
+    rows.add(
+      const StatusFinancialRowModel(
+        label: 'Payment Status',
+        value: 'Confirmed',
+        valueTone: StatusFinancialValueTone.positive,
+      ),
+    );
+    rows.add(
+      StatusFinancialRowModel(
+        label: 'Confirmed On',
+        value: _dateTime(booking.lifecycle.paidAt),
+        isEmphasized: true,
+      ),
+    );
+    return rows;
+  }
+
+  bool _shouldShowLocationSection(
+    CanonicalBookingPrivateParticipantsData? participantPrivateData,
+    String? errorMessage,
+  ) {
+    return _hasDirectionsData(participantPrivateData) ||
+        participantPrivateData?.hasProviderPhoneNumber == true ||
+        (errorMessage != null && errorMessage.trim().isNotEmpty);
+  }
+
+  bool _hasDirectionsData(
+    CanonicalBookingPrivateParticipantsData? participantPrivateData,
+  ) {
+    if (participantPrivateData == null) return false;
+    return (participantPrivateData.latitude != null &&
+            participantPrivateData.longitude != null) ||
+        participantPrivateData.hasAddress;
+  }
+
+  String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {
+    final startAt = _scheduledStartAt(booking);
+    return startAt == null ? 'Pending' : _calendarDate(startAt);
+  }
+
+  String _bookingTimeLabel(CanonicalBookingDocumentV3 booking) {
+    if (booking.schedule case final CanonicalSlotBookingScheduleV3 schedule) {
+      if (!_hasValidSlotWindow(schedule)) return 'Pending';
+      return '${_timeOnly(schedule.scheduledStartAt)} to ${_timeOnly(schedule.scheduledEndAt)}';
+    }
+    if (booking.schedule case final CanonicalRangeBookingScheduleV3 schedule) {
+      if (!_hasValidRangeWindow(schedule)) return 'Pending';
+      return '${_timeOnly(schedule.checkInDateTime)} to ${_timeOnly(schedule.checkOutDateTime)}';
+    }
+    return 'Pending';
+  }
+
+  String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
+    if (booking.schedule case final CanonicalSlotBookingScheduleV3 schedule) {
+      return _minutesLabel(
+        schedule.totalDurationMinutes > 0
+            ? schedule.totalDurationMinutes
+            : booking.statistics.totalDurationMinutes,
+      );
+    }
+    if (booking.schedule case final CanonicalRangeBookingScheduleV3 schedule) {
+      return _nightsLabel(schedule.nights);
+    }
+    return 'Pending';
+  }
+
+  DateTime? _scheduledStartAt(CanonicalBookingDocumentV3 booking) {
+    if (booking.schedule case final CanonicalSlotBookingScheduleV3 schedule) {
+      return _hasValidSlotWindow(schedule) ? schedule.scheduledStartAt : null;
+    }
+    if (booking.schedule case final CanonicalRangeBookingScheduleV3 schedule) {
+      return _hasValidRangeWindow(schedule) ? schedule.checkInDateTime : null;
+    }
+    return null;
+  }
+
+  String _timelineDateTimeLabel(DateTime value) {
+    return '${_calendarDate(value)} · ${_timeOnly(value)}';
   }
 
   Widget _buildActions(CanonicalBookingDocumentV3 booking) {
@@ -1191,6 +1579,328 @@ class _CanonicalBookingDetailScreenState
   }
 }
 
+class _CustomerOtpSectionCard extends StatelessWidget {
+  const _CustomerOtpSectionCard({
+    required this.booking,
+    required this.otpPrivateData,
+    required this.isLoading,
+    required this.errorMessage,
+    required this.providerName,
+    required this.onRetry,
+  });
+
+  final CanonicalBookingDocumentV3 booking;
+  final CanonicalBookingPrivateData? otpPrivateData;
+  final bool isLoading;
+  final String? errorMessage;
+  final String providerName;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = errorMessage != null && errorMessage!.trim().isNotEmpty;
+    final isStarted =
+        booking.state == CanonicalBookingStateV3.inProgress ||
+        booking.lifecycle.otpEnteredAt != null ||
+        otpPrivateData?.otpState.toUpperCase() == 'USED';
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              BookingDetailsIconTile(
+                icon: Icons.password_rounded,
+                iconColor: AppColors.primary,
+                backgroundColor: const Color(0xFFFFF1E7),
+                size: 34,
+                iconSize: 18,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Use this OTP to start the service',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (isStarted)
+            const Text(
+              'Service started. Your booking OTP has already been used for this booking.',
+              style: TextStyle(
+                color: AppColors.textGrey,
+                fontWeight: FontWeight.w600,
+                height: 1.45,
+              ),
+            )
+          else if (otpPrivateData?.isOtpActive == true) ...[
+            _OtpInfoBlock(
+              otpCode: otpPrivateData!.parentOtpCode,
+              providerName: providerName,
+            ),
+          ] else if (isLoading)
+            const Text(
+              'Loading your service OTP...',
+              style: TextStyle(
+                color: AppColors.textGrey,
+                fontWeight: FontWeight.w600,
+              ),
+            )
+          else ...[
+            Text(
+              hasError
+                  ? 'Your service OTP could not be loaded right now.'
+                  : booking.state == CanonicalBookingStateV3.noShow
+                  ? 'The service OTP is no longer available because this booking was marked as no-show.'
+                  : 'Private OTP details are not available right now.',
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontWeight: FontWeight.w600,
+                height: 1.45,
+              ),
+            ),
+            if (hasError) ...[
+              const SizedBox(height: 12),
+              SecondaryButton(
+                label: 'Retry details',
+                onPressed: onRetry,
+                size: AppButtonSize.compact,
+              ),
+            ],
+          ],
+          const SizedBox(height: 14),
+          BookingDetailsSurfaceCard(
+            backgroundColor: const Color(0xFFFFF8F1),
+            borderColor: AppColors.primary.withValues(alpha: 0.10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                BookingDetailsIconTile(
+                  icon: Icons.warning_amber_rounded,
+                  iconColor: AppColors.primary,
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.10),
+                  size: 28,
+                  iconSize: 16,
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Do not share this OTP before meeting the provider and confirming that the service is ready to begin.',
+                    style: TextStyle(
+                      color: AppColors.textGrey,
+                      fontWeight: FontWeight.w600,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerLocationCard extends StatelessWidget {
+  const _CustomerLocationCard({
+    required this.participantPrivateData,
+    required this.errorMessage,
+    required this.onOpenMap,
+    required this.onCallProvider,
+    required this.onRetry,
+  });
+
+  final CanonicalBookingPrivateParticipantsData? participantPrivateData;
+  final String? errorMessage;
+  final VoidCallback? onOpenMap;
+  final VoidCallback? onCallProvider;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.location_on_outlined,
+                iconColor: AppColors.primary,
+                backgroundColor: Color(0xFFFFF1E7),
+                size: 34,
+                iconSize: 18,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  participantPrivateData?.hasAddress == true
+                      ? participantPrivateData!.exactAddress
+                      : 'Directions could not be loaded right now.',
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w700,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (onOpenMap != null)
+            SecondaryButton(
+              label: 'Get directions',
+              onPressed: onOpenMap,
+              icon: Icons.map_outlined,
+              size: AppButtonSize.compact,
+            ),
+          if (onCallProvider != null) ...[
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: 'Call provider',
+              onPressed: onCallProvider,
+              icon: Icons.call_outlined,
+              size: AppButtonSize.compact,
+            ),
+          ],
+          if (onRetry != null && onOpenMap == null) ...[
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: 'Retry details',
+              onPressed: onRetry,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerChatCard extends StatelessWidget {
+  const _CustomerChatCard({
+    required this.isOpening,
+    required this.isUnlocked,
+    required this.onOpenChat,
+  });
+
+  final bool isOpening;
+  final bool isUnlocked;
+  final VoidCallback? onOpenChat;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.chat_bubble_outline_rounded,
+                iconColor: AppColors.primary,
+                backgroundColor: Color(0xFFFFF1E7),
+                size: 34,
+                iconSize: 18,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Coordinate service details directly with the provider.',
+                  style: TextStyle(
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          GradientButton(
+            label: isOpening ? 'Opening...' : 'Message provider',
+            onPressed: isUnlocked && !isOpening ? onOpenChat : null,
+            size: AppButtonSize.compact,
+            isLoading: isOpening,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerCancellationCard extends StatelessWidget {
+  const _CustomerCancellationCard({
+    required this.canCancel,
+    required this.isBusy,
+    required this.onReadPolicy,
+    required this.onCancel,
+  });
+
+  final bool canCancel;
+  final bool isBusy;
+  final VoidCallback onReadPolicy;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.policy_outlined,
+                iconColor: AppColors.primary,
+                backgroundColor: Color(0xFFFFF1E7),
+                size: 34,
+                iconSize: 18,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  canCancel
+                      ? 'Cancellation eligibility and refund depend on the time remaining before the scheduled service.'
+                      : 'Cancellation is no longer available for this booking.',
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SecondaryButton(
+            label: 'Read Cancellation Policy',
+            onPressed: onReadPolicy,
+            icon: Icons.open_in_new_rounded,
+            size: AppButtonSize.compact,
+          ),
+          if (canCancel && onCancel != null) ...[
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: isBusy ? 'Processing...' : 'Cancel Booking',
+              onPressed: isBusy ? null : onCancel,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _HeroCard extends StatelessWidget {
   const _HeroCard({required this.booking, required this.currentUid});
 
@@ -1200,6 +1910,14 @@ class _HeroCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isParent = booking.parentId == currentUid;
+    final statusLabel = booking.state == CanonicalBookingStateV3.inProgress
+        ? 'Service in progress'
+        : booking.state == CanonicalBookingStateV3.noShow
+        ? 'No-show'
+        : 'Confirmed';
+    final statusColor = booking.state == CanonicalBookingStateV3.noShow
+        ? const Color(0xFFDC2626)
+        : const Color(0xFF2FA56A);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1214,31 +1932,46 @@ class _HeroCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              booking.state == CanonicalBookingStateV3.inProgress
-                  ? 'Service in progress'
-                  : booking.state == CanonicalBookingStateV3.noShow
-                  ? 'No-show'
-                  : 'Confirmed',
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w800,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  booking.service.serviceTitle,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  statusLabel,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Text(
-            booking.service.serviceTitle,
+            booking.participants.provider.displayName,
             style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 24,
-              fontWeight: FontWeight.w900,
+              color: AppColors.textGrey,
+              fontWeight: FontWeight.w700,
+              fontSize: 15,
             ),
           ),
           const SizedBox(height: 8),
@@ -1304,7 +2037,7 @@ class _PrivateSection extends StatelessWidget {
         !hasOtpError &&
         !hasParticipantError) {
       return _InfoCard(
-        title: isParent ? 'Customer service access' : 'Paid booking details',
+        title: isParent ? 'OTP' : 'Paid booking details',
         rows: [
           _InfoRow(
             'Status',
@@ -1324,42 +2057,41 @@ class _PrivateSection extends StatelessWidget {
             'Service status',
             'Service started. Your booking OTP has already been used for this booking.',
           )
-        else if (otpDetails?.isOtpActive == true) ...[
-          _InfoRow('Service OTP', otpDetails!.parentOtpCode),
-          const _InfoRow(
-            'How to use it',
-            'Share this 6-digit OTP with the provider when the service begins.',
-          ),
-        ] else if (isOtpLoading)
-          const _InfoRow('Service OTP', 'Loading your service OTP...')
+        else if (otpDetails?.isOtpActive == true)
+          _OtpInfoBlock(
+            otpCode: otpDetails!.parentOtpCode,
+            providerName: booking.participants.provider.displayName,
+          )
+        else if (isOtpLoading)
+          const _InfoRow('Start OTP', 'Loading your service OTP...')
         else if (hasOtpError)
           _InfoRow(
-            'Service OTP',
+            'Start OTP',
             'Your service OTP could not be loaded right now.',
           ),
       ],
       if (!isParent && participantDetails?.hasPhoneNumber == true)
         _InfoRow('Phone', participantDetails!.phoneNumber),
-      if (participantDetails?.hasAddress == true)
+      if (!isParent && participantDetails?.hasAddress == true)
         _ActionInfoRow(
           label: 'Service address',
           value: participantDetails!.exactAddress,
           actionLabel: 'Get directions',
           onTap: () => onOpenMap(participantDetails),
         )
-      else if (hasParticipantError)
+      else if (!isParent && hasParticipantError)
         _InfoRow(
           'Service address',
           'Directions could not be loaded right now.',
         ),
-      if (participantDetails?.hasProviderPhoneNumber == true)
+      if (!isParent && participantDetails?.hasProviderPhoneNumber == true)
         _ActionInfoRow(
           label: 'Provider contact',
           value: participantDetails!.providerPhoneNumber,
           actionLabel: 'Call provider',
           onTap: () => onCallPhone(participantDetails.providerPhoneNumber),
         )
-      else if (hasParticipantError)
+      else if (!isParent && hasParticipantError)
         _InfoRow(
           'Provider contact',
           'Provider phone could not be loaded right now.',
@@ -1367,7 +2099,7 @@ class _PrivateSection extends StatelessWidget {
     ];
     final needsRetry = hasOtpError || hasParticipantError;
     return _InfoCard(
-      title: isParent ? 'Customer service access' : 'Paid booking details',
+      title: isParent ? 'OTP' : 'Paid booking details',
       rows: rows,
       footer: needsRetry
           ? SecondaryButton(
@@ -1688,29 +2420,196 @@ class _ChatSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _InfoCard(
-      title: 'Booking chat',
-      rows: [
-        _InfoRow(
-          'About',
-          'Use this chat to coordinate details for this booking.',
-        ),
-      ],
-      footer: isUnlocked
-          ? GradientButton(
-              label: isOpening
-                  ? 'Opening...'
-                  : (isParent ? 'Message provider' : 'Message customer'),
-              onPressed: isOpening ? null : onOpenChat,
-              size: AppButtonSize.compact,
-            )
-          : SecondaryButton(
-              label: isParent
-                  ? 'Message provider after confirmation'
-                  : 'Message customer after confirmation',
-              onPressed: null,
-              size: AppButtonSize.compact,
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.06),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Booking chat',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
             ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Use this chat to coordinate details for this booking.',
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              height: 1.45,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 16),
+          isUnlocked
+              ? GradientButton(
+                  label: isOpening
+                      ? 'Opening...'
+                      : (isParent ? 'Message provider' : 'Message customer'),
+                  onPressed: isOpening ? null : onOpenChat,
+                  size: AppButtonSize.compact,
+                )
+              : SecondaryButton(
+                  label: isParent
+                      ? 'Message provider after confirmation'
+                      : 'Message customer after confirmation',
+                  onPressed: null,
+                  size: AppButtonSize.compact,
+                ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OtpInfoBlock extends StatelessWidget {
+  const _OtpInfoBlock({required this.otpCode, required this.providerName});
+
+  final String otpCode;
+  final String providerName;
+
+  @override
+  Widget build(BuildContext context) {
+    final digits = otpCode.split('');
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const horizontalGap = 6.0;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Center(
+              child: Text(
+                'START OTP',
+                style: TextStyle(
+                  color: AppColors.textGrey,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (var index = 0; index < digits.length; index++) ...[
+                  Expanded(
+                    child: Container(
+                      height: 58,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF1E7),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      alignment: Alignment.center,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          digits[index],
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (index != digits.length - 1)
+                    SizedBox(width: horizontalGap),
+                ],
+              ],
+            ),
+            const SizedBox(height: 14),
+            Center(
+              child: Text(
+                'Share this with $providerName only when the service actually begins. The OTP is what starts the clock.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textGrey,
+                  height: 1.45,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _AddressCard extends StatelessWidget {
+  const _AddressCard({required this.address, required this.onTapDirections});
+
+  final String address;
+  final VoidCallback onTapDirections;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Service address',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            address,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontWeight: FontWeight.w700,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton(
+              onPressed: onTapDirections,
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                side: BorderSide(
+                  color: AppColors.primary.withValues(alpha: 0.35),
+                ),
+                foregroundColor: AppColors.primary,
+                textStyle: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              child: const Text('Get directions'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
