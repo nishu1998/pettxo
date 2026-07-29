@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -62,15 +61,11 @@ class _CanonicalProviderBookingRequestDetailScreenState
 
   @override
   Widget build(BuildContext context) {
-    final shouldUseTerminalTopBar = !widget.initialRequest.isActionable;
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: shouldUseTerminalTopBar
-          ? const CanonicalBookingStatusDetailTopBar(title: 'Booking Details')
-          : const PreferredSize(
-              preferredSize: Size.fromHeight(92),
-              child: _ProviderGlassTopBar(title: 'Booking request'),
-            ),
+      appBar: const CanonicalBookingStatusDetailTopBar(
+        title: 'Booking Details',
+      ),
       body: StreamBuilder<BookingReadModel?>(
         stream: _bookingRepository.watchCanonicalBooking(
           widget.initialRequest.bookingId,
@@ -92,70 +87,106 @@ class _CanonicalProviderBookingRequestDetailScreenState
           }
           return SafeArea(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(18, 10, 18, 24),
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
               children: [
-                _RequestHeroCard(
+                _ProviderRequestOverviewCard(
                   request: currentRequest,
                   effectiveState: effectiveState,
                 ),
                 const SizedBox(height: 16),
-                _RequestSummaryCard(
-                  request: currentRequest,
-                  scheduleLabel: _scheduleLabel(currentRequest),
+                const BookingDetailsSectionLabel('Booking summary'),
+                const SizedBox(height: 10),
+                BookingSummaryCard(
+                  rows: _buildActiveSummaryRows(
+                    currentRequest,
+                    canonicalBooking,
+                  ),
                 ),
-                const SizedBox(height: 12),
-                _RequestStatusCard(
-                  request: currentRequest,
-                  effectiveState: effectiveState,
-                  statusBody: _stateDescription(currentRequest, effectiveState),
-                  noteBody: _importantMessage(currentRequest, effectiveState),
-                  countdownDeadline: currentRequest.isAcceptedAwaitingPayment
-                      ? currentRequest.payDeadlineAt
-                      : currentRequest.isPendingProvider
-                      ? currentRequest.acceptDeadlineAt
-                      : null,
-                  countdownTitle: currentRequest.isAcceptedAwaitingPayment
-                      ? 'Customer payment window'
-                      : currentRequest.isPendingProvider
-                      ? 'Response window'
-                      : null,
+                const SizedBox(height: 16),
+                const BookingDetailsSectionLabel('Booking status'),
+                const SizedBox(height: 10),
+                BookingStatusCard(
+                  model: _buildActiveStatusCard(currentRequest, effectiveState),
                 ),
-                if (currentRequest.timerStartsAt != null &&
-                    currentRequest.isQueuedRequest) ...[
-                  const SizedBox(height: 12),
-                  _RequestInfoCard(
-                    title: 'Working-hours opening',
-                    body:
-                        'The official 60-minute response window starts on ${_dateTimeLabel(currentRequest.timerStartsAt!)}.',
+                const SizedBox(height: 16),
+                const BookingDetailsSectionLabel('Booking timeline'),
+                const SizedBox(height: 10),
+                BookingTimelineCard(
+                  steps: _buildActiveTimeline(currentRequest, canonicalBooking),
+                ),
+                if (_activeDeadline(currentRequest) != null ||
+                    currentRequest.timerStartsAt != null) ...[
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Response window'),
+                  const SizedBox(height: 10),
+                  _ProviderResponseWindowCard(
+                    deadline: _activeDeadline(currentRequest),
+                    timerStartsAt: currentRequest.timerStartsAt,
+                    isPaymentWindow:
+                        effectiveState ==
+                        CanonicalBookingStateV3.acceptedAwaitingPayment,
                   ),
                 ],
-                const SizedBox(height: 22),
-                if (currentRequest.isActionable) ...[
-                  Row(
+                const SizedBox(height: 16),
+                const BookingDetailsSectionLabel('Important information'),
+                const SizedBox(height: 10),
+                ImportantInformationCard(
+                  model: _buildActiveInformation(
+                    currentRequest,
+                    effectiveState,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const BookingDetailsSectionLabel('Primary actions'),
+                const SizedBox(height: 10),
+                BookingDetailsSurfaceCard(
+                  child: Column(
                     children: [
-                      Expanded(
-                        child: SecondaryButton(
-                          label: _isDeclining ? 'Declining...' : 'Decline',
-                          onPressed: _isBusy ? null : _declineRequest,
-                          size: AppButtonSize.compact,
+                      if (currentRequest.isActionable)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SecondaryButton(
+                                label: _isDeclining
+                                    ? 'Declining...'
+                                    : 'Decline',
+                                onPressed: _isBusy ? null : _declineRequest,
+                                size: AppButtonSize.compact,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: GradientButton(
+                                label: _isAccepting ? 'Accepting...' : 'Accept',
+                                onPressed: _isBusy ? null : _acceptRequest,
+                                size: AppButtonSize.compact,
+                                isLoading: _isAccepting,
+                              ),
+                            ),
+                          ],
+                        )
+                      else
+                        const Text(
+                          'No provider action is required for this booking request right now.',
+                          style: TextStyle(
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w600,
+                            height: 1.45,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: GradientButton(
-                          label: _isAccepting ? 'Accepting...' : 'Accept',
-                          onPressed: _isBusy ? null : _acceptRequest,
-                          size: AppButtonSize.compact,
-                          isLoading: _isAccepting,
-                        ),
-                      ),
                     ],
                   ),
-                ] else if (!currentRequest.isPaymentExpired) ...[
+                ),
+                if (!currentRequest.isActionable &&
+                    !currentRequest.isPaymentExpired) ...[
+                  const SizedBox(height: 16),
                   const _PassiveNoticeCard(
                     text:
                         'This request is now read-only here. The latest state has already been applied.',
                   ),
+                ],
+                if (currentRequest.isActionable) ...[
+                  const SizedBox(height: 12),
                 ],
               ],
             ),
@@ -314,37 +345,6 @@ class _CanonicalProviderBookingRequestDetailScreenState
     return 'This request already moved forward and is shown here only for safe read compatibility.';
   }
 
-  String _importantMessage(
-    CanonicalProviderBookingRequestView request,
-    CanonicalBookingStateV3 effectiveState,
-  ) {
-    if (request.isQueuedRequest) {
-      return 'Payment and response windows still anchor to your next working-hours opening.';
-    }
-    if (effectiveState == CanonicalBookingStateV3.paymentExpired) {
-      return '';
-    }
-    if (effectiveState == CanonicalBookingStateV3.acceptedAwaitingPayment) {
-      return '';
-    }
-    return 'Accepting lets the customer pay now. Availability is confirmed only after payment succeeds.';
-  }
-
-  String _scheduleLabel(CanonicalProviderBookingRequestView request) {
-    final start = request.scheduledStartAt;
-    final end = request.scheduledEndAt;
-    if (start == null || end == null) {
-      return 'Schedule details are not available yet for this booking type.';
-    }
-    final slotCount = request.slotCount > 0
-        ? ' · ${request.slotCount} slot${request.slotCount == 1 ? '' : 's'}'
-        : '';
-    final duration = request.totalDurationMinutes > 0
-        ? ' · ${request.totalDurationMinutes} min'
-        : '';
-    return '${_dateTimeLabel(start)} to ${_timeLabel(end)}$slotCount$duration';
-  }
-
   String _dateTimeLabel(DateTime value) {
     const months = [
       'Jan',
@@ -373,6 +373,238 @@ class _CanonicalProviderBookingRequestDetailScreenState
     final suffix = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
     return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
+  }
+
+  List<StatusSummaryRowModel> _buildActiveSummaryRows(
+    CanonicalProviderBookingRequestView request,
+    CanonicalBookingDocumentV3? booking,
+  ) {
+    final rows = <StatusSummaryRowModel>[
+      StatusSummaryRowModel(
+        label: 'Service',
+        value: request.serviceTitle,
+        icon: Icons.pets_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Customer',
+        value: request.maskedParentDisplayName,
+        icon: Icons.person_outline_rounded,
+      ),
+    ];
+    if (request.animalType.trim().isNotEmpty) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Pet',
+          value: request.animalType,
+          icon: Icons.pets_rounded,
+        ),
+      );
+    }
+    rows.addAll([
+      StatusSummaryRowModel(
+        label: 'Booking Date',
+        value: _activeBookingDateLabel(request),
+        icon: Icons.calendar_today_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Time',
+        value: _activeBookingTimeLabel(request),
+        icon: Icons.access_time_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Duration',
+        value: _activeBookingDurationLabel(request),
+        icon: Icons.timelapse_outlined,
+      ),
+    ]);
+    if (request.slotCount > 0) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Slot count',
+          value:
+              '${request.slotCount} slot${request.slotCount == 1 ? '' : 's'}',
+          icon: Icons.view_week_outlined,
+        ),
+      );
+    }
+    if (request.serviceCategory.trim().isNotEmpty) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Category',
+          value: request.serviceCategory,
+          icon: Icons.category_outlined,
+        ),
+      );
+    }
+    rows.add(
+      StatusSummaryRowModel(
+        label: 'Request ID',
+        value: request.bookingId.toUpperCase(),
+        icon: Icons.confirmation_number_outlined,
+      ),
+    );
+    return rows;
+  }
+
+  StatusCardPresentationModel _buildActiveStatusCard(
+    CanonicalProviderBookingRequestView request,
+    CanonicalBookingStateV3 effectiveState,
+  ) {
+    switch (effectiveState) {
+      case CanonicalBookingStateV3.requested:
+      case CanonicalBookingStateV3.pendingProvider:
+        return const StatusCardPresentationModel(
+          icon: Icons.assignment_outlined,
+          title: 'Action Required',
+          explanation:
+              'A customer has requested this booking.\n\nReview the request before the response timer expires.',
+          accentColor: Color(0xFFF08A24),
+          badgeLabel: 'Pending response',
+        );
+      case CanonicalBookingStateV3.acceptedAwaitingPayment:
+        return const StatusCardPresentationModel(
+          icon: Icons.check_circle_outline_rounded,
+          title: 'Accepted, Awaiting Payment',
+          explanation:
+              'The customer is in the payment step.\n\nAvailability is confirmed only after successful payment.',
+          accentColor: Color(0xFF2F9E44),
+          badgeLabel: 'Awaiting payment',
+        );
+      default:
+        return StatusCardPresentationModel(
+          icon: Icons.info_outline_rounded,
+          title: _ProviderRequestOverviewCard._stateLabel(
+            request.effectiveState,
+          ),
+          explanation: _stateDescription(request, effectiveState),
+          accentColor: AppColors.primary,
+        );
+    }
+  }
+
+  List<BookingTimelineStepModel> _buildActiveTimeline(
+    CanonicalProviderBookingRequestView request,
+    CanonicalBookingDocumentV3? booking,
+  ) {
+    final steps = <BookingTimelineStepModel>[
+      BookingTimelineStepModel(
+        label: 'Request submitted',
+        timestamp: booking?.lifecycle.requestedAt == null
+            ? null
+            : _dateTimeLabel(booking!.lifecycle.requestedAt!),
+        tone: BookingTimelineStepTone.success,
+      ),
+    ];
+    if (request.isAcceptedAwaitingPayment) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Provider accepted',
+          timestamp: booking?.lifecycle.respondedAt == null
+              ? null
+              : _dateTimeLabel(booking!.lifecycle.respondedAt!),
+          tone: BookingTimelineStepTone.success,
+          isHighlighted: true,
+        ),
+      );
+      steps.add(
+        const BookingTimelineStepModel(
+          label: 'Payment',
+          tone: BookingTimelineStepTone.warning,
+        ),
+      );
+    } else {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Waiting for provider response',
+          tone: BookingTimelineStepTone.neutral,
+          isHighlighted: request.isAwaitingProviderDecision,
+        ),
+      );
+      steps.add(
+        const BookingTimelineStepModel(
+          label: 'Payment',
+          tone: BookingTimelineStepTone.neutral,
+        ),
+      );
+    }
+    steps.addAll(const [
+      BookingTimelineStepModel(
+        label: 'Confirmed',
+        tone: BookingTimelineStepTone.neutral,
+      ),
+      BookingTimelineStepModel(
+        label: 'Service',
+        tone: BookingTimelineStepTone.neutral,
+      ),
+      BookingTimelineStepModel(
+        label: 'Completed',
+        tone: BookingTimelineStepTone.neutral,
+      ),
+    ]);
+    return steps;
+  }
+
+  DateTime? _activeDeadline(CanonicalProviderBookingRequestView request) {
+    return request.isAcceptedAwaitingPayment
+        ? request.payDeadlineAt
+        : request.acceptDeadlineAt;
+  }
+
+  StatusImportantInformationModel _buildActiveInformation(
+    CanonicalProviderBookingRequestView request,
+    CanonicalBookingStateV3 effectiveState,
+  ) {
+    if (effectiveState == CanonicalBookingStateV3.acceptedAwaitingPayment) {
+      return const StatusImportantInformationModel(
+        title: 'Payment is still pending',
+        body:
+            'The customer can complete payment within the active window. Availability is confirmed only after successful payment.',
+      );
+    }
+    return const StatusImportantInformationModel(
+      title: 'What happens next',
+      body:
+          'Accepting this request allows the customer to continue to payment. Availability is confirmed only after successful payment.',
+    );
+  }
+
+  String _activeBookingDateLabel(CanonicalProviderBookingRequestView request) {
+    return request.scheduledStartAt == null
+        ? 'Pending'
+        : _calendarDate(request.scheduledStartAt!);
+  }
+
+  String _activeBookingTimeLabel(CanonicalProviderBookingRequestView request) {
+    if (request.scheduledStartAt == null || request.scheduledEndAt == null) {
+      return 'Pending';
+    }
+    return '${_timeLabel(request.scheduledStartAt!)} - ${_timeLabel(request.scheduledEndAt!)}';
+  }
+
+  String _activeBookingDurationLabel(
+    CanonicalProviderBookingRequestView request,
+  ) {
+    return request.totalDurationMinutes > 0
+        ? '${request.totalDurationMinutes} min'
+        : 'Pending';
+  }
+
+  String _calendarDate(DateTime value) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${value.day} ${months[value.month - 1]} ${value.year}';
   }
 }
 
@@ -1205,97 +1437,99 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
       return StatusFinancialValueTone.danger;
     }
     return StatusFinancialValueTone.neutral;
-Bye  }
+  }
 }
 
-class _RequestHeroCard extends StatelessWidget {
+class _ProviderRequestOverviewCard extends StatelessWidget {
+  const _ProviderRequestOverviewCard({
+    required this.request,
+    required this.effectiveState,
+  });
+
   final CanonicalProviderBookingRequestView request;
   final CanonicalBookingStateV3 effectiveState;
 
-  const _RequestHeroCard({required this.request, required this.effectiveState});
-
   @override
   Widget build(BuildContext context) {
-    final payout = request.estimatedProviderPayoutPaise != null
-        ? '₹${(request.estimatedProviderPayoutPaise! / 100).toStringAsFixed(0)} payout'
-        : 'Payout shown after payment flow activation';
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.08),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
+    return BookingDetailsSurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: _stateTint(effectiveState),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              _stateLabel(effectiveState),
-              style: const TextStyle(
-                color: AppColors.textDark,
-                fontWeight: FontWeight.w800,
-                fontSize: 12,
+          Row(
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.assignment_outlined,
+                iconColor: AppColors.primary,
+                backgroundColor: Color(0xFFFFEEE5),
+                size: 58,
+                iconSize: 28,
               ),
-            ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _stateTint(effectiveState),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        _stateLabel(effectiveState),
+                        style: const TextStyle(
+                          color: AppColors.textDark,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      request.serviceTitle,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${request.maskedParentDisplayName} · ${request.animalType} · ${request.serviceCategory}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        height: 1.4,
+                        color: AppColors.textGrey,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 14),
-          Text(
-            request.serviceTitle,
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-              color: AppColors.textDark,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${request.maskedParentDisplayName} · ${request.animalType} · ${request.serviceCategory}',
-            style: const TextStyle(
-              fontSize: 14,
-              height: 1.4,
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 14),
-          LayoutBuilder(
-            builder: (context, constraints) => Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _MetricChip(
-                  icon: Icons.star_rounded,
-                  label: request.parentRating > 0
-                      ? request.parentRating.toStringAsFixed(1)
-                      : 'New',
-                ),
-                _MetricChip(
-                  icon: Icons.verified_rounded,
-                  label:
-                      '${request.completedBookingCount} completed booking${request.completedBookingCount == 1 ? '' : 's'}',
-                  maxWidth: constraints.maxWidth * 0.62,
-                  allowWrap: true,
-                ),
-                _MetricChip(
-                  icon: Icons.account_balance_wallet_outlined,
-                  label: payout,
-                  maxWidth: constraints.maxWidth * 0.78,
-                  allowWrap: true,
-                ),
-              ],
-            ),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _MetricChip(
+                icon: Icons.star_rounded,
+                label: request.parentRating > 0
+                    ? request.parentRating.toStringAsFixed(1)
+                    : 'New',
+              ),
+              _MetricChip(
+                icon: Icons.verified_rounded,
+                label:
+                    '${request.completedBookingCount} completed booking${request.completedBookingCount == 1 ? '' : 's'}',
+              ),
+            ],
           ),
         ],
       ),
@@ -1333,45 +1567,11 @@ class _RequestHeroCard extends StatelessWidget {
 class _MetricChip extends StatelessWidget {
   final IconData icon;
   final String label;
-  final double? maxWidth;
-  final bool allowWrap;
 
-  const _MetricChip({
-    required this.icon,
-    required this.label,
-    this.maxWidth,
-    this.allowWrap = false,
-  });
+  const _MetricChip({required this.icon, required this.label});
 
   @override
   Widget build(BuildContext context) {
-    final labelStyle = const TextStyle(
-      color: AppColors.textDark,
-      fontWeight: FontWeight.w700,
-      fontSize: 12,
-      height: 1.3,
-    );
-    if (allowWrap && maxWidth != null) {
-      return SizedBox(
-        width: maxWidth,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFF7F1),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, size: 16, color: AppColors.primary),
-              const SizedBox(width: 8),
-              Expanded(child: Text(label, softWrap: true, style: labelStyle)),
-            ],
-          ),
-        ),
-      );
-    }
-
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -1383,302 +1583,71 @@ class _MetricChip extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: AppColors.primary),
           const SizedBox(width: 8),
-          Text(label, style: labelStyle),
-        ],
-      ),
-    );
-  }
-}
-
-class _RequestInfoCard extends StatelessWidget {
-  final String title;
-  final String body;
-
-  const _RequestInfoCard({required this.title, required this.body});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontWeight: FontWeight.w800,
-              fontSize: 14,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            body,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              height: 1.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RequestSummaryCard extends StatelessWidget {
-  const _RequestSummaryCard({
-    required this.request,
-    required this.scheduleLabel,
-  });
-
-  final CanonicalProviderBookingRequestView request;
-  final String scheduleLabel;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SummaryLine(label: 'Schedule', value: scheduleLabel),
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          const SizedBox(height: 12),
-          _SummaryLine(
-            label: 'Status',
-            value: _RequestHeroCard._stateLabel(request.effectiveState),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RequestStatusCard extends StatelessWidget {
-  const _RequestStatusCard({
-    required this.request,
-    required this.effectiveState,
-    required this.statusBody,
-    required this.noteBody,
-    required this.countdownDeadline,
-    required this.countdownTitle,
-  });
-
-  final CanonicalProviderBookingRequestView request;
-  final CanonicalBookingStateV3 effectiveState;
-  final String statusBody;
-  final String noteBody;
-  final DateTime? countdownDeadline;
-  final String? countdownTitle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            _cardTitle,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontWeight: FontWeight.w800,
-              fontSize: 14,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            statusBody,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              height: 1.45,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          if (countdownDeadline != null && countdownTitle != null) ...[
-            const SizedBox(height: 14),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF7F1),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    countdownTitle!,
-                    style: const TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  BookingDeadlineCountdown(
-                    deadline: countdownDeadline,
-                    valueFontSize: 18,
-                    labelFontSize: 11,
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    textAlign: TextAlign.center,
-                    centerLabelRow: true,
-                  ),
-                ],
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 156),
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+                height: 1.3,
               ),
             ),
-          ],
-          if (noteBody.trim().isNotEmpty) ...[
-            const SizedBox(height: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderResponseWindowCard extends StatelessWidget {
+  const _ProviderResponseWindowCard({
+    required this.deadline,
+    required this.timerStartsAt,
+    required this.isPaymentWindow,
+  });
+
+  final DateTime? deadline;
+  final DateTime? timerStartsAt;
+  final bool isPaymentWindow;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            isPaymentWindow ? 'Customer payment window' : 'Response window',
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontWeight: FontWeight.w900,
+              fontSize: 18,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (deadline != null)
+            BookingDeadlineCountdown(
+              deadline: deadline,
+              valueFontSize: 24,
+              labelFontSize: 12,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              textAlign: TextAlign.center,
+              centerLabelRow: true,
+              showSideDividers: true,
+            )
+          else if (timerStartsAt != null)
             Text(
-              noteBody,
+              'The official 60-minute response window starts on ${_ProviderTerminalBookingDetailsView._dateTimeLabel(timerStartsAt!)}.',
               style: const TextStyle(
                 color: AppColors.textGrey,
                 height: 1.45,
                 fontWeight: FontWeight.w600,
               ),
             ),
-          ],
         ],
-      ),
-    );
-  }
-
-  String get _cardTitle {
-    if (effectiveState == CanonicalBookingStateV3.acceptedAwaitingPayment) {
-      return 'Accepted, awaiting payment';
-    }
-    if (effectiveState == CanonicalBookingStateV3.paymentExpired) {
-      return 'Payment window expired';
-    }
-    if (request.isPendingProvider) {
-      return 'Response status';
-    }
-    if (request.isQueuedRequest) {
-      return 'Queued request';
-    }
-    return 'Request status';
-  }
-}
-
-class _SummaryLine extends StatelessWidget {
-  const _SummaryLine({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 72,
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            value,
-            textAlign: TextAlign.right,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ProviderGlassTopBar extends StatelessWidget {
-  const _ProviderGlassTopBar({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.78),
-            border: Border(
-              bottom: BorderSide(
-                color: Colors.white.withValues(alpha: 0.58),
-                width: 1,
-              ),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 18,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
-              child: Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.62),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.55),
-                      ),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.of(context).maybePop(),
-                      icon: const Icon(
-                        Icons.arrow_back_rounded,
-                        color: AppColors.textDark,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

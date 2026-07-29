@@ -64,44 +64,49 @@ void main() {
   }
 
   testWidgets(
-    'queued outside-hours detail copy no longer says actions are locked',
+    'queued provider request uses shared booking details sections and actions',
     (tester) async {
       await pumpScreen(
         tester,
         request: buildRequest(state: CanonicalBookingStateV3.requested),
       );
 
-      expect(
-        find.textContaining('actions stay locked', findRichText: true),
-        findsNothing,
-      );
-      expect(
-        find.textContaining(
-          'You can still accept or decline it now',
-          findRichText: true,
-        ),
-        findsWidgets,
-      );
+      expect(find.text('Booking Details'), findsOneWidget);
+      expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'BOOKING STATUS');
+      expect(find.text('BOOKING STATUS'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'Action Required');
+      expect(find.text('Action Required'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'RESPONSE WINDOW');
+      expect(find.text('RESPONSE WINDOW'), findsOneWidget);
+      expect(find.text('Accept'), findsOneWidget);
+      expect(find.text('Decline'), findsOneWidget);
+      expect(find.textContaining('actions stay locked'), findsNothing);
     },
   );
 
-  testWidgets('accepted request no longer shows queued-actionable copy', (
-    tester,
-  ) async {
-    await pumpScreen(
-      tester,
-      request: buildRequest(
-        state: CanonicalBookingStateV3.acceptedAwaitingPayment,
-      ),
-    );
+  testWidgets(
+    'accepted request shows payment-window layout without provider actions',
+    (tester) async {
+      await pumpScreen(
+        tester,
+        request: buildRequest(
+          state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+        ),
+      );
 
-    expect(
-      find.textContaining('The customer can pay now', findRichText: true),
-      findsNothing,
-    );
-    expect(find.text('Accepted, awaiting payment'), findsWidgets);
-    expect(find.text('Time remaining'), findsOneWidget);
-  });
+      expect(
+        find.textContaining('The customer can pay now', findRichText: true),
+        findsNothing,
+      );
+      await _scrollUntilTextVisible(tester, 'Accepted, Awaiting Payment');
+      expect(find.text('Accepted, Awaiting Payment'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'RESPONSE WINDOW');
+      expect(find.text('Customer payment window'), findsOneWidget);
+      expect(find.text('Accept'), findsNothing);
+      expect(find.text('Decline'), findsNothing);
+    },
+  );
 
   testWidgets(
     'expired accepted request opens unified provider terminal details and hides active controls',
