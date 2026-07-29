@@ -50,6 +50,11 @@ void main() {
 
       expect(find.text('Booking Details'), findsOneWidget);
       expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('BOOKING STATUS'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('BOOKING STATUS'), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text('BOOKING TIMELINE'),
@@ -122,6 +127,70 @@ void main() {
       expect(find.text('Refund Status'), findsOneWidget);
       expect(find.text('Pay now'), findsNothing);
       expect(find.text('Resume payment'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'pending-provider request uses shared booking details layout and keeps request actions',
+    (tester) async {
+      final repository = _FakeBookingRepository(_buildPendingProviderBooking());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CanonicalBookingRequestStatusScreen(
+            bookingId: 'booking-pending',
+            initialResult: CanonicalBookingRequestResult(
+              bookingId: 'booking-pending',
+              source: 'canonical_v3',
+              schemaVersion: canonicalBookingSchemaVersion,
+              bookingModelVersion: canonicalBookingModelVersion,
+              state: CanonicalBookingStateV3.pendingProvider,
+              bookingType: BookingV3Type.slot,
+              requestedAt: DateTime.utc(2026, 7, 29, 8),
+              timerStartsAt: DateTime.utc(2026, 7, 29, 8),
+              acceptDeadlineAt: DateTime.utc(2026, 7, 29, 9),
+              wasQueuedOutsideWorkingHours: false,
+              idempotentReplay: false,
+            ),
+            serviceName: 'Daily Dog Walk',
+            providerName: 'Nishant Gautam',
+            serviceImageUrl: '',
+            bookingRepository: repository,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Booking Details'), findsOneWidget);
+      expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('BOOKING STATUS'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('BOOKING STATUS'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Waiting for Provider Response'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Waiting for Provider Response'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('RESPONSE WINDOW'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('RESPONSE WINDOW'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Cancel Request'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Cancel Request'), findsOneWidget);
+      expect(find.text('Close'), findsOneWidget);
+      expect(find.text('Pay Now'), findsNothing);
+      expect(find.text('Resume Payment'), findsNothing);
+      expect(tester.takeException(), isNull);
     },
   );
 }
@@ -341,6 +410,217 @@ CanonicalBookingDocumentV3 _buildExpiredAwaitingPaymentBooking() {
 
   expect(result.isValid, isTrue);
   return result.booking!;
+}
+
+CanonicalBookingDocumentV3 _buildPendingProviderBooking() {
+  final now = DateTime.now().toUtc();
+  final requestedAt = now.subtract(const Duration(minutes: 10));
+  final acceptDeadlineAt = now.add(const Duration(minutes: 50));
+  final scheduledStartAt = now.add(const Duration(days: 1));
+  final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
+  return CanonicalBookingDocumentV3(
+    schemaVersion: canonicalBookingSchemaVersion,
+    bookingModelVersion: canonicalBookingModelVersion,
+    documentFormat: canonicalBookingDocumentFormat,
+    bookingType: BookingV3Type.slot,
+    state: CanonicalBookingStateV3.pendingProvider,
+    participants: const CanonicalBookingParticipantsV3(
+      parent: CanonicalPublicParentParticipantV3(
+        parentId: 'parent-1',
+        displayFirstName: 'Nisha',
+        lastInitial: 'G',
+        photoUrl: '',
+        completedBookingCount: 3,
+        rating: 4.8,
+      ),
+      provider: CanonicalPublicProviderParticipantV3(
+        providerId: 'provider-1',
+        displayName: 'Nishant Gautam',
+        username: 'nishant',
+        photoUrl: '',
+        completedBookingCount: 10,
+        rating: 4.9,
+      ),
+    ),
+    service: BookingServiceSnapshotV3(
+      serviceId: 'service-1',
+      providerId: 'provider-1',
+      serviceTitle: 'Daily Dog Walk',
+      animalType: 'Dog',
+      category: 'Walking',
+      bookingType: BookingV3Type.slot,
+      timezone: 'Asia/Kolkata',
+      serviceUnitPricePaise: 10000,
+      durationMinutes: 60,
+      pricePerNightPaise: null,
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      checkInDateTime: null,
+      checkOutDateTime: null,
+      capacitySnapshot: 1,
+      serviceLocationType: 'provider_location',
+      currency: 'INR',
+      snapshotVersion: 1,
+    ),
+    schedule: CanonicalSlotBookingScheduleV3(
+      serviceAnchorAt: scheduledStartAt,
+      timezone: 'Asia/Kolkata',
+      slots: [
+        CanonicalBookingSlotSegmentV3(
+          slotId: 'slot-1',
+          dateKey:
+              '${scheduledStartAt.year.toString().padLeft(4, '0')}-'
+              '${scheduledStartAt.month.toString().padLeft(2, '0')}-'
+              '${scheduledStartAt.day.toString().padLeft(2, '0')}',
+          startAt: scheduledStartAt,
+          endAt: scheduledEndAt,
+          durationMinutes: 60,
+          unitPricePaise: 10000,
+          serviceId: 'service-1',
+          providerId: 'provider-1',
+          timezone: 'Asia/Kolkata',
+        ),
+      ],
+      slotCount: 1,
+      scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
+      totalDurationMinutes: 60,
+    ),
+    lifecycle: CanonicalBookingLifecycleV3(
+      requestedAt: requestedAt,
+      timerStartsAt: requestedAt,
+      wasQueuedOutsideWorkingHours: false,
+      notifiedAt: requestedAt,
+      acceptDeadlineAt: acceptDeadlineAt,
+      viewedByProviderAt: null,
+      respondedAt: null,
+      providerResponseType: null,
+      responseSeconds: null,
+      payDeadlineAt: null,
+      paymentStartedAt: null,
+      paidAt: null,
+      paymentSeconds: null,
+      otpGeneratedAt: null,
+      otpEnteredAt: null,
+      noShowAt: null,
+      serviceEndedAt: null,
+      disputeDeadlineAt: null,
+      completedAt: null,
+      reviewWindowEndsAt: null,
+      finalizedAt: null,
+      cancelledAt: null,
+    ),
+    payment: const CanonicalBookingPaymentV3(
+      status: 'not_started',
+      razorpayOrderId: '',
+      razorpayPaymentId: '',
+      razorpayRefundId: '',
+      paymentAttemptId: '',
+      orderCreatedAt: null,
+      paymentStartedAt: null,
+      capturedAt: null,
+      verifiedAt: null,
+      verificationSource: '',
+      webhookEventIds: [],
+      failureCode: '',
+      failureMessage: '',
+    ),
+    financials: BookingFinancialSnapshotV3(
+      currency: 'INR',
+      serviceSubtotalPaise: 10000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 0,
+      platformCommissionRateBasisPoints: 0,
+      platformCommissionPaise: 0,
+      providerPayoutPaise: 0,
+      pettxoCouponFundingPaise: 0,
+      gatewayFeeSunkPaise: 0,
+      providerFaultCostPaise: 0,
+      refundAmountPaise: 0,
+      pettxoNetBeforeGatewayPaise: 0,
+      pricingVersion: 1,
+    ),
+    privacy: const CanonicalBookingPrivacyV3(
+      isPaidContactUnlocked: false,
+      contactUnlockedAt: null,
+      chatUnlockedAt: null,
+      otpVisibleToParent: false,
+      exactAddressUnlocked: false,
+      privacyVersion: canonicalBookingPrivacyVersion,
+      privateParticipantsRefPath: '',
+    ),
+    cancellation: const CanonicalBookingCancellationV3(
+      cancelledAt: null,
+      cancelledBy: null,
+      cancelReasonCode: '',
+      cancelReasonText: '',
+      hoursBeforeServiceAtCancel: null,
+      refundBand: '',
+      refundBasisPoints: null,
+      refundAmountPaise: 0,
+      providerCompensationPaise: 0,
+      pettxoRetainedPaise: 0,
+      cancellationType: null,
+    ),
+    dispute: const CanonicalBookingDisputeV3(
+      disputeId: '',
+      status: '',
+      raisedAt: null,
+      raisedBy: null,
+      reasonCode: '',
+      description: '',
+      evidenceRefs: [],
+      resolvedAt: null,
+      resolvedBy: null,
+      resolution: '',
+      resolutionVersion: 0,
+      financialAdjustmentId: '',
+      refundInstructionId: '',
+      customerRefundPaise: 0,
+      providerReleasePaise: 0,
+    ),
+    payout: const CanonicalBookingPayoutV3(
+      status: '',
+      holdReason: '',
+      eligibleAt: null,
+      readyAt: null,
+      processingAt: null,
+      releasedAt: null,
+      failedAt: null,
+      providerPayoutPaise: 0,
+      priorPaidPaise: 0,
+      remainingPayablePaise: 0,
+      payoutReference: '',
+      externalTransactionId: '',
+      failureCode: '',
+      retryCount: 0,
+    ),
+    statistics: const CanonicalBookingStatisticsV3(
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      nights: null,
+    ),
+    audit: const CanonicalBookingAuditV3(
+      createdBy: BookingActorV3.parent,
+      lastUpdatedBy: BookingActorV3.system,
+      source: 'test',
+    ),
+    parentId: 'parent-1',
+    providerId: 'provider-1',
+    serviceId: 'service-1',
+    stateQueryValue: CanonicalBookingStateV3.pendingProvider,
+    bookingTypeQueryValue: BookingV3Type.slot,
+    serviceAnchorAt: scheduledStartAt,
+    scheduledStartAt: scheduledStartAt,
+    checkInDateTime: null,
+    acceptDeadlineAt: acceptDeadlineAt,
+    payDeadlineAt: null,
+    completedAt: null,
+    customerId: 'parent-1',
+    serviceOwnerId: 'provider-1',
+    createdAt: requestedAt,
+    updatedAt: requestedAt,
+  );
 }
 
 CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking() {

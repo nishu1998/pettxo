@@ -12,6 +12,7 @@ import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
+import '../widgets/booking_deadline_countdown.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
 import '../../../profile/presentation/screens/service_detail_screen.dart';
@@ -100,75 +101,121 @@ class _CanonicalBookingRequestStatusScreenState
             }
             return SafeArea(
               child: ListView(
-                padding: const EdgeInsets.fromLTRB(18, 8, 18, 20),
+                padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
                 children: [
-                  _StatusHeroCard(
-                    serviceName: widget.serviceName,
-                    providerName: widget.providerName,
+                  _CustomerRequestOverviewCard(
+                    serviceName:
+                        canonicalBooking?.service.serviceTitle
+                                .trim()
+                                .isNotEmpty ==
+                            true
+                        ? canonicalBooking!.service.serviceTitle
+                        : widget.serviceName,
+                    providerName:
+                        canonicalBooking?.participants.provider.displayName
+                                .trim()
+                                .isNotEmpty ==
+                            true
+                        ? canonicalBooking!.participants.provider.displayName
+                        : widget.providerName,
+                    category: canonicalBooking?.service.category ?? '',
+                    currentState: canonicalBooking == null
+                        ? widget.initialResult.state
+                        : _effectiveDisplayState(canonicalBooking),
                     serviceImageUrl: widget.serviceImageUrl,
-                    title: status.title,
-                    subtitle: status.subtitle,
-                    color: status.color,
+                    serviceId: canonicalBooking?.serviceId ?? '',
+                    servicesRepository: _servicesRepository,
                   ),
-                  const SizedBox(height: 12),
-                  if (status.countdownLabel != null)
-                    _DetailCard(
-                      title: 'Response window',
-                      body: status.countdownLabel!,
-                    ),
-                  if (status.timerStartsAtLabel != null) ...[
-                    const SizedBox(height: 12),
-                    _DetailCard(
-                      title: 'Timer starts',
-                      body: status.timerStartsAtLabel!,
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  const _DetailCard(
-                    title: 'Charges',
-                    body: 'Nothing has been charged.',
-                  ),
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Booking summary'),
                   const SizedBox(height: 10),
-                  _DetailCard(title: 'Current state', body: status.stateLabel),
-                  if (status.developmentNote != null) ...[
-                    const SizedBox(height: 12),
-                    _DetailCard(
-                      title: 'Payment',
-                      body: status.developmentNote!,
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  if (status.canCancel) ...[
-                    SecondaryButton(
-                      label: _isCancelling ? 'Cancelling...' : 'Cancel request',
-                      onPressed: _isCancelling ? null : _cancelRequest,
-                    ),
+                  BookingSummaryCard(
+                    rows: _buildActiveSummaryRows(canonicalBooking),
+                  ),
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Booking status'),
+                  const SizedBox(height: 10),
+                  BookingStatusCard(
+                    model: _buildActiveStatusCard(canonicalBooking, status),
+                  ),
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Booking timeline'),
+                  const SizedBox(height: 10),
+                  BookingTimelineCard(
+                    steps: _buildActiveTimeline(canonicalBooking),
+                  ),
+                  if (_activeDeadline(canonicalBooking) != null ||
+                      status.timerStartsAtLabel != null) ...[
+                    const SizedBox(height: 16),
+                    const BookingDetailsSectionLabel('Response window'),
                     const SizedBox(height: 10),
+                    _ActiveCountdownCard(
+                      title: canOpenPayment
+                          ? 'Payment window'
+                          : 'Response window',
+                      deadline: _activeDeadline(canonicalBooking),
+                      fallbackMessage: status.timerStartsAtLabel,
+                    ),
                   ],
-                  if (canOpenPayment) ...[
-                    GradientButton(
-                      label:
-                          canonicalBooking!.payment.paymentAttemptId
-                              .trim()
-                              .isNotEmpty
-                          ? 'Resume payment'
-                          : 'Pay now',
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => CanonicalBookingPaymentScreen(
-                            bookingId: widget.bookingId,
-                            serviceName: widget.serviceName,
-                            providerName: widget.providerName,
-                            serviceImageUrl: widget.serviceImageUrl,
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Financial summary'),
+                  const SizedBox(height: 10),
+                  FinancialSummaryCard(
+                    rows: _buildActiveFinancialRows(
+                      canOpenPayment: canOpenPayment,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Important information'),
+                  const SizedBox(height: 10),
+                  ImportantInformationCard(
+                    model: _buildActiveInformation(
+                      canOpenPayment: canOpenPayment,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const BookingDetailsSectionLabel('Primary actions'),
+                  const SizedBox(height: 10),
+                  BookingDetailsSurfaceCard(
+                    child: Column(
+                      children: [
+                        if (status.canCancel)
+                          SecondaryButton(
+                            label: _isCancelling
+                                ? 'Cancelling...'
+                                : 'Cancel Request',
+                            onPressed: _isCancelling ? null : _cancelRequest,
+                            icon: Icons.close_rounded,
                           ),
+                        if (canOpenPayment) ...[
+                          if (status.canCancel) const SizedBox(height: 10),
+                          GradientButton(
+                            label:
+                                canonicalBooking!.payment.paymentAttemptId
+                                    .trim()
+                                    .isNotEmpty
+                                ? 'Resume Payment'
+                                : 'Pay Now',
+                            onPressed: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => CanonicalBookingPaymentScreen(
+                                  bookingId: widget.bookingId,
+                                  serviceName: widget.serviceName,
+                                  providerName: widget.providerName,
+                                  serviceImageUrl: widget.serviceImageUrl,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (status.canCancel || canOpenPayment)
+                          const SizedBox(height: 10),
+                        SecondaryButton(
+                          label: 'Close',
+                          onPressed: _handleClosePressed,
                         ),
-                      ),
+                      ],
                     ),
-                    const SizedBox(height: 10),
-                  ],
-                  SecondaryButton(
-                    label: 'Close',
-                    onPressed: _handleClosePressed,
                   ),
                 ],
               ),
@@ -471,6 +518,162 @@ class _CanonicalBookingRequestStatusScreenState
     final suffix = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
     return '${value.day} ${months[value.month - 1]} ${value.year} · $displayHour:${minute.toString().padLeft(2, '0')} $suffix';
+  }
+
+  List<StatusSummaryRowModel> _buildActiveSummaryRows(
+    CanonicalBookingDocumentV3? booking,
+  ) {
+    final category = booking?.service.category.trim() ?? '';
+    return [
+      StatusSummaryRowModel(
+        label: 'Service',
+        value: booking?.service.serviceTitle.trim().isNotEmpty == true
+            ? booking!.service.serviceTitle
+            : widget.serviceName,
+        icon: Icons.pets_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Provider',
+        value:
+            booking?.participants.provider.displayName.trim().isNotEmpty == true
+            ? booking!.participants.provider.displayName
+            : widget.providerName,
+        icon: Icons.person_outline_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Booking Date',
+        value: booking == null ? 'Pending' : _bookingDateLabel(booking),
+        icon: Icons.calendar_today_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Time',
+        value: booking == null ? 'Pending' : _bookingTimeLabel(booking),
+        icon: Icons.access_time_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Duration',
+        value: booking == null ? 'Pending' : _bookingDurationLabel(booking),
+        icon: Icons.timelapse_outlined,
+      ),
+      if (category.isNotEmpty)
+        StatusSummaryRowModel(
+          label: 'Category',
+          value: category,
+          icon: Icons.category_outlined,
+        ),
+      StatusSummaryRowModel(
+        label: 'Request ID',
+        value: widget.bookingId.toUpperCase(),
+        icon: Icons.confirmation_number_outlined,
+      ),
+    ];
+  }
+
+  StatusCardPresentationModel _buildActiveStatusCard(
+    CanonicalBookingDocumentV3? booking,
+    _RequestStatusViewData status,
+  ) {
+    final displayState = booking == null
+        ? widget.initialResult.state
+        : _effectiveDisplayState(booking);
+    switch (displayState) {
+      case CanonicalBookingStateV3.requested:
+      case CanonicalBookingStateV3.pendingProvider:
+        return const StatusCardPresentationModel(
+          icon: Icons.hourglass_bottom_rounded,
+          title: 'Waiting for Provider Response',
+          explanation:
+              'Your booking request has been sent successfully.\n\nThe provider is reviewing your request.\n\nYou\'ll automatically receive a notification once they respond.',
+          accentColor: Color(0xFFF08A24),
+          badgeLabel: 'Pending',
+        );
+      case CanonicalBookingStateV3.acceptedAwaitingPayment:
+        return const StatusCardPresentationModel(
+          icon: Icons.check_circle_outline_rounded,
+          title: 'Provider Accepted',
+          explanation:
+              'The provider accepted your request.\n\nPay within the active window to confirm availability and unlock the booking.',
+          accentColor: Color(0xFF2F9E44),
+          badgeLabel: 'Awaiting payment',
+        );
+      default:
+        return StatusCardPresentationModel(
+          icon: Icons.info_outline_rounded,
+          title: status.title.replaceAll('.', ''),
+          explanation: status.subtitle,
+          accentColor: status.color,
+          badgeLabel: status.stateLabel,
+        );
+    }
+  }
+
+  List<BookingTimelineStepModel> _buildActiveTimeline(
+    CanonicalBookingDocumentV3? booking,
+  ) {
+    return <BookingTimelineStepModel>[
+      BookingTimelineStepModel(
+        label: 'Request submitted',
+        timestamp: booking?.lifecycle.requestedAt == null
+            ? null
+            : _dateTimeLabel(booking!.lifecycle.requestedAt!),
+        tone: BookingTimelineStepTone.success,
+      ),
+      const BookingTimelineStepModel(
+        label: 'Provider reviewing',
+        timestamp: null,
+        tone: BookingTimelineStepTone.neutral,
+        isHighlighted: true,
+      ),
+    ];
+  }
+
+  DateTime? _activeDeadline(CanonicalBookingDocumentV3? booking) {
+    if (booking != null) {
+      final displayState = _effectiveDisplayState(booking);
+      if (displayState == CanonicalBookingStateV3.acceptedAwaitingPayment) {
+        return booking.lifecycle.payDeadlineAt;
+      }
+      return booking.lifecycle.acceptDeadlineAt;
+    }
+    return widget.initialResult.acceptDeadlineAt;
+  }
+
+  List<StatusFinancialRowModel> _buildActiveFinancialRows({
+    required bool canOpenPayment,
+  }) {
+    if (canOpenPayment) {
+      return const [
+        StatusFinancialRowModel(
+          label: 'Customer payment',
+          value: 'Pending',
+          valueTone: StatusFinancialValueTone.warning,
+        ),
+      ];
+    }
+    return const [
+      StatusFinancialRowModel(
+        label: 'Customer payment',
+        value: 'Not charged yet',
+        valueTone: StatusFinancialValueTone.neutral,
+      ),
+    ];
+  }
+
+  StatusImportantInformationModel _buildActiveInformation({
+    required bool canOpenPayment,
+  }) {
+    if (canOpenPayment) {
+      return const StatusImportantInformationModel(
+        title: 'Payment unlocks the booking',
+        body:
+            'Availability is confirmed only after successful payment. If the payment window ends first, this request will expire automatically.',
+      );
+    }
+    return const StatusImportantInformationModel(
+      title: 'No payment has been collected',
+      body:
+          'You may cancel this booking request until the provider responds. Payment will only be collected after the provider accepts your request.',
+    );
   }
 
   List<StatusSummaryRowModel> _buildSummaryRows(
@@ -1179,73 +1382,75 @@ class _CanonicalBookingRequestStatusScreenState
   }
 }
 
-class _StatusHeroCard extends StatelessWidget {
-  final String serviceName;
-  final String providerName;
-  final String serviceImageUrl;
-  final String title;
-  final String subtitle;
-  final Color color;
-
-  const _StatusHeroCard({
+class _CustomerRequestOverviewCard extends StatelessWidget {
+  const _CustomerRequestOverviewCard({
     required this.serviceName,
     required this.providerName,
+    required this.category,
+    required this.currentState,
     required this.serviceImageUrl,
-    required this.title,
-    required this.subtitle,
-    required this.color,
+    required this.serviceId,
+    required this.servicesRepository,
   });
+
+  final String serviceName;
+  final String providerName;
+  final String category;
+  final CanonicalBookingStateV3 currentState;
+  final String serviceImageUrl;
+  final String serviceId;
+  final ServicesRepository servicesRepository;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
+    final badgeLabel = switch (currentState) {
+      CanonicalBookingStateV3.acceptedAwaitingPayment => 'Awaiting payment',
+      _ => 'Waiting for provider response',
+    };
+    final badgeColor = switch (currentState) {
+      CanonicalBookingStateV3.acceptedAwaitingPayment => const Color(
+        0xFF2F9E44,
       ),
+      _ => const Color(0xFFF08A24),
+    };
+    return BookingDetailsSurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: SizedBox(
-                  width: 58,
-                  height: 58,
-                  child: serviceImageUrl.trim().isEmpty
-                      ? Container(
-                          color: const Color(0xFFFFEFE7),
-                          child: const Icon(
-                            Icons.pets_rounded,
-                            color: AppColors.primary,
-                          ),
-                        )
-                      : Image.network(
-                          serviceImageUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => Container(
-                            color: const Color(0xFFFFEFE7),
-                            child: const Icon(
-                              Icons.pets_rounded,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        ),
-                ),
-              ),
+              _buildServiceImage(),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: badgeColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        badgeLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: badgeColor,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     Text(
                       serviceName,
                       style: const TextStyle(
                         color: AppColors.textDark,
                         fontWeight: FontWeight.w900,
-                        fontSize: 17,
+                        fontSize: 22,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -1258,41 +1463,16 @@ class _StatusHeroCard extends StatelessWidget {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: color.withValues(alpha: 0.14),
-                child: Icon(Icons.hourglass_top_rounded, color: color),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 16,
+                    if (category.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        category,
+                        style: const TextStyle(
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: AppColors.textGrey,
-                        fontWeight: FontWeight.w700,
-                        height: 1.35,
-                      ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -1302,43 +1482,128 @@ class _StatusHeroCard extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildServiceImage() {
+    final primaryImageUrl = _primaryImageUrl(serviceImageUrl);
+    if (primaryImageUrl != null) return _HeroServiceImage(url: primaryImageUrl);
+    if (serviceId.trim().isEmpty) return const _FallbackServiceTile();
+    return FutureBuilder<String?>(
+      future: _loadServiceImage(),
+      builder: (context, snapshot) {
+        final resolvedImageUrl = _primaryImageUrl(snapshot.data ?? '');
+        if (resolvedImageUrl == null) return const _FallbackServiceTile();
+        return _HeroServiceImage(url: resolvedImageUrl);
+      },
+    );
+  }
+
+  Future<String?> _loadServiceImage() async {
+    final service = await servicesRepository.fetchServiceById(serviceId);
+    if (service == null) return null;
+    if (service.photoUrls.isNotEmpty) return service.photoUrls.first;
+    return service.primaryPhotoUrl.trim().isEmpty
+        ? null
+        : service.primaryPhotoUrl;
+  }
+
+  static String? _primaryImageUrl(String rawValue) {
+    final trimmed = rawValue.trim();
+    if (trimmed.isEmpty) return null;
+    final normalized = trimmed
+        .replaceAll('[', '')
+        .replaceAll(']', '')
+        .replaceAll('"', '')
+        .replaceAll("'", '');
+    final first = normalized
+        .split(RegExp(r'\s*,\s*|\s*\|\s*|\n'))
+        .map((entry) => entry.trim())
+        .firstWhere((entry) => entry.isNotEmpty, orElse: () => '');
+    return first.isEmpty ? null : first;
+  }
 }
 
-class _DetailCard extends StatelessWidget {
-  final String title;
-  final String body;
+class _HeroServiceImage extends StatelessWidget {
+  const _HeroServiceImage({required this.url});
 
-  const _DetailCard({required this.title, required this.body});
+  final String url;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        width: 58,
+        height: 58,
+        child: Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => const _FallbackServiceTile(),
+        ),
       ),
+    );
+  }
+}
+
+class _FallbackServiceTile extends StatelessWidget {
+  const _FallbackServiceTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return const BookingDetailsIconTile(
+      icon: Icons.pets_rounded,
+      iconColor: AppColors.primary,
+      backgroundColor: Color(0xFFFFEEE5),
+      size: 58,
+      iconSize: 28,
+    );
+  }
+}
+
+class _ActiveCountdownCard extends StatelessWidget {
+  const _ActiveCountdownCard({
+    required this.title,
+    required this.deadline,
+    this.fallbackMessage,
+  });
+
+  final String title;
+  final DateTime? deadline;
+  final String? fallbackMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             title,
             style: const TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w800,
-              fontSize: 13,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            body,
-            style: const TextStyle(
               color: AppColors.textDark,
-              fontWeight: FontWeight.w800,
-              fontSize: 14.5,
-              height: 1.35,
+              fontWeight: FontWeight.w900,
+              fontSize: 18,
             ),
           ),
+          const SizedBox(height: 12),
+          if (deadline != null)
+            BookingDeadlineCountdown(
+              deadline: deadline,
+              valueFontSize: 24,
+              labelFontSize: 12,
+              showSideDividers: true,
+              centerLabelRow: true,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              textAlign: TextAlign.center,
+            )
+          else if (fallbackMessage != null)
+            Text(
+              fallbackMessage!,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontWeight: FontWeight.w600,
+                height: 1.45,
+              ),
+            ),
         ],
       ),
     );
