@@ -396,6 +396,65 @@ void main() {
       expect(result.booking?.lifecycle.otpEnteredAt, isNull);
     });
 
+    test(
+      'parses historically corrupted completed booking using legacy completion fallbacks',
+      () {
+        final map = buildCanonicalRange();
+        final completedAt = DateTime.utc(2026, 7, 28, 9, 30);
+        final reviewWindowEndsAt = DateTime.utc(2026, 7, 29, 9, 30);
+        final disputeDeadlineAt = DateTime.utc(2026, 7, 29, 9, 30);
+        map['state'] = 'COMPLETED_PENDING_REVIEW';
+        map['stateQueryValue'] = 'COMPLETED_PENDING_REVIEW';
+        map['completedAt'] = completedAt;
+        (map['lifecycle'] as Map<String, dynamic>)['completedAt'] = null;
+        (map['lifecycle'] as Map<String, dynamic>)['serviceEndedAt'] = null;
+        (map['lifecycle'] as Map<String, dynamic>)['reviewWindowEndsAt'] = null;
+        (map['lifecycle'] as Map<String, dynamic>)['disputeDeadlineAt'] = null;
+        map['lifecycle.completedAt'] = completedAt;
+        map['lifecycle.serviceEndedAt'] = completedAt;
+        map['lifecycle.reviewWindowEndsAt'] = reviewWindowEndsAt;
+        map['lifecycle.disputeDeadlineAt'] = disputeDeadlineAt;
+
+        final result = parseCanonicalBookingDocumentV3(map);
+
+        expect(result.isValid, isTrue);
+        expect(
+          result.booking?.state,
+          CanonicalBookingStateV3.completedPendingReview,
+        );
+        expect(result.booking?.completedAt, completedAt);
+        expect(result.booking?.lifecycle.completedAt, completedAt);
+        expect(result.booking?.lifecycle.serviceEndedAt, completedAt);
+        expect(
+          result.booking?.lifecycle.reviewWindowEndsAt,
+          reviewWindowEndsAt,
+        );
+        expect(result.booking?.lifecycle.disputeDeadlineAt, disputeDeadlineAt);
+      },
+    );
+
+    test('parses persisted review status from canonical booking fields', () {
+      final map = buildCanonicalRange();
+      final submittedAt = DateTime.utc(2026, 7, 29, 9, 45);
+      map['state'] = 'COMPLETED_PENDING_REVIEW';
+      map['stateQueryValue'] = 'COMPLETED_PENDING_REVIEW';
+      map['reviewStatus'] = 'submitted';
+      map['reviewId'] = 'booking-1';
+      map['review'] = {
+        'status': 'submitted',
+        'reviewId': 'booking-1',
+        'submittedAt': submittedAt,
+      };
+
+      final result = parseCanonicalBookingDocumentV3(map);
+
+      expect(result.isValid, isTrue);
+      expect(result.booking?.hasSubmittedReview, isTrue);
+      expect(result.booking?.review.status, 'submitted');
+      expect(result.booking?.review.reviewId, 'booking-1');
+      expect(result.booking?.review.submittedAt, submittedAt);
+    });
+
     test('rejects pre-payment private fields on public booking doc', () {
       final map = buildCanonicalSlot();
       (map['participants']['parent'] as Map<String, dynamic>)['phoneNumber'] =

@@ -326,6 +326,21 @@ class CanonicalBookingDisputeV3 {
   });
 }
 
+class CanonicalBookingReviewV3 {
+  final String status;
+  final String reviewId;
+  final DateTime? submittedAt;
+
+  const CanonicalBookingReviewV3({
+    required this.status,
+    required this.reviewId,
+    required this.submittedAt,
+  });
+
+  bool get isSubmitted =>
+      reviewId.trim().isNotEmpty || status.trim().toLowerCase() == 'submitted';
+}
+
 class CanonicalBookingPayoutV3 {
   final String status;
   final String holdReason;
@@ -435,6 +450,7 @@ class CanonicalBookingDocumentV3 {
   final CanonicalBookingPrivacyV3 privacy;
   final CanonicalBookingCancellationV3 cancellation;
   final CanonicalBookingDisputeV3 dispute;
+  final CanonicalBookingReviewV3 review;
   final CanonicalBookingPayoutV3 payout;
   final CanonicalBookingStatisticsV3 statistics;
   final CanonicalBookingAuditV3 audit;
@@ -469,6 +485,11 @@ class CanonicalBookingDocumentV3 {
     required this.privacy,
     required this.cancellation,
     required this.dispute,
+    this.review = const CanonicalBookingReviewV3(
+      status: '',
+      reviewId: '',
+      submittedAt: null,
+    ),
     required this.payout,
     required this.statistics,
     required this.audit,
@@ -491,6 +512,7 @@ class CanonicalBookingDocumentV3 {
 
   bool get isSlotBooking => bookingType == BookingV3Type.slot;
   bool get isRangeBooking => bookingType == BookingV3Type.range;
+  bool get hasSubmittedReview => review.isSubmitted;
 }
 
 class CanonicalBookingDocumentParseResult {
@@ -563,7 +585,7 @@ class _CanonicalBookingDocumentParser {
       service?.serviceId ?? '',
       service?.providerId ?? '',
     );
-    final lifecycle = _parseLifecycle(_readMap(raw['lifecycle']));
+    var lifecycle = _parseLifecycle(_readMap(raw['lifecycle']));
     final payment = _parsePayment(_readMap(raw['payment']));
     final financials = _parseFinancials(raw['financials']);
     final privacy = _parsePrivacy(_readMap(raw['privacy']));
@@ -629,6 +651,12 @@ class _CanonicalBookingDocumentParser {
         List<CanonicalBookingValidationIssue>.unmodifiable(issues),
       );
     }
+
+    lifecycle = _applyLegacyCompletedLifecycleFallback(
+      raw: raw,
+      state: state,
+      lifecycle: lifecycle,
+    );
 
     if (parentId.isEmpty ||
         providerId.isEmpty ||
@@ -717,6 +745,7 @@ class _CanonicalBookingDocumentParser {
         privacy: privacy,
         cancellation: cancellation,
         dispute: dispute,
+        review: _parseReview(raw),
         payout: payout,
         statistics: statistics,
         audit: audit,
@@ -1206,6 +1235,24 @@ class _CanonicalBookingDocumentParser {
     );
   }
 
+  CanonicalBookingReviewV3 _parseReview(Map<String, dynamic> raw) {
+    final reviewMap = _readMap(raw['review']);
+    final reviewStatus = _readString(raw['reviewStatus']).isNotEmpty
+        ? _readString(raw['reviewStatus'])
+        : _readString(reviewMap['status']);
+    final reviewId = _readString(raw['reviewId']).isNotEmpty
+        ? _readString(raw['reviewId'])
+        : _readString(reviewMap['reviewId']);
+    final submittedAt =
+        _readDate(raw['reviewSubmittedAt'], 'reviewSubmittedAt') ??
+        _readDate(reviewMap['submittedAt'], 'review.submittedAt');
+    return CanonicalBookingReviewV3(
+      status: reviewStatus,
+      reviewId: reviewId,
+      submittedAt: submittedAt,
+    );
+  }
+
   CanonicalBookingPayoutV3? _parsePayout(Map<String, dynamic> map) {
     return CanonicalBookingPayoutV3(
       status: _readString(map['status']),
@@ -1467,6 +1514,77 @@ class _CanonicalBookingDocumentParser {
   void _addIssue(String code, String message, String path) {
     issues.add(
       CanonicalBookingValidationIssue(code: code, message: message, path: path),
+    );
+  }
+
+  CanonicalBookingLifecycleV3 _applyLegacyCompletedLifecycleFallback({
+    required Map<String, dynamic> raw,
+    required CanonicalBookingStateV3 state,
+    required CanonicalBookingLifecycleV3 lifecycle,
+  }) {
+    final isCompletedState =
+        state == CanonicalBookingStateV3.completedPendingReview ||
+        state == CanonicalBookingStateV3.completedFinal;
+    if (!isCompletedState) {
+      return lifecycle;
+    }
+
+    final fallbackServiceEndedAt =
+        lifecycle.serviceEndedAt ??
+        _readDate(raw['lifecycle.serviceEndedAt'], 'lifecycle.serviceEndedAt');
+    final fallbackCompletedAt =
+        lifecycle.completedAt ??
+        _readDate(raw['lifecycle.completedAt'], 'lifecycle.completedAt') ??
+        _readDate(raw['completedAt'], 'completedAt');
+    final normalizedServiceEndedAt =
+        fallbackServiceEndedAt ?? fallbackCompletedAt;
+    final fallbackReviewWindowEndsAt =
+        lifecycle.reviewWindowEndsAt ??
+        _readDate(
+          raw['lifecycle.reviewWindowEndsAt'],
+          'lifecycle.reviewWindowEndsAt',
+        );
+    final fallbackDisputeDeadlineAt =
+        lifecycle.disputeDeadlineAt ??
+        _readDate(
+          raw['lifecycle.disputeDeadlineAt'],
+          'lifecycle.disputeDeadlineAt',
+        );
+    final fallbackOtpEnteredAt =
+        lifecycle.otpEnteredAt ??
+        _readDate(raw['lifecycle.otpEnteredAt'], 'lifecycle.otpEnteredAt');
+
+    if (normalizedServiceEndedAt == lifecycle.serviceEndedAt &&
+        fallbackCompletedAt == lifecycle.completedAt &&
+        fallbackReviewWindowEndsAt == lifecycle.reviewWindowEndsAt &&
+        fallbackDisputeDeadlineAt == lifecycle.disputeDeadlineAt &&
+        fallbackOtpEnteredAt == lifecycle.otpEnteredAt) {
+      return lifecycle;
+    }
+
+    return CanonicalBookingLifecycleV3(
+      requestedAt: lifecycle.requestedAt,
+      timerStartsAt: lifecycle.timerStartsAt,
+      wasQueuedOutsideWorkingHours: lifecycle.wasQueuedOutsideWorkingHours,
+      notifiedAt: lifecycle.notifiedAt,
+      acceptDeadlineAt: lifecycle.acceptDeadlineAt,
+      viewedByProviderAt: lifecycle.viewedByProviderAt,
+      respondedAt: lifecycle.respondedAt,
+      providerResponseType: lifecycle.providerResponseType,
+      responseSeconds: lifecycle.responseSeconds,
+      payDeadlineAt: lifecycle.payDeadlineAt,
+      paymentStartedAt: lifecycle.paymentStartedAt,
+      paidAt: lifecycle.paidAt,
+      paymentSeconds: lifecycle.paymentSeconds,
+      otpGeneratedAt: lifecycle.otpGeneratedAt,
+      otpEnteredAt: fallbackOtpEnteredAt,
+      noShowAt: lifecycle.noShowAt,
+      serviceEndedAt: normalizedServiceEndedAt,
+      disputeDeadlineAt: fallbackDisputeDeadlineAt,
+      completedAt: fallbackCompletedAt,
+      reviewWindowEndsAt: fallbackReviewWindowEndsAt,
+      finalizedAt: lifecycle.finalizedAt,
+      cancelledAt: lifecycle.cancelledAt,
     );
   }
 

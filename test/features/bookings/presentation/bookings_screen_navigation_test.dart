@@ -280,13 +280,34 @@ void main() {
     required CanonicalBookingStateV3 state,
     String paymentAttemptId = '',
     DateTime? payDeadlineAtOverride,
+    DateTime? scheduledStartAtOverride,
+    DateTime? scheduledEndAtOverride,
+    DateTime? paidAtOverride,
+    DateTime? otpEnteredAtOverride,
+    bool reviewSubmitted = false,
   }) {
     final map = buildCanonicalSlotFixture();
     final requestedAt = fixtureRequestedAtUtc();
     final payDeadlineAt = payDeadlineAtOverride ?? fixturePayDeadlineUtc();
+    final slotStart = scheduledStartAtOverride ?? fixtureSlotStartUtc();
+    final slotEnd = scheduledEndAtOverride ?? fixtureSlotEndUtc();
     final rawState = canonicalStateValue(state);
     map['state'] = rawState;
     map['stateQueryValue'] = rawState;
+    map['serviceAnchorAt'] = slotStart;
+    map['scheduledStartAt'] = slotStart;
+    final slot =
+        ((map['schedule'] as Map<String, dynamic>)['slots'] as List).first
+            as Map<String, dynamic>;
+    slot['startAt'] = slotStart;
+    slot['endAt'] = slotEnd;
+    slot['dateKey'] =
+        '${slotStart.year.toString().padLeft(4, '0')}-'
+        '${slotStart.month.toString().padLeft(2, '0')}-'
+        '${slotStart.day.toString().padLeft(2, '0')}';
+    (map['schedule'] as Map<String, dynamic>)['scheduledStartAt'] = slotStart;
+    (map['schedule'] as Map<String, dynamic>)['scheduledEndAt'] = slotEnd;
+    (map['schedule'] as Map<String, dynamic>)['serviceAnchorAt'] = slotStart;
     (map['lifecycle'] as Map<String, dynamic>)['respondedAt'] =
         state == CanonicalBookingStateV3.requested ? null : requestedAt;
     (map['lifecycle'] as Map<String, dynamic>)['providerResponseType'] =
@@ -300,16 +321,31 @@ void main() {
         : null;
     (map['lifecycle'] as Map<String, dynamic>)['paidAt'] =
         state == CanonicalBookingStateV3.confirmed
-        ? requestedAt.add(const Duration(hours: 2))
+        ? (paidAtOverride ?? requestedAt.add(const Duration(hours: 2)))
         : null;
+    (map['lifecycle'] as Map<String, dynamic>)['otpEnteredAt'] =
+        otpEnteredAtOverride;
     (map['payment'] as Map<String, dynamic>)['status'] =
-        paymentAttemptId.isEmpty ? 'not_started' : 'order_created';
+        state == CanonicalBookingStateV3.confirmed
+        ? 'confirmed'
+        : paymentAttemptId.isEmpty
+        ? 'not_started'
+        : 'order_created';
     (map['payment'] as Map<String, dynamic>)['razorpayOrderId'] =
         paymentAttemptId.isEmpty ? '' : 'order_1';
     (map['payment'] as Map<String, dynamic>)['paymentAttemptId'] =
         paymentAttemptId;
     (map['payment'] as Map<String, dynamic>)['orderCreatedAt'] =
         paymentAttemptId.isEmpty ? null : requestedAt;
+    if (reviewSubmitted) {
+      map['reviewStatus'] = 'submitted';
+      map['reviewId'] = 'booking-1';
+      map['review'] = {
+        'status': 'submitted',
+        'reviewId': 'booking-1',
+        'submittedAt': requestedAt.add(const Duration(days: 3)),
+      };
+    }
     map['payDeadlineAt'] =
         state == CanonicalBookingStateV3.acceptedAwaitingPayment ||
             state == CanonicalBookingStateV3.paymentExpired
@@ -358,6 +394,10 @@ void main() {
     CanonicalBookingStateV3 state = CanonicalBookingStateV3.requested,
     String paymentAttemptId = '',
     DateTime? payDeadlineAtOverride,
+    DateTime? scheduledStartAtOverride,
+    DateTime? scheduledEndAtOverride,
+    DateTime? paidAtOverride,
+    DateTime? otpEnteredAtOverride,
   }) {
     return CanonicalBookingReadModel(
       documentId: 'booking-1',
@@ -365,6 +405,10 @@ void main() {
         state: state,
         paymentAttemptId: paymentAttemptId,
         payDeadlineAtOverride: payDeadlineAtOverride,
+        scheduledStartAtOverride: scheduledStartAtOverride,
+        scheduledEndAtOverride: scheduledEndAtOverride,
+        paidAtOverride: paidAtOverride,
+        otpEnteredAtOverride: otpEnteredAtOverride,
       ),
     );
   }
@@ -703,6 +747,109 @@ void main() {
   });
 
   testWidgets(
+    'overdue confirmed booking without OTP moves to customer Past as No show and stays tappable',
+    (tester) async {
+      final now = DateTime.now().toUtc();
+      final scheduledStartAt = now.subtract(const Duration(days: 2, hours: 2));
+      final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
+      final overdueConfirmed = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.confirmed,
+        scheduledStartAtOverride: scheduledStartAt,
+        scheduledEndAtOverride: scheduledEndAt,
+        paidAtOverride: scheduledStartAt.subtract(const Duration(hours: 2)),
+      );
+      final opener = RecordingBookingOpener(
+        latestBookings: {'booking-1': overdueConfirmed},
+      );
+
+      await pumpScreen(
+        tester,
+        opener: opener,
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.receiving
+              ? [overdueConfirmed]
+              : const [],
+        ),
+      );
+
+      expect(find.text('Dog Walking'), findsNothing);
+
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(find.text('No show'), findsOneWidget);
+
+      await tester.tap(canonicalBookingCard('booking-1'));
+      await tester.pump();
+
+      expect(
+        opener.lastPlan?.target,
+        BookingNavigationTarget.canonicalBookingDetail,
+      );
+    },
+  );
+
+  testWidgets(
+    'customer completed pending review booking appears in Past immediately',
+    (tester) async {
+      final completedBooking = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.completedPendingReview,
+      );
+      final opener = RecordingBookingOpener(
+        latestBookings: {'booking-1': completedBooking},
+      );
+
+      await pumpScreen(
+        tester,
+        opener: opener,
+        bookingStreamBuilder: (userId, contextMode) =>
+            Stream.value([completedBooking]),
+      );
+
+      expect(find.text('Dog Walking'), findsNothing);
+
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(find.text('Review pending'), findsOneWidget);
+    },
+  );
+
+  testWidgets('customer reviewed completed booking shows Reviewed in Past', (
+    tester,
+  ) async {
+    final completedBooking = CanonicalBookingReadModel(
+      documentId: 'booking-1',
+      booking: buildCanonicalBooking(
+        state: CanonicalBookingStateV3.completedPendingReview,
+        reviewSubmitted: true,
+      ),
+    );
+    final opener = RecordingBookingOpener(
+      latestBookings: {'booking-1': completedBooking},
+    );
+
+    await pumpScreen(
+      tester,
+      opener: opener,
+      bookingStreamBuilder: (userId, contextMode) =>
+          Stream.value([completedBooking]),
+    );
+
+    await tester.tap(find.text('Past'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dog Walking'), findsOneWidget);
+    expect(find.text('Reviewed'), findsOneWidget);
+    expect(
+      find.text('Service completed. Your review has been submitted.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
     'customer refund-required tap stays on terminal booking details',
     (tester) async {
       final opener = RecordingBookingOpener(
@@ -862,6 +1009,46 @@ void main() {
         opener.lastPlan?.target,
         BookingNavigationTarget.canonicalBookingDetail,
       );
+    },
+  );
+
+  testWidgets(
+    'overdue confirmed booking without OTP moves to provider Past as No show',
+    (tester) async {
+      final now = DateTime.now().toUtc();
+      final scheduledStartAt = now.subtract(const Duration(days: 2, hours: 2));
+      final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
+      final overdueConfirmed = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.confirmed,
+        scheduledStartAtOverride: scheduledStartAt,
+        scheduledEndAtOverride: scheduledEndAt,
+        paidAtOverride: scheduledStartAt.subtract(const Duration(hours: 2)),
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(
+          latestBookings: {'booking-1': overdueConfirmed},
+        ),
+        currentUserIdOverride: 'provider-1',
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.delivering
+              ? [overdueConfirmed]
+              : const [],
+        ),
+        providerRequestStreamBuilder: (_) => const Stream.empty(),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsNothing);
+
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(find.text('No show'), findsOneWidget);
     },
   );
 
@@ -1081,6 +1268,41 @@ void main() {
     expect(find.text('Expired'), findsOneWidget);
     expect(find.text('Time remaining'), findsNothing);
   });
+
+  testWidgets(
+    'provider completed pending review booking appears in Past immediately',
+    (tester) async {
+      final completedBooking = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.completedPendingReview,
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(
+          latestBookings: {'booking-1': completedBooking},
+        ),
+        currentUserIdOverride: 'provider-1',
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.delivering
+              ? [completedBooking]
+              : const [],
+        ),
+        providerRequestStreamBuilder: (_) => const Stream.empty(),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsNothing);
+
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dog Walking'), findsOneWidget);
+      expect(find.text('Completed'), findsOneWidget);
+      expect(find.text('Review pending'), findsNothing);
+    },
+  );
 }
 
 class RecordingBookingOpener {

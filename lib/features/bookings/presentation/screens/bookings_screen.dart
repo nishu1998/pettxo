@@ -79,6 +79,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
   String? _canonicalActionBookingId;
   String? _canonicalActionType;
   String? _openingCanonicalBookingId;
+  final Map<String, String> _bookingDiagnosticsSignatures = {};
 
   @override
   void initState() {
@@ -152,6 +153,142 @@ class _BookingsScreenState extends State<BookingsScreen> {
           right.booking.scheduledStartAt ?? right.booking.serviceAnchorAt;
       return rightTime.compareTo(leftTime);
     });
+  }
+
+  String _assignedSectionForState(
+    BookingContextMode contextMode,
+    CanonicalBookingStateV3 state,
+  ) {
+    if (contextMode == BookingContextMode.receiving) {
+      return _isPastCustomerState(state) ? 'past' : 'upcoming';
+    }
+    if (state == CanonicalBookingStateV3.requested ||
+        state == CanonicalBookingStateV3.pendingProvider) {
+      return 'requests';
+    }
+    if (_isProviderConfirmedState(state)) {
+      return 'confirmed';
+    }
+    if (_isPastProviderState(state)) {
+      return 'past';
+    }
+    return 'excluded';
+  }
+
+  String _exclusionReasonForState(
+    BookingContextMode contextMode,
+    BookingTab activeTab,
+    CanonicalBookingStateV3 state,
+  ) {
+    if (contextMode == BookingContextMode.receiving) {
+      final shouldBePast = _isPastCustomerState(state);
+      if (activeTab == BookingTab.upcoming && shouldBePast) {
+        return 'past_state_hidden_from_upcoming';
+      }
+      if (activeTab == BookingTab.past && !shouldBePast) {
+        return 'active_state_hidden_from_past';
+      }
+      return 'included';
+    }
+
+    return switch (activeTab) {
+      BookingTab.requests =>
+        state == CanonicalBookingStateV3.requested ||
+                state == CanonicalBookingStateV3.pendingProvider
+            ? 'included'
+            : 'not_request_state',
+      BookingTab.confirmed =>
+        _isProviderConfirmedState(state) ? 'included' : 'not_confirmed_state',
+      BookingTab.pastDeliveries =>
+        _isPastProviderState(state) ? 'included' : 'not_past_state',
+      _ => 'inactive_tab',
+    };
+  }
+
+  void _maybeLogCanonicalBookingQueryDiagnostics(
+    String currentUserId,
+    List<BookingReadModel> bookings,
+  ) {
+    assert(() {
+      final role = _context == BookingContextMode.receiving
+          ? 'customer'
+          : 'provider';
+      final activeTab = _activeTab.name;
+      final signature = StringBuffer('$role|$activeTab|${bookings.length}');
+      for (final booking in bookings) {
+        if (booking is CanonicalBookingReadModel) {
+          final effectiveState = effectiveCanonicalBookingPresentationState(
+            booking.booking,
+          );
+          signature
+            ..write('|${booking.bookingId}')
+            ..write(':${booking.booking.state.name}')
+            ..write(':${effectiveState.name}')
+            ..write(':${booking.booking.stateQueryValue.name}')
+            ..write(':${booking.booking.customerId.isNotEmpty}')
+            ..write(':${booking.booking.serviceOwnerId.isNotEmpty}')
+            ..write(':${booking.booking.scheduledStartAt != null}')
+            ..write(':${booking.booking.completedAt != null}')
+            ..write(':${booking.booking.lifecycle.completedAt != null}');
+        } else if (booking is InvalidBookingReadModel) {
+          signature
+            ..write('|${booking.bookingId}')
+            ..write(':invalid:')
+            ..write(
+              booking.errors
+                  .map((error) => '${error.code}@${error.path}')
+                  .join(','),
+            );
+        }
+      }
+
+      final signatureText = signature.toString();
+      final cacheKey = '$role|$activeTab|$currentUserId';
+      if (_bookingDiagnosticsSignatures[cacheKey] == signatureText) {
+        return true;
+      }
+      _bookingDiagnosticsSignatures[cacheKey] = signatureText;
+
+      debugPrint(
+        '[CanonicalBookingsQuery] role=$role activeTab=$activeTab rawDocumentCount=${bookings.length}',
+      );
+      for (final booking in bookings) {
+        if (booking is CanonicalBookingReadModel) {
+          final rawState = booking.booking.state;
+          final effectiveState = effectiveCanonicalBookingPresentationState(
+            booking.booking,
+          );
+          final assignedSection = _assignedSectionForState(
+            _context,
+            effectiveState,
+          );
+          final exclusionReason = _exclusionReasonForState(
+            _context,
+            _activeTab,
+            effectiveState,
+          );
+          debugPrint(
+            '[CanonicalBookingsQuery] bookingId=${booking.bookingId} rawState=${rawState.name} stateQueryValue=${booking.booking.stateQueryValue.name} customerIdPresent=${booking.booking.customerId.isNotEmpty} serviceOwnerIdPresent=${booking.booking.serviceOwnerId.isNotEmpty} scheduledStartAtPresent=${booking.booking.scheduledStartAt != null} completedAtPresent=${booking.booking.completedAt != null} lifecycleCompletedAtPresent=${booking.booking.lifecycle.completedAt != null} parseSuccess=true effectiveState=${effectiveState.name} selectedTab=$activeTab assignedSection=$assignedSection exclusionReason=$exclusionReason',
+          );
+        } else if (booking is InvalidBookingReadModel) {
+          final rawData = booking.rawData;
+          final lifecycleMap = rawData['lifecycle'] is Map<String, dynamic>
+              ? rawData['lifecycle'] as Map<String, dynamic>
+              : rawData['lifecycle'] is Map
+              ? Map<String, dynamic>.from(
+                  (rawData['lifecycle'] as Map).cast<dynamic, dynamic>(),
+                )
+              : const <String, dynamic>{};
+          final issues = booking.errors
+              .map((error) => '${error.code}@${error.path}')
+              .join('|');
+          debugPrint(
+            '[CanonicalBookingsQuery] bookingId=${booking.bookingId} rawState=${booking.rawStatus} stateQueryValue=${rawData['stateQueryValue']} customerIdPresent=${(rawData['customerId'] as String? ?? '').trim().isNotEmpty} serviceOwnerIdPresent=${(rawData['serviceOwnerId'] as String? ?? '').trim().isNotEmpty} scheduledStartAtPresent=${rawData['scheduledStartAt'] != null} completedAtPresent=${rawData['completedAt'] != null} lifecycleCompletedAtPresent=${lifecycleMap['completedAt'] != null} parseSuccess=false effectiveState=invalid selectedTab=$activeTab assignedSection=excluded exclusionReason=invalid_document:$issues',
+          );
+        }
+      }
+      return true;
+    }());
   }
 
   String _sectionLabelFor(int count) {
@@ -360,6 +497,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
       stream: _bookingReadModelStreamFor(currentUserId),
       builder: (context, snapshot) {
         final allBookings = snapshot.data ?? const <BookingReadModel>[];
+        _maybeLogCanonicalBookingQueryDiagnostics(currentUserId, allBookings);
         final canonicalBookings = _canonicalBookingsForActiveTab(allBookings);
         final canonicalRequestCount = allBookings
             .whereType<CanonicalBookingReadModel>()
@@ -583,8 +721,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
 
   bool _isProviderConfirmedState(CanonicalBookingStateV3 state) {
     return state == CanonicalBookingStateV3.confirmed ||
-        state == CanonicalBookingStateV3.inProgress ||
-        state == CanonicalBookingStateV3.completedPendingReview;
+        state == CanonicalBookingStateV3.inProgress;
   }
 
   bool _isPastProviderState(CanonicalBookingStateV3 state) {
@@ -1055,11 +1192,11 @@ class _CanonicalBookingListCard extends StatelessWidget {
                       vertical: 8,
                     ),
                     decoration: BoxDecoration(
-                      color: _pillColor(displayState),
+                      color: _pillColor(booking, displayState, contextMode),
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: Text(
-                      _stateLabel(displayState),
+                      _stateLabel(booking, displayState, contextMode),
                       style: const TextStyle(
                         color: AppColors.textDark,
                         fontWeight: FontWeight.w800,
@@ -1089,7 +1226,7 @@ class _CanonicalBookingListCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Text(
-                  _supportingLine(booking, displayState),
+                  _supportingLine(booking, displayState, contextMode),
                   style: const TextStyle(
                     color: AppColors.textDark,
                     fontSize: 12,
@@ -1145,12 +1282,21 @@ class _CanonicalBookingListCard extends StatelessWidget {
     );
   }
 
-  static Color _pillColor(CanonicalBookingStateV3 state) {
+  static Color _pillColor(
+    CanonicalBookingDocumentV3 booking,
+    CanonicalBookingStateV3 state,
+    BookingContextMode contextMode,
+  ) {
+    final reviewSubmitted = booking.hasSubmittedReview;
     switch (state) {
       case CanonicalBookingStateV3.confirmed:
       case CanonicalBookingStateV3.inProgress:
-      case CanonicalBookingStateV3.completedPendingReview:
       case CanonicalBookingStateV3.completedFinal:
+        return const Color(0xFFDDF7E3);
+      case CanonicalBookingStateV3.completedPendingReview:
+        if (contextMode == BookingContextMode.receiving && !reviewSubmitted) {
+          return const Color(0xFFFFE8D4);
+        }
         return const Color(0xFFDDF7E3);
       case CanonicalBookingStateV3.acceptedAwaitingPayment:
         return const Color(0xFFFFE1D2);
@@ -1162,14 +1308,22 @@ class _CanonicalBookingListCard extends StatelessWidget {
     }
   }
 
-  static String _stateLabel(CanonicalBookingStateV3 state) {
+  static String _stateLabel(
+    CanonicalBookingDocumentV3 booking,
+    CanonicalBookingStateV3 state,
+    BookingContextMode contextMode,
+  ) {
+    final reviewSubmitted = booking.hasSubmittedReview;
     return switch (state) {
       CanonicalBookingStateV3.requested => 'Queued',
       CanonicalBookingStateV3.pendingProvider => 'Pending',
       CanonicalBookingStateV3.acceptedAwaitingPayment => 'Awaiting payment',
       CanonicalBookingStateV3.confirmed => 'Confirmed',
       CanonicalBookingStateV3.inProgress => 'In progress',
-      CanonicalBookingStateV3.completedPendingReview => 'Review pending',
+      CanonicalBookingStateV3.completedPendingReview =>
+        contextMode == BookingContextMode.receiving
+            ? (reviewSubmitted ? 'Reviewed' : 'Review pending')
+            : 'Completed',
       CanonicalBookingStateV3.completedFinal => 'Completed',
       CanonicalBookingStateV3.paymentExpired => 'Expired',
       CanonicalBookingStateV3.cancelledByParent ||
@@ -1196,6 +1350,7 @@ class _CanonicalBookingListCard extends StatelessWidget {
   static String _supportingLine(
     CanonicalBookingDocumentV3 booking,
     CanonicalBookingStateV3 displayState,
+    BookingContextMode contextMode,
   ) {
     switch (displayState) {
       case CanonicalBookingStateV3.requested:
@@ -1208,7 +1363,14 @@ class _CanonicalBookingListCard extends StatelessWidget {
       case CanonicalBookingStateV3.inProgress:
         return 'Service is currently in progress.';
       case CanonicalBookingStateV3.completedPendingReview:
-        return 'Service completed. You can now leave a review.';
+        if (contextMode == BookingContextMode.receiving) {
+          return booking.hasSubmittedReview
+              ? 'Service completed. Your review has been submitted.'
+              : 'Service completed. You can now leave a review.';
+        }
+        return booking.hasSubmittedReview
+            ? 'Service completed. The customer review has been submitted.'
+            : 'Service completed successfully.';
       case CanonicalBookingStateV3.completedFinal:
         return 'Booking finished successfully.';
       case CanonicalBookingStateV3.paymentExpired:

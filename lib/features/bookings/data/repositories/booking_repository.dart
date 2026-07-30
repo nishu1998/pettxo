@@ -888,6 +888,7 @@ class BookingRepository {
     required String otp,
     required String requestAttemptId,
   }) async {
+    const callableName = 'verifyBookingStartOtpV3';
     final id = bookingId.trim();
     final otpValue = otp.trim();
     final attemptId = requestAttemptId.trim();
@@ -909,15 +910,34 @@ class BookingRepository {
       );
     }
 
-    final callable = _functions.httpsCallable('verifyBookingStartOtpV3');
-    await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'otp': otpValue,
-      'requestAttemptId': attemptId,
-    });
+    debugPrint(
+      '[CanonicalOtpVerification] request callable=$callableName bookingId=$id otpLength=${otpValue.length}',
+    );
+    final callable = _functions.httpsCallable(callableName);
+    try {
+      await callable.call<Map<String, dynamic>>({
+        'bookingId': id,
+        'otp': otpValue,
+        'requestAttemptId': attemptId,
+      });
+      debugPrint(
+        '[CanonicalOtpVerification] success callable=$callableName bookingId=$id',
+      );
+    } on FirebaseFunctionsException catch (error) {
+      debugPrint(
+        '[CanonicalOtpVerification] firebase_error callable=$callableName bookingId=$id code=${error.code} message=${error.message ?? ''} details=${error.details}',
+      );
+      rethrow;
+    } catch (error) {
+      debugPrint(
+        '[CanonicalOtpVerification] unknown_error callable=$callableName bookingId=$id error=$error',
+      );
+      rethrow;
+    }
   }
 
   Future<void> completeBookingServiceV3({required String bookingId}) async {
+    const callableName = 'completeBookingServiceV3';
     final id = bookingId.trim();
     if (id.isEmpty) {
       throw ArgumentError.value(
@@ -927,8 +947,26 @@ class BookingRepository {
       );
     }
 
-    final callable = _functions.httpsCallable('completeBookingServiceV3');
-    await callable.call<Map<String, dynamic>>({'bookingId': id});
+    debugPrint(
+      '[CanonicalServiceCompletion] request callable=$callableName bookingId=$id',
+    );
+    final callable = _functions.httpsCallable(callableName);
+    try {
+      await callable.call<Map<String, dynamic>>({'bookingId': id});
+      debugPrint(
+        '[CanonicalServiceCompletion] success callable=$callableName bookingId=$id',
+      );
+    } on FirebaseFunctionsException catch (error) {
+      debugPrint(
+        '[CanonicalServiceCompletion] firebase_error callable=$callableName bookingId=$id code=${error.code} message=${(error.message ?? '').trim()} details=${error.details}',
+      );
+      rethrow;
+    } catch (error) {
+      debugPrint(
+        '[CanonicalServiceCompletion] unexpected_error callable=$callableName bookingId=$id error=$error',
+      );
+      rethrow;
+    }
   }
 
   Future<String> submitBookingReviewV3({
@@ -958,13 +996,30 @@ class BookingRepository {
         .where((value) => value.isNotEmpty)
         .toList(growable: false);
     final callable = _functions.httpsCallable('submitBookingReviewV3');
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'rating': rating,
-      'comment': comment.trim(),
-      'tags': cleanedTags,
-    });
-    return (result.data['reviewId'] as String? ?? '').trim();
+    try {
+      final result = await callable.call<Map<String, dynamic>>({
+        'bookingId': id,
+        'rating': rating,
+        'comment': comment.trim(),
+        'tags': cleanedTags,
+      });
+      return (result.data['reviewId'] as String? ?? '').trim();
+    } on FirebaseFunctionsException catch (error) {
+      debugPrint(
+        '[CanonicalReviewSubmission] firebase_error callable=submitBookingReviewV3 bookingId=$id code=${error.code} message=${(error.message ?? '').trim()} details=${error.details}',
+      );
+      rethrow;
+    } on FirebaseException catch (error) {
+      debugPrint(
+        '[CanonicalReviewSubmission] firebase_exception callable=submitBookingReviewV3 bookingId=$id code=${error.code} message=${(error.message ?? '').trim()}',
+      );
+      rethrow;
+    } catch (error) {
+      debugPrint(
+        '[CanonicalReviewSubmission] unexpected_error callable=submitBookingReviewV3 bookingId=$id error=$error',
+      );
+      rethrow;
+    }
   }
 
   Future<String> createBookingDisputeV3({
@@ -981,16 +1036,34 @@ class BookingRepository {
     }
 
     final callable = _functions.httpsCallable('createBookingDisputeV3');
-    final result = await callable.call<Map<String, dynamic>>({
-      'bookingId': id,
-      'reason': trimmedReason,
-      'description': trimmedDescription,
-      'attachments': attachments
-          .map((value) => value.trim())
-          .where((value) => value.isNotEmpty)
-          .toList(growable: false),
-    });
-    return (result.data['disputeId'] as String? ?? '').trim();
+    final cleanedAttachments = attachments
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    try {
+      final result = await callable.call<Map<String, dynamic>>({
+        'bookingId': id,
+        'reason': trimmedReason,
+        'description': trimmedDescription,
+        'attachments': cleanedAttachments,
+      });
+      return (result.data['disputeId'] as String? ?? '').trim();
+    } on FirebaseFunctionsException catch (error) {
+      debugPrint(
+        '[CanonicalDisputeSubmission] firebase_error callable=createBookingDisputeV3 bookingId=$id reasonPresent=${trimmedReason.isNotEmpty} descriptionLength=${trimmedDescription.length} code=${error.code} message=${(error.message ?? '').trim()} details=${error.details}',
+      );
+      rethrow;
+    } on FirebaseException catch (error) {
+      debugPrint(
+        '[CanonicalDisputeSubmission] firebase_exception callable=createBookingDisputeV3 bookingId=$id reasonPresent=${trimmedReason.isNotEmpty} descriptionLength=${trimmedDescription.length} code=${error.code} message=${(error.message ?? '').trim()}',
+      );
+      rethrow;
+    } catch (error) {
+      debugPrint(
+        '[CanonicalDisputeSubmission] unexpected_error callable=createBookingDisputeV3 bookingId=$id reasonPresent=${trimmedReason.isNotEmpty} descriptionLength=${trimmedDescription.length} error=$error',
+      );
+      rethrow;
+    }
   }
 
   String _dateKey(DateTime date) {
