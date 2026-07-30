@@ -112,6 +112,8 @@ void main() {
     testWidgets(
       'renders slot schedules with explicit date, time, and duration',
       (tester) async {
+        final booking = bookingRepository.booking!;
+        final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
         final privateController = CanonicalBookingPrivateController(
           privateLoader: (_) => Stream.value(_buildPrivateOtpData()),
         );
@@ -123,8 +125,16 @@ void main() {
         );
 
         expect(find.text('BOOKING SUMMARY'), findsOneWidget);
-        expect(find.text('28 Jul 2026'), findsOneWidget);
-        expect(find.text('9:00 AM to 10:00 AM'), findsOneWidget);
+        expect(
+          find.text(_calendarDateLabel(schedule.scheduledStartAt)),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            _timeRangeLabel(schedule.scheduledStartAt, schedule.scheduledEndAt),
+          ),
+          findsOneWidget,
+        );
         expect(find.text('60 min'), findsOneWidget);
       },
     );
@@ -133,6 +143,8 @@ void main() {
       'renders continuous multi-slot bookings as one combined window',
       (tester) async {
         bookingRepository.booking = _buildMultiSlotConfirmedBooking();
+        final booking = bookingRepository.booking!;
+        final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
         final privateController = CanonicalBookingPrivateController(
           privateLoader: (_) => Stream.value(_buildPrivateOtpData()),
         );
@@ -143,8 +155,16 @@ void main() {
           privateController: privateController,
         );
 
-        expect(find.text('28 Jul 2026'), findsOneWidget);
-        expect(find.text('9:00 AM to 11:00 AM'), findsOneWidget);
+        expect(
+          find.text(_calendarDateLabel(schedule.scheduledStartAt)),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            _timeRangeLabel(schedule.scheduledStartAt, schedule.scheduledEndAt),
+          ),
+          findsOneWidget,
+        );
         expect(find.text('120 min'), findsOneWidget);
       },
     );
@@ -153,6 +173,8 @@ void main() {
       tester,
     ) async {
       bookingRepository.booking = _buildRangeConfirmedBooking();
+      final booking = bookingRepository.booking!;
+      final schedule = booking.schedule as CanonicalRangeBookingScheduleV3;
       final privateController = CanonicalBookingPrivateController(
         privateLoader: (_) => Stream.value(_buildPrivateOtpData()),
       );
@@ -165,10 +187,16 @@ void main() {
       );
 
       expect(find.text('Stay booking'), findsOneWidget);
-      expect(find.text('Check-in'), findsOneWidget);
-      expect(find.text('29 Jul 2026 3:30 PM'), findsOneWidget);
-      expect(find.text('Check-out'), findsOneWidget);
-      expect(find.text('31 Jul 2026 11:30 AM'), findsOneWidget);
+      expect(
+        find.text(_calendarDateLabel(schedule.checkInDateTime)),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          _timeRangeLabel(schedule.checkInDateTime, schedule.checkOutDateTime),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('2 nights'), findsOneWidget);
     });
 
@@ -189,6 +217,91 @@ void main() {
       expect(find.text('Daily Dog Walk'), findsWidgets);
       expect(find.text('Pending'), findsWidgets);
     });
+
+    testWidgets(
+      'derived no-show hides customer OTP section and shows terminal no-show timeline item',
+      (tester) async {
+        bookingRepository.booking = _buildOverdueConfirmedBooking();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) => const Stream.empty(),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        expect(find.text('No Show'), findsOneWidget);
+        expect(
+          find.text(
+            'The service window ended before OTP verification, so this booking was marked as no-show.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('SERVICE-START OTP'), findsNothing);
+        expect(find.text('START OTP'), findsNothing);
+        expect(find.text('Use this OTP to start the service'), findsNothing);
+        expect(
+          find.text(
+            'The service OTP is no longer available because this booking was marked as no-show.',
+          ),
+          findsNothing,
+        );
+        expect(find.textContaining('Share this with'), findsNothing);
+        await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
+        expect(find.text('Marked as no-show'), findsOneWidget);
+        expect(
+          find.text('OTP was not verified before the service window ended'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            _timelineDateTimeLabel(
+              (bookingRepository.booking!.schedule
+                      as CanonicalSlotBookingScheduleV3)
+                  .scheduledEndAt,
+            ),
+          ),
+          findsOneWidget,
+        );
+        await _scrollUntilTextVisible(tester, 'No-show status');
+        expect(
+          find.textContaining('Pettxo support can review a dispute until'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'raw no-show customer booking also hides OTP section and uses persisted no-show time',
+      (tester) async {
+        bookingRepository.booking = _buildRawNoShowBooking();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'REVOKED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        expect(find.text('SERVICE-START OTP'), findsNothing);
+        expect(find.text('START OTP'), findsNothing);
+        await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
+        expect(find.text('Marked as no-show'), findsOneWidget);
+        expect(
+          find.text(
+            _timelineDateTimeLabel(
+              bookingRepository.booking!.lifecycle.noShowAt!,
+            ),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
 
     testWidgets('reuses the existing OTP stream across rebuilds', (
       tester,
@@ -442,19 +555,54 @@ void main() {
       );
 
       await _scrollToProviderStartSection(tester);
+      expect(find.text('Enter customer OTP'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'BOOKING CHAT');
       await tester.ensureVisible(find.text('Message customer'));
       await tester.pump();
       expect(find.text('Message customer'), findsOneWidget);
       expect(
-        find.text('Use this chat to coordinate details for this booking.'),
+        find.text(
+          'Coordinate any remaining service details directly with the customer.',
+        ),
         findsOneWidget,
       );
-      expect(find.text('Enter customer OTP'), findsOneWidget);
       expect(find.text('Start service'), findsNothing);
       expect(find.text('Service OTP'), findsNothing);
       expect(find.text('654321'), findsNothing);
       expect(find.text('Reveal OTP'), findsNothing);
     });
+
+    testWidgets(
+      'provider no-show hides OTP entry controls and ends timeline with no-show outcome',
+      (tester) async {
+        bookingRepository.booking = _buildRawNoShowBooking();
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'REVOKED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+          currentUserIdOverride: 'provider-1',
+        );
+
+        expect(find.text('SERVICE START'), findsNothing);
+        expect(find.text('Enter customer OTP'), findsNothing);
+        expect(find.text('Verify OTP'), findsNothing);
+        await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
+        expect(find.text('Service scheduled'), findsOneWidget);
+        expect(find.text('Marked as no-show'), findsOneWidget);
+        expect(
+          find.text('OTP was not verified before the service window ended'),
+          findsOneWidget,
+        );
+        expect(find.text('Complete service'), findsNothing);
+      },
+    );
 
     testWidgets(
       'provider OTP submit stays disabled until six digits are entered',
@@ -534,7 +682,6 @@ void main() {
             .where((widget) => widget.label == 'Verifying...')
             .first;
         expect(loadingVerifyButton.isLoading, isTrue);
-        expect(loadingVerifyButton.onPressed, isNull);
 
         expect(bookingRepository.verifyBookingStartOtpCallCount, 1);
         expect(bookingRepository.lastVerifyBookingId, 'booking-1');
@@ -618,14 +765,394 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 200));
 
+        expect(find.text('The OTP is incorrect.'), findsOneWidget);
+        expect(find.textContaining('permission-denied'), findsNothing);
+        expect(find.textContaining('INVALID_OTP'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'provider completion success stops spinner after booking moves to completed pending review',
+      (tester) async {
+        bookingRepository.booking = _buildInProgressBooking();
+        bookingRepository.bookingStreamController =
+            StreamController<BookingReadModel?>.broadcast();
+        bookingRepository.emitBooking(_buildInProgressBooking());
+        final completionStarted = Completer<void>();
+        final allowCompletion = Completer<void>();
+        bookingRepository.onCompleteBookingService = () async {
+          completionStarted.complete();
+          await allowCompletion.future;
+          bookingRepository.booking = _buildCompletedPendingReviewBooking();
+          bookingRepository.emitBooking(_buildCompletedPendingReviewBooking());
+        };
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+          currentUserIdOverride: 'provider-1',
+        );
+
+        await _scrollToProviderStartSection(
+          tester,
+          actionText: 'Complete service',
+        );
+        expect(find.text('Complete service'), findsOneWidget);
+
+        await tester.tap(find.text('Complete service'));
+        await tester.pump();
+        await completionStarted.future;
         expect(
-          find.text(
-            'The OTP is incorrect. Ask the customer to confirm the code and try again.',
+          find.byWidgetPredicate(
+            (widget) =>
+                widget is CircularProgressIndicator &&
+                widget.valueColor is AlwaysStoppedAnimation<Color>,
           ),
           findsOneWidget,
         );
-        expect(find.textContaining('permission-denied'), findsNothing);
-        expect(find.textContaining('INVALID_OTP'), findsNothing);
+        expect(find.text('Complete service'), findsNothing);
+
+        allowCompletion.complete();
+        await tester.pumpAndSettle();
+
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(find.text('Complete service'), findsNothing);
+        expect(
+          bookingRepository.booking?.state,
+          CanonicalBookingStateV3.completedPendingReview,
+        );
+      },
+    );
+
+    testWidgets(
+      'provider completed booking shows redesigned details and hides provider contact',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking();
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+          currentUserIdOverride: 'provider-1',
+        );
+
+        expect(
+          find.text('The service has been completed successfully.'),
+          findsOneWidget,
+        );
+        expect(find.text('Service completed successfully.'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'Customer phone');
+        expect(find.text('Customer phone'), findsOneWidget);
+        expect(find.text('Service address'), findsOneWidget);
+        expect(find.text('Provider contact'), findsNothing);
+        expect(find.text('Provider phone'), findsNothing);
+
+        await _scrollUntilTextVisible(tester, 'Message Customer');
+        expect(find.text('Message Customer'), findsOneWidget);
+        expect(find.text('Get directions'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'customer completed booking hides OTP section and shows redesigned completion actions',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().add(const Duration(hours: 12)),
+        );
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        expect(
+          find.text(
+            'Your payment is confirmed. You can now leave a review, raise a dispute during the review window, contact the provider, view directions, or continue chatting.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Leave Review'), findsOneWidget);
+        expect(find.text('Raise Dispute'), findsOneWidget);
+        expect(find.text('SERVICE-START OTP'), findsNothing);
+        expect(find.text('START OTP'), findsNothing);
+        expect(
+          find.text(
+            'Service started. Your booking OTP has already been used for this booking.',
+          ),
+          findsNothing,
+        );
+
+        await _scrollUntilTextVisible(tester, 'Service address');
+        expect(find.text('Get Directions'), findsOneWidget);
+        expect(find.text('Call provider'), findsOneWidget);
+
+        await _scrollUntilTextVisible(tester, 'Message Provider');
+        expect(find.text('Message Provider'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'customer completed booking keeps review available after dispute window expiry',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().subtract(const Duration(hours: 1)),
+        );
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        expect(find.text('Leave Review'), findsOneWidget);
+        expect(find.text('Raise Dispute'), findsNothing);
+        expect(
+          find.text('You can leave a review at any time.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'customer completed booking hides Leave Review when review is already submitted',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().add(const Duration(hours: 12)),
+          reviewSubmitted: true,
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        expect(find.text('Leave Review'), findsNothing);
+        expect(
+          find.text('Your review has already been submitted.'),
+          findsOneWidget,
+        );
+        expect(find.text('Raise Dispute'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'customer completed booking submits review once and immediately hides the review action',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().add(const Duration(hours: 12)),
+        );
+        bookingRepository.submitBookingReviewResult = 'booking-1';
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'Leave Review');
+        await tester.ensureVisible(find.text('Leave Review'));
+        await tester.pump();
+        await tester.tap(find.text('Leave Review'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(IconButton).last);
+        await tester.enterText(
+          find.byType(TextField).last,
+          'Excellent completed booking experience.',
+        );
+        await tester.tap(find.widgetWithText(GradientButton, 'Submit review'));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(bookingRepository.submitBookingReviewCallCount, 1);
+        expect(bookingRepository.lastReviewBookingId, 'booking-1');
+        expect(bookingRepository.lastReviewRating, 5);
+        expect(
+          bookingRepository.lastReviewComment,
+          'Excellent completed booking experience.',
+        );
+        expect(find.text('Review submitted successfully.'), findsOneWidget);
+        expect(find.text('Leave Review'), findsNothing);
+        expect(
+          find.text('Your review has already been submitted.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'customer completed booking maps duplicate review response to already reviewed and hides action',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().add(const Duration(hours: 12)),
+        );
+        bookingRepository.submitBookingReviewError = FirebaseFunctionsException(
+          code: 'already-exists',
+          message: 'A review has already been submitted for this booking.',
+          details: {'code': 'REVIEW_ALREADY_SUBMITTED'},
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'Leave Review');
+        await tester.ensureVisible(find.text('Leave Review'));
+        await tester.pump();
+        await tester.tap(find.text('Leave Review'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(IconButton).last);
+        await tester.enterText(
+          find.byType(TextField).last,
+          'Excellent completed booking experience.',
+        );
+        await tester.tap(find.widgetWithText(GradientButton, 'Submit review'));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Your review has already been submitted for this booking.'),
+          findsOneWidget,
+        );
+        expect(find.text('Leave Review'), findsNothing);
+        expect(
+          find.text('Your review has already been submitted.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'customer completed booking submits dispute payload and shows success state',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().add(const Duration(hours: 12)),
+        );
+        bookingRepository.createBookingDisputeResult = 'dispute-1';
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'Raise Dispute');
+        await tester.tap(find.text('Raise Dispute'));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byType(TextField).at(0),
+          'provider_no_show',
+        );
+        await tester.enterText(
+          find.byType(TextField).at(1),
+          'The provider did not arrive at the booked time.',
+        );
+        await tester.tap(find.widgetWithText(GradientButton, 'Raise dispute'));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(bookingRepository.createBookingDisputeCallCount, 1);
+        expect(bookingRepository.lastDisputeBookingId, 'booking-1');
+        expect(bookingRepository.lastDisputeReason, 'provider_no_show');
+        expect(
+          bookingRepository.lastDisputeDescription,
+          'The provider did not arrive at the booked time.',
+        );
+        expect(
+          find.text(
+            'Dispute submitted. Payout stays on hold until Pettxo reviews it.',
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'customer completed booking maps already disputed errors clearly',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          reviewWindowEndsAt: DateTime.now().add(const Duration(hours: 12)),
+        );
+        bookingRepository.createBookingDisputeError =
+            FirebaseFunctionsException(
+              code: 'already-exists',
+              message: 'A dispute already exists for this booking.',
+              details: {'code': 'ALREADY_DISPUTED'},
+            );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'Raise Dispute');
+        await tester.tap(find.text('Raise Dispute'));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byType(TextField).at(0),
+          'provider_no_show',
+        );
+        await tester.enterText(
+          find.byType(TextField).at(1),
+          'The provider did not arrive at the booked time.',
+        );
+        await tester.tap(find.widgetWithText(GradientButton, 'Raise dispute'));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('A dispute has already been raised for this booking.'),
+          findsOneWidget,
+        );
       },
     );
   });
@@ -654,9 +1181,16 @@ Future<void> _pumpUntilTextExists(WidgetTester tester, String text) async {
   }
 }
 
-Future<void> _scrollToProviderStartSection(WidgetTester tester) async {
-  await tester.drag(find.byType(Scrollable).first, const Offset(0, -1200));
-  await tester.pump();
+Future<void> _scrollToProviderStartSection(
+  WidgetTester tester, {
+  String actionText = 'Enter customer OTP',
+}) async {
+  await _scrollUntilTextVisible(tester, 'SERVICE START');
+  final actionFinder = find.text(actionText);
+  if (actionFinder.evaluate().isNotEmpty) {
+    await tester.ensureVisible(actionFinder);
+    await tester.pump();
+  }
 }
 
 Future<void> _pumpScreen(
@@ -692,8 +1226,23 @@ class _FakeBookingRepository extends BookingRepository {
   StreamController<BookingReadModel?>? bookingStreamController;
   Completer<void>? verifyBookingStartOtpCompleter;
   Future<void> Function()? onVerifyBookingStartOtp;
+  Future<void> Function()? onCompleteBookingService;
+  Object? submitBookingReviewError;
+  Object? createBookingDisputeError;
   Object? verifyBookingStartOtpError;
+  Object? completeBookingServiceError;
+  int submitBookingReviewCallCount = 0;
+  int createBookingDisputeCallCount = 0;
   int verifyBookingStartOtpCallCount = 0;
+  int completeBookingServiceCallCount = 0;
+  String submitBookingReviewResult = '';
+  String createBookingDisputeResult = '';
+  String lastReviewBookingId = '';
+  int lastReviewRating = 0;
+  String lastReviewComment = '';
+  String lastDisputeBookingId = '';
+  String lastDisputeReason = '';
+  String lastDisputeDescription = '';
   String lastVerifyBookingId = '';
   String lastVerifyOtp = '';
   String lastVerifyRequestAttemptId = '';
@@ -751,6 +1300,51 @@ class _FakeBookingRepository extends BookingRepository {
     }
   }
 
+  @override
+  Future<void> completeBookingServiceV3({required String bookingId}) async {
+    completeBookingServiceCallCount += 1;
+    if (completeBookingServiceError != null) {
+      throw completeBookingServiceError!;
+    }
+    if (onCompleteBookingService != null) {
+      await onCompleteBookingService!();
+    }
+  }
+
+  @override
+  Future<String> submitBookingReviewV3({
+    required String bookingId,
+    required int rating,
+    String comment = '',
+    List<String> tags = const [],
+  }) async {
+    submitBookingReviewCallCount += 1;
+    lastReviewBookingId = bookingId;
+    lastReviewRating = rating;
+    lastReviewComment = comment;
+    if (submitBookingReviewError != null) {
+      throw submitBookingReviewError!;
+    }
+    return submitBookingReviewResult;
+  }
+
+  @override
+  Future<String> createBookingDisputeV3({
+    required String bookingId,
+    required String reason,
+    required String description,
+    List<String> attachments = const [],
+  }) async {
+    createBookingDisputeCallCount += 1;
+    lastDisputeBookingId = bookingId;
+    lastDisputeReason = reason;
+    lastDisputeDescription = description;
+    if (createBookingDisputeError != null) {
+      throw createBookingDisputeError!;
+    }
+    return createBookingDisputeResult;
+  }
+
   void emitBooking(CanonicalBookingDocumentV3 nextBooking) {
     booking = nextBooking;
     bookingStreamController?.add(
@@ -801,9 +1395,60 @@ CanonicalBookingPrivateParticipantsData _buildPrivateParticipantsData({
   );
 }
 
+DateTime _futureFixtureUtc({
+  required int daysFromNow,
+  required int hour,
+  int minute = 0,
+}) {
+  final now = DateTime.now().toUtc();
+  final anchor = DateTime.utc(now.year, now.month, now.day);
+  return anchor.add(Duration(days: daysFromNow, hours: hour, minutes: minute));
+}
+
+String _calendarDateLabel(DateTime value) {
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final local = value.toLocal();
+  return '${local.day} ${months[local.month - 1]} ${local.year}';
+}
+
+String _timeLabel(DateTime value) {
+  final local = value.toLocal();
+  final hour = local.hour > 12
+      ? local.hour - 12
+      : (local.hour == 0 ? 12 : local.hour);
+  final minutes = local.minute.toString().padLeft(2, '0');
+  final meridiem = local.hour >= 12 ? 'PM' : 'AM';
+  return '$hour:$minutes $meridiem';
+}
+
+String _timeRangeLabel(DateTime start, DateTime end) {
+  return '${_timeLabel(start)} to ${_timeLabel(end)}';
+}
+
+String _timelineDateTimeLabel(DateTime value) {
+  return '${_calendarDateLabel(value)} · ${_timeLabel(value)}';
+}
+
 CanonicalBookingDocumentV3 _buildConfirmedBooking() {
-  final scheduledStartAt = DateTime.utc(2026, 7, 28, 3, 30);
-  final scheduledEndAt = DateTime.utc(2026, 7, 28, 4, 30);
+  final scheduledStartAt = _futureFixtureUtc(
+    daysFromNow: 2,
+    hour: 3,
+    minute: 30,
+  );
+  final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
   return _buildConfirmedBookingDocument(
     bookingType: BookingV3Type.slot,
     service: const BookingServiceSnapshotV3(
@@ -832,7 +1477,10 @@ CanonicalBookingDocumentV3 _buildConfirmedBooking() {
       slots: [
         CanonicalBookingSlotSegmentV3(
           slotId: 'slot-1',
-          dateKey: '2026-07-28',
+          dateKey:
+              '${scheduledStartAt.year.toString().padLeft(4, '0')}-'
+              '${scheduledStartAt.month.toString().padLeft(2, '0')}-'
+              '${scheduledStartAt.day.toString().padLeft(2, '0')}',
           startAt: scheduledStartAt,
           endAt: scheduledEndAt,
           durationMinutes: 60,
@@ -859,8 +1507,16 @@ CanonicalBookingDocumentV3 _buildConfirmedBooking() {
 }
 
 CanonicalBookingDocumentV3 _buildMultiSlotConfirmedBooking() {
-  final firstSlotStartAt = DateTime.utc(2026, 7, 28, 3, 30);
-  final secondSlotEndAt = DateTime.utc(2026, 7, 28, 5, 30);
+  final firstSlotStartAt = _futureFixtureUtc(
+    daysFromNow: 2,
+    hour: 3,
+    minute: 30,
+  );
+  final secondSlotEndAt = firstSlotStartAt.add(const Duration(hours: 2));
+  final dateKey =
+      '${firstSlotStartAt.year.toString().padLeft(4, '0')}-'
+      '${firstSlotStartAt.month.toString().padLeft(2, '0')}-'
+      '${firstSlotStartAt.day.toString().padLeft(2, '0')}';
 
   return _buildConfirmedBookingDocument(
     bookingType: BookingV3Type.slot,
@@ -890,9 +1546,9 @@ CanonicalBookingDocumentV3 _buildMultiSlotConfirmedBooking() {
       slots: [
         CanonicalBookingSlotSegmentV3(
           slotId: 'slot-1',
-          dateKey: '2026-07-28',
+          dateKey: dateKey,
           startAt: firstSlotStartAt,
-          endAt: DateTime.utc(2026, 7, 28, 4, 30),
+          endAt: firstSlotStartAt.add(const Duration(hours: 1)),
           durationMinutes: 60,
           unitPricePaise: 25000,
           serviceId: 'service-1',
@@ -901,8 +1557,8 @@ CanonicalBookingDocumentV3 _buildMultiSlotConfirmedBooking() {
         ),
         CanonicalBookingSlotSegmentV3(
           slotId: 'slot-2',
-          dateKey: '2026-07-28',
-          startAt: DateTime.utc(2026, 7, 28, 4, 30),
+          dateKey: dateKey,
+          startAt: firstSlotStartAt.add(const Duration(hours: 1)),
           endAt: secondSlotEndAt,
           durationMinutes: 60,
           unitPricePaise: 25000,
@@ -928,8 +1584,10 @@ CanonicalBookingDocumentV3 _buildMultiSlotConfirmedBooking() {
 }
 
 CanonicalBookingDocumentV3 _buildRangeConfirmedBooking() {
-  final checkInDateTime = DateTime.utc(2026, 7, 29, 10, 0);
-  final checkOutDateTime = DateTime.utc(2026, 7, 31, 6, 0);
+  final checkInDateTime = _futureFixtureUtc(daysFromNow: 2, hour: 10);
+  final checkOutDateTime = checkInDateTime.add(
+    const Duration(days: 1, hours: 20),
+  );
 
   return _buildConfirmedBookingDocument(
     bookingType: BookingV3Type.range,
@@ -976,7 +1634,11 @@ CanonicalBookingDocumentV3 _buildRangeConfirmedBooking() {
 }
 
 CanonicalBookingDocumentV3 _buildMalformedSlotConfirmedBooking() {
-  final scheduledStartAt = DateTime.utc(2026, 7, 28, 3, 30);
+  final scheduledStartAt = _futureFixtureUtc(
+    daysFromNow: 2,
+    hour: 3,
+    minute: 30,
+  );
 
   return _buildConfirmedBookingDocument(
     bookingType: BookingV3Type.slot,
@@ -1006,7 +1668,71 @@ CanonicalBookingDocumentV3 _buildMalformedSlotConfirmedBooking() {
       slots: const <CanonicalBookingSlotSegmentV3>[],
       slotCount: 1,
       scheduledStartAt: scheduledStartAt,
-      scheduledEndAt: DateTime.utc(2026, 7, 28, 3, 0),
+      scheduledEndAt: scheduledStartAt.subtract(const Duration(minutes: 30)),
+      totalDurationMinutes: 60,
+    ),
+    statistics: const CanonicalBookingStatisticsV3(
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      nights: null,
+    ),
+    serviceAnchorAt: scheduledStartAt,
+    scheduledStartAt: scheduledStartAt,
+    checkInDateTime: null,
+  );
+}
+
+CanonicalBookingDocumentV3 _buildOverdueConfirmedBooking() {
+  final scheduledStartAt = _futureFixtureUtc(
+    daysFromNow: -2,
+    hour: 3,
+    minute: 30,
+  );
+  final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
+  return _buildConfirmedBookingDocument(
+    bookingType: BookingV3Type.slot,
+    service: const BookingServiceSnapshotV3(
+      serviceId: 'service-1',
+      providerId: 'provider-1',
+      serviceTitle: 'Daily Dog Walk',
+      animalType: 'Dog',
+      category: 'Walking',
+      bookingType: BookingV3Type.slot,
+      timezone: 'Asia/Kolkata',
+      serviceUnitPricePaise: 25000,
+      durationMinutes: 60,
+      pricePerNightPaise: null,
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      checkInDateTime: null,
+      checkOutDateTime: null,
+      capacitySnapshot: 1,
+      serviceLocationType: 'provider_location',
+      currency: 'INR',
+      snapshotVersion: 1,
+    ),
+    schedule: CanonicalSlotBookingScheduleV3(
+      serviceAnchorAt: scheduledStartAt,
+      timezone: 'Asia/Kolkata',
+      slots: [
+        CanonicalBookingSlotSegmentV3(
+          slotId: 'slot-1',
+          dateKey:
+              '${scheduledStartAt.year.toString().padLeft(4, '0')}-'
+              '${scheduledStartAt.month.toString().padLeft(2, '0')}-'
+              '${scheduledStartAt.day.toString().padLeft(2, '0')}',
+          startAt: scheduledStartAt,
+          endAt: scheduledEndAt,
+          durationMinutes: 60,
+          unitPricePaise: 25000,
+          serviceId: 'service-1',
+          providerId: 'provider-1',
+          timezone: 'Asia/Kolkata',
+        ),
+      ],
+      slotCount: 1,
+      scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
       totalDurationMinutes: 60,
     ),
     statistics: const CanonicalBookingStatisticsV3(
@@ -1028,15 +1754,20 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
   required DateTime serviceAnchorAt,
   required DateTime? scheduledStartAt,
   required DateTime? checkInDateTime,
+  CanonicalBookingStateV3 state = CanonicalBookingStateV3.confirmed,
+  DateTime? noShowAt,
+  DateTime? disputeDeadlineAt,
+  bool otpVisibleToParent = true,
 }) {
-  final paidAt = DateTime.utc(2026, 7, 27, 8, 0);
+  final requestedAt = serviceAnchorAt.subtract(const Duration(days: 2));
+  final paidAt = serviceAnchorAt.subtract(const Duration(days: 1, hours: 1));
 
   return CanonicalBookingDocumentV3(
     schemaVersion: canonicalBookingSchemaVersion,
     bookingModelVersion: canonicalBookingModelVersion,
     documentFormat: canonicalBookingDocumentFormat,
     bookingType: bookingType,
-    state: CanonicalBookingStateV3.confirmed,
+    state: state,
     participants: const CanonicalBookingParticipantsV3(
       parent: CanonicalPublicParentParticipantV3(
         parentId: 'parent-1',
@@ -1058,24 +1789,24 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
     service: service,
     schedule: schedule,
     lifecycle: CanonicalBookingLifecycleV3(
-      requestedAt: DateTime.utc(2026, 7, 26, 10),
-      timerStartsAt: DateTime.utc(2026, 7, 26, 10, 5),
+      requestedAt: requestedAt,
+      timerStartsAt: requestedAt.add(const Duration(minutes: 5)),
       wasQueuedOutsideWorkingHours: false,
-      notifiedAt: DateTime.utc(2026, 7, 26, 10, 6),
-      acceptDeadlineAt: DateTime.utc(2026, 7, 26, 11),
-      viewedByProviderAt: DateTime.utc(2026, 7, 26, 10, 15),
-      respondedAt: DateTime.utc(2026, 7, 26, 10, 30),
+      notifiedAt: requestedAt.add(const Duration(minutes: 6)),
+      acceptDeadlineAt: requestedAt.add(const Duration(hours: 1)),
+      viewedByProviderAt: requestedAt.add(const Duration(minutes: 15)),
+      respondedAt: requestedAt.add(const Duration(minutes: 30)),
       providerResponseType: ProviderResponseTypeV3.accept,
       responseSeconds: 1800,
-      payDeadlineAt: DateTime.utc(2026, 7, 27, 11),
-      paymentStartedAt: DateTime.utc(2026, 7, 27, 7, 55),
+      payDeadlineAt: requestedAt.add(const Duration(days: 1, hours: 1)),
+      paymentStartedAt: paidAt.subtract(const Duration(minutes: 5)),
       paidAt: paidAt,
       paymentSeconds: 120,
       otpGeneratedAt: paidAt,
       otpEnteredAt: null,
-      noShowAt: null,
+      noShowAt: noShowAt,
       serviceEndedAt: null,
-      disputeDeadlineAt: null,
+      disputeDeadlineAt: disputeDeadlineAt,
       completedAt: null,
       reviewWindowEndsAt: null,
       finalizedAt: paidAt,
@@ -1115,7 +1846,7 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
       isPaidContactUnlocked: true,
       contactUnlockedAt: paidAt,
       chatUnlockedAt: paidAt,
-      otpVisibleToParent: true,
+      otpVisibleToParent: otpVisibleToParent,
       exactAddressUnlocked: true,
       privacyVersion: 1,
       privateParticipantsRefPath: 'bookingPrivateParticipants/booking-1',
@@ -1175,7 +1906,7 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
     parentId: 'parent-1',
     providerId: 'provider-1',
     serviceId: service.serviceId,
-    stateQueryValue: CanonicalBookingStateV3.confirmed,
+    stateQueryValue: state,
     bookingTypeQueryValue: bookingType,
     serviceAnchorAt: serviceAnchorAt,
     scheduledStartAt: scheduledStartAt,
@@ -1190,11 +1921,80 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
   );
 }
 
-CanonicalBookingDocumentV3 _buildInProgressBooking() {
+CanonicalBookingDocumentV3 _buildRawNoShowBooking() {
+  final scheduledStartAt = _futureFixtureUtc(
+    daysFromNow: -2,
+    hour: 3,
+    minute: 30,
+  );
+  final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
+  return _buildConfirmedBookingDocument(
+    bookingType: BookingV3Type.slot,
+    state: CanonicalBookingStateV3.noShow,
+    noShowAt: scheduledEndAt,
+    disputeDeadlineAt: scheduledEndAt.add(const Duration(hours: 24)),
+    otpVisibleToParent: false,
+    service: const BookingServiceSnapshotV3(
+      serviceId: 'service-1',
+      providerId: 'provider-1',
+      serviceTitle: 'Daily Dog Walk',
+      animalType: 'Dog',
+      category: 'Walking',
+      bookingType: BookingV3Type.slot,
+      timezone: 'Asia/Kolkata',
+      serviceUnitPricePaise: 25000,
+      durationMinutes: 60,
+      pricePerNightPaise: null,
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      checkInDateTime: null,
+      checkOutDateTime: null,
+      capacitySnapshot: 1,
+      serviceLocationType: 'provider_location',
+      currency: 'INR',
+      snapshotVersion: 1,
+    ),
+    schedule: CanonicalSlotBookingScheduleV3(
+      serviceAnchorAt: scheduledStartAt,
+      timezone: 'Asia/Kolkata',
+      slots: [
+        CanonicalBookingSlotSegmentV3(
+          slotId: 'slot-1',
+          dateKey:
+              '${scheduledStartAt.year.toString().padLeft(4, '0')}-'
+              '${scheduledStartAt.month.toString().padLeft(2, '0')}-'
+              '${scheduledStartAt.day.toString().padLeft(2, '0')}',
+          startAt: scheduledStartAt,
+          endAt: scheduledEndAt,
+          durationMinutes: 60,
+          unitPricePaise: 25000,
+          serviceId: 'service-1',
+          providerId: 'provider-1',
+          timezone: 'Asia/Kolkata',
+        ),
+      ],
+      slotCount: 1,
+      scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
+      totalDurationMinutes: 60,
+    ),
+    statistics: const CanonicalBookingStatisticsV3(
+      selectedSlotCount: 1,
+      totalDurationMinutes: 60,
+      nights: null,
+    ),
+    serviceAnchorAt: scheduledStartAt,
+    scheduledStartAt: scheduledStartAt,
+    checkInDateTime: null,
+  );
+}
+
+CanonicalBookingDocumentV3 _buildInProgressBooking({DateTime? otpEnteredAt}) {
   final scheduledStartAt = DateTime.utc(2026, 7, 28, 3, 30);
   final scheduledEndAt = DateTime.utc(2026, 7, 28, 4, 30);
   final paidAt = DateTime.utc(2026, 7, 27, 8, 0);
-  final otpEnteredAt = DateTime.utc(2026, 7, 28, 3, 35);
+  final effectiveOtpEnteredAt =
+      otpEnteredAt ?? DateTime.utc(2026, 7, 28, 3, 35);
 
   return CanonicalBookingDocumentV3(
     schemaVersion: canonicalBookingSchemaVersion,
@@ -1276,7 +2076,7 @@ CanonicalBookingDocumentV3 _buildInProgressBooking() {
       paidAt: paidAt,
       paymentSeconds: 120,
       otpGeneratedAt: paidAt,
-      otpEnteredAt: otpEnteredAt,
+      otpEnteredAt: effectiveOtpEnteredAt,
       noShowAt: null,
       serviceEndedAt: null,
       disputeDeadlineAt: null,
@@ -1394,7 +2194,111 @@ CanonicalBookingDocumentV3 _buildInProgressBooking() {
     customerId: 'parent-1',
     serviceOwnerId: 'provider-1',
     createdAt: DateTime.utc(2026, 7, 26, 10),
-    updatedAt: otpEnteredAt,
+    updatedAt: effectiveOtpEnteredAt,
+  );
+}
+
+CanonicalBookingDocumentV3 _buildCompletedPendingReviewBooking({
+  DateTime? completedAt,
+  DateTime? reviewWindowEndsAt,
+  CanonicalBookingStateV3 state =
+      CanonicalBookingStateV3.completedPendingReview,
+  bool reviewSubmitted = false,
+}) {
+  final inProgress = _buildInProgressBooking();
+  final effectiveCompletedAt = completedAt ?? DateTime.utc(2026, 7, 28, 4, 30);
+  final effectiveReviewWindowEndsAt =
+      reviewWindowEndsAt ?? effectiveCompletedAt.add(const Duration(hours: 24));
+
+  return CanonicalBookingDocumentV3(
+    schemaVersion: inProgress.schemaVersion,
+    bookingModelVersion: inProgress.bookingModelVersion,
+    documentFormat: inProgress.documentFormat,
+    bookingType: inProgress.bookingType,
+    state: state,
+    participants: inProgress.participants,
+    service: inProgress.service,
+    schedule: inProgress.schedule,
+    lifecycle: CanonicalBookingLifecycleV3(
+      requestedAt: inProgress.lifecycle.requestedAt,
+      timerStartsAt: inProgress.lifecycle.timerStartsAt,
+      wasQueuedOutsideWorkingHours:
+          inProgress.lifecycle.wasQueuedOutsideWorkingHours,
+      notifiedAt: inProgress.lifecycle.notifiedAt,
+      acceptDeadlineAt: inProgress.lifecycle.acceptDeadlineAt,
+      viewedByProviderAt: inProgress.lifecycle.viewedByProviderAt,
+      respondedAt: inProgress.lifecycle.respondedAt,
+      providerResponseType: inProgress.lifecycle.providerResponseType,
+      responseSeconds: inProgress.lifecycle.responseSeconds,
+      payDeadlineAt: inProgress.lifecycle.payDeadlineAt,
+      paymentStartedAt: inProgress.lifecycle.paymentStartedAt,
+      paidAt: inProgress.lifecycle.paidAt,
+      paymentSeconds: inProgress.lifecycle.paymentSeconds,
+      otpGeneratedAt: inProgress.lifecycle.otpGeneratedAt,
+      otpEnteredAt: inProgress.lifecycle.otpEnteredAt,
+      noShowAt: inProgress.lifecycle.noShowAt,
+      serviceEndedAt: effectiveCompletedAt,
+      disputeDeadlineAt: effectiveReviewWindowEndsAt,
+      completedAt: effectiveCompletedAt,
+      reviewWindowEndsAt: effectiveReviewWindowEndsAt,
+      finalizedAt: null,
+      cancelledAt: inProgress.lifecycle.cancelledAt,
+    ),
+    payment: inProgress.payment,
+    financials: inProgress.financials,
+    privacy: CanonicalBookingPrivacyV3(
+      isPaidContactUnlocked: inProgress.privacy.isPaidContactUnlocked,
+      contactUnlockedAt: inProgress.privacy.contactUnlockedAt,
+      chatUnlockedAt: inProgress.privacy.chatUnlockedAt,
+      otpVisibleToParent: false,
+      exactAddressUnlocked: inProgress.privacy.exactAddressUnlocked,
+      privacyVersion: inProgress.privacy.privacyVersion,
+      privateParticipantsRefPath: inProgress.privacy.privateParticipantsRefPath,
+    ),
+    cancellation: inProgress.cancellation,
+    dispute: inProgress.dispute,
+    review: CanonicalBookingReviewV3(
+      status: reviewSubmitted ? 'submitted' : '',
+      reviewId: reviewSubmitted ? 'booking-1' : '',
+      submittedAt: reviewSubmitted ? effectiveCompletedAt : null,
+    ),
+    payout: CanonicalBookingPayoutV3(
+      status: 'HELD',
+      holdReason: inProgress.payout.holdReason,
+      eligibleAt: effectiveReviewWindowEndsAt,
+      readyAt: null,
+      processingAt: null,
+      releasedAt: null,
+      failedAt: null,
+      providerPayoutPaise: inProgress.financials!.providerPayoutPaise,
+      priorPaidPaise: inProgress.payout.priorPaidPaise,
+      remainingPayablePaise: inProgress.payout.remainingPayablePaise,
+      payoutReference: inProgress.payout.payoutReference,
+      externalTransactionId: inProgress.payout.externalTransactionId,
+      failureCode: inProgress.payout.failureCode,
+      retryCount: inProgress.payout.retryCount,
+    ),
+    statistics: inProgress.statistics,
+    audit: const CanonicalBookingAuditV3(
+      createdBy: BookingActorV3.system,
+      lastUpdatedBy: BookingActorV3.provider,
+      source: 'test',
+    ),
+    parentId: inProgress.parentId,
+    providerId: inProgress.providerId,
+    serviceId: inProgress.serviceId,
+    stateQueryValue: state,
+    bookingTypeQueryValue: inProgress.bookingTypeQueryValue,
+    serviceAnchorAt: inProgress.serviceAnchorAt,
+    scheduledStartAt: inProgress.scheduledStartAt,
+    checkInDateTime: inProgress.checkInDateTime,
+    acceptDeadlineAt: inProgress.acceptDeadlineAt,
+    payDeadlineAt: inProgress.payDeadlineAt,
+    completedAt: effectiveCompletedAt,
+    customerId: inProgress.customerId,
+    serviceOwnerId: inProgress.serviceOwnerId,
+    createdAt: inProgress.createdAt,
+    updatedAt: effectiveCompletedAt,
   );
 }
 

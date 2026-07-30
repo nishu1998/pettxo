@@ -19,6 +19,7 @@ import '../../domain/models/canonical_booking_cancellation_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
+import '../utils/canonical_booking_presentation_state.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
 
 class CanonicalBookingDetailScreen extends StatefulWidget {
@@ -115,14 +116,18 @@ class _CanonicalBookingDetailScreenState
           final currentUid = _currentUserId;
           final isParent = booking.parentId == currentUid;
           final userIsProvider = booking.providerId == currentUid;
-          final canReadPrivate =
-              booking.state == CanonicalBookingStateV3.confirmed &&
-              booking.lifecycle.paidAt != null &&
-              isParent;
-          final canReadParticipantPrivate =
+          final effectiveState = effectiveCanonicalBookingPresentationState(
+            booking,
+          );
+          final isPaidConfirmedOrLater =
               booking.lifecycle.paidAt != null &&
               (booking.state == CanonicalBookingStateV3.confirmed ||
-                  booking.state == CanonicalBookingStateV3.inProgress);
+                  booking.state == CanonicalBookingStateV3.inProgress ||
+                  booking.state ==
+                      CanonicalBookingStateV3.completedPendingReview ||
+                  booking.state == CanonicalBookingStateV3.completedFinal);
+          final canReadPrivate = isPaidConfirmedOrLater && isParent;
+          final canReadParticipantPrivate = isPaidConfirmedOrLater;
           _privateController.bind(
             bookingId: widget.bookingId,
             shouldLoadPrivate: canReadPrivate,
@@ -157,6 +162,18 @@ class _CanonicalBookingDetailScreenState
                       otpErrorMessage: privateState.errorMessage,
                     );
                   }
+                  if (_shouldUseRedesignedProviderBookingDetails(
+                    booking,
+                    userIsProvider,
+                  )) {
+                    return _buildProviderBookingDetailsExperience(
+                      booking: booking,
+                      participantPrivateData: participantSnapshot.data,
+                      participantErrorMessage: participantSnapshot.hasError
+                          ? 'Paid-only booking details could not be loaded right now.'
+                          : null,
+                    );
+                  }
                   return ListView(
                     padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
                     children: [
@@ -167,7 +184,7 @@ class _CanonicalBookingDetailScreenState
                         repository: _repository,
                         booking: booking,
                       ),
-                      if (booking.state == CanonicalBookingStateV3.noShow) ...[
+                      if (effectiveState == CanonicalBookingStateV3.noShow) ...[
                         const SizedBox(height: 14),
                         _NoShowStatusSection(booking: booking),
                       ],
@@ -268,7 +285,8 @@ class _CanonicalBookingDetailScreenState
                         onOpenMap: (details) => _openMap(details),
                       ),
                       if (userIsProvider &&
-                          booking.state == CanonicalBookingStateV3.confirmed &&
+                          effectiveCanonicalBookingPresentationState(booking) ==
+                              CanonicalBookingStateV3.confirmed &&
                           booking.lifecycle.paidAt != null) ...[
                         const SizedBox(height: 14),
                         _ProviderServiceStartSection(
@@ -425,7 +443,7 @@ class _CanonicalBookingDetailScreenState
   }
 
   static String _statusLabel(CanonicalBookingDocumentV3 booking) {
-    return switch (booking.state) {
+    return switch (effectiveCanonicalBookingPresentationState(booking)) {
       CanonicalBookingStateV3.confirmed => 'Confirmed',
       CanonicalBookingStateV3.inProgress => 'In progress',
       CanonicalBookingStateV3.completedPendingReview => 'Completed',
@@ -452,9 +470,34 @@ class _CanonicalBookingDetailScreenState
     bool isParent,
   ) {
     if (!isParent) return false;
-    return booking.state == CanonicalBookingStateV3.confirmed ||
-        booking.state == CanonicalBookingStateV3.inProgress ||
-        booking.state == CanonicalBookingStateV3.noShow;
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    return effectiveState == CanonicalBookingStateV3.confirmed ||
+        effectiveState == CanonicalBookingStateV3.inProgress ||
+        effectiveState == CanonicalBookingStateV3.noShow ||
+        effectiveState == CanonicalBookingStateV3.completedPendingReview ||
+        effectiveState == CanonicalBookingStateV3.completedFinal;
+  }
+
+  bool _shouldUseRedesignedProviderBookingDetails(
+    CanonicalBookingDocumentV3 booking,
+    bool isProvider,
+  ) {
+    if (!isProvider) return false;
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    return effectiveState == CanonicalBookingStateV3.confirmed ||
+        effectiveState == CanonicalBookingStateV3.inProgress ||
+        effectiveState == CanonicalBookingStateV3.noShow ||
+        effectiveState == CanonicalBookingStateV3.completedPendingReview ||
+        effectiveState == CanonicalBookingStateV3.completedFinal;
+  }
+
+  bool _shouldShowCompletedCustomerAddressSection(
+    CanonicalBookingPrivateParticipantsData? participantPrivateData,
+    String? participantErrorMessage,
+  ) {
+    return participantPrivateData?.hasAddress == true ||
+        participantPrivateData?.hasProviderPhoneNumber == true ||
+        (participantErrorMessage?.trim().isNotEmpty ?? false);
   }
 
   Widget _buildCustomerBookingDetailsExperience({
@@ -465,6 +508,18 @@ class _CanonicalBookingDetailScreenState
     required bool isOtpLoading,
     required String? otpErrorMessage,
   }) {
+    final isCompletedState =
+        booking.state == CanonicalBookingStateV3.completedPendingReview ||
+        booking.state == CanonicalBookingStateV3.completedFinal;
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    if (isCompletedState) {
+      return _buildCustomerCompletedBookingDetailsExperience(
+        booking: booking,
+        participantPrivateData: participantPrivateData,
+        participantErrorMessage: participantErrorMessage,
+      );
+    }
+
     return SafeArea(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
@@ -480,17 +535,23 @@ class _CanonicalBookingDetailScreenState
           const BookingDetailsSectionLabel('Booking timeline'),
           const SizedBox(height: 10),
           BookingTimelineCard(steps: _buildCustomerTimeline(booking)),
-          const SizedBox(height: 16),
-          const BookingDetailsSectionLabel('Service-start OTP'),
-          const SizedBox(height: 10),
-          _CustomerOtpSectionCard(
-            booking: booking,
-            otpPrivateData: otpPrivateData,
-            isLoading: isOtpLoading,
-            errorMessage: otpErrorMessage,
-            providerName: booking.participants.provider.displayName,
-            onRetry: _retryPrivateReads,
-          ),
+          if (effectiveState == CanonicalBookingStateV3.noShow) ...[
+            const SizedBox(height: 16),
+            _NoShowStatusSection(booking: booking),
+          ],
+          if (effectiveState != CanonicalBookingStateV3.noShow) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Service-start OTP'),
+            const SizedBox(height: 10),
+            _CustomerOtpSectionCard(
+              booking: booking,
+              otpPrivateData: otpPrivateData,
+              isLoading: isOtpLoading,
+              errorMessage: otpErrorMessage,
+              providerName: booking.participants.provider.displayName,
+              onRetry: _retryPrivateReads,
+            ),
+          ],
           if (_shouldShowLocationSection(
             participantPrivateData,
             participantErrorMessage,
@@ -532,12 +593,12 @@ class _CanonicalBookingDetailScreenState
           const BookingDetailsSectionLabel('Cancellation'),
           const SizedBox(height: 10),
           _CustomerCancellationCard(
-            canCancel: booking.state == CanonicalBookingStateV3.confirmed,
+            canCancel: effectiveState == CanonicalBookingStateV3.confirmed,
             isBusy: _isCancelling || _isLoadingPreview || _isStartingService,
             onReadPolicy: () => Navigator.of(
               context,
             ).pushNamed(LegalPoliciesCatalog.cancellationPolicy.routeName),
-            onCancel: booking.state == CanonicalBookingStateV3.confirmed
+            onCancel: effectiveState == CanonicalBookingStateV3.confirmed
                 ? () => _startCancellationFlow(
                     bookingId: widget.bookingId,
                     actorType: 'CUSTOMER',
@@ -550,17 +611,313 @@ class _CanonicalBookingDetailScreenState
           const SizedBox(height: 10),
           ImportantInformationCard(
             model: StatusImportantInformationModel(
-              title: booking.state == CanonicalBookingStateV3.inProgress
+              title: effectiveState == CanonicalBookingStateV3.inProgress
                   ? 'Service in progress'
-                  : booking.state == CanonicalBookingStateV3.noShow
+                  : effectiveState == CanonicalBookingStateV3.noShow
                   ? 'OTP no longer available'
                   : 'OTP verification required',
-              body: booking.state == CanonicalBookingStateV3.inProgress
+              body: effectiveState == CanonicalBookingStateV3.inProgress
                   ? 'The service clock started after successful OTP verification.'
-                  : booking.state == CanonicalBookingStateV3.noShow
+                  : effectiveState == CanonicalBookingStateV3.noShow
                   ? 'The service window ended before OTP verification, so the booking was marked as no-show.'
                   : 'OTP verification is required to start the service. The service clock starts only after successful OTP verification.',
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCustomerCompletedBookingDetailsExperience({
+    required CanonicalBookingDocumentV3 booking,
+    required CanonicalBookingPrivateParticipantsData? participantPrivateData,
+    required String? participantErrorMessage,
+  }) {
+    final disputeDeadlineAt =
+        booking.lifecycle.disputeDeadlineAt ??
+        booking.lifecycle.reviewWindowEndsAt;
+    final reviewSubmitted =
+        _reviewSubmittedLocally || booking.hasSubmittedReview;
+    final hasOpenDispute =
+        booking.dispute.status.trim().toLowerCase() == 'open';
+    final disputeWindowActive =
+        disputeDeadlineAt != null && !DateTime.now().isAfter(disputeDeadlineAt);
+    final canLeaveReview =
+        (booking.state == CanonicalBookingStateV3.completedPendingReview ||
+            booking.state == CanonicalBookingStateV3.completedFinal) &&
+        !reviewSubmitted &&
+        !_isSubmittingReview;
+    final canRaiseDispute =
+        booking.state == CanonicalBookingStateV3.completedPendingReview &&
+        disputeWindowActive &&
+        !hasOpenDispute &&
+        !_isSubmittingDispute;
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+        children: [
+          _CustomerCompletedSummaryCard(
+            serviceTitle: booking.service.serviceTitle,
+            providerName: booking.participants.provider.displayName,
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Completion status'),
+          const SizedBox(height: 10),
+          _CustomerCompletedStatusCard(
+            disputeDeadlineText: disputeDeadlineAt != null
+                ? _dateTimeWithMeridiem(disputeDeadlineAt)
+                : 'Not available',
+            canLeaveReview: canLeaveReview,
+            canRaiseDispute: canRaiseDispute,
+            reviewSubmitted: reviewSubmitted,
+            disputeOpen: hasOpenDispute,
+            disputeWindowActive: disputeWindowActive,
+            isSubmittingReview: _isSubmittingReview,
+            isSubmittingDispute: _isSubmittingDispute,
+            onLeaveReview: canLeaveReview
+                ? () => _showReviewSheet(booking)
+                : null,
+            onRaiseDispute: canRaiseDispute
+                ? () => _showDisputeSheet(booking)
+                : null,
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Service'),
+          const SizedBox(height: 10),
+          _CustomerCompletedServiceCard(
+            serviceTitle: booking.service.serviceTitle,
+            providerName: booking.participants.provider.displayName,
+            paymentLabel: _paymentStatusLabel(booking),
+            amountPaid: _money(booking),
+            confirmedAt: _dateTimeWithMeridiem(
+              booking.lifecycle.paidAt ?? booking.createdAt,
+            ),
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Schedule'),
+          const SizedBox(height: 10),
+          BookingSummaryCard(
+            rows: _buildCustomerCompletedScheduleRows(booking),
+          ),
+          const SizedBox(height: 24),
+          if (_shouldShowCompletedCustomerAddressSection(
+            participantPrivateData,
+            participantErrorMessage,
+          )) ...[
+            const BookingDetailsSectionLabel('Service address'),
+            const SizedBox(height: 10),
+            _CustomerCompletedAddressCard(
+              participantPrivateData: participantPrivateData,
+              errorMessage: participantErrorMessage,
+              onOpenMap: _hasDirectionsData(participantPrivateData)
+                  ? () => _openMap(participantPrivateData!)
+                  : null,
+              onCallProvider:
+                  participantPrivateData?.hasProviderPhoneNumber == true
+                  ? () =>
+                        _openPhone(participantPrivateData!.providerPhoneNumber)
+                  : null,
+              onRetry: participantErrorMessage == null
+                  ? null
+                  : _retryPrivateReads,
+            ),
+            const SizedBox(height: 24),
+          ],
+          const BookingDetailsSectionLabel('Booking chat'),
+          const SizedBox(height: 10),
+          _CustomerCompletedChatCard(
+            isOpening: _isOpeningChat,
+            isUnlocked: booking.privacy.chatUnlockedAt != null,
+            onOpenChat: booking.privacy.chatUnlockedAt != null
+                ? () => _openBookingChat(widget.bookingId)
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProviderBookingDetailsExperience({
+    required CanonicalBookingDocumentV3 booking,
+    required CanonicalBookingPrivateParticipantsData? participantPrivateData,
+    required String? participantErrorMessage,
+  }) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    final isCompletedState =
+        booking.state == CanonicalBookingStateV3.completedPendingReview ||
+        booking.state == CanonicalBookingStateV3.completedFinal;
+    if (isCompletedState) {
+      return _buildProviderCompletedBookingDetailsExperience(
+        booking: booking,
+        participantPrivateData: participantPrivateData,
+        participantErrorMessage: participantErrorMessage,
+      );
+    }
+
+    final canCancel = effectiveState == CanonicalBookingStateV3.confirmed;
+    final canComplete = effectiveState == CanonicalBookingStateV3.inProgress;
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+        children: [
+          const BookingDetailsSectionLabel('Booking status'),
+          const SizedBox(height: 10),
+          BookingStatusCard(model: _buildProviderStatusCard(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking summary'),
+          const SizedBox(height: 10),
+          BookingSummaryCard(rows: _buildProviderSummaryRows(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking timeline'),
+          const SizedBox(height: 10),
+          BookingTimelineCard(steps: _buildProviderTimeline(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Service details'),
+          const SizedBox(height: 10),
+          _ProviderServiceDetailsCard(
+            participantPrivateData: participantPrivateData,
+            errorMessage: participantErrorMessage,
+            onOpenMap: _hasDirectionsData(participantPrivateData)
+                ? () => _openMap(participantPrivateData!)
+                : null,
+            onCallCustomer: participantPrivateData?.hasPhoneNumber == true
+                ? () => _openPhone(participantPrivateData!.phoneNumber)
+                : null,
+            onRetry: participantErrorMessage == null
+                ? null
+                : _retryPrivateReads,
+          ),
+          if (effectiveState != CanonicalBookingStateV3.noShow) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Service start'),
+            const SizedBox(height: 10),
+            _ProviderUnifiedServiceActionCard(
+              booking: booking,
+              isBusy: _isStartingService || _isCompletingService,
+              onEnterOtp: effectiveState == CanonicalBookingStateV3.confirmed
+                  ? () => _startServiceFlow(bookingId: widget.bookingId)
+                  : null,
+              onCompleteService: canComplete
+                  ? () => _completeServiceFlow(bookingId: widget.bookingId)
+                  : null,
+            ),
+          ],
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking chat'),
+          const SizedBox(height: 10),
+          _ProviderBookingChatCard(
+            isOpening: _isOpeningChat,
+            isUnlocked: booking.privacy.chatUnlockedAt != null,
+            onOpenChat: booking.privacy.chatUnlockedAt != null
+                ? () => _openBookingChat(widget.bookingId)
+                : null,
+          ),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Cancellation'),
+          const SizedBox(height: 10),
+          _ProviderCancellationCard(
+            canCancel: canCancel,
+            isBusy: _isCancelling || _isLoadingPreview || _isStartingService,
+            onCancel: canCancel
+                ? () => _startCancellationFlow(
+                    bookingId: widget.bookingId,
+                    actorType: 'PROVIDER',
+                    isProvider: true,
+                  )
+                : null,
+          ),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Important information'),
+          const SizedBox(height: 10),
+          ImportantInformationCard(
+            model: StatusImportantInformationModel(
+              title: booking.state == CanonicalBookingStateV3.inProgress
+                  ? 'Service already started'
+                  : 'OTP verification required',
+              body: booking.state == CanonicalBookingStateV3.inProgress
+                  ? 'This booking officially started after successful OTP verification. Complete the service only after the scheduled work is finished.'
+                  : 'The booking officially begins only after successful OTP verification. Verify the customer\'s OTP only when the service is ready to start.',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProviderCompletedBookingDetailsExperience({
+    required CanonicalBookingDocumentV3 booking,
+    required CanonicalBookingPrivateParticipantsData? participantPrivateData,
+    required String? participantErrorMessage,
+  }) {
+    final reviewWindowText = booking.lifecycle.reviewWindowEndsAt != null
+        ? '${_calendarDate(booking.lifecycle.reviewWindowEndsAt!)} • ${_timeOnly(booking.lifecycle.reviewWindowEndsAt!)}'
+        : 'Awaiting final sync';
+    final currentStateText =
+        booking.state == CanonicalBookingStateV3.completedPendingReview
+        ? 'Waiting for customer review or automatic finalization.'
+        : 'Customer review window is closed and the booking is finalized.';
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+        children: [
+          _ProviderCompletedSummaryCard(
+            serviceTitle: booking.service.serviceTitle,
+            providerName: booking.participants.provider.displayName,
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Completion status'),
+          const SizedBox(height: 10),
+          _ProviderCompletedStatusCard(
+            statusText: 'Service completed successfully.',
+            reviewWindowText: reviewWindowText,
+            currentStateText: currentStateText,
+            isPendingReview:
+                booking.state == CanonicalBookingStateV3.completedPendingReview,
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Service'),
+          const SizedBox(height: 10),
+          _ProviderCompletedServiceCard(
+            providerName: booking.participants.provider.displayName,
+            bookingType: _bookingTypeLabel(booking),
+            paymentLabel: _paymentStatusLabel(booking),
+            amountPaid: _money(booking),
+            completedAt: booking.completedAt != null
+                ? _timelineDateTimeLabel(booking.completedAt!)
+                : 'Pending sync',
+            serviceTitle: booking.service.serviceTitle,
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Schedule'),
+          const SizedBox(height: 10),
+          _ProviderCompletedScheduleCard(
+            rows: _buildProviderCompletedScheduleRows(booking),
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Paid booking details'),
+          const SizedBox(height: 10),
+          _ProviderCompletedPaidDetailsCard(
+            participantPrivateData: participantPrivateData,
+            errorMessage: participantErrorMessage,
+            onOpenMap: _hasDirectionsData(participantPrivateData)
+                ? () => _openMap(participantPrivateData!)
+                : null,
+            onCallCustomer: participantPrivateData?.hasPhoneNumber == true
+                ? () => _openPhone(participantPrivateData!.phoneNumber)
+                : null,
+            onRetry: participantErrorMessage == null
+                ? null
+                : _retryPrivateReads,
+          ),
+          const SizedBox(height: 24),
+          const BookingDetailsSectionLabel('Booking chat'),
+          const SizedBox(height: 10),
+          _ProviderCompletedChatCard(
+            isOpening: _isOpeningChat,
+            isUnlocked: booking.privacy.chatUnlockedAt != null,
+            onOpenChat: booking.privacy.chatUnlockedAt != null
+                ? () => _openBookingChat(widget.bookingId)
+                : null,
           ),
         ],
       ),
@@ -617,9 +974,128 @@ class _CanonicalBookingDetailScreenState
     return rows;
   }
 
+  List<StatusSummaryRowModel> _buildCustomerCompletedScheduleRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return [
+      StatusSummaryRowModel(
+        label: 'Type',
+        value: _bookingTypeLabel(booking),
+        icon: Icons.event_note_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Date',
+        value: _bookingDateLabel(booking),
+        icon: Icons.calendar_today_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Time',
+        value: _bookingTimeLabel(booking),
+        icon: Icons.access_time_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Duration',
+        value: _bookingDurationLabel(booking),
+        icon: Icons.hourglass_bottom_rounded,
+      ),
+    ];
+  }
+
+  List<StatusSummaryRowModel> _buildProviderSummaryRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final customerName =
+        '${booking.participants.parent.displayFirstName} ${booking.participants.parent.lastInitial}.';
+    final rows = <StatusSummaryRowModel>[
+      StatusSummaryRowModel(
+        label: 'Service',
+        value: booking.service.serviceTitle,
+        icon: Icons.pets_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Customer',
+        value: customerName,
+        icon: Icons.person_outline_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Pet',
+        value: booking.service.animalType.trim().isEmpty
+            ? 'Pet'
+            : booking.service.animalType.trim(),
+        icon: Icons.pets_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Booking Date',
+        value: _bookingDateLabel(booking),
+        icon: Icons.calendar_today_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Time',
+        value: _bookingTimeLabel(booking),
+        icon: Icons.access_time_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Duration',
+        value: _bookingDurationLabel(booking),
+        icon: Icons.timelapse_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Booking Type',
+        value: _bookingTypeLabel(booking),
+        icon: Icons.event_note_outlined,
+      ),
+    ];
+    final category = booking.service.category.trim();
+    if (category.isNotEmpty) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Category',
+          value: category,
+          icon: Icons.category_outlined,
+        ),
+      );
+    }
+    rows.add(
+      StatusSummaryRowModel(
+        label: 'Booking ID',
+        value: widget.bookingId.toUpperCase(),
+        icon: Icons.confirmation_number_outlined,
+      ),
+    );
+    return rows;
+  }
+
+  List<StatusSummaryRowModel> _buildProviderCompletedScheduleRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return [
+      StatusSummaryRowModel(
+        label: 'Date',
+        value: _bookingDateLabel(booking),
+        icon: Icons.calendar_today_outlined,
+      ),
+      StatusSummaryRowModel(
+        label: 'Time',
+        value: _bookingTimeLabel(booking),
+        icon: Icons.access_time_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Duration',
+        value: _bookingDurationLabel(booking),
+        icon: Icons.hourglass_bottom_rounded,
+      ),
+      StatusSummaryRowModel(
+        label: 'Visit type',
+        value: _bookingTypeLabel(booking),
+        icon: Icons.sell_outlined,
+      ),
+    ];
+  }
+
   StatusCardPresentationModel _buildCustomerStatusCard(
     CanonicalBookingDocumentV3 booking,
   ) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
     if (booking.state == CanonicalBookingStateV3.inProgress) {
       return const StatusCardPresentationModel(
         icon: Icons.play_circle_outline_rounded,
@@ -630,7 +1106,7 @@ class _CanonicalBookingDetailScreenState
         badgeLabel: 'Confirmed',
       );
     }
-    if (booking.state == CanonicalBookingStateV3.noShow) {
+    if (effectiveState == CanonicalBookingStateV3.noShow) {
       return const StatusCardPresentationModel(
         icon: Icons.event_busy_outlined,
         title: 'No Show',
@@ -650,10 +1126,45 @@ class _CanonicalBookingDetailScreenState
     );
   }
 
+  StatusCardPresentationModel _buildProviderStatusCard(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    if (booking.state == CanonicalBookingStateV3.inProgress) {
+      return const StatusCardPresentationModel(
+        icon: Icons.play_circle_outline_rounded,
+        title: 'Service In Progress',
+        explanation:
+            'The customer\'s OTP has been verified successfully. Finish the service and complete the booking when the visit ends.',
+        accentColor: Color(0xFF2FA56A),
+        badgeLabel: 'Confirmed',
+      );
+    }
+    if (effectiveState == CanonicalBookingStateV3.noShow) {
+      return const StatusCardPresentationModel(
+        icon: Icons.event_busy_outlined,
+        title: 'No Show',
+        explanation:
+            'The service window ended before OTP verification, so this booking was marked as no-show.',
+        accentColor: Color(0xFFE07A2D),
+        badgeLabel: 'Closed',
+      );
+    }
+    return const StatusCardPresentationModel(
+      icon: Icons.check_circle_outline_rounded,
+      title: 'Booking Confirmed',
+      explanation:
+          'The customer has successfully completed payment.\n\nYou can begin the service at the scheduled time.',
+      accentColor: Color(0xFF2FA56A),
+      badgeLabel: 'Confirmed',
+    );
+  }
+
   List<BookingTimelineStepModel> _buildCustomerTimeline(
     CanonicalBookingDocumentV3 booking,
   ) {
     final steps = <BookingTimelineStepModel>[];
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
     if (booking.lifecycle.requestedAt != null) {
       steps.add(
         BookingTimelineStepModel(
@@ -688,12 +1199,105 @@ class _CanonicalBookingDetailScreenState
         ),
       );
     }
-    if (booking.lifecycle.otpEnteredAt != null) {
+    if (effectiveState == CanonicalBookingStateV3.noShow) {
+      final noShowAt = effectiveCanonicalNoShowTimestamp(booking);
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Marked as no-show',
+          subtitle: 'OTP was not verified before the service window ended',
+          timestamp: noShowAt != null ? _timelineDateTimeLabel(noShowAt) : null,
+          tone: BookingTimelineStepTone.warning,
+          isHighlighted: true,
+        ),
+      );
+    } else if (booking.lifecycle.otpEnteredAt != null) {
       steps.add(
         BookingTimelineStepModel(
           label: 'Service started',
           timestamp: _timelineDateTimeLabel(booking.lifecycle.otpEnteredAt!),
           isHighlighted: true,
+        ),
+      );
+    }
+    return steps;
+  }
+
+  List<BookingTimelineStepModel> _buildProviderTimeline(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final steps = <BookingTimelineStepModel>[];
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    final hasStarted =
+        effectiveState == CanonicalBookingStateV3.inProgress ||
+        booking.lifecycle.otpEnteredAt != null;
+    if (booking.lifecycle.requestedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Request submitted',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.requestedAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.respondedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Provider accepted',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.respondedAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.paidAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Payment completed',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.paidAt!),
+        ),
+      );
+    }
+    final scheduledAt = _scheduledStartAt(booking);
+    if (scheduledAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Service scheduled',
+          timestamp: _timelineDateTimeLabel(scheduledAt),
+          tone: BookingTimelineStepTone.neutral,
+        ),
+      );
+    }
+    if (hasStarted) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Service started',
+          timestamp: booking.lifecycle.otpEnteredAt != null
+              ? _timelineDateTimeLabel(booking.lifecycle.otpEnteredAt!)
+              : null,
+          isHighlighted: true,
+        ),
+      );
+    } else if (effectiveState == CanonicalBookingStateV3.noShow) {
+      final noShowAt = effectiveCanonicalNoShowTimestamp(booking);
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Marked as no-show',
+          subtitle: 'OTP was not verified before the service window ended',
+          timestamp: noShowAt != null ? _timelineDateTimeLabel(noShowAt) : null,
+          tone: BookingTimelineStepTone.warning,
+          isHighlighted: true,
+        ),
+      );
+    } else {
+      steps.add(
+        const BookingTimelineStepModel(
+          label: 'Start service',
+          tone: BookingTimelineStepTone.neutral,
+        ),
+      );
+    }
+    if (effectiveState != CanonicalBookingStateV3.noShow) {
+      steps.add(
+        const BookingTimelineStepModel(
+          label: 'Complete service',
+          tone: BookingTimelineStepTone.neutral,
         ),
       );
     }
@@ -808,11 +1412,12 @@ class _CanonicalBookingDetailScreenState
     final currentUid = _currentUserId;
     final isParent = booking.parentId == currentUid;
     final isProvider = booking.providerId == currentUid;
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
     final canCancel =
-        booking.state == CanonicalBookingStateV3.confirmed &&
+        effectiveState == CanonicalBookingStateV3.confirmed &&
         (isParent || isProvider);
     final canComplete =
-        booking.state == CanonicalBookingStateV3.inProgress && isProvider;
+        effectiveState == CanonicalBookingStateV3.inProgress && isProvider;
     if (!canCancel && !canComplete) {
       return const SizedBox.shrink();
     }
@@ -1054,53 +1659,81 @@ class _CanonicalBookingDetailScreenState
       final code = error.code.trim().toLowerCase();
       final message = error.message?.trim() ?? '';
       final details = '${error.details}';
+      if (code == 'unauthenticated') {
+        return 'Please sign in again.';
+      }
       if (code == 'resource-exhausted' ||
           details.contains('TEMPORARILY_LOCKED') ||
           details.contains('ATTEMPTS_EXCEEDED')) {
         return 'Too many incorrect attempts. Please wait before trying again.';
+      }
+      if (details.contains('ACTOR_NOT_AUTHORIZED') ||
+          message.contains('Only the assigned provider can verify this OTP')) {
+        return 'Only the assigned provider can verify this OTP.';
       }
       if (message.contains('already been cancelled')) {
         return 'This booking is no longer available for service start.';
       }
       if (message.contains('service-start window has already passed') ||
           details.contains('AFTER_SERVICE_END')) {
-        return 'This service can no longer be started because the scheduled service window has ended.';
+        return 'The service window has ended.';
       }
       if (message.contains('not eligible for service start') ||
+          details.contains('INVALID_BOOKING_STATE') ||
           details.contains('INVALID_STATE') ||
           details.contains('PAYMENT_NOT_CONFIRMED')) {
-        return 'This booking is not ready for service start right now.';
+        return 'Booking is not ready for OTP verification.';
       }
       if (message.contains('OTP verification is not available')) {
-        return 'The service OTP is not available right now. Ask the customer to reopen their confirmed booking details.';
+        return 'Booking is not ready for OTP verification.';
       }
-      if (code == 'permission-denied' ||
-          message.contains('OTP is invalid') ||
+      if (message.contains('OTP is invalid') ||
           details.contains('INVALID_OTP')) {
-        return 'The OTP is incorrect. Ask the customer to confirm the code and try again.';
+        return 'The OTP is incorrect.';
+      }
+      if (code == 'permission-denied') {
+        return 'Only the assigned provider can verify this OTP.';
       }
       if (code == 'unavailable' ||
           code == 'deadline-exceeded' ||
-          code == 'internal' ||
+          code == 'aborted' ||
           message.contains('network')) {
-        return 'We could not verify the OTP right now. Please try again.';
+        return 'Check your internet connection.';
+      }
+      if (code == 'internal' || code == 'unknown' || code == 'data-loss') {
+        return 'We could not start the service right now. Please try again.';
       }
     }
     final text = '$error';
+    if (text.contains('unauthenticated')) {
+      return 'Please sign in again.';
+    }
+    if (text.contains('ACTOR_NOT_AUTHORIZED')) {
+      return 'Only the assigned provider can verify this OTP.';
+    }
     if (text.contains('AFTER_SERVICE_END') ||
         text.contains('service-start window has already passed')) {
-      return 'This service can no longer be started because the scheduled service window has ended.';
+      return 'The service window has ended.';
     }
     if (text.contains('resource-exhausted')) {
       return 'Too many incorrect attempts. Please wait before trying again.';
     }
-    if (text.contains('permission-denied')) {
+    if (text.contains('INVALID_OTP')) {
       return 'The OTP is incorrect. Ask the customer to confirm the code and try again.';
+    }
+    if (text.contains('INVALID_BOOKING_STATE')) {
+      return 'Booking is not ready for OTP verification.';
     }
     if (text.contains('network-request-failed') ||
         text.contains('deadline-exceeded') ||
+        text.contains('aborted') ||
         text.contains('unavailable')) {
-      return 'We could not verify the OTP right now. Please try again.';
+      return 'Check your internet connection.';
+    }
+    if (text.contains('internal') ||
+        text.contains('unknown') ||
+        text.contains('data-loss')) {
+      return 'We could not start the service right now. Please try again.';
     }
     return 'We could not verify the OTP right now. Please try again.';
   }
@@ -1206,17 +1839,51 @@ class _CanonicalBookingDetailScreenState
   Future<void> _completeServiceFlow({required String bookingId}) async {
     setState(() => _isCompletingService = true);
     try {
+      debugPrint(
+        '[CanonicalServiceCompletion] request callable=completeBookingServiceV3 bookingId=$bookingId',
+      );
       await _repository.completeBookingServiceV3(bookingId: bookingId);
+      debugPrint(
+        '[CanonicalServiceCompletion] success callable=completeBookingServiceV3 bookingId=$bookingId',
+      );
+      debugPrint(
+        '[CanonicalServiceCompletion] refresh_started bookingId=$bookingId targetStates=COMPLETED_PENDING_REVIEW,COMPLETED_FINAL',
+      );
+      await _waitForBookingStates(
+        bookingId: bookingId,
+        expectedStates: const {
+          CanonicalBookingStateV3.completedPendingReview,
+          CanonicalBookingStateV3.completedFinal,
+        },
+      );
+      debugPrint(
+        '[CanonicalServiceCompletion] refresh_completed bookingId=$bookingId',
+      );
       if (!mounted) return;
       AppSnackbar.showSuccess(
         context,
         'Service completed. The customer now has 24 hours to review or dispute.',
       );
+      debugPrint(
+        '[CanonicalServiceCompletion] navigation_completed bookingId=$bookingId',
+      );
     } catch (error) {
+      if (error is FirebaseFunctionsException) {
+        debugPrint(
+          '[CanonicalServiceCompletion] firebase_error callable=completeBookingServiceV3 bookingId=$bookingId code=${error.code} message=${(error.message ?? '').trim()} details=${error.details}',
+        );
+      } else {
+        debugPrint(
+          '[CanonicalServiceCompletion] unexpected_error callable=completeBookingServiceV3 bookingId=$bookingId error=$error',
+        );
+      }
       if (!mounted) return;
+      final text = '$error';
       AppSnackbar.showError(
         context,
-        '$error'.contains('failed-precondition')
+        error is TimeoutException
+            ? 'Service completion is still refreshing. Please wait a moment.'
+            : text.contains('failed-precondition')
             ? 'This booking cannot be completed right now.'
             : 'Could not complete this service right now.',
       );
@@ -1224,6 +1891,40 @@ class _CanonicalBookingDetailScreenState
       if (mounted) {
         setState(() => _isCompletingService = false);
       }
+    }
+  }
+
+  Future<void> _waitForBookingStates({
+    required String bookingId,
+    required Set<CanonicalBookingStateV3> expectedStates,
+  }) async {
+    final current = await _repository.fetchCanonicalBooking(bookingId);
+    if (current is CanonicalBookingReadModel &&
+        expectedStates.contains(current.booking.state)) {
+      return;
+    }
+    _serviceStartStateSubscription?.cancel();
+    final completer = Completer<void>();
+    _serviceStartStateSubscription = _repository
+        .watchCanonicalBooking(bookingId)
+        .listen((readModel) {
+          if (readModel is CanonicalBookingReadModel &&
+              expectedStates.contains(readModel.booking.state) &&
+              !completer.isCompleted) {
+            completer.complete();
+          }
+        });
+    try {
+      await completer.future.timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      final latest = await _repository.fetchCanonicalBooking(bookingId);
+      if (latest is! CanonicalBookingReadModel ||
+          !expectedStates.contains(latest.booking.state)) {
+        rethrow;
+      }
+    } finally {
+      await _serviceStartStateSubscription?.cancel();
+      _serviceStartStateSubscription = null;
     }
   }
 
@@ -1413,10 +2114,46 @@ class _CanonicalBookingDetailScreenState
       if (closeSheet) Navigator.of(context).pop();
       AppSnackbar.showSuccess(context, 'Review submitted successfully.');
     } catch (error) {
+      String? functionCode;
+      String? detailCode;
+      debugPrint(
+        '[CanonicalReviewSubmission] submit_failed bookingId=${widget.bookingId} state=${booking.state.name} completedAtPresent=${(booking.lifecycle.completedAt ?? booking.completedAt) != null} reviewStatus=${booking.review.status} reviewIdPresent=${booking.review.reviewId.isNotEmpty} reviewAlreadyExistsKnown=${_reviewSubmittedLocally || booking.hasSubmittedReview} error=$error',
+      );
+      if (error is FirebaseFunctionsException) {
+        functionCode = error.code;
+        final details = error.details is Map<Object?, Object?>
+            ? Map<Object?, Object?>.from(error.details as Map<Object?, Object?>)
+            : null;
+        final backendCode = details?['code'];
+        if (backendCode is String && backendCode.trim().isNotEmpty) {
+          detailCode = backendCode.trim();
+        }
+        debugPrint(
+          '[CanonicalReviewSubmission] functions_exception bookingId=${widget.bookingId} code=${error.code} message=${(error.message ?? '').trim()} details=${error.details}',
+        );
+      } else if (error is FirebaseException) {
+        debugPrint(
+          '[CanonicalReviewSubmission] firebase_exception bookingId=${widget.bookingId} code=${error.code} message=${(error.message ?? '').trim()}',
+        );
+      }
       if (!mounted) return;
+      final normalizedCode = (detailCode ?? functionCode ?? '')
+          .trim()
+          .toUpperCase();
+      if (normalizedCode == 'REVIEW_ALREADY_SUBMITTED' ||
+          normalizedCode == 'ALREADY_REVIEWED' ||
+          functionCode == 'already-exists') {
+        setState(() => _reviewSubmittedLocally = true);
+      }
       AppSnackbar.showError(
         context,
-        '$error'.contains('failed-precondition')
+        normalizedCode == 'REVIEW_ALREADY_SUBMITTED' ||
+                normalizedCode == 'ALREADY_REVIEWED' ||
+                functionCode == 'already-exists' ||
+                '$error'.contains('ALREADY_REVIEWED')
+            ? 'Your review has already been submitted for this booking.'
+            : functionCode == 'failed-precondition' ||
+                  '$error'.contains('failed-precondition')
             ? 'This booking is no longer ready for review.'
             : 'Could not submit your review right now.',
       );
@@ -1433,6 +2170,8 @@ class _CanonicalBookingDetailScreenState
   }) async {
     final reason = _disputeReasonController.text.trim();
     final description = _disputeDescriptionController.text.trim();
+    final nestedDisputeDeadlineAt = booking.lifecycle.disputeDeadlineAt;
+    final reviewWindowFallback = booking.lifecycle.reviewWindowEndsAt;
     if (reason.isEmpty || description.isEmpty) {
       AppSnackbar.showError(
         context,
@@ -1454,11 +2193,52 @@ class _CanonicalBookingDetailScreenState
         'Dispute submitted. Payout stays on hold until Pettxo reviews it.',
       );
     } catch (error) {
+      debugPrint(
+        '[CanonicalDisputeSubmission] submit_failed bookingId=${widget.bookingId} callable=createBookingDisputeV3 state=${booking.state.name} nestedDisputeDeadlinePresent=${nestedDisputeDeadlineAt != null} historicalDottedDisputeDeadlineExposed=false reviewWindowFallbackPresent=${reviewWindowFallback != null} reasonPresent=${reason.isNotEmpty} descriptionLength=${description.length} error=$error',
+      );
+      String? functionCode;
+      String? detailCode;
+      if (error is FirebaseFunctionsException) {
+        functionCode = error.code;
+        final details = error.details is Map<Object?, Object?>
+            ? Map<Object?, Object?>.from(error.details as Map<Object?, Object?>)
+            : null;
+        final backendCode = details?['code'];
+        if (backendCode is String && backendCode.trim().isNotEmpty) {
+          detailCode = backendCode.trim();
+        }
+        debugPrint(
+          '[CanonicalDisputeSubmission] functions_exception bookingId=${widget.bookingId} code=${error.code} message=${(error.message ?? '').trim()} details=${error.details}',
+        );
+      } else if (error is FirebaseException) {
+        debugPrint(
+          '[CanonicalDisputeSubmission] firebase_exception bookingId=${widget.bookingId} code=${error.code} message=${(error.message ?? '').trim()}',
+        );
+      }
       if (!mounted) return;
+      final normalizedCode = (detailCode ?? functionCode ?? '')
+          .trim()
+          .toUpperCase();
+      final text = '$error';
       AppSnackbar.showError(
         context,
-        '$error'.contains('failed-precondition')
-            ? 'This booking is no longer eligible for dispute submission.'
+        normalizedCode == 'WINDOW_EXPIRED' || text.contains('WINDOW_EXPIRED')
+            ? 'The dispute window for this booking has expired.'
+            : normalizedCode == 'ALREADY_DISPUTED' ||
+                  functionCode == 'already-exists' ||
+                  text.contains('ALREADY_DISPUTED')
+            ? 'A dispute has already been raised for this booking.'
+            : functionCode == 'permission-denied' ||
+                  text.contains('permission-denied')
+            ? 'You are not allowed to raise a dispute for this booking.'
+            : functionCode == 'invalid-argument' ||
+                  text.contains('invalid-argument')
+            ? 'Please check your dispute details and try again.'
+            : functionCode == 'failed-precondition' ||
+                  text.contains('failed-precondition')
+            ? 'This booking is not eligible for dispute submission.'
+            : functionCode == 'unavailable' || text.contains('unavailable')
+            ? 'Network is unavailable right now. Please try again.'
             : 'Could not submit your dispute right now.',
       );
     } finally {
@@ -1656,7 +2436,8 @@ class _CustomerOtpSectionCard extends StatelessWidget {
             Text(
               hasError
                   ? 'Your service OTP could not be loaded right now.'
-                  : booking.state == CanonicalBookingStateV3.noShow
+                  : effectiveCanonicalBookingPresentationState(booking) ==
+                        CanonicalBookingStateV3.noShow
                   ? 'The service OTP is no longer available because this booking was marked as no-show.'
                   : 'Private OTP details are not available right now.',
               style: const TextStyle(
@@ -1901,6 +2682,1270 @@ class _CustomerCancellationCard extends StatelessWidget {
   }
 }
 
+class _CustomerCompletedSummaryCard extends StatelessWidget {
+  const _CustomerCompletedSummaryCard({
+    required this.serviceTitle,
+    required this.providerName,
+  });
+
+  final String serviceTitle;
+  final String providerName;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      backgroundColor: const Color(0xFFFFFBF8),
+      borderColor: AppColors.primary.withValues(alpha: 0.10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      serviceTitle,
+                      style: const TextStyle(
+                        color: AppColors.textDark,
+                        fontSize: 27,
+                        fontWeight: FontWeight.w900,
+                        height: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      providerName,
+                      style: const TextStyle(
+                        color: AppColors.textGrey,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE4F6E9),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  'Completed',
+                  style: TextStyle(
+                    color: Color(0xFF248A52),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Your payment is confirmed. You can now leave a review, raise a dispute during the review window, contact the provider, view directions, or continue chatting.',
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontWeight: FontWeight.w600,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerCompletedStatusCard extends StatelessWidget {
+  const _CustomerCompletedStatusCard({
+    required this.disputeDeadlineText,
+    required this.canLeaveReview,
+    required this.canRaiseDispute,
+    required this.reviewSubmitted,
+    required this.disputeOpen,
+    required this.disputeWindowActive,
+    required this.isSubmittingReview,
+    required this.isSubmittingDispute,
+    required this.onLeaveReview,
+    required this.onRaiseDispute,
+  });
+
+  final String disputeDeadlineText;
+  final bool canLeaveReview;
+  final bool canRaiseDispute;
+  final bool reviewSubmitted;
+  final bool disputeOpen;
+  final bool disputeWindowActive;
+  final bool isSubmittingReview;
+  final bool isSubmittingDispute;
+  final VoidCallback? onLeaveReview;
+  final VoidCallback? onRaiseDispute;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        children: [
+          const _ProviderCompletedInfoRow(
+            icon: Icons.verified_rounded,
+            iconColor: Color(0xFF248A52),
+            iconBackgroundColor: Color(0xFFE8F7EC),
+            label: 'Status',
+            value: 'Service completed successfully.',
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedInfoRow(
+            icon: Icons.schedule_rounded,
+            iconColor: Color(0xFF2D6CDF),
+            iconBackgroundColor: Color(0xFFE8F1FF),
+            label: 'Dispute window',
+            value: disputeWindowActive
+                ? 'Raise a dispute before\n$disputeDeadlineText'
+                : 'The dispute window closed on\n$disputeDeadlineText',
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedInfoRow(
+            icon: Icons.hourglass_bottom_rounded,
+            iconColor: Color(0xFF8B57D9),
+            iconBackgroundColor: Color(0xFFF1E9FF),
+            label: 'Review',
+            value: reviewSubmitted
+                ? 'Your review has already been submitted.'
+                : 'You can leave a review at any time.',
+          ),
+          if (onLeaveReview != null || onRaiseDispute != null) ...[
+            const SizedBox(height: 18),
+            if (onLeaveReview != null)
+              GradientButton(
+                label: reviewSubmitted
+                    ? 'Review submitted'
+                    : isSubmittingReview
+                    ? 'Submitting...'
+                    : 'Leave Review',
+                onPressed: reviewSubmitted || isSubmittingReview
+                    ? null
+                    : onLeaveReview,
+                size: AppButtonSize.compact,
+                isLoading: isSubmittingReview,
+              ),
+            if (onRaiseDispute != null) ...[
+              const SizedBox(height: 12),
+              SecondaryButton(
+                label: disputeOpen
+                    ? 'Dispute submitted'
+                    : isSubmittingDispute
+                    ? 'Submitting...'
+                    : 'Raise Dispute',
+                onPressed: disputeOpen || isSubmittingDispute
+                    ? null
+                    : onRaiseDispute,
+                size: AppButtonSize.compact,
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerCompletedServiceCard extends StatelessWidget {
+  const _CustomerCompletedServiceCard({
+    required this.serviceTitle,
+    required this.providerName,
+    required this.paymentLabel,
+    required this.amountPaid,
+    required this.confirmedAt,
+  });
+
+  final String serviceTitle;
+  final String providerName;
+  final String paymentLabel;
+  final String amountPaid;
+  final String confirmedAt;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ProviderCompletedMetricRow(label: 'Title', value: serviceTitle),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(label: 'Provider', value: providerName),
+          const _ProviderDetailDivider(),
+          _CustomerCompletedServiceStatusRow(),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(
+            label: 'Payment',
+            value: paymentLabel == 'Payment confirmed'
+                ? paymentLabel
+                : 'Payment confirmed',
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(label: 'Amount Paid', value: amountPaid),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(
+            label: 'Confirmed At',
+            value: confirmedAt,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerCompletedServiceStatusRow extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Expanded(
+          flex: 5,
+          child: Text(
+            'Status',
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              height: 1.4,
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          flex: 7,
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE4F6E9),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Text(
+                'Completed',
+                style: TextStyle(
+                  color: Color(0xFF248A52),
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CustomerCompletedAddressCard extends StatelessWidget {
+  const _CustomerCompletedAddressCard({
+    required this.participantPrivateData,
+    required this.errorMessage,
+    required this.onOpenMap,
+    required this.onCallProvider,
+    required this.onRetry,
+  });
+
+  final CanonicalBookingPrivateParticipantsData? participantPrivateData;
+  final String? errorMessage;
+  final VoidCallback? onOpenMap;
+  final VoidCallback? onCallProvider;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = errorMessage != null && errorMessage!.trim().isNotEmpty;
+    final addressText = participantPrivateData?.hasAddress == true
+        ? participantPrivateData!.exactAddress
+        : hasError
+        ? 'Service address could not be loaded right now.'
+        : 'Service address is not available right now.';
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.location_on_outlined,
+                iconColor: AppColors.primary,
+                backgroundColor: Color(0xFFFFF1E7),
+                size: 34,
+                iconSize: 18,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  addressText,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w700,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (onOpenMap != null)
+            SecondaryButton(
+              label: 'Get Directions',
+              onPressed: onOpenMap,
+              icon: Icons.place_outlined,
+              size: AppButtonSize.compact,
+            ),
+          if (onCallProvider != null) ...[
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: 'Call provider',
+              onPressed: onCallProvider,
+              icon: Icons.call_outlined,
+              size: AppButtonSize.compact,
+            ),
+          ],
+          if (onRetry != null &&
+              onOpenMap == null &&
+              onCallProvider == null) ...[
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: 'Retry details',
+              onPressed: onRetry,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerCompletedChatCard extends StatelessWidget {
+  const _CustomerCompletedChatCard({
+    required this.isOpening,
+    required this.isUnlocked,
+    required this.onOpenChat,
+  });
+
+  final bool isOpening;
+  final bool isUnlocked;
+  final VoidCallback? onOpenChat;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Booking Chat',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Use this chat to coordinate with your provider regarding this completed booking.',
+            style: TextStyle(
+              color: AppColors.textGrey,
+              fontWeight: FontWeight.w600,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 16),
+          GradientButton(
+            label: isOpening ? 'Opening...' : 'Message Provider',
+            onPressed: isUnlocked && !isOpening ? onOpenChat : null,
+            size: AppButtonSize.compact,
+            isLoading: isOpening,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompletedSummaryCard extends StatelessWidget {
+  const _ProviderCompletedSummaryCard({
+    required this.serviceTitle,
+    required this.providerName,
+  });
+
+  final String serviceTitle;
+  final String providerName;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      backgroundColor: const Color(0xFFF7FDF8),
+      borderColor: const Color(0xFFD7F0DE),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Expanded(child: SizedBox.shrink()),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE4F6E9),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  'Completed',
+                  style: TextStyle(
+                    color: Color(0xFF248A52),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Text(
+            serviceTitle,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+              height: 1.1,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            providerName,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFFD7F0DE)),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                BookingDetailsIconTile(
+                  icon: Icons.verified_rounded,
+                  iconColor: Color(0xFF248A52),
+                  backgroundColor: Color(0xFFE8F7EC),
+                  size: 32,
+                  iconSize: 18,
+                ),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'The service has been completed successfully.',
+                    style: TextStyle(
+                      color: AppColors.textDark,
+                      fontWeight: FontWeight.w700,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompletedStatusCard extends StatelessWidget {
+  const _ProviderCompletedStatusCard({
+    required this.statusText,
+    required this.reviewWindowText,
+    required this.currentStateText,
+    required this.isPendingReview,
+  });
+
+  final String statusText;
+  final String reviewWindowText;
+  final String currentStateText;
+  final bool isPendingReview;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        children: [
+          _ProviderCompletedInfoRow(
+            icon: Icons.verified_rounded,
+            iconColor: const Color(0xFF248A52),
+            iconBackgroundColor: const Color(0xFFE8F7EC),
+            label: 'Status',
+            value: statusText,
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedInfoRow(
+            icon: Icons.schedule_rounded,
+            iconColor: const Color(0xFFE07A2D),
+            iconBackgroundColor: const Color(0xFFFFF1E7),
+            label: 'Review window',
+            value: isPendingReview
+                ? 'Ends $reviewWindowText'
+                : 'Closed after $reviewWindowText',
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedInfoRow(
+            icon: Icons.hourglass_bottom_rounded,
+            iconColor: const Color(0xFFB67A00),
+            iconBackgroundColor: const Color(0xFFFFF5D9),
+            label: 'Current state',
+            value: currentStateText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompletedServiceCard extends StatelessWidget {
+  const _ProviderCompletedServiceCard({
+    required this.serviceTitle,
+    required this.providerName,
+    required this.bookingType,
+    required this.paymentLabel,
+    required this.amountPaid,
+    required this.completedAt,
+  });
+
+  final String serviceTitle;
+  final String providerName;
+  final String bookingType;
+  final String paymentLabel;
+  final String amountPaid;
+  final String completedAt;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text(
+                'Service details',
+                style: TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE4F6E9),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  'Completed',
+                  style: TextStyle(
+                    color: Color(0xFF248A52),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _ProviderCompletedMetricRow(label: 'Title', value: serviceTitle),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(label: 'Provider', value: providerName),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(
+            label: 'Booking type',
+            value: bookingType,
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(label: 'Payment', value: paymentLabel),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(label: 'Amount paid', value: amountPaid),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedMetricRow(
+            label: 'Completed at',
+            value: completedAt,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompletedScheduleCard extends StatelessWidget {
+  const _ProviderCompletedScheduleCard({required this.rows});
+
+  final List<StatusSummaryRowModel> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingSummaryCard(rows: rows);
+  }
+}
+
+class _ProviderCompletedPaidDetailsCard extends StatelessWidget {
+  const _ProviderCompletedPaidDetailsCard({
+    required this.participantPrivateData,
+    required this.errorMessage,
+    required this.onOpenMap,
+    required this.onCallCustomer,
+    required this.onRetry,
+  });
+
+  final CanonicalBookingPrivateParticipantsData? participantPrivateData;
+  final String? errorMessage;
+  final VoidCallback? onOpenMap;
+  final VoidCallback? onCallCustomer;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = errorMessage != null && errorMessage!.trim().isNotEmpty;
+    final addressValue = participantPrivateData?.hasAddress == true
+        ? participantPrivateData!.exactAddress
+        : hasError
+        ? 'Service address could not be loaded right now.'
+        : 'Service address is not available right now.';
+    final phoneValue = participantPrivateData?.hasPhoneNumber == true
+        ? participantPrivateData!.phoneNumber
+        : hasError
+        ? 'Customer phone could not be loaded right now.'
+        : 'Customer phone is not available right now.';
+
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ProviderCompletedInfoRow(
+            icon: Icons.call_outlined,
+            iconColor: AppColors.primary,
+            iconBackgroundColor: const Color(0xFFFFF1E7),
+            label: 'Customer phone',
+            value: phoneValue,
+            actionLabel: onCallCustomer != null ? 'Call customer' : null,
+            onActionTap: onCallCustomer,
+          ),
+          const _ProviderDetailDivider(),
+          _ProviderCompletedInfoRow(
+            icon: Icons.location_on_outlined,
+            iconColor: AppColors.primary,
+            iconBackgroundColor: const Color(0xFFFFF1E7),
+            label: 'Service address',
+            value: addressValue,
+          ),
+          if (onOpenMap != null) ...[
+            const SizedBox(height: 16),
+            SecondaryButton(
+              label: 'Get directions',
+              onPressed: onOpenMap,
+              icon: Icons.map_outlined,
+              size: AppButtonSize.compact,
+            ),
+          ],
+          if (onRetry != null &&
+              onOpenMap == null &&
+              onCallCustomer == null) ...[
+            const SizedBox(height: 16),
+            SecondaryButton(
+              label: 'Retry details',
+              onPressed: onRetry,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompletedChatCard extends StatelessWidget {
+  const _ProviderCompletedChatCard({
+    required this.isOpening,
+    required this.isUnlocked,
+    required this.onOpenChat,
+  });
+
+  final bool isOpening;
+  final bool isUnlocked;
+  final VoidCallback? onOpenChat;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              BookingDetailsIconTile(
+                icon: Icons.chat_bubble_outline_rounded,
+                iconColor: AppColors.primary,
+                backgroundColor: Color(0xFFFFF1E7),
+                size: 34,
+                iconSize: 18,
+              ),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Use chat to coordinate any follow-up details with the customer.',
+                  style: TextStyle(
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          GradientButton(
+            label: isOpening ? 'Opening...' : 'Message Customer',
+            onPressed: isUnlocked && !isOpening ? onOpenChat : null,
+            size: AppButtonSize.compact,
+            isLoading: isOpening,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderServiceDetailsCard extends StatelessWidget {
+  const _ProviderServiceDetailsCard({
+    required this.participantPrivateData,
+    required this.errorMessage,
+    required this.onOpenMap,
+    required this.onCallCustomer,
+    required this.onRetry,
+  });
+
+  final CanonicalBookingPrivateParticipantsData? participantPrivateData;
+  final String? errorMessage;
+  final VoidCallback? onOpenMap;
+  final VoidCallback? onCallCustomer;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = errorMessage != null && errorMessage!.trim().isNotEmpty;
+    final rows = <Widget>[
+      _ProviderDetailRow(
+        label: 'Service address',
+        value: participantPrivateData?.hasAddress == true
+            ? participantPrivateData!.exactAddress
+            : hasError
+            ? 'Directions could not be loaded right now.'
+            : 'Service address is not available right now.',
+        actionLabel: onOpenMap != null ? 'Get directions' : null,
+        onActionTap: onOpenMap,
+      ),
+      const _ProviderDetailDivider(),
+      _ProviderDetailRow(
+        label: 'Customer phone',
+        value: participantPrivateData?.hasPhoneNumber == true
+            ? participantPrivateData!.phoneNumber
+            : hasError
+            ? 'Customer phone could not be loaded right now.'
+            : 'Customer phone is not available right now.',
+        actionLabel: onCallCustomer != null ? 'Call customer' : null,
+        onActionTap: onCallCustomer,
+      ),
+    ];
+    if (participantPrivateData?.hasProviderPhoneNumber == true || hasError) {
+      rows.addAll([
+        const _ProviderDetailDivider(),
+        _ProviderDetailRow(
+          label: 'Provider phone',
+          value: participantPrivateData?.hasProviderPhoneNumber == true
+              ? participantPrivateData!.providerPhoneNumber
+              : 'Provider phone could not be loaded right now.',
+        ),
+      ]);
+    }
+
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        children: [
+          ...rows,
+          if (onRetry != null) ...[
+            const SizedBox(height: 14),
+            SecondaryButton(
+              label: 'Retry details',
+              onPressed: onRetry,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderUnifiedServiceActionCard extends StatelessWidget {
+  const _ProviderUnifiedServiceActionCard({
+    required this.booking,
+    required this.isBusy,
+    required this.onEnterOtp,
+    required this.onCompleteService,
+  });
+
+  final CanonicalBookingDocumentV3 booking;
+  final bool isBusy;
+  final VoidCallback? onEnterOtp;
+  final VoidCallback? onCompleteService;
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    final hasStarted =
+        effectiveState == CanonicalBookingStateV3.inProgress ||
+        booking.lifecycle.otpEnteredAt != null;
+    final isNoShow = effectiveState == CanonicalBookingStateV3.noShow;
+
+    return BookingDetailsSurfaceCard(
+      backgroundColor: const Color(0xFFF5F9FF),
+      borderColor: const Color(0xFFDCEAFF),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.shield_outlined,
+                iconColor: Color(0xFF2D6CDF),
+                backgroundColor: Color(0xFFE8F1FF),
+                size: 38,
+                iconSize: 20,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hasStarted
+                          ? 'Service started'
+                          : isNoShow
+                          ? 'No-show'
+                          : 'OTP required',
+                      style: const TextStyle(
+                        color: AppColors.textDark,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (isNoShow)
+                      const Text(
+                        'The service window ended before OTP verification, so the start OTP is no longer available for this booking.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                          height: 1.45,
+                        ),
+                      )
+                    else if (!hasStarted)
+                      const Text(
+                        'Ask the customer for their 6-digit service OTP when the service begins.\n\nEntering the correct OTP validates the service start for this booking.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                          height: 1.45,
+                        ),
+                      ),
+                    if (hasStarted) ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                        'The customer OTP was verified successfully. You can now complete the service when the work is finished.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                          height: 1.45,
+                        ),
+                      ),
+                    ] else
+                      const Text('', style: TextStyle(fontSize: 0)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (!isNoShow && (!hasStarted || onCompleteService != null)) ...[
+            const SizedBox(height: 16),
+            GradientButton(
+              label: hasStarted
+                  ? (isBusy ? 'Completing...' : 'Complete service')
+                  : (isBusy ? 'Verifying...' : 'Enter customer OTP'),
+              onPressed: hasStarted ? onCompleteService : onEnterOtp,
+              size: AppButtonSize.compact,
+              isLoading: isBusy,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderBookingChatCard extends StatelessWidget {
+  const _ProviderBookingChatCard({
+    required this.isOpening,
+    required this.isUnlocked,
+    required this.onOpenChat,
+  });
+
+  final bool isOpening;
+  final bool isUnlocked;
+  final VoidCallback? onOpenChat;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.chat_bubble_outline_rounded,
+                iconColor: Color(0xFF6D4BDE),
+                backgroundColor: Color(0xFFF0EBFF),
+                size: 38,
+                iconSize: 20,
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Coordinate any remaining service details directly with the customer.',
+                  style: TextStyle(
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SecondaryButton(
+            label: isOpening ? 'Opening...' : 'Message customer',
+            onPressed: isUnlocked && !isOpening ? onOpenChat : null,
+            icon: Icons.chat_bubble_outline_rounded,
+            size: AppButtonSize.compact,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCancellationCard extends StatelessWidget {
+  const _ProviderCancellationCard({
+    required this.canCancel,
+    required this.isBusy,
+    required this.onCancel,
+  });
+
+  final bool canCancel;
+  final bool isBusy;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return BookingDetailsSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const BookingDetailsIconTile(
+                icon: Icons.cancel_outlined,
+                iconColor: Color(0xFFDC2626),
+                backgroundColor: Color(0xFFFEECEC),
+                size: 38,
+                iconSize: 20,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  canCancel
+                      ? 'Provider cancellation is still available before the service starts. Refunds and payout handling will follow the active cancellation policy.'
+                      : 'Provider cancellation is no longer available because the service has already started.',
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (canCancel && onCancel != null) ...[
+            const SizedBox(height: 16),
+            SecondaryButton(
+              label: isBusy ? 'Processing...' : 'Cancel as provider',
+              onPressed: isBusy ? null : onCancel,
+              icon: Icons.cancel_outlined,
+              size: AppButtonSize.compact,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderCompletedInfoRow extends StatelessWidget {
+  const _ProviderCompletedInfoRow({
+    required this.icon,
+    required this.iconColor,
+    required this.iconBackgroundColor,
+    required this.label,
+    required this.value,
+    this.actionLabel,
+    this.onActionTap,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final Color iconBackgroundColor;
+  final String label;
+  final String value;
+  final String? actionLabel;
+  final VoidCallback? onActionTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        BookingDetailsIconTile(
+          icon: icon,
+          iconColor: iconColor,
+          backgroundColor: iconBackgroundColor,
+          size: 34,
+          iconSize: 18,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textGrey,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  height: 1.4,
+                ),
+              ),
+              if (actionLabel != null && onActionTap != null) ...[
+                const SizedBox(height: 10),
+                InkWell(
+                  onTap: onActionTap,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        actionLabel!,
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Icon(
+                        Icons.open_in_new_rounded,
+                        size: 16,
+                        color: AppColors.primary,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProviderCompletedMetricRow extends StatelessWidget {
+  const _ProviderCompletedMetricRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          flex: 5,
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              height: 1.4,
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          flex: 7,
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProviderDetailRow extends StatelessWidget {
+  const _ProviderDetailRow({
+    required this.label,
+    required this.value,
+    this.actionLabel,
+    this.onActionTap,
+  });
+
+  final String label;
+  final String value;
+  final String? actionLabel;
+  final VoidCallback? onActionTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  value,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (actionLabel != null && onActionTap != null) ...[
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: InkWell(
+                onTap: onActionTap,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      actionLabel!,
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Icon(
+                      Icons.open_in_new_rounded,
+                      size: 16,
+                      color: AppColors.primary,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProviderDetailDivider extends StatelessWidget {
+  const _ProviderDetailDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 1,
+      margin: const EdgeInsets.symmetric(vertical: 12),
+      color: AppColors.textGrey.withValues(alpha: 0.12),
+    );
+  }
+}
+
 class _HeroCard extends StatelessWidget {
   const _HeroCard({required this.booking, required this.currentUid});
 
@@ -1910,12 +3955,13 @@ class _HeroCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isParent = booking.parentId == currentUid;
-    final statusLabel = booking.state == CanonicalBookingStateV3.inProgress
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    final statusLabel = effectiveState == CanonicalBookingStateV3.inProgress
         ? 'Service in progress'
-        : booking.state == CanonicalBookingStateV3.noShow
+        : effectiveState == CanonicalBookingStateV3.noShow
         ? 'No-show'
         : 'Confirmed';
-    final statusColor = booking.state == CanonicalBookingStateV3.noShow
+    final statusColor = effectiveState == CanonicalBookingStateV3.noShow
         ? const Color(0xFFDC2626)
         : const Color(0xFF2FA56A);
     return Container(
@@ -1976,9 +4022,9 @@ class _HeroCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            booking.state == CanonicalBookingStateV3.inProgress
+            effectiveState == CanonicalBookingStateV3.inProgress
                 ? 'The provider has started this service. OTP reuse is disabled and cancellation is no longer available.'
-                : booking.state == CanonicalBookingStateV3.noShow
+                : effectiveState == CanonicalBookingStateV3.noShow
                 ? 'This booking was marked as no-show because the service OTP was not entered before the service window ended.'
                 : isParent
                 ? 'Your payment is confirmed. Use this screen for your service OTP, provider contact, directions, and booking chat.'
@@ -2024,6 +4070,10 @@ class _PrivateSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isParent = booking.parentId == currentUid;
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    if (isParent && effectiveState == CanonicalBookingStateV3.noShow) {
+      return const SizedBox.shrink();
+    }
     final otpDetails = otpPrivateData;
     final participantDetails = participantPrivateData;
     final hasOtpError =
@@ -2041,16 +4091,14 @@ class _PrivateSection extends StatelessWidget {
         rows: [
           _InfoRow(
             'Status',
-            booking.state == CanonicalBookingStateV3.noShow
-                ? 'The service OTP is no longer available because this booking was marked as no-show.'
-                : 'Private contact and OTP stay hidden until payment confirmation finishes.',
+            'Private contact and OTP stay hidden until payment confirmation finishes.',
           ),
         ],
       );
     }
     final rows = <Widget>[
       if (isParent) ...[
-        if (booking.state == CanonicalBookingStateV3.inProgress ||
+        if (effectiveState == CanonicalBookingStateV3.inProgress ||
             booking.lifecycle.otpEnteredAt != null ||
             otpDetails?.otpState.toUpperCase() == 'USED')
           const _InfoRow(
@@ -2152,6 +4200,7 @@ class _NoShowStatusSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final disputeDeadlineAt = effectiveCanonicalNoShowDisputeDeadline(booking);
     return _InfoCard(
       title: 'No-show status',
       rows: [
@@ -2165,8 +4214,8 @@ class _NoShowStatusSection extends StatelessWidget {
         ),
         _InfoRow(
           'Dispute',
-          booking.lifecycle.disputeDeadlineAt != null
-              ? 'If the provider was unavailable, Pettxo support can review a dispute until ${_CanonicalBookingDetailScreenState._dateTime(booking.lifecycle.disputeDeadlineAt)}.'
+          disputeDeadlineAt != null
+              ? 'If the provider was unavailable, Pettxo support can review a dispute until ${_CanonicalBookingDetailScreenState._dateTime(disputeDeadlineAt)}.'
               : 'Dispute review remains available if the provider was unavailable.',
         ),
       ],

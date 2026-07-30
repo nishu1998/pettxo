@@ -54,12 +54,14 @@ class StatusCardPresentationModel {
 class BookingTimelineStepModel {
   const BookingTimelineStepModel({
     required this.label,
+    this.subtitle,
     this.timestamp,
     this.isHighlighted = false,
     this.tone = BookingTimelineStepTone.success,
   });
 
   final String label;
+  final String? subtitle;
   final String? timestamp;
   final bool isHighlighted;
   final BookingTimelineStepTone tone;
@@ -539,6 +541,17 @@ class _TimelineStepTile extends StatelessWidget {
                       style: const TextStyle(
                         color: AppColors.textGrey,
                         fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                  if (step.subtitle != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      step.subtitle!,
+                      style: const TextStyle(
+                        color: AppColors.textGrey,
+                        fontWeight: FontWeight.w600,
+                        height: 1.4,
                       ),
                     ),
                   ],
