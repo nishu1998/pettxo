@@ -439,13 +439,20 @@ function buildServiceStartRecord(params: {
   priorFailedAttempts: number;
   successfulAttemptNumber: number;
 }): BookingServiceStartRecord {
+  const normalizedServiceAnchorAt = asDate(serviceAnchorAt(params.booking));
+  if (normalizedServiceAnchorAt == null) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Booking is missing a valid service anchor time.",
+    );
+  }
   return {
     bookingId: params.bookingId,
     providerId: params.booking.providerId,
     parentId: params.booking.parentId,
-    serviceAnchorAt: serviceAnchorAt(params.booking),
+    serviceAnchorAt: normalizedServiceAnchorAt,
     verifiedAt: new Date(params.authoritativeNow.getTime()),
-    otpGeneratedAt: params.booking.lifecycle.otpGeneratedAt ?? null,
+    otpGeneratedAt: asDate(params.booking.lifecycle.otpGeneratedAt),
     otpVerifiedAt: new Date(params.authoritativeNow.getTime()),
     verificationAttemptId: params.requestAttemptId,
     successfulAttemptNumber: params.successfulAttemptNumber,
@@ -483,14 +490,21 @@ function buildNoShowNotifications(params: {
   });
 }
 
-function buildNoShowRecord(params: {
+export function buildNoShowRecord(params: {
   booking: CanonicalBookingDocumentV3;
   bookingId: string;
   authoritativeNow: Date;
   expectedServiceEndAt: Date;
 }): BookingNoShowRecord {
+  const normalizedServiceAnchorAt = asDate(serviceAnchorAt(params.booking));
+  if (normalizedServiceAnchorAt == null) {
+    throw new Error(
+      `Booking ${params.bookingId} is missing a valid authoritative service anchor time.`,
+    );
+  }
+  const noShowAt = new Date(params.expectedServiceEndAt.getTime());
   const disputeDeadlineAt = new Date(
-    params.authoritativeNow.getTime() + NO_SHOW_DISPUTE_WINDOW_MS,
+    noShowAt.getTime() + NO_SHOW_DISPUTE_WINDOW_MS,
   );
   const allocation = calculateCanonicalNoShowAllocationV3({booking: params.booking});
   return {
@@ -498,9 +512,9 @@ function buildNoShowRecord(params: {
     providerId: params.booking.providerId,
     parentId: params.booking.parentId,
     bookingType: params.booking.bookingType,
-    serviceAnchorAt: serviceAnchorAt(params.booking),
+    serviceAnchorAt: normalizedServiceAnchorAt,
     expectedServiceEndAt: new Date(params.expectedServiceEndAt.getTime()),
-    noShowAt: new Date(params.authoritativeNow.getTime()),
+    noShowAt,
     noShowReasonCode: "OTP_NOT_ENTERED_BY_SERVICE_END",
     customerRefundBasisPoints: allocation.customerRefundBasisPoints,
     providerShareBasisPoints: allocation.providerShareBasisPoints,
@@ -547,297 +561,381 @@ export async function verifyBookingStartOtpV3(params: {
     };
   }
 
-  return params.firestore.runTransaction(async (transaction) => {
-    const [bookingSnapshot, bookingPrivateSnapshot, serviceStartSnapshot] = await Promise.all([
-      transaction.get(bookingRef),
-      transaction.get(bookingPrivateRef),
-      transaction.get(serviceStartRef),
-    ]);
+  let checkpoint = "OTP_VERIFY_REQUEST_RECEIVED";
+  let currentState = "";
+  console.info("OTP_VERIFY_REQUEST_RECEIVED", {
+    bookingId: params.bookingId,
+    providerUid: params.providerId,
+    bookingPath: bookingRef.path,
+    bookingPrivatePath: bookingPrivateRef.path,
+    serviceStartPath: serviceStartRef.path,
+  });
+  try {
+    return await params.firestore.runTransaction(async (transaction) => {
+      const [bookingSnapshot, bookingPrivateSnapshot, serviceStartSnapshot] = await Promise.all([
+        transaction.get(bookingRef),
+        transaction.get(bookingPrivateRef),
+        transaction.get(serviceStartRef),
+      ]);
 
-    if (!bookingSnapshot.exists) {
-      throw new HttpsError("not-found", "Booking not found.");
-    }
+      checkpoint = "OTP_VERIFY_BOOKING_LOADED";
+      console.info("OTP_VERIFY_BOOKING_LOADED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+      });
+      if (!bookingSnapshot.exists) {
+        throw new HttpsError("not-found", "Booking not found.");
+      }
 
-    const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
-    if (booking.providerId !== params.providerId) {
-      return {
-        code: "UNAUTHORIZED",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: booking.lifecycle.otpEnteredAt ?? null,
-        idempotentReplay: false,
-        retryAfterMs: null,
-      };
-    }
-    if (booking.state === "IN_PROGRESS" || serviceStartSnapshot.exists) {
-      return {
-        code: "ALREADY_STARTED",
-        bookingId: params.bookingId,
-        state: "IN_PROGRESS",
-        otpEnteredAt:
-          booking.lifecycle.otpEnteredAt ??
-          asDate(serviceStartSnapshot.data()?.otpVerifiedAt),
-        idempotentReplay: true,
-        retryAfterMs: null,
-      };
-    }
-    if (booking.state === "CANCELLED" || booking.state === "NO_SHOW") {
-      return {
-        code: "BOOKING_CANCELLED",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: booking.lifecycle.otpEnteredAt ?? null,
-        idempotentReplay: false,
-        retryAfterMs: null,
-      };
-    }
-    if (booking.state !== "CONFIRMED") {
-      return {
-        code: !hasConfirmedPaymentV3(booking)
-          ? "PAYMENT_NOT_CONFIRMED"
-          : "INVALID_STATE",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: booking.lifecycle.otpEnteredAt ?? null,
-        idempotentReplay: false,
-        retryAfterMs: null,
-      };
-    }
-    if (!hasConfirmedPaymentV3(booking)) {
-      return {
-        code: "PAYMENT_NOT_CONFIRMED",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: null,
-        idempotentReplay: false,
-        retryAfterMs: null,
-      };
-    }
-
-    const bookingPrivate = bookingPrivateSnapshot.exists
-      ? bookingPrivateSnapshot.data() as CanonicalBookingPrivateDocumentV3
-      : null;
-    if (!bookingPrivate || !asTrimmedString(bookingPrivate.providerOtpHash)) {
-      return {
-        code: "OTP_NOT_AVAILABLE",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: null,
-        idempotentReplay: false,
-        retryAfterMs: null,
-      };
-    }
-
-    if (bookingPrivate.lastVerificationAttemptId === params.requestAttemptId) {
-      const previousOutcome = bookingPrivate.lastVerificationOutcome.trim();
-      if (previousOutcome === "VERIFIED_STARTED" || previousOutcome === "ALREADY_STARTED") {
+      const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
+      currentState = booking.state;
+      const bookingOtpEnteredAt = asDate(booking.lifecycle.otpEnteredAt);
+      if (booking.providerId !== params.providerId) {
+        return {
+          code: "UNAUTHORIZED",
+          bookingId: params.bookingId,
+          state: booking.state,
+          otpEnteredAt: bookingOtpEnteredAt,
+          idempotentReplay: false,
+          retryAfterMs: null,
+        };
+      }
+      if (booking.state === "IN_PROGRESS" || serviceStartSnapshot.exists) {
         return {
           code: "ALREADY_STARTED",
           bookingId: params.bookingId,
           state: "IN_PROGRESS",
-          otpEnteredAt: bookingPrivate.verifiedAt ?? booking.lifecycle.otpEnteredAt ?? null,
+          otpEnteredAt:
+            bookingOtpEnteredAt ??
+            asDate(serviceStartSnapshot.data()?.otpVerifiedAt),
           idempotentReplay: true,
           retryAfterMs: null,
         };
       }
-      if (previousOutcome === "INVALID_OTP") {
+      if (booking.state === "CANCELLED" || booking.state === "NO_SHOW") {
         return {
-          code: "INVALID_OTP",
+          code: "BOOKING_CANCELLED",
+          bookingId: params.bookingId,
+          state: booking.state,
+          otpEnteredAt: bookingOtpEnteredAt,
+          idempotentReplay: false,
+          retryAfterMs: null,
+        };
+      }
+      if (booking.state !== "CONFIRMED") {
+        return {
+          code: !hasConfirmedPaymentV3(booking)
+            ? "PAYMENT_NOT_CONFIRMED"
+            : "INVALID_STATE",
+          bookingId: params.bookingId,
+          state: booking.state,
+          otpEnteredAt: bookingOtpEnteredAt,
+          idempotentReplay: false,
+          retryAfterMs: null,
+        };
+      }
+      if (!hasConfirmedPaymentV3(booking)) {
+        return {
+          code: "PAYMENT_NOT_CONFIRMED",
           bookingId: params.bookingId,
           state: booking.state,
           otpEnteredAt: null,
+          idempotentReplay: false,
+          retryAfterMs: null,
+        };
+      }
+
+      checkpoint = "OTP_VERIFY_PRIVATE_RECORD_LOADED";
+      console.info("OTP_VERIFY_PRIVATE_RECORD_LOADED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+        serviceStartExists: serviceStartSnapshot.exists,
+      });
+      const bookingPrivate = bookingPrivateSnapshot.exists
+        ? bookingPrivateSnapshot.data() as CanonicalBookingPrivateDocumentV3
+        : null;
+      if (!bookingPrivate || !asTrimmedString(bookingPrivate.providerOtpHash)) {
+        return {
+          code: "OTP_NOT_AVAILABLE",
+          bookingId: params.bookingId,
+          state: booking.state,
+          otpEnteredAt: null,
+          idempotentReplay: false,
+          retryAfterMs: null,
+        };
+      }
+
+      checkpoint = "OTP_VERIFY_AUTHORIZED";
+      console.info("OTP_VERIFY_AUTHORIZED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+        bookingState: booking.state,
+      });
+      if (bookingPrivate.lastVerificationAttemptId === params.requestAttemptId) {
+        const previousOutcome = bookingPrivate.lastVerificationOutcome.trim();
+        if (previousOutcome === "VERIFIED_STARTED" || previousOutcome === "ALREADY_STARTED") {
+          return {
+            code: "ALREADY_STARTED",
+            bookingId: params.bookingId,
+            state: "IN_PROGRESS",
+            otpEnteredAt: asDate(bookingPrivate.verifiedAt) ?? bookingOtpEnteredAt,
+            idempotentReplay: true,
+            retryAfterMs: null,
+          };
+        }
+        if (previousOutcome === "INVALID_OTP") {
+          return {
+            code: "INVALID_OTP",
+            bookingId: params.bookingId,
+            state: booking.state,
+            otpEnteredAt: null,
+            idempotentReplay: true,
+            retryAfterMs: null,
+          };
+        }
+        if (previousOutcome === "TEMPORARILY_LOCKED") {
+          const lockedUntil = asDate(bookingPrivate.lockedUntil);
+          const retryAfterMs = lockedUntil == null
+            ? null
+            : Math.max(lockedUntil.getTime() - authoritativeNow.getTime(), 0);
+          return {
+            code: "TEMPORARILY_LOCKED",
+            bookingId: params.bookingId,
+            state: booking.state,
+            otpEnteredAt: null,
+            idempotentReplay: true,
+            retryAfterMs,
+          };
+        }
+      }
+
+      if (bookingPrivate.otpState === "USED" || bookingPrivate.verifiedAt != null) {
+        return {
+          code: "ALREADY_STARTED",
+          bookingId: params.bookingId,
+          state: "IN_PROGRESS",
+          otpEnteredAt: asDate(bookingPrivate.verifiedAt) ?? bookingOtpEnteredAt,
           idempotentReplay: true,
           retryAfterMs: null,
         };
       }
-      if (previousOutcome === "TEMPORARILY_LOCKED") {
-        const retryAfterMs = bookingPrivate.lockedUntil == null
-          ? null
-          : Math.max(bookingPrivate.lockedUntil.getTime() - authoritativeNow.getTime(), 0);
+
+      const lockedUntil = asDate(bookingPrivate.lockedUntil);
+      if (lockedUntil != null && lockedUntil.getTime() > authoritativeNow.getTime()) {
+        transaction.set(bookingPrivateRef, {
+          lastVerificationAttemptId: params.requestAttemptId,
+          lastVerificationOutcome: "TEMPORARILY_LOCKED",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
         return {
           code: "TEMPORARILY_LOCKED",
           bookingId: params.bookingId,
           state: booking.state,
           otpEnteredAt: null,
-          idempotentReplay: true,
-          retryAfterMs,
+          idempotentReplay: false,
+          retryAfterMs: lockedUntil.getTime() - authoritativeNow.getTime(),
         };
       }
-    }
 
-    if (bookingPrivate.otpState === "USED" || bookingPrivate.verifiedAt != null) {
+      const eligibility = evaluateCanonicalServiceStartEligibilityV3({
+        booking,
+        authoritativeNow,
+      });
+      if (eligibility.code !== "ALLOWED") {
+        const outcome =
+          eligibility.code === "AFTER_SERVICE_END"
+            ? "AFTER_SERVICE_END"
+            : eligibility.code;
+        transaction.set(bookingPrivateRef, {
+          lastVerificationAttemptId: params.requestAttemptId,
+          lastVerificationOutcome: outcome,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        return {
+          code: outcome as ServiceStartOutcomeCode,
+          bookingId: params.bookingId,
+          state: booking.state,
+          otpEnteredAt: null,
+          idempotentReplay: false,
+          retryAfterMs: null,
+        };
+      }
+
+      checkpoint = "OTP_VERIFY_ELIGIBILITY_PASSED";
+      console.info("OTP_VERIFY_ELIGIBILITY_PASSED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+        bookingState: booking.state,
+      });
+      if (!safeOtpMatches(bookingPrivate.providerOtpHash, params.bookingId, otpCandidate)) {
+        const failedAttemptCount =
+          typeof bookingPrivate.failedAttemptCount === "number" &&
+              Number.isFinite(bookingPrivate.failedAttemptCount)
+            ? bookingPrivate.failedAttemptCount
+            : 0;
+        const nextFailedAttemptCount = failedAttemptCount + 1;
+        const locked =
+          nextFailedAttemptCount >= SERVICE_START_MAX_FAILED_ATTEMPTS
+            ? new Date(authoritativeNow.getTime() + SERVICE_START_LOCKOUT_MS)
+            : null;
+        transaction.set(bookingPrivateRef, {
+          failedAttemptCount: nextFailedAttemptCount,
+          lastFailedAttemptAt: Timestamp.fromDate(authoritativeNow),
+          lockedUntil: locked == null ? null : Timestamp.fromDate(locked),
+          lastVerificationAttemptId: params.requestAttemptId,
+          lastVerificationOutcome:
+            nextFailedAttemptCount >= SERVICE_START_MAX_FAILED_ATTEMPTS
+              ? "TEMPORARILY_LOCKED"
+              : "INVALID_OTP",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        return {
+          code:
+            nextFailedAttemptCount >= SERVICE_START_MAX_FAILED_ATTEMPTS
+              ? "ATTEMPTS_EXCEEDED"
+              : "INVALID_OTP",
+          bookingId: params.bookingId,
+          state: booking.state,
+          otpEnteredAt: null,
+          idempotentReplay: false,
+          retryAfterMs:
+            locked == null ? null : locked.getTime() - authoritativeNow.getTime(),
+        };
+      }
+
+      checkpoint = "OTP_VERIFY_MATCHED";
+      console.info("OTP_VERIFY_MATCHED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+        bookingState: booking.state,
+      });
+      const priorFailedAttempts =
+        typeof bookingPrivate.failedAttemptCount === "number" &&
+            Number.isFinite(bookingPrivate.failedAttemptCount)
+          ? bookingPrivate.failedAttemptCount
+          : 0;
+      const successfulAttemptNumber = priorFailedAttempts + 1;
+      const serviceStartRecord = buildServiceStartRecord({
+        booking,
+        bookingId: params.bookingId,
+        authoritativeNow,
+        requestAttemptId: params.requestAttemptId,
+        priorFailedAttempts,
+        successfulAttemptNumber,
+      });
+      const event = buildBookingEventPlan({
+        bookingId: params.bookingId,
+        event: "otp_entered",
+        actor: "provider",
+        at: authoritativeNow,
+        meta: {
+          verificationAttemptId: params.requestAttemptId,
+        },
+      });
+      const notification = buildServiceStartNotification({
+        booking,
+        bookingId: params.bookingId,
+      });
+
+      checkpoint = "OTP_VERIFY_TRANSACTION_WRITES_PREPARED";
+      console.info("OTP_VERIFY_TRANSACTION_WRITES_PREPARED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+        eventId: event.eventId,
+      });
+      transaction.set(bookingRef, {
+        state: "IN_PROGRESS",
+        stateQueryValue: "IN_PROGRESS",
+        "lifecycle.otpEnteredAt": Timestamp.fromDate(authoritativeNow),
+        updatedAt: FieldValue.serverTimestamp(),
+        "audit.lastUpdatedBy": "provider",
+        "privacy.otpVisibleToParent": false,
+      }, {merge: true});
+      transaction.set(bookingPrivateRef, {
+        parentOtpCode: "",
+        providerOtpHash: "",
+        otpState: "USED",
+        verifiedAt: Timestamp.fromDate(authoritativeNow),
+        successfulAttemptNumber,
+        lastVerificationAttemptId: params.requestAttemptId,
+        lastVerificationOutcome: "VERIFIED_STARTED",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+      transaction.set(serviceStartRef, {
+        ...serviceStartRecord,
+        createdAt: Timestamp.fromDate(serviceStartRecord.createdAt),
+        updatedAt: Timestamp.fromDate(serviceStartRecord.updatedAt),
+        verifiedAt: Timestamp.fromDate(serviceStartRecord.verifiedAt),
+        otpGeneratedAt:
+          serviceStartRecord.otpGeneratedAt == null
+            ? null
+            : Timestamp.fromDate(serviceStartRecord.otpGeneratedAt),
+        otpVerifiedAt: Timestamp.fromDate(serviceStartRecord.otpVerifiedAt),
+        serviceAnchorAt: Timestamp.fromDate(serviceStartRecord.serviceAnchorAt),
+      }, {merge: false});
+      transaction.set(
+        bookingRef.collection("events").doc(event.eventId),
+        {
+          bookingId: event.record.bookingId,
+          event: event.record.event,
+          actor: event.record.actor,
+          at: Timestamp.fromDate(event.record.at),
+          meta: event.record.meta,
+          schemaVersion: event.record.schemaVersion,
+        },
+        {merge: false},
+      );
+      transaction.set(notificationRef, {
+        userId: notification.recipientUserId,
+        category: "booking",
+        type: notification.type,
+        title: notification.title,
+        body: notification.body,
+        read: false,
+        isRead: false,
+        actorId: params.providerId,
+        bookingId: notification.data.bookingId ?? "",
+        serviceId: booking.serviceId,
+        data: notification.data,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        source: "canonical_v3",
+      }, {merge: true});
+      checkpoint = "OTP_VERIFY_TRANSACTION_COMMITTED";
+      console.info("OTP_VERIFY_TRANSACTION_COMMITTED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+      });
+      console.info("OTP_VERIFY_COMPLETED", {
+        bookingId: params.bookingId,
+        providerUid: params.providerId,
+        bookingState: "IN_PROGRESS",
+      });
       return {
-        code: "ALREADY_STARTED",
+        code: "VERIFIED_STARTED",
         bookingId: params.bookingId,
         state: "IN_PROGRESS",
-        otpEnteredAt: bookingPrivate.verifiedAt ?? booking.lifecycle.otpEnteredAt ?? null,
-        idempotentReplay: true,
-        retryAfterMs: null,
-      };
-    }
-
-    const lockedUntil = bookingPrivate.lockedUntil;
-    if (lockedUntil != null && lockedUntil.getTime() > authoritativeNow.getTime()) {
-      transaction.set(bookingPrivateRef, {
-        lastVerificationAttemptId: params.requestAttemptId,
-        lastVerificationOutcome: "TEMPORARILY_LOCKED",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true});
-      return {
-        code: "TEMPORARILY_LOCKED",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: null,
-        idempotentReplay: false,
-        retryAfterMs: lockedUntil.getTime() - authoritativeNow.getTime(),
-      };
-    }
-
-    const eligibility = evaluateCanonicalServiceStartEligibilityV3({
-      booking,
-      authoritativeNow,
-    });
-    if (eligibility.code !== "ALLOWED") {
-      const outcome =
-        eligibility.code === "AFTER_SERVICE_END"
-          ? "AFTER_SERVICE_END"
-          : eligibility.code;
-      transaction.set(bookingPrivateRef, {
-        lastVerificationAttemptId: params.requestAttemptId,
-        lastVerificationOutcome: outcome,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true});
-      return {
-        code: outcome as ServiceStartOutcomeCode,
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: null,
+        otpEnteredAt: authoritativeNow,
         idempotentReplay: false,
         retryAfterMs: null,
       };
-    }
-
-    if (!safeOtpMatches(bookingPrivate.providerOtpHash, params.bookingId, otpCandidate)) {
-      const nextFailedAttemptCount = bookingPrivate.failedAttemptCount + 1;
-      const locked =
-        nextFailedAttemptCount >= SERVICE_START_MAX_FAILED_ATTEMPTS
-          ? new Date(authoritativeNow.getTime() + SERVICE_START_LOCKOUT_MS)
-          : null;
-      transaction.set(bookingPrivateRef, {
-        failedAttemptCount: nextFailedAttemptCount,
-        lastFailedAttemptAt: Timestamp.fromDate(authoritativeNow),
-        lockedUntil: locked == null ? null : Timestamp.fromDate(locked),
-        lastVerificationAttemptId: params.requestAttemptId,
-        lastVerificationOutcome:
-          nextFailedAttemptCount >= SERVICE_START_MAX_FAILED_ATTEMPTS
-            ? "TEMPORARILY_LOCKED"
-            : "INVALID_OTP",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true});
-      return {
-        code:
-          nextFailedAttemptCount >= SERVICE_START_MAX_FAILED_ATTEMPTS
-            ? "ATTEMPTS_EXCEEDED"
-            : "INVALID_OTP",
-        bookingId: params.bookingId,
-        state: booking.state,
-        otpEnteredAt: null,
-        idempotentReplay: false,
-        retryAfterMs:
-          locked == null ? null : locked.getTime() - authoritativeNow.getTime(),
-      };
-    }
-
-    const successfulAttemptNumber = bookingPrivate.failedAttemptCount + 1;
-    const serviceStartRecord = buildServiceStartRecord({
-      booking,
-      bookingId: params.bookingId,
-      authoritativeNow,
-      requestAttemptId: params.requestAttemptId,
-      priorFailedAttempts: bookingPrivate.failedAttemptCount,
-      successfulAttemptNumber,
     });
-    const event = buildBookingEventPlan({
+  } catch (error) {
+    console.error("bookingV3.verifyBookingStartOtpV3.unexpected", {
+      checkpoint,
       bookingId: params.bookingId,
-      event: "otp_entered",
-      actor: "provider",
-      at: authoritativeNow,
-      meta: {
-        verificationAttemptId: params.requestAttemptId,
-      },
+      providerUid: params.providerId,
+      bookingState: currentState,
+      bookingPath: bookingRef.path,
+      bookingPrivatePath: bookingPrivateRef.path,
+      serviceStartPath: serviceStartRef.path,
+      notificationPath: notificationRef.path,
+      errorName: error instanceof Error ? error.name : typeof error,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : null,
     });
-    const notification = buildServiceStartNotification({
-      booking,
-      bookingId: params.bookingId,
-    });
-
-    transaction.set(bookingRef, {
-      state: "IN_PROGRESS",
-      stateQueryValue: "IN_PROGRESS",
-      "lifecycle.otpEnteredAt": Timestamp.fromDate(authoritativeNow),
-      updatedAt: FieldValue.serverTimestamp(),
-      "audit.lastUpdatedBy": "provider",
-      "privacy.otpVisibleToParent": false,
-    }, {merge: true});
-    transaction.set(bookingPrivateRef, {
-      parentOtpCode: "",
-      providerOtpHash: "",
-      otpState: "USED",
-      verifiedAt: Timestamp.fromDate(authoritativeNow),
-      successfulAttemptNumber,
-      lastVerificationAttemptId: params.requestAttemptId,
-      lastVerificationOutcome: "VERIFIED_STARTED",
-      updatedAt: FieldValue.serverTimestamp(),
-    }, {merge: true});
-    transaction.set(serviceStartRef, {
-      ...serviceStartRecord,
-      createdAt: Timestamp.fromDate(serviceStartRecord.createdAt),
-      updatedAt: Timestamp.fromDate(serviceStartRecord.updatedAt),
-      verifiedAt: Timestamp.fromDate(serviceStartRecord.verifiedAt),
-      otpGeneratedAt:
-        serviceStartRecord.otpGeneratedAt == null
-          ? null
-          : Timestamp.fromDate(serviceStartRecord.otpGeneratedAt),
-      otpVerifiedAt: Timestamp.fromDate(serviceStartRecord.otpVerifiedAt),
-      serviceAnchorAt: Timestamp.fromDate(serviceStartRecord.serviceAnchorAt),
-    }, {merge: false});
-    transaction.set(
-      bookingRef.collection("events").doc(event.eventId),
-      {
-        bookingId: event.record.bookingId,
-        event: event.record.event,
-        actor: event.record.actor,
-        at: Timestamp.fromDate(event.record.at),
-        meta: event.record.meta,
-        schemaVersion: event.record.schemaVersion,
-      },
-      {merge: false},
-    );
-    transaction.set(notificationRef, {
-      userId: notification.recipientUserId,
-      category: "booking",
-      type: notification.type,
-      title: notification.title,
-      body: notification.body,
-      read: false,
-      isRead: false,
-      actorId: params.providerId,
-      bookingId: notification.data.bookingId ?? "",
-      serviceId: booking.serviceId,
-      data: notification.data,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-      source: "canonical_v3",
-    }, {merge: true});
-    return {
-      code: "VERIFIED_STARTED",
-      bookingId: params.bookingId,
-      state: "IN_PROGRESS",
-      otpEnteredAt: authoritativeNow,
-      idempotentReplay: false,
-      retryAfterMs: null,
-    };
-  });
+    throw error;
+  }
 }
 
 export async function finalizeCanonicalNoShowV3(params: {
@@ -910,7 +1008,7 @@ export async function finalizeCanonicalNoShowV3(params: {
       bookingId: params.bookingId,
       event: "no_show",
       actor: "system",
-      at: authoritativeNow,
+      at: noShowRecord.noShowAt,
       meta: {
         reasonCode: noShowRecord.noShowReasonCode,
       },
@@ -923,28 +1021,38 @@ export async function finalizeCanonicalNoShowV3(params: {
     transaction.set(bookingRef, {
       state: "NO_SHOW",
       stateQueryValue: "NO_SHOW",
-      "lifecycle.noShowAt": Timestamp.fromDate(authoritativeNow),
-      "lifecycle.disputeDeadlineAt": Timestamp.fromDate(noShowRecord.disputeDeadlineAt),
+      lifecycle: {
+        noShowAt: Timestamp.fromDate(noShowRecord.noShowAt),
+        disputeDeadlineAt: Timestamp.fromDate(noShowRecord.disputeDeadlineAt),
+      },
       updatedAt: FieldValue.serverTimestamp(),
-      "audit.lastUpdatedBy": "system",
-      "privacy.otpVisibleToParent": false,
-      "dispute.status": "none",
-      "dispute.raisedAt": null,
-      "dispute.raisedBy": null,
-      "dispute.reasonCode": "",
-      "dispute.description": "",
-      "dispute.evidenceRefs": [],
-      "dispute.resolvedAt": null,
-      "dispute.resolvedBy": null,
-      "dispute.resolution": "",
-      "dispute.customerRefundPaise": 0,
-      "dispute.providerReleasePaise": 0,
-      "payout.status": "held",
-      "payout.eligibleAt": Timestamp.fromDate(noShowRecord.disputeDeadlineAt),
-      "payout.releasedAt": null,
-      "payout.providerPayoutPaise": allocation.providerCompensationPaise,
-      "payout.payoutReference": "",
-      "payout.failureCode": "",
+      audit: {
+        lastUpdatedBy: "system",
+      },
+      privacy: {
+        otpVisibleToParent: false,
+      },
+      dispute: {
+        status: "none",
+        raisedAt: null,
+        raisedBy: null,
+        reasonCode: "",
+        description: "",
+        evidenceRefs: [],
+        resolvedAt: null,
+        resolvedBy: null,
+        resolution: "",
+        customerRefundPaise: 0,
+        providerReleasePaise: 0,
+      },
+      payout: {
+        status: "held",
+        eligibleAt: Timestamp.fromDate(noShowRecord.disputeDeadlineAt),
+        releasedAt: null,
+        providerPayoutPaise: allocation.providerCompensationPaise,
+        payoutReference: "",
+        failureCode: "",
+      },
     }, {merge: true});
     transaction.set(bookingPrivateRef, {
       parentOtpCode: "",
@@ -1060,11 +1168,14 @@ export async function reconcileCanonicalServiceStartArtifactsV3(params: {
   if (!bookingSnapshot.exists) return "NOOP";
   const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
 
-  if (booking.state === "IN_PROGRESS" && booking.lifecycle.otpEnteredAt != null) {
+  const bookingOtpEnteredAt = asDate(booking.lifecycle.otpEnteredAt);
+  if (booking.state === "IN_PROGRESS" && bookingOtpEnteredAt != null) {
     const updates: Record<string, unknown> = {};
     const bookingPrivate = bookingPrivateSnapshot.exists
       ? (bookingPrivateSnapshot.data() as CanonicalBookingPrivateDocumentV3)
       : null;
+    const normalizedServiceAnchorAt = asDate(serviceAnchorAt(booking));
+    const normalizedOtpGeneratedAt = asDate(booking.lifecycle.otpGeneratedAt);
     if (bookingPrivate &&
         (bookingPrivate.otpState !== "USED" ||
           bookingPrivate.parentOtpCode.trim().length > 0 ||
@@ -1073,30 +1184,30 @@ export async function reconcileCanonicalServiceStartArtifactsV3(params: {
         parentOtpCode: "",
         providerOtpHash: "",
         otpState: "USED",
-        verifiedAt: Timestamp.fromDate(booking.lifecycle.otpEnteredAt),
+        verifiedAt: Timestamp.fromDate(bookingOtpEnteredAt),
         updatedAt: FieldValue.serverTimestamp(),
       };
     }
-    if (!serviceStartSnapshot.exists) {
+    if (!serviceStartSnapshot.exists && normalizedServiceAnchorAt != null) {
       updates.serviceStart = {
         bookingId: params.bookingId,
         providerId: booking.providerId,
         parentId: booking.parentId,
-        serviceAnchorAt: Timestamp.fromDate(serviceAnchorAt(booking)),
-        verifiedAt: Timestamp.fromDate(booking.lifecycle.otpEnteredAt),
+        serviceAnchorAt: Timestamp.fromDate(normalizedServiceAnchorAt),
+        verifiedAt: Timestamp.fromDate(bookingOtpEnteredAt),
         otpGeneratedAt:
-          booking.lifecycle.otpGeneratedAt == null
+          normalizedOtpGeneratedAt == null
             ? null
-            : Timestamp.fromDate(booking.lifecycle.otpGeneratedAt),
-        otpVerifiedAt: Timestamp.fromDate(booking.lifecycle.otpEnteredAt),
+            : Timestamp.fromDate(normalizedOtpGeneratedAt),
+        otpVerifiedAt: Timestamp.fromDate(bookingOtpEnteredAt),
         verificationAttemptId: "",
         successfulAttemptNumber: 1,
         priorFailedAttempts: 0,
         stateBefore: "CONFIRMED",
         stateAfter: "IN_PROGRESS",
         policyVersion: SERVICE_START_POLICY_VERSION,
-        createdAt: Timestamp.fromDate(booking.lifecycle.otpEnteredAt),
-        updatedAt: Timestamp.fromDate(booking.lifecycle.otpEnteredAt),
+        createdAt: Timestamp.fromDate(bookingOtpEnteredAt),
+        updatedAt: Timestamp.fromDate(bookingOtpEnteredAt),
       };
     }
     if (Object.keys(updates).length === 0) return "NOOP";

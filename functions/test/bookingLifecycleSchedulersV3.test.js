@@ -19,6 +19,11 @@ const {
   finalizeCanonicalNoShowV3,
   reconcileCanonicalServiceStartArtifactsV3,
 } = require("../lib/booking/application/serviceStartOrchestrationV3.js");
+const {
+  runFinalizeCanonicalNoShowsSchedulerV3,
+  scanCanonicalNoShowCandidatesByStateV3,
+} = require("../lib/booking/bookingV3FlowFunctions.js");
+const {Timestamp} = require("firebase-admin/firestore");
 
 class FakeDocSnapshot {
   constructor(firestore, path, data) {
@@ -34,6 +39,14 @@ class FakeDocSnapshot {
 
   data() {
     return this._data;
+  }
+}
+
+class FakeQuerySnapshot {
+  constructor(docs) {
+    this.docs = docs;
+    this.size = docs.length;
+    this.empty = docs.length === 0;
   }
 }
 
@@ -80,6 +93,103 @@ class FakeCollectionRef {
   doc(id) {
     return new FakeDocRef(this.firestore, `${this.path}/${id}`);
   }
+
+  where(field, operator, value) {
+    return new FakeQuery(this.firestore, this.path, [{field, operator, value}]);
+  }
+}
+
+class FakeQuery {
+  constructor(firestore, path, filters = [], orderByField = null, limitCount = null, startAfterValue = null) {
+    this.firestore = firestore;
+    this.path = path;
+    this.filters = filters;
+    this.orderByField = orderByField;
+    this.limitCount = limitCount;
+    this.startAfterValue = startAfterValue;
+  }
+
+  where(field, operator, value) {
+    return new FakeQuery(
+      this.firestore,
+      this.path,
+      [...this.filters, {field, operator, value}],
+      this.orderByField,
+      this.limitCount,
+      this.startAfterValue,
+    );
+  }
+
+  orderBy(field) {
+    return new FakeQuery(
+      this.firestore,
+      this.path,
+      this.filters,
+      field,
+      this.limitCount,
+      this.startAfterValue,
+    );
+  }
+
+  limit(count) {
+    return new FakeQuery(
+      this.firestore,
+      this.path,
+      this.filters,
+      this.orderByField,
+      count,
+      this.startAfterValue,
+    );
+  }
+
+  startAfter(value) {
+    return new FakeQuery(
+      this.firestore,
+      this.path,
+      this.filters,
+      this.orderByField,
+      this.limitCount,
+      value,
+    );
+  }
+
+  async get() {
+    const prefix = `${this.path}/`;
+    let docs = Array.from(this.firestore.store.entries())
+      .filter(([path]) => path.startsWith(prefix))
+      .filter(([path]) => !path.slice(prefix.length).includes("/"))
+      .map(([path, data]) => new FakeDocSnapshot(this.firestore, path, data));
+
+    for (const filter of this.filters) {
+      docs = docs.filter((doc) => {
+        if (filter.operator !== "==") {
+          throw new Error(`Unsupported operator ${filter.operator}`);
+        }
+        return doc.data()?.[filter.field] === filter.value;
+      });
+    }
+
+    if (this.orderByField != null) {
+      const orderField = this.orderByField;
+      docs.sort((left, right) => {
+        const leftValue =
+          typeof orderField === "string" ? left.data()?.[orderField] : left.id;
+        const rightValue =
+          typeof orderField === "string" ? right.data()?.[orderField] : right.id;
+        return String(leftValue ?? "").localeCompare(String(rightValue ?? ""));
+      });
+    }
+
+    if (this.startAfterValue != null) {
+      docs = docs.filter((doc) => doc.id > this.startAfterValue);
+    }
+
+    if (this.limitCount != null) {
+      docs = docs.slice(0, this.limitCount);
+    }
+
+    return new FakeQuerySnapshot(docs);
+  }
 }
 
 class FakeFirestore {
@@ -97,8 +207,27 @@ class FakeFirestore {
 
   _set(path, data, options = {}) {
     const existing = this.store.get(path) ?? {};
-    this.store.set(path, options.merge ? {...existing, ...data} : {...data});
+    this.store.set(path, options.merge ? deepMerge(existing, data) : {...data});
   }
+}
+
+function isPlainObject(value) {
+  return value != null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function deepMerge(existing, next) {
+  const base = isPlainObject(existing) ? {...existing} : {};
+  for (const [key, value] of Object.entries(next)) {
+    if (isPlainObject(value) && isPlainObject(base[key])) {
+      base[key] = deepMerge(base[key], value);
+      continue;
+    }
+    base[key] = value;
+  }
+  return base;
 }
 
 function buildPendingProviderBooking() {
@@ -113,6 +242,30 @@ function buildAwaitingPaymentBooking() {
   booking.state = "ACCEPTED_AWAITING_PAYMENT";
   booking.stateQueryValue = "ACCEPTED_AWAITING_PAYMENT";
   return booking;
+}
+
+function deepConvertDatesToTimestamps(value) {
+  if (value instanceof Date) {
+    return Timestamp.fromDate(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => deepConvertDatesToTimestamps(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        deepConvertDatesToTimestamps(entry),
+      ]),
+    );
+  }
+  return value;
+}
+
+function asStoredDate(value) {
+  if (value instanceof Date) return value;
+  if (value && typeof value.toDate === "function") return value.toDate();
+  return null;
 }
 
 test("halfway reminder sends exactly one provider reminder for actionable requests", () => {
@@ -428,6 +581,77 @@ test("no-show reconciliation finalizes overdue confirmed bookings and remains ha
   assert.equal(firestore.store.has(`bookingNoShows/${bookingId}`), true);
 });
 
+test("no-show finalization writes nested lifecycle and privacy fields atomically without dotted keys", async () => {
+  const bookingId = "booking-no-show-nested-write-1";
+  const booking = buildConfirmedSlotBookingFixture();
+  booking.lifecycle.requestedAt = new Date("2026-07-22T10:00:00.000Z");
+  booking.lifecycle.timerStartsAt = new Date("2026-07-22T10:30:00.000Z");
+  booking.privacy.exactAddressUnlocked = true;
+  booking.privacy.contactUnlockedAt = new Date("2026-07-23T05:50:00.000Z");
+  booking.audit.source = "fixture-preserved";
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingPrivate/${bookingId}`]: {
+      bookingId,
+      parentOtpCode: "123456",
+      providerOtpHash: "hash",
+      otpState: "ACTIVE",
+    },
+  });
+  const authoritativeNow = new Date(booking.schedule.scheduledEndAt.getTime() + 1);
+
+  const result = await finalizeCanonicalNoShowV3({
+    firestore,
+    bookingId,
+    authoritativeNow,
+  });
+
+  assert.equal(result.code, "FINALIZED_NO_SHOW");
+  const storedBooking = firestore.store.get(`bookings/${bookingId}`);
+  const storedNoShow = firestore.store.get(`bookingNoShows/${bookingId}`);
+  const storedNoShowAt = asStoredDate(storedBooking.lifecycle.noShowAt);
+  const storedDisputeDeadlineAt = asStoredDate(storedBooking.lifecycle.disputeDeadlineAt);
+  assert.equal(storedBooking.state, "NO_SHOW");
+  assert.ok(storedNoShowAt);
+  assert.equal(
+    storedNoShowAt.toISOString(),
+    booking.schedule.scheduledEndAt.toISOString(),
+  );
+  assert.ok(storedDisputeDeadlineAt);
+  assert.equal(
+    storedDisputeDeadlineAt.toISOString(),
+    new Date(booking.schedule.scheduledEndAt.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+  );
+  assert.equal(storedBooking.privacy.otpVisibleToParent, false);
+  assert.equal(
+    storedBooking.lifecycle.requestedAt.toISOString(),
+    booking.lifecycle.requestedAt.toISOString(),
+  );
+  assert.equal(
+    storedBooking.privacy.contactUnlockedAt.toISOString(),
+    booking.privacy.contactUnlockedAt.toISOString(),
+  );
+  assert.equal(storedBooking.privacy.exactAddressUnlocked, true);
+  assert.equal(storedBooking.audit.source, "fixture-preserved");
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(storedBooking, "lifecycle.noShowAt"),
+    false,
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(storedBooking, "lifecycle.disputeDeadlineAt"),
+    false,
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(storedBooking, "privacy.otpVisibleToParent"),
+    false,
+  );
+  assert.equal(storedNoShow.bookingId, bookingId);
+  assert.equal(
+    storedNoShow.noShowAt.toDate().toISOString(),
+    booking.schedule.scheduledEndAt.toISOString(),
+  );
+});
+
 test("no-show reconciliation repairs missing start artifacts for in-progress bookings", async () => {
   const bookingId = "booking-no-show-repair-1";
   const booking = buildConfirmedSlotBookingFixture();
@@ -459,6 +683,145 @@ test("no-show reconciliation repairs missing start artifacts for in-progress boo
     firestore.store.has(`bookingServiceStarts/${bookingId}`),
     true,
   );
+});
+
+test("no-show reconciliation repair normalizes Firestore Timestamp values from live snapshots", async () => {
+  const bookingId = "booking-no-show-repair-timestamp-1";
+  const booking = buildConfirmedSlotBookingFixture();
+  booking.state = "IN_PROGRESS";
+  booking.stateQueryValue = "IN_PROGRESS";
+  booking.lifecycle.otpEnteredAt = new Date("2026-07-23T05:55:00.000Z");
+  booking.lifecycle.otpGeneratedAt = new Date("2026-07-23T05:45:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: deepConvertDatesToTimestamps(booking),
+    [`bookingPrivate/${bookingId}`]: {
+      bookingId,
+      parentOtpCode: "123456",
+      providerOtpHash: "hash",
+      otpState: "ACTIVE",
+    },
+  });
+
+  const result = await reconcileCanonicalServiceStartArtifactsV3({
+    firestore,
+    bookingId,
+    authoritativeNow: new Date("2026-07-23T06:10:00.000Z"),
+  });
+
+  assert.equal(result, "REPAIRED");
+  assert.equal(
+    firestore.store.has(`bookingServiceStarts/${bookingId}`),
+    true,
+  );
+});
+
+test("scheduler normalizes non-Error failures without masking the original booking failure", async () => {
+  const infoLogs = [];
+  const errorLogs = [];
+
+  await assert.rejects(
+    runFinalizeCanonicalNoShowsSchedulerV3({
+      authoritativeNow: new Date("2026-07-30T10:00:00.000Z"),
+      schedulerLogger: {
+        info: (message, payload) => infoLogs.push({message, payload}),
+        error: (message, payload) => errorLogs.push({message, payload}),
+      },
+      scanStateBucket: async ({stateQueryValue}) => {
+        if (stateQueryValue === "CONFIRMED") {
+          throw {
+            bookingId: "booking-bad-1",
+            failure: "timestamp_like",
+            when: {seconds: 123, nanoseconds: 456},
+          };
+        }
+        return {scanned: 0, noShowFinalized: 0, repairedStarts: 0};
+      },
+    }),
+    /timestamp_like/i,
+  );
+
+  assert.equal(
+    infoLogs.some((entry) => entry.message === "bookingV3.scheduler.noShowFinalization.started"),
+    true,
+  );
+  assert.equal(
+    errorLogs.some((entry) => entry.message === "bookingV3.scheduler.noShowFinalization.failed"),
+    true,
+  );
+  assert.equal(
+    String(errorLogs[0].payload.message).includes("timestamp_like"),
+    true,
+  );
+});
+
+test("scheduler scan paginates across multiple pages of eligible bookings", async () => {
+  const authoritativeNow = new Date("2026-07-30T10:00:00.000Z");
+  const firestore = new FakeFirestore();
+  const totalConfirmed = 205;
+  for (let index = 0; index < totalConfirmed; index += 1) {
+    firestore.store.set(`bookings/confirmed-${String(index).padStart(3, "0")}`, {
+      stateQueryValue: "CONFIRMED",
+    });
+  }
+  const visited = [];
+  const schedulerLogger = {info: () => {}, error: () => {}};
+  const stats = await scanCanonicalNoShowCandidatesByStateV3({
+    stateQueryValue: "CONFIRMED",
+    authoritativeNow,
+    schedulerLogger,
+    firestore,
+    reconcileBooking: async ({bookingId}) => {
+      visited.push(bookingId);
+      return "NOOP";
+    },
+  });
+  assert.equal(stats.scanned, totalConfirmed);
+  assert.equal(visited.length, totalConfirmed);
+  assert.equal(visited[0], "confirmed-000");
+  assert.equal(visited[204], "confirmed-204");
+});
+
+test("scheduler scan is idempotent across repeated retries for overdue bookings", async () => {
+  const authoritativeNow = new Date("2026-07-30T10:00:00.000Z");
+  const firestore = new FakeFirestore({
+    "bookings/confirmed-a": {stateQueryValue: "CONFIRMED"},
+    "bookings/confirmed-b": {stateQueryValue: "CONFIRMED"},
+  });
+  const outcomes = new Map();
+
+  const statsFirst = await scanCanonicalNoShowCandidatesByStateV3({
+    stateQueryValue: "CONFIRMED",
+    authoritativeNow,
+    schedulerLogger: {info: () => {}, error: () => {}},
+    firestore,
+    reconcileBooking: async ({bookingId}) => {
+      if (outcomes.has(bookingId)) {
+        return "NOOP";
+      }
+      outcomes.set(bookingId, "NO_SHOW_FINALIZED");
+      return "NO_SHOW_FINALIZED";
+    },
+  });
+
+  const statsSecond = await scanCanonicalNoShowCandidatesByStateV3({
+    stateQueryValue: "CONFIRMED",
+    authoritativeNow,
+    schedulerLogger: {info: () => {}, error: () => {}},
+    firestore,
+    reconcileBooking: async ({bookingId}) =>
+      outcomes.has(bookingId) ? "NOOP" : "NO_SHOW_FINALIZED",
+  });
+
+  assert.deepEqual(statsFirst, {
+    scanned: 2,
+    noShowFinalized: 2,
+    repairedStarts: 0,
+  });
+  assert.deepEqual(statsSecond, {
+    scanned: 2,
+    noShowFinalized: 0,
+    repairedStarts: 0,
+  });
 });
 
 test("direct no-show finalization does not run before service window end or after booking completion", async () => {

@@ -1524,7 +1524,12 @@ service cloud.firestore {
               get(/databases/$(database)/documents/bookings/$(bookingId)).data.parentId == request.auth.uid ||
               get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid
             ) &&
-            get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' &&
+            (
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'COMPLETED_PENDING_REVIEW' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'COMPLETED_FINAL'
+            ) &&
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
           ) ||
           isAdmin()
@@ -1545,7 +1550,9 @@ service cloud.firestore {
             ) &&
             (
               get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' ||
-              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS'
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'COMPLETED_PENDING_REVIEW' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'COMPLETED_FINAL'
             ) &&
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
           ) ||
@@ -1561,7 +1568,9 @@ service cloud.firestore {
             request.auth.uid in resource.data.participantIds &&
             (
               get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'CONFIRMED' ||
-              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS'
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'IN_PROGRESS' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'COMPLETED_PENDING_REVIEW' ||
+              get(/databases/$(database)/documents/bookings/$(bookingId)).data.state == 'COMPLETED_FINAL'
             ) &&
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.lifecycle.paidAt != null
           ) ||

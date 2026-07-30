@@ -103,6 +103,33 @@ function buildInProgressBooking() {
   return booking;
 }
 
+function assertNoLiteralDottedKeys(value, path = "") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) =>
+      assertNoLiteralDottedKeys(entry, `${path}[${index}]`),
+    );
+    return;
+  }
+  if (value == null || typeof value !== "object") return;
+
+  for (const [key, nested] of Object.entries(value)) {
+    assert.equal(
+      key.includes("."),
+      false,
+      `unexpected dotted key at ${path || "<root>"}: ${key}`,
+    );
+    const nextPath = path ? `${path}.${key}` : key;
+    assertNoLiteralDottedKeys(nested, nextPath);
+  }
+}
+
+function assertNoDottedBookingMutationFields(storedBooking) {
+  assert.equal(Object.prototype.hasOwnProperty.call(storedBooking, "dispute.status"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(storedBooking, "dispute.reasonCode"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(storedBooking, "payout.status"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(storedBooking, "audit.lastUpdatedBy"), false);
+}
+
 test("provider completion moves IN_PROGRESS booking into COMPLETED_PENDING_REVIEW and writes payout hold docs", async () => {
   const bookingId = "booking-complete-1";
   const booking = buildInProgressBooking();
@@ -114,11 +141,33 @@ test("provider completion moves IN_PROGRESS booking into COMPLETED_PENDING_REVIE
     firestore,
     bookingId,
     providerUid: booking.providerId,
-    authoritativeNow: new Date("2026-07-23T06:10:00.000Z"),
+    authoritativeNow: new Date(booking.lifecycle.otpEnteredAt.getTime() + 5 * 60 * 1000),
   });
 
   assert.equal(result.code, "COMPLETED_PENDING_REVIEW");
-  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "COMPLETED_PENDING_REVIEW");
+  const storedBooking = firestore.store.get(`bookings/${bookingId}`);
+  assert.equal(storedBooking.state, "COMPLETED_PENDING_REVIEW");
+  assert.ok(storedBooking.lifecycle.completedAt);
+  assert.ok(storedBooking.lifecycle.serviceEndedAt);
+  assert.ok(storedBooking.lifecycle.reviewWindowEndsAt);
+  assert.ok(storedBooking.lifecycle.disputeDeadlineAt);
+  assert.equal(storedBooking.payout.status, "HELD");
+  assert.ok(storedBooking.payout.eligibleAt);
+  assert.equal(
+    storedBooking.payout.providerPayoutPaise,
+    booking.financials.providerPayoutPaise,
+  );
+  assert.equal(storedBooking.privacy.otpVisibleToParent, false);
+  assert.equal(
+    storedBooking.completion.policyVersion,
+    "v3.2_slice8",
+  );
+  assert.equal(
+    storedBooking.completion.reasonCode,
+    "provider_marked_complete",
+  );
+  assert.equal(storedBooking.audit.lastUpdatedBy, "provider");
+  assertNoLiteralDottedKeys(storedBooking);
   assert.equal(firestore.store.get(`payoutReadiness/${bookingId}`).status, "HELD");
   assert.equal(
     firestore.store.get(`bookings/${bookingId}/events/service_completed`).event,
@@ -160,10 +209,131 @@ test("review submission is idempotent and updates the service review document on
 
   assert.equal(first.code, "REVIEW_SUBMITTED");
   assert.equal(second.code, "ALREADY_REVIEWED");
+  const storedReview = firestore.store.get(`services/${booking.serviceId}/reviews/${bookingId}`);
+  const storedBooking = firestore.store.get(`bookings/${bookingId}`);
+  const storedService = firestore.store.get(`services/${booking.serviceId}`);
+  const storedProvider = firestore.store.get(`users/${booking.providerId}`);
+  assert.equal(storedReview.rating, 5);
+  assert.equal(storedBooking.reviewStatus, "submitted");
+  assert.equal(storedBooking.review.reviewId, bookingId);
+  assert.equal(storedBooking.review.status, "submitted");
+  assert.equal(storedBooking.audit.lastUpdatedBy, "parent");
+  assert.equal(Object.prototype.hasOwnProperty.call(storedBooking, "audit.lastUpdatedBy"), false);
+  assert.equal(storedService.ratingCount, 1);
+  assert.equal(storedProvider.ratingCount, 1);
+  assert.equal(storedService.reviewedBookingCount, 1);
+  assert.equal(storedProvider.reviewedBookingCount, 1);
+});
+
+test("review submission still succeeds after the dispute deadline expires", async () => {
+  const bookingId = "booking-review-late-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T06:10:00.000Z");
+  booking.lifecycle.disputeDeadlineAt = new Date("2026-07-24T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`services/${booking.serviceId}`]: {stats: {}, ratingAverage: 0, ratingCount: 0},
+    [`users/${booking.providerId}`]: {ratingAverage: 0, ratingCount: 0},
+  });
+
+  const result = await submitBookingReviewV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    rating: 4,
+    comment: "Still reviewing after the dispute window.",
+    tags: [],
+    authoritativeNow: new Date("2026-07-25T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "REVIEW_SUBMITTED");
   assert.equal(
     firestore.store.get(`services/${booking.serviceId}/reviews/${bookingId}`).rating,
-    5,
+    4,
   );
+});
+
+test("review submission accepts historical completed booking when nested lifecycle.completedAt is stale", async () => {
+  const bookingId = "booking-review-legacy-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_FINAL";
+  booking.stateQueryValue = "COMPLETED_FINAL";
+  booking.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.completedAt = null;
+  booking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T06:10:00.000Z");
+  booking.lifecycle.disputeDeadlineAt = new Date("2026-07-24T06:10:00.000Z");
+  booking["lifecycle.completedAt"] = new Date("2026-07-23T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`services/${booking.serviceId}`]: {stats: {}, ratingAverage: 0, ratingCount: 0},
+    [`users/${booking.providerId}`]: {ratingAverage: 0, ratingCount: 0},
+  });
+
+  const result = await submitBookingReviewV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    rating: 5,
+    comment: "Legacy completed booking review",
+    tags: [],
+    authoritativeNow: new Date("2026-07-26T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "REVIEW_SUBMITTED");
+});
+
+test("review submission rejects active bookings before completion", async () => {
+  const bookingId = "booking-review-active-1";
+  const booking = buildInProgressBooking();
+  booking.state = "IN_PROGRESS";
+  booking.stateQueryValue = "IN_PROGRESS";
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`services/${booking.serviceId}`]: {stats: {}, ratingAverage: 0, ratingCount: 0},
+    [`users/${booking.providerId}`]: {ratingAverage: 0, ratingCount: 0},
+  });
+
+  const result = await submitBookingReviewV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    rating: 5,
+    comment: "Should fail before completion",
+    tags: [],
+    authoritativeNow: new Date("2026-07-23T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "INVALID_STATE");
+});
+
+test("review submission rejects the wrong user safely", async () => {
+  const bookingId = "booking-review-wrong-user-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`services/${booking.serviceId}`]: {stats: {}, ratingAverage: 0, ratingCount: 0},
+    [`users/${booking.providerId}`]: {ratingAverage: 0, ratingCount: 0},
+  });
+
+  const result = await submitBookingReviewV3({
+    firestore,
+    bookingId,
+    parentUid: "someone-else",
+    rating: 5,
+    comment: "Wrong user",
+    tags: [],
+    authoritativeNow: new Date("2026-07-23T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "UNAUTHORIZED");
 });
 
 test("open dispute blocks canonical finalization", async () => {
@@ -246,7 +416,143 @@ test("customer dispute creation marks payout hold and stays in COMPLETED_PENDING
   });
 
   assert.equal(result.code, "DISPUTE_CREATED");
-  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "COMPLETED_PENDING_REVIEW");
-  assert.equal(firestore.store.get(`bookings/${bookingId}`)["dispute.status"], "OPEN");
+  const storedBooking = firestore.store.get(`bookings/${bookingId}`);
+  assert.equal(storedBooking.state, "COMPLETED_PENDING_REVIEW");
+  assert.equal(storedBooking.dispute.status, "OPEN");
+  assert.equal(storedBooking.dispute.reasonCode, "provider_unavailable");
+  assert.equal(storedBooking.payout.status, "HELD");
+  assert.equal(storedBooking.audit.lastUpdatedBy, "parent");
+  assertNoLiteralDottedKeys(storedBooking);
   assert.equal(firestore.store.get(`payoutReadiness/${bookingId}`).status, "HELD");
+});
+
+test("customer dispute creation is rejected after the dispute deadline expires", async () => {
+  const bookingId = "booking-dispute-expired-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T06:10:00.000Z");
+  booking.lifecycle.disputeDeadlineAt = new Date("2026-07-24T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingFinancials/${bookingId}`]: {},
+    [`providerEarnings/${bookingId}`]: {},
+    [`payoutReadiness/${bookingId}`]: {},
+  });
+
+  const result = await createBookingDisputeV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    reason: "late-dispute",
+    description: "The dispute window already expired.",
+    attachments: [],
+    authoritativeNow: new Date("2026-07-25T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "WINDOW_EXPIRED");
+});
+
+test("customer dispute creation accepts historical dotted dispute deadline data", async () => {
+  const bookingId = "booking-dispute-legacy-deadline-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.disputeDeadlineAt = null;
+  booking.lifecycle.reviewWindowEndsAt = null;
+  booking["lifecycle.disputeDeadlineAt"] = new Date("2026-07-24T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingFinancials/${bookingId}`]: {},
+    [`providerEarnings/${bookingId}`]: {},
+    [`payoutReadiness/${bookingId}`]: {},
+  });
+
+  const result = await createBookingDisputeV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    reason: "legacy-window",
+    description: "Historical dotted deadline should still allow disputes.",
+    attachments: [],
+    authoritativeNow: new Date("2026-07-23T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "DISPUTE_CREATED");
+  const storedBooking = firestore.store.get(`bookings/${bookingId}`);
+  assert.equal(storedBooking.dispute.status, "OPEN");
+  assert.equal(storedBooking.payout.status, "HELD");
+  assertNoDottedBookingMutationFields(storedBooking);
+});
+
+test("customer dispute creation falls back to review window when dispute deadline is missing", async () => {
+  const bookingId = "booking-dispute-review-window-fallback-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.disputeDeadlineAt = null;
+  booking.lifecycle.reviewWindowEndsAt = null;
+  booking["lifecycle.reviewWindowEndsAt"] = new Date("2026-07-24T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingFinancials/${bookingId}`]: {},
+    [`providerEarnings/${bookingId}`]: {},
+    [`payoutReadiness/${bookingId}`]: {},
+  });
+
+  const result = await createBookingDisputeV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    reason: "fallback-window",
+    description: "Review window fallback should preserve historical eligibility.",
+    attachments: [],
+    authoritativeNow: new Date("2026-07-23T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "DISPUTE_CREATED");
+  const storedBooking = firestore.store.get(`bookings/${bookingId}`);
+  assert.equal(storedBooking.dispute.status, "OPEN");
+  assertNoDottedBookingMutationFields(storedBooking);
+});
+
+test("customer dispute creation returns ALREADY_DISPUTED when an active dispute already exists", async () => {
+  const bookingId = "booking-dispute-duplicate-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T06:10:00.000Z");
+  booking.lifecycle.disputeDeadlineAt = new Date("2026-07-24T06:10:00.000Z");
+  booking.dispute = {
+    ...booking.dispute,
+    status: "OPEN",
+  };
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingFinancials/${bookingId}`]: {},
+    [`providerEarnings/${bookingId}`]: {},
+    [`payoutReadiness/${bookingId}`]: {},
+    [`bookingCompletionDisputes/${bookingId}`]: {
+      bookingId,
+      status: "OPEN",
+    },
+  });
+
+  const result = await createBookingDisputeV3({
+    firestore,
+    bookingId,
+    parentUid: booking.parentId,
+    reason: "provider_unavailable",
+    description: "Duplicate dispute should be rejected safely.",
+    attachments: [],
+    authoritativeNow: new Date("2026-07-23T07:00:00.000Z"),
+  });
+
+  assert.equal(result.code, "ALREADY_DISPUTED");
 });

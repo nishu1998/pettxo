@@ -29,7 +29,6 @@ export type ReviewSubmissionCode =
   | "REVIEW_SUBMITTED"
   | "ALREADY_REVIEWED"
   | "INVALID_STATE"
-  | "WINDOW_EXPIRED"
   | "UNAUTHORIZED"
   | "NOT_FOUND"
   | "INVALID_BOOKING_DATA";
@@ -122,6 +121,66 @@ function hasReviewAlreadyV3(bookingData: Record<string, unknown>): {reviewId: st
     reviewId,
     submitted: reviewId.length > 0 || reviewStatus === "submitted",
   };
+}
+
+function isReviewEligibleCompletedStateV3(state: CanonicalBookingDocumentV3["state"]): boolean {
+  return state === "COMPLETED_PENDING_REVIEW" || state === "COMPLETED_FINAL";
+}
+
+function resolveCompletedAtV3(bookingData: Record<string, unknown>): Date | null {
+  const lifecycle =
+    typeof bookingData.lifecycle === "object" && bookingData.lifecycle != null ?
+      bookingData.lifecycle as Record<string, unknown> :
+      {};
+  return (
+    asDate(lifecycle.completedAt) ??
+    asDate(bookingData["lifecycle.completedAt"]) ??
+    asDate(bookingData.completedAt)
+  );
+}
+
+function resolveDisputeDeadlineV3(bookingData: Record<string, unknown>): {
+  deadline: Date | null;
+  source:
+    | "lifecycle.disputeDeadlineAt"
+    | "legacy.lifecycle.disputeDeadlineAt"
+    | "lifecycle.reviewWindowEndsAt"
+    | "legacy.lifecycle.reviewWindowEndsAt"
+    | "missing";
+} {
+  const lifecycle =
+    typeof bookingData.lifecycle === "object" && bookingData.lifecycle != null ?
+      bookingData.lifecycle as Record<string, unknown> :
+      {};
+  const nestedDisputeDeadlineAt = asDate(lifecycle.disputeDeadlineAt);
+  if (nestedDisputeDeadlineAt != null) {
+    return {
+      deadline: nestedDisputeDeadlineAt,
+      source: "lifecycle.disputeDeadlineAt",
+    };
+  }
+  const legacyDisputeDeadlineAt = asDate(bookingData["lifecycle.disputeDeadlineAt"]);
+  if (legacyDisputeDeadlineAt != null) {
+    return {
+      deadline: legacyDisputeDeadlineAt,
+      source: "legacy.lifecycle.disputeDeadlineAt",
+    };
+  }
+  const nestedReviewWindowEndsAt = asDate(lifecycle.reviewWindowEndsAt);
+  if (nestedReviewWindowEndsAt != null) {
+    return {
+      deadline: nestedReviewWindowEndsAt,
+      source: "lifecycle.reviewWindowEndsAt",
+    };
+  }
+  const legacyReviewWindowEndsAt = asDate(bookingData["lifecycle.reviewWindowEndsAt"]);
+  if (legacyReviewWindowEndsAt != null) {
+    return {
+      deadline: legacyReviewWindowEndsAt,
+      source: "legacy.lifecycle.reviewWindowEndsAt",
+    };
+  }
+  return {deadline: null, source: "missing"};
 }
 
 function toReviewerName(booking: CanonicalBookingDocumentV3): string {
@@ -257,6 +316,11 @@ export async function completeBookingServiceV3(params: {
   const providerEarningRef = params.firestore.collection("providerEarnings").doc(params.bookingId);
   const payoutReadinessRef = params.firestore.collection("payoutReadiness").doc(params.bookingId);
 
+  console.info("SERVICE_COMPLETE_REQUEST_RECEIVED", {
+    bookingId: params.bookingId,
+    providerUid: params.providerUid,
+  });
+
   return params.firestore.runTransaction(async (transaction) => {
     const [bookingSnapshot, completionSnapshot] = await Promise.all([
       transaction.get(bookingRef),
@@ -272,7 +336,16 @@ export async function completeBookingServiceV3(params: {
         reviewWindowEndsAt: null,
       };
     }
-    const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
+    const bookingData = (bookingSnapshot.data() ?? {}) as Record<string, unknown>;
+    const booking = bookingData as CanonicalBookingDocumentV3;
+    console.info("SERVICE_COMPLETE_BOOKING_LOADED", {
+      bookingId: params.bookingId,
+      providerUid: params.providerUid,
+      currentState: booking.state,
+      paymentStatus: booking.payment.status,
+      hasPaidAt: booking.lifecycle.paidAt != null,
+      completionRecordExists: completionSnapshot.exists,
+    });
     if (booking.providerId !== params.providerUid) {
       return {
         code: "UNAUTHORIZED",
@@ -283,6 +356,11 @@ export async function completeBookingServiceV3(params: {
         reviewWindowEndsAt: booking.lifecycle.reviewWindowEndsAt,
       };
     }
+    console.info("SERVICE_COMPLETE_AUTHORIZED", {
+      bookingId: params.bookingId,
+      providerUid: params.providerUid,
+      currentState: booking.state,
+    });
     if (booking.state === "COMPLETED_PENDING_REVIEW" && completionSnapshot.exists) {
       return {
         code: "ALREADY_COMPLETED",
@@ -326,6 +404,13 @@ export async function completeBookingServiceV3(params: {
 
     const completedAt = new Date(authoritativeNow.getTime());
     const reviewWindowEndsAt = new Date(completedAt.getTime() + CANONICAL_REVIEW_WINDOW_MS);
+    console.info("SERVICE_COMPLETE_STATE_VALIDATED", {
+      bookingId: params.bookingId,
+      providerUid: params.providerUid,
+      currentState: booking.state,
+      completedAt: completedAt.toISOString(),
+      reviewWindowEndsAt: reviewWindowEndsAt.toISOString(),
+    });
     const payoutDocs = buildCompletionPayoutDocuments({
       booking,
       bookingId: params.bookingId,
@@ -345,23 +430,59 @@ export async function completeBookingServiceV3(params: {
       bookingType: booking.bookingType,
       state: "COMPLETED_PENDING_REVIEW",
     });
+    console.info("SERVICE_COMPLETE_WRITES_PREPARED", {
+      bookingId: params.bookingId,
+      providerUid: params.providerUid,
+      targetState: "COMPLETED_PENDING_REVIEW",
+      notificationCount: notifications.length,
+    });
+
+    const nextLifecycle = {
+      ...booking.lifecycle,
+      serviceEndedAt: Timestamp.fromDate(completedAt),
+      completedAt: Timestamp.fromDate(completedAt),
+      reviewWindowEndsAt: Timestamp.fromDate(reviewWindowEndsAt),
+      disputeDeadlineAt: Timestamp.fromDate(reviewWindowEndsAt),
+    };
+    const nextPayout = {
+      ...booking.payout,
+      status: "HELD",
+      eligibleAt: Timestamp.fromDate(reviewWindowEndsAt),
+      providerPayoutPaise: booking.financials.providerPayoutPaise,
+    };
+    const nextPrivacy = {
+      ...booking.privacy,
+      otpVisibleToParent: false,
+    };
+    const existingCompletion =
+      typeof bookingData.completion === "object" && bookingData.completion != null ?
+        bookingData.completion as Record<string, unknown> :
+        {};
+    const nextCompletion = {
+      ...existingCompletion,
+      reasonCode: "provider_marked_complete",
+      policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
+    };
+    const nextDispute = {
+      ...booking.dispute,
+      status: "none",
+    };
+    const nextAudit = {
+      ...booking.audit,
+      lastUpdatedBy: "provider",
+    };
 
     transaction.set(bookingRef, {
       state: "COMPLETED_PENDING_REVIEW",
       stateQueryValue: "COMPLETED_PENDING_REVIEW",
       completedAt: Timestamp.fromDate(completedAt),
       updatedAt: Timestamp.fromDate(completedAt),
-      "lifecycle.serviceEndedAt": Timestamp.fromDate(completedAt),
-      "lifecycle.completedAt": Timestamp.fromDate(completedAt),
-      "lifecycle.reviewWindowEndsAt": Timestamp.fromDate(reviewWindowEndsAt),
-      "lifecycle.disputeDeadlineAt": Timestamp.fromDate(reviewWindowEndsAt),
-      "payout.status": "HELD",
-      "payout.eligibleAt": Timestamp.fromDate(reviewWindowEndsAt),
-      "payout.providerPayoutPaise": booking.financials.providerPayoutPaise,
-      "completion.reasonCode": "provider_marked_complete",
-      "completion.policyVersion": SERVICE_COMPLETION_POLICY_VERSION,
-      "dispute.status": "none",
-      "audit.lastUpdatedBy": "provider",
+      lifecycle: nextLifecycle,
+      payout: nextPayout,
+      privacy: nextPrivacy,
+      completion: nextCompletion,
+      dispute: nextDispute,
+      audit: nextAudit,
     }, {merge: true});
     transaction.set(completionRef, {
       bookingId: params.bookingId,
@@ -392,8 +513,13 @@ export async function completeBookingServiceV3(params: {
       actorId: params.providerUid,
       createdAt: completedAt,
     });
+    console.info("SERVICE_COMPLETE_TRANSACTION_COMMITTED", {
+      bookingId: params.bookingId,
+      providerUid: params.providerUid,
+      targetState: "COMPLETED_PENDING_REVIEW",
+    });
 
-    return {
+    const result: CompletionResult = {
       code: "COMPLETED_PENDING_REVIEW",
       bookingId: params.bookingId,
       state: "COMPLETED_PENDING_REVIEW",
@@ -401,6 +527,13 @@ export async function completeBookingServiceV3(params: {
       completedAt,
       reviewWindowEndsAt,
     };
+    console.info("SERVICE_COMPLETE_COMPLETED", {
+      bookingId: params.bookingId,
+      providerUid: params.providerUid,
+      resultCode: result.code,
+      targetState: result.state,
+    });
+    return result;
   });
 }
 
@@ -429,6 +562,10 @@ export async function submitBookingReviewV3(params: {
     }
     const bookingData = bookingSnapshot.data() ?? {};
     const booking = bookingData as CanonicalBookingDocumentV3;
+    const reviewStatusBefore =
+      asString(bookingData.reviewStatus) ||
+      asString((bookingData.review as Record<string, unknown> | undefined)?.status);
+    const existingReview = hasReviewAlreadyV3(bookingData);
     if (booking.parentId !== params.parentUid) {
       return {
         code: "UNAUTHORIZED",
@@ -439,7 +576,14 @@ export async function submitBookingReviewV3(params: {
         submittedAt: null,
       };
     }
-    if (booking.state !== "COMPLETED_PENDING_REVIEW") {
+    if (!isReviewEligibleCompletedStateV3(booking.state)) {
+      console.info("bookingV3.submitBookingReviewV3.validation", {
+        bookingId: params.bookingId,
+        reviewExists: existingReview.submitted,
+        reviewStatusBefore,
+        duplicateRejectionReason: "invalid_state",
+        aggregateUpdatePerformed: false,
+      });
       return {
         code: "INVALID_STATE",
         bookingId: params.bookingId,
@@ -449,8 +593,14 @@ export async function submitBookingReviewV3(params: {
         submittedAt: null,
       };
     }
-    const reviewWindowEndsAt = booking.lifecycle.reviewWindowEndsAt;
-    if (reviewWindowEndsAt == null) {
+    if (resolveCompletedAtV3(bookingData) == null) {
+      console.info("bookingV3.submitBookingReviewV3.validation", {
+        bookingId: params.bookingId,
+        reviewExists: existingReview.submitted,
+        reviewStatusBefore,
+        duplicateRejectionReason: "missing_completed_at",
+        aggregateUpdatePerformed: false,
+      });
       return {
         code: "INVALID_BOOKING_DATA",
         bookingId: params.bookingId,
@@ -460,18 +610,14 @@ export async function submitBookingReviewV3(params: {
         submittedAt: null,
       };
     }
-    if (authoritativeNow.getTime() > reviewWindowEndsAt.getTime()) {
-      return {
-        code: "WINDOW_EXPIRED",
-        bookingId: params.bookingId,
-        state: booking.state,
-        reviewId: "",
-        idempotentReplay: false,
-        submittedAt: null,
-      };
-    }
-    const existingReview = hasReviewAlreadyV3(bookingData);
     if (existingReview.submitted) {
+      console.info("bookingV3.submitBookingReviewV3.validation", {
+        bookingId: params.bookingId,
+        reviewExists: true,
+        reviewStatusBefore,
+        duplicateRejectionReason: "booking_review_already_marked_submitted",
+        aggregateUpdatePerformed: false,
+      });
       return {
         code: "ALREADY_REVIEWED",
         bookingId: params.bookingId,
@@ -495,6 +641,13 @@ export async function submitBookingReviewV3(params: {
       transaction.get(providerRef),
     ]);
     if (reviewSnapshot.exists) {
+      console.info("bookingV3.submitBookingReviewV3.validation", {
+        bookingId: params.bookingId,
+        reviewExists: true,
+        reviewStatusBefore,
+        duplicateRejectionReason: "review_document_exists",
+        aggregateUpdatePerformed: false,
+      });
       return {
         code: "ALREADY_REVIEWED",
         bookingId: params.bookingId,
@@ -564,6 +717,9 @@ export async function submitBookingReviewV3(params: {
       bookingType: booking.bookingType,
       state: booking.state,
     });
+    const bookingAudit = typeof booking.audit === "object" && booking.audit != null ?
+      booking.audit as Record<string, unknown> :
+      {};
 
     transaction.set(reviewRef, {
       bookingId: params.bookingId,
@@ -591,7 +747,10 @@ export async function submitBookingReviewV3(params: {
         submittedAt: Timestamp.fromDate(authoritativeNow),
       },
       updatedAt: Timestamp.fromDate(authoritativeNow),
-      "audit.lastUpdatedBy": "parent",
+      audit: {
+        ...bookingAudit,
+        lastUpdatedBy: "parent",
+      },
     }, {merge: true});
     transaction.set(serviceRef, {
       ratingAverage: nextServiceRatingAverage,
@@ -628,6 +787,13 @@ export async function submitBookingReviewV3(params: {
       notifications,
       actorId: params.parentUid,
       createdAt: authoritativeNow,
+    });
+    console.info("bookingV3.submitBookingReviewV3.validation", {
+      bookingId: params.bookingId,
+      reviewExists: false,
+      reviewStatusBefore,
+      duplicateRejectionReason: "",
+      aggregateUpdatePerformed: true,
     });
 
     return {
@@ -695,8 +861,22 @@ export async function createBookingDisputeV3(params: {
         createdAt: null,
       };
     }
-    const reviewWindowEndsAt = booking.lifecycle.reviewWindowEndsAt;
-    if (reviewWindowEndsAt == null) {
+    const bookingData = bookingSnapshot.data() ?? {};
+    const disputeDeadlineResolution = resolveDisputeDeadlineV3(
+      bookingData as Record<string, unknown>,
+    );
+    const disputeDeadlineAt = disputeDeadlineResolution.deadline;
+    console.info("bookingV3.createBookingDisputeV3.validation", {
+      bookingId: params.bookingId,
+      callerOwnsBooking: booking.parentId === params.parentUid,
+      bookingState: booking.state,
+      deadlineSource: disputeDeadlineResolution.source,
+      deadlineActive:
+        disputeDeadlineAt != null &&
+        authoritativeNow.getTime() <= disputeDeadlineAt.getTime(),
+      existingDisputeStatus: booking.dispute.status,
+    });
+    if (disputeDeadlineAt == null) {
       return {
         code: "INVALID_BOOKING_DATA",
         bookingId: params.bookingId,
@@ -706,7 +886,7 @@ export async function createBookingDisputeV3(params: {
         createdAt: null,
       };
     }
-    if (authoritativeNow.getTime() > reviewWindowEndsAt.getTime()) {
+    if (authoritativeNow.getTime() > disputeDeadlineAt.getTime()) {
       return {
         code: "WINDOW_EXPIRED",
         bookingId: params.bookingId,
@@ -746,16 +926,34 @@ export async function createBookingDisputeV3(params: {
       source: "canonical_v3",
       updatedAt: Timestamp.fromDate(authoritativeNow),
     }, {merge: true});
+    const bookingDispute = typeof booking.dispute === "object" && booking.dispute != null ?
+      booking.dispute as Record<string, unknown> :
+      {};
+    const bookingPayout = typeof booking.payout === "object" && booking.payout != null ?
+      booking.payout as Record<string, unknown> :
+      {};
+    const bookingAudit = typeof booking.audit === "object" && booking.audit != null ?
+      booking.audit as Record<string, unknown> :
+      {};
     transaction.set(bookingRef, {
       updatedAt: Timestamp.fromDate(authoritativeNow),
-      "dispute.status": "OPEN",
-      "dispute.raisedAt": Timestamp.fromDate(authoritativeNow),
-      "dispute.raisedBy": "parent",
-      "dispute.reasonCode": params.reason,
-      "dispute.description": params.description,
-      "dispute.evidenceRefs": params.attachments,
-      "payout.status": "HELD",
-      "audit.lastUpdatedBy": "parent",
+      dispute: {
+        ...bookingDispute,
+        status: "OPEN",
+        raisedAt: Timestamp.fromDate(authoritativeNow),
+        raisedBy: "parent",
+        reasonCode: params.reason,
+        description: params.description,
+        evidenceRefs: params.attachments,
+      },
+      payout: {
+        ...bookingPayout,
+        status: "HELD",
+      },
+      audit: {
+        ...bookingAudit,
+        lastUpdatedBy: "parent",
+      },
     }, {merge: true});
     transaction.set(bookingFinancialRef, {
       status: "HELD",

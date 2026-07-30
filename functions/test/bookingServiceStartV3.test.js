@@ -1,11 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {createHash} = require("node:crypto");
+const {Timestamp} = require("firebase-admin/firestore");
 
 const {
   buildConfirmedSlotBookingFixture,
 } = require("../lib/booking/schema/bookingFixtures.js");
 const {
+  buildNoShowRecord,
   calculateCanonicalNoShowAllocationV3,
   finalizeCanonicalNoShowV3,
   verifyBookingStartOtpV3,
@@ -128,11 +130,29 @@ function buildConfirmedBookingSeed() {
   };
 }
 
+function deepConvertDatesToTimestamps(value) {
+  if (value instanceof Date) {
+    return Timestamp.fromDate(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => deepConvertDatesToTimestamps(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        deepConvertDatesToTimestamps(entry),
+      ]),
+    );
+  }
+  return value;
+}
+
 test("correct OTP succeeds before the scheduled start once payment is confirmed", async () => {
   const {bookingId, booking, privateDoc} = buildConfirmedBookingSeed();
   const firestore = new FakeFirestore({
-    [`bookings/${bookingId}`]: booking,
-    [`bookingPrivate/${bookingId}`]: privateDoc,
+    [`bookings/${bookingId}`]: deepConvertDatesToTimestamps(booking),
+    [`bookingPrivate/${bookingId}`]: deepConvertDatesToTimestamps(privateDoc),
   });
   const beforeScheduledStart = new Date(
     booking.schedule.scheduledStartAt.getTime() - 60 * 1000,
@@ -196,7 +216,9 @@ test("overdue confirmed booking finalizes to NO_SHOW exactly once", async () => 
     [`bookings/${bookingId}`]: booking,
     [`bookingPrivate/${bookingId}`]: privateDoc,
   });
-  const authoritativeNow = new Date(booking.schedule.scheduledEndAt.getTime() + 1);
+  const authoritativeNow = new Date(
+    booking.schedule.scheduledEndAt.getTime() + 2 * 60 * 60 * 1000,
+  );
 
   const result = await finalizeCanonicalNoShowV3({
     firestore,
@@ -212,8 +234,91 @@ test("overdue confirmed booking finalizes to NO_SHOW exactly once", async () => 
     0,
   );
   assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).lifecycle.noShowAt.toDate().getTime(),
+    booking.schedule.scheduledEndAt.getTime(),
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).lifecycle.disputeDeadlineAt.toDate().getTime(),
+    booking.schedule.scheduledEndAt.getTime() + 24 * 60 * 60 * 1000,
+  );
+  assert.equal(
     firestore.store.get(`payoutReadiness/${bookingId}`).status,
     "held",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${bookingId}`).eligibleAt.toDate().getTime(),
+    booking.schedule.scheduledEndAt.getTime() + 24 * 60 * 60 * 1000,
+  );
+});
+
+test("buildNoShowRecord normalizes a live Firestore Timestamp anchor to a Date", () => {
+  const {bookingId, booking} = buildConfirmedBookingSeed();
+
+  const record = buildNoShowRecord({
+    booking: deepConvertDatesToTimestamps(booking),
+    bookingId,
+    authoritativeNow: new Date("2026-07-30T05:50:00.000Z"),
+    expectedServiceEndAt: booking.schedule.scheduledEndAt,
+  });
+
+  assert.ok(record.serviceAnchorAt instanceof Date);
+  assert.equal(
+    record.serviceAnchorAt.getTime(),
+    booking.schedule.scheduledStartAt.getTime(),
+  );
+  assert.equal(
+    record.noShowAt.getTime(),
+    booking.schedule.scheduledEndAt.getTime(),
+  );
+  assert.equal(
+    record.disputeDeadlineAt.getTime(),
+    booking.schedule.scheduledEndAt.getTime() + 24 * 60 * 60 * 1000,
+  );
+});
+
+test("buildNoShowRecord preserves a Date anchor and exact no-show timeline", () => {
+  const {bookingId, booking} = buildConfirmedBookingSeed();
+
+  const record = buildNoShowRecord({
+    booking,
+    bookingId,
+    authoritativeNow: new Date("2026-07-30T05:50:00.000Z"),
+    expectedServiceEndAt: booking.schedule.scheduledEndAt,
+  });
+
+  assert.equal(
+    record.serviceAnchorAt.getTime(),
+    booking.schedule.scheduledStartAt.getTime(),
+  );
+  assert.equal(
+    record.noShowAt.getTime(),
+    booking.schedule.scheduledEndAt.getTime(),
+  );
+  assert.equal(
+    record.disputeDeadlineAt.getTime(),
+    booking.schedule.scheduledEndAt.getTime() + 24 * 60 * 60 * 1000,
+  );
+});
+
+test("buildNoShowRecord rejects an invalid authoritative service anchor", () => {
+  const {bookingId, booking} = buildConfirmedBookingSeed();
+  const invalidBooking = {
+    ...booking,
+    schedule: {
+      ...booking.schedule,
+      scheduledStartAt: "invalid-anchor",
+    },
+  };
+
+  assert.throws(
+    () =>
+      buildNoShowRecord({
+        booking: invalidBooking,
+        bookingId,
+        authoritativeNow: new Date("2026-07-30T05:50:00.000Z"),
+        expectedServiceEndAt: booking.schedule.scheduledEndAt,
+      }),
+    /missing a valid authoritative service anchor time/i,
   );
 });
 

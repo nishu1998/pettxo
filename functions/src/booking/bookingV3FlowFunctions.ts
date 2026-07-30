@@ -1,4 +1,4 @@
-import {FieldValue, Timestamp} from "firebase-admin/firestore";
+import {FieldPath, FieldValue, Timestamp} from "firebase-admin/firestore";
 import {
   HttpsError,
   onCall,
@@ -6,6 +6,7 @@ import {
   type CallableRequest,
 } from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
+import * as logger from "firebase-functions/logger";
 
 import {
   RAZORPAY_KEY_ID,
@@ -964,6 +965,22 @@ function logRequestEvent(
   payload: Record<string, unknown>,
 ): void {
   console.info(`bookingV3.${event}`, payload);
+}
+
+function normalizeError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  if (typeof error === "string") {
+    return new Error(error);
+  }
+
+  try {
+    return new Error(JSON.stringify(error));
+  } catch {
+    return new Error(String(error));
+  }
 }
 
 async function loadClaimedOffer(
@@ -2355,13 +2372,26 @@ export const verifyBookingStartOtpV3 = onCall(
       throw new HttpsError("invalid-argument", "requestAttemptId is required.");
     }
 
-    await authorizeCanonicalBookingCommand({
+    console.info("bookingV3.verifyBookingStartOtpV3.request", {
+      bookingId,
+      providerUid: uid,
+      requestAttemptId,
+    });
+
+    const authorized = await authorizeCanonicalBookingCommand({
       bookingId,
       authenticatedUserId: uid,
       expectedActor: "provider",
       allowedStates: ["CONFIRMED", "IN_PROGRESS", "CANCELLED"],
       operation: "continuation",
       now: authoritativeNow,
+    });
+    console.info("bookingV3.verifyBookingStartOtpV3.authorized", {
+      bookingId,
+      providerUid: uid,
+      state: authorized.booking.state,
+      paymentStatus: authorized.booking.payment.status,
+      paidAt: authorized.booking.lifecycle.paidAt?.toISOString() ?? null,
     });
 
     const result = await verifyBookingStartOtpApplicationV3({
@@ -2371,6 +2401,14 @@ export const verifyBookingStartOtpV3 = onCall(
       otpCandidate,
       requestAttemptId,
       authoritativeNow,
+    });
+    console.info("bookingV3.verifyBookingStartOtpV3.result", {
+      bookingId,
+      providerUid: uid,
+      code: result.code,
+      state: result.state,
+      otpEnteredAt: result.otpEnteredAt?.toISOString() ?? null,
+      idempotentReplay: result.idempotentReplay,
     });
 
     if (result.code === "UNAUTHORIZED") {
@@ -2434,49 +2472,95 @@ export const completeBookingServiceV3 = onCall(
       throw new HttpsError("invalid-argument", "bookingId is required.");
     }
 
-    const bookingSnapshot = await db.collection("bookings").doc(bookingId).get();
-    if (!bookingSnapshot.exists) {
-      throw new HttpsError("not-found", "Booking not found.", {code: "BOOKING_NOT_FOUND"});
-    }
-    const booking = ensureCanonicalBooking(bookingSnapshot.data());
-    if (booking.providerId !== uid) {
-      throw new HttpsError("permission-denied", "Only the provider can complete this booking.", {
-        code: "ACTOR_NOT_AUTHORIZED",
-      });
-    }
-    const authorized = await authorizeCanonicalBookingCommand({
-      bookingId,
-      authenticatedUserId: uid,
-      expectedActor: "provider",
-      allowedStates: ["IN_PROGRESS", "COMPLETED_PENDING_REVIEW"],
-      operation: "continuation",
-      now: new Date(),
-    });
-    const result = await completeBookingServiceApplicationV3({
-      firestore: db,
+    console.info("bookingV3.completeBookingServiceV3.request", {
       bookingId,
       providerUid: uid,
     });
-    if (result.code === "NOT_FOUND") {
-      throw new HttpsError("not-found", "Booking not found.", {code: result.code});
-    }
-    if (result.code === "UNAUTHORIZED") {
-      throw new HttpsError("permission-denied", "Only the provider can complete this booking.", {
-        code: result.code,
+    try {
+      const bookingSnapshot = await db.collection("bookings").doc(bookingId).get();
+      if (!bookingSnapshot.exists) {
+        throw new HttpsError("not-found", "Booking not found.", {code: "BOOKING_NOT_FOUND"});
+      }
+      const booking = ensureCanonicalBooking(bookingSnapshot.data());
+      console.info("bookingV3.completeBookingServiceV3.bookingLoaded", {
+        bookingId,
+        providerUid: uid,
+        currentState: booking.state,
+        paymentStatus: booking.payment.status,
+        hasPaidAt: booking.lifecycle.paidAt != null,
       });
-    }
-    if (result.code === "PAYMENT_NOT_CONFIRMED" ||
-      result.code === "INVALID_STATE" ||
-      result.code === "INVALID_BOOKING_DATA") {
-      throw new HttpsError("failed-precondition", "This booking cannot be completed right now.", {
-        code: result.code,
+      if (booking.providerId !== uid) {
+        throw new HttpsError("permission-denied", "Only the provider can complete this booking.", {
+          code: "ACTOR_NOT_AUTHORIZED",
+        });
+      }
+      const authorized = await authorizeCanonicalBookingCommand({
+        bookingId,
+        authenticatedUserId: uid,
+        expectedActor: "provider",
+        allowedStates: ["IN_PROGRESS", "COMPLETED_PENDING_REVIEW"],
+        operation: "continuation",
+        now: new Date(),
+      });
+      console.info("bookingV3.completeBookingServiceV3.authorized", {
+        bookingId,
+        providerUid: uid,
+        authorizedState: authorized.booking.state,
+      });
+      const result = await completeBookingServiceApplicationV3({
+        firestore: db,
+        bookingId,
+        providerUid: uid,
+      });
+      console.info("bookingV3.completeBookingServiceV3.result", {
+        bookingId,
+        providerUid: uid,
+        resultCode: result.code,
         state: result.state,
+        idempotentReplay: result.idempotentReplay,
       });
+      if (result.code === "NOT_FOUND") {
+        throw new HttpsError("not-found", "Booking not found.", {code: result.code});
+      }
+      if (result.code === "UNAUTHORIZED") {
+        throw new HttpsError("permission-denied", "Only the provider can complete this booking.", {
+          code: result.code,
+        });
+      }
+      if (result.code === "PAYMENT_NOT_CONFIRMED" ||
+        result.code === "INVALID_STATE" ||
+        result.code === "INVALID_BOOKING_DATA") {
+        throw new HttpsError(
+          "failed-precondition",
+          "This booking cannot be completed right now.",
+          {
+            code: result.code,
+            state: result.state,
+          });
+      }
+      return buildBookingCompletionResponse({
+        ...result,
+        state: result.code === "COMPLETED_PENDING_REVIEW" ? "COMPLETED_PENDING_REVIEW" : authorized.booking.state,
+      });
+    } catch (error) {
+      const errorDetails =
+        error instanceof HttpsError &&
+            typeof error.details === "object" &&
+            error.details != null
+          ? error.details as Record<string, unknown>
+          : null;
+      console.error("bookingV3.completeBookingServiceV3.error", {
+        bookingId,
+        providerUid: uid,
+        errorName: error instanceof Error ? error.name : typeof error,
+        message: error instanceof Error ? error.message : String(error),
+        code:
+          error instanceof HttpsError
+            ? (typeof errorDetails?.code === "string" ? errorDetails.code : error.code)
+            : undefined,
+      });
+      throw error;
     }
-    return buildBookingCompletionResponse({
-      ...result,
-      state: result.code === "COMPLETED_PENDING_REVIEW" ? "COMPLETED_PENDING_REVIEW" : authorized.booking.state,
-    });
   },
 );
 
@@ -2509,31 +2593,61 @@ export const submitBookingReviewV3 = onCall(
       });
     }
 
-    const result = await submitBookingReviewApplicationV3({
-      firestore: db,
-      bookingId,
-      parentUid: uid,
-      rating,
-      comment,
-      tags,
-    });
-    if (result.code === "NOT_FOUND") {
-      throw new HttpsError("not-found", "Booking not found.", {code: result.code});
-    }
-    if (result.code === "UNAUTHORIZED") {
-      throw new HttpsError("permission-denied", "Only the customer can submit a review.", {
-        code: result.code,
+    try {
+      const result = await submitBookingReviewApplicationV3({
+        firestore: db,
+        bookingId,
+        parentUid: uid,
+        rating,
+        comment,
+        tags,
       });
-    }
-    if (result.code === "INVALID_STATE" ||
-      result.code === "WINDOW_EXPIRED" ||
-      result.code === "INVALID_BOOKING_DATA") {
-      throw new HttpsError("failed-precondition", "This booking is not ready for review.", {
-        code: result.code,
-        state: result.state,
+      if (result.code === "NOT_FOUND") {
+        throw new HttpsError("not-found", "Booking not found.", {code: result.code});
+      }
+      if (result.code === "UNAUTHORIZED") {
+        throw new HttpsError("permission-denied", "Only the customer can submit a review.", {
+          code: result.code,
+        });
+      }
+      if (result.code === "ALREADY_REVIEWED") {
+        throw new HttpsError("already-exists", "A review has already been submitted for this booking.", {
+          code: "REVIEW_ALREADY_SUBMITTED",
+          state: result.state,
+          reviewId: result.reviewId,
+        });
+      }
+      if (result.code === "INVALID_STATE" || result.code === "INVALID_BOOKING_DATA") {
+        throw new HttpsError("failed-precondition", "This booking is not ready for review.", {
+          code: result.code,
+          state: result.state,
+        });
+      }
+      return buildBookingReviewResponse(result);
+    } catch (error) {
+      const errorDetails =
+        error instanceof HttpsError &&
+            typeof error.details === "object" &&
+            error.details != null
+          ? error.details as Record<string, unknown>
+          : null;
+      console.error("bookingV3.submitBookingReviewV3.error", {
+        bookingId,
+        parentUid: uid,
+        bookingState: booking.state,
+        completedAtPresent: booking.completedAt != null || booking.lifecycle.completedAt != null,
+        reviewAlreadyExistsKnown:
+          Boolean((bookingSnapshot.data() ?? {}).reviewId) ||
+          String((bookingSnapshot.data() ?? {}).reviewStatus ?? "").trim().toLowerCase() === "submitted",
+        errorName: error instanceof Error ? error.name : typeof error,
+        message: error instanceof Error ? error.message : String(error),
+        code:
+          error instanceof HttpsError
+            ? (typeof errorDetails?.code === "string" ? errorDetails.code : error.code)
+            : undefined,
       });
+      throw error;
     }
-    return buildBookingReviewResponse(result);
   },
 );
 
@@ -2562,32 +2676,63 @@ export const createBookingDisputeV3 = onCall(
         code: "ACTOR_NOT_AUTHORIZED",
       });
     }
-
-    const result = await createBookingDisputeApplicationV3({
-      firestore: db,
-      bookingId,
-      parentUid: uid,
-      reason,
-      description,
-      attachments,
-    });
-    if (result.code === "NOT_FOUND") {
-      throw new HttpsError("not-found", "Booking not found.", {code: result.code});
-    }
-    if (result.code === "UNAUTHORIZED") {
-      throw new HttpsError("permission-denied", "Only the customer can raise a dispute.", {
-        code: result.code,
+    try {
+      const result = await createBookingDisputeApplicationV3({
+        firestore: db,
+        bookingId,
+        parentUid: uid,
+        reason,
+        description,
+        attachments,
       });
-    }
-    if (result.code === "INVALID_STATE" ||
-      result.code === "WINDOW_EXPIRED" ||
-      result.code === "INVALID_BOOKING_DATA") {
-      throw new HttpsError("failed-precondition", "This booking is not eligible for dispute submission.", {
-        code: result.code,
-        state: result.state,
+      if (result.code === "NOT_FOUND") {
+        throw new HttpsError("not-found", "Booking not found.", {code: result.code});
+      }
+      if (result.code === "UNAUTHORIZED") {
+        throw new HttpsError("permission-denied", "Only the customer can raise a dispute.", {
+          code: result.code,
+        });
+      }
+      if (result.code === "ALREADY_DISPUTED") {
+        throw new HttpsError("already-exists", "A dispute already exists for this booking.", {
+          code: result.code,
+          state: result.state,
+        });
+      }
+      if (result.code === "INVALID_STATE" ||
+        result.code === "WINDOW_EXPIRED" ||
+        result.code === "INVALID_BOOKING_DATA") {
+        throw new HttpsError("failed-precondition", "This booking is not eligible for dispute submission.", {
+          code: result.code,
+          state: result.state,
+        });
+      }
+      return buildBookingDisputeResponse(result);
+    } catch (error) {
+      const errorDetails =
+        error instanceof HttpsError &&
+        typeof error.details === "object" &&
+        error.details != null ?
+          error.details as Record<string, unknown> :
+          undefined;
+      console.error("bookingV3.createBookingDisputeV3.error", {
+        bookingId,
+        callerUid: uid,
+        callerOwnsBooking: booking.parentId === uid,
+        bookingState: booking.state,
+        nestedDisputeDeadlinePresent: booking.lifecycle.disputeDeadlineAt != null,
+        reviewWindowFallbackPresent: booking.lifecycle.reviewWindowEndsAt != null,
+        existingDisputeStatus: booking.dispute.status,
+        reasonPresent: reason.length > 0,
+        descriptionLength: description.length,
+        code:
+          error instanceof HttpsError ?
+            (typeof errorDetails?.code === "string" ? errorDetails.code : error.code) :
+            undefined,
+        message: error instanceof Error ? error.message : String(error),
       });
+      throw error;
     }
-    return buildBookingDisputeResponse(result);
   },
 );
 
@@ -3084,45 +3229,174 @@ export const reconcileBookingPaymentsV3 = onSchedule(
   },
 );
 
+type NoShowBucketState = "CONFIRMED" | "IN_PROGRESS";
+
+type SchedulerLogger = Pick<typeof logger, "info" | "error">;
+
+type NoShowScanStats = {
+  scanned: number;
+  noShowFinalized: number;
+  repairedStarts: number;
+};
+
 export const finalizeCanonicalNoShowsV3 = onSchedule(
   {schedule: "every 30 minutes", timeZone: "Asia/Kolkata"},
   async () => {
-    const authoritativeNow = new Date();
-    const confirmedSnapshot = await db
-      .collection("bookings")
-      .where("stateQueryValue", "==", "CONFIRMED")
-      .limit(100)
-      .get();
-    const inProgressSnapshot = await db
-      .collection("bookings")
-      .where("stateQueryValue", "==", "IN_PROGRESS")
-      .limit(100)
-      .get();
+    await runFinalizeCanonicalNoShowsSchedulerV3();
+  },
+);
 
-    let noShowFinalized = 0;
-    let repairedStarts = 0;
-    for (const doc of [...confirmedSnapshot.docs, ...inProgressSnapshot.docs]) {
-      const result = await reconcileCanonicalServiceStartArtifactsV3({
-        firestore: db,
-        bookingId: doc.id,
-        authoritativeNow,
-      });
-      if (result === "NO_SHOW_FINALIZED") {
-        noShowFinalized += 1;
-      } else if (result === "REPAIRED") {
-        repairedStarts += 1;
+export async function runFinalizeCanonicalNoShowsSchedulerV3(params?: {
+  authoritativeNow?: Date;
+  schedulerLogger?: SchedulerLogger;
+  scanStateBucket?: (args: {
+    stateQueryValue: NoShowBucketState;
+    authoritativeNow: Date;
+    schedulerLogger: SchedulerLogger;
+  }) => Promise<NoShowScanStats>;
+}): Promise<void> {
+  const authoritativeNow = params?.authoritativeNow ?? new Date();
+  const schedulerLogger = params?.schedulerLogger ?? logger;
+  const scanStateBucket =
+    params?.scanStateBucket ??
+    ((args: {
+      stateQueryValue: NoShowBucketState;
+      authoritativeNow: Date;
+      schedulerLogger: SchedulerLogger;
+    }) => scanCanonicalNoShowCandidatesByStateV3(args));
+
+  schedulerLogger.info("bookingV3.scheduler.noShowFinalization.started", {
+    schedule: "every 30 minutes",
+    timeZone: "Asia/Kolkata",
+    authoritativeAt: authoritativeNow.toISOString(),
+  });
+
+  try {
+    const confirmedStats = await scanStateBucket({
+      stateQueryValue: "CONFIRMED",
+      authoritativeNow,
+      schedulerLogger,
+    });
+    const inProgressStats = await scanStateBucket({
+      stateQueryValue: "IN_PROGRESS",
+      authoritativeNow,
+      schedulerLogger,
+    });
+
+    schedulerLogger.info("bookingV3.scheduler.noShowFinalization.completed", {
+      confirmedScanned: confirmedStats.scanned,
+      inProgressScanned: inProgressStats.scanned,
+      noShowFinalized:
+        confirmedStats.noShowFinalized + inProgressStats.noShowFinalized,
+      repairedStarts:
+        confirmedStats.repairedStarts + inProgressStats.repairedStarts,
+      authoritativeAt: authoritativeNow.toISOString(),
+    });
+  } catch (error) {
+    const normalized = normalizeError(error);
+    schedulerLogger.error("bookingV3.scheduler.noShowFinalization.failed", {
+      message: normalized.message,
+      stack: normalized.stack,
+      authoritativeAt: authoritativeNow.toISOString(),
+    });
+    throw normalized;
+  }
+}
+
+const NO_SHOW_SCAN_BATCH_SIZE = 100;
+
+export async function scanCanonicalNoShowCandidatesByStateV3(params: {
+  stateQueryValue: NoShowBucketState;
+  authoritativeNow: Date;
+  schedulerLogger?: SchedulerLogger;
+  firestore?: typeof db;
+  reconcileBooking?: typeof reconcileCanonicalServiceStartArtifactsV3;
+}): Promise<NoShowScanStats> {
+  const schedulerLogger = params.schedulerLogger ?? logger;
+  const firestore = params.firestore ?? db;
+  const reconcileBooking =
+    params.reconcileBooking ?? reconcileCanonicalServiceStartArtifactsV3;
+  let scanned = 0;
+  let noShowFinalized = 0;
+  let repairedStarts = 0;
+  let lastDocumentId: string | null = null;
+  let pageNumber = 0;
+
+  schedulerLogger.info("bookingV3.scheduler.noShowFinalization.stateBucket.started", {
+    stateQueryValue: params.stateQueryValue,
+    authoritativeAt: params.authoritativeNow.toISOString(),
+  });
+
+  while (true) {
+    let query = firestore
+      .collection("bookings")
+      .where("stateQueryValue", "==", params.stateQueryValue)
+      .orderBy(FieldPath.documentId())
+      .limit(NO_SHOW_SCAN_BATCH_SIZE);
+    if (lastDocumentId != null) {
+      query = query.startAfter(lastDocumentId);
+    }
+
+    const snapshot = await query.get();
+    if (snapshot.empty) break;
+
+    pageNumber += 1;
+    schedulerLogger.info("bookingV3.scheduler.noShowFinalization.pageLoaded", {
+      stateQueryValue: params.stateQueryValue,
+      pageNumber,
+      pageSize: snapshot.size,
+      lastDocumentId,
+    });
+
+    scanned += snapshot.size;
+    for (const doc of snapshot.docs) {
+      try {
+        const result = await reconcileBooking({
+          firestore,
+          bookingId: doc.id,
+          authoritativeNow: params.authoritativeNow,
+        });
+        if (result === "NO_SHOW_FINALIZED") {
+          noShowFinalized += 1;
+        } else if (result === "REPAIRED") {
+          repairedStarts += 1;
+        }
+        schedulerLogger.info("bookingV3.scheduler.noShowFinalization.bookingProcessed", {
+          bookingId: doc.id,
+          stateQueryValue: params.stateQueryValue,
+          outcome: result,
+        });
+      } catch (error) {
+        const normalized = normalizeError(error);
+        schedulerLogger.error("bookingV3.scheduler.noShowFinalization.bookingFailed", {
+          bookingId: doc.id,
+          stateQueryValue: params.stateQueryValue,
+          message: normalized.message,
+          stack: normalized.stack,
+        });
+        throw normalized;
       }
     }
 
-    console.info("bookingV3.scheduler.noShowFinalization", {
-      confirmedScanned: confirmedSnapshot.size,
-      inProgressScanned: inProgressSnapshot.size,
-      noShowFinalized,
-      repairedStarts,
-      authoritativeAt: authoritativeNow.toISOString(),
-    });
-  },
-);
+    lastDocumentId = snapshot.docs[snapshot.docs.length - 1]?.id ?? null;
+    if (snapshot.size < NO_SHOW_SCAN_BATCH_SIZE) break;
+  }
+
+  schedulerLogger.info("bookingV3.scheduler.noShowFinalization.stateBucket.completed", {
+    stateQueryValue: params.stateQueryValue,
+    scanned,
+    noShowFinalized,
+    repairedStarts,
+    pages: pageNumber,
+    authoritativeAt: params.authoritativeNow.toISOString(),
+  });
+
+  return {
+    scanned,
+    noShowFinalized,
+    repairedStarts,
+  };
+}
 
 export const finalizeCompletedBookingsV3 = onSchedule(
   {schedule: "every 15 minutes", timeZone: "Asia/Kolkata"},
