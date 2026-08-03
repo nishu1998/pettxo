@@ -498,6 +498,7 @@ service cloud.firestore {
         'acceptedTermsAt',
         'acceptedPrivacyAt',
         'acceptedProviderAgreementAt',
+        'exploreLocation',
         'createdAt',
         'updatedAt',
         'deletionRequestedAt',
@@ -549,6 +550,60 @@ service cloud.firestore {
         request.resource.data.accountStatus is string
       ) &&
       (
+        !request.resource.data.keys().hasAny(['exploreLocation']) ||
+        request.resource.data.exploreLocation == null ||
+        (
+          request.resource.data.exploreLocation is map &&
+          request.resource.data.exploreLocation.keys().hasOnly([
+            'latitude',
+            'longitude',
+            'city',
+            'state',
+            'country',
+            'geohash3',
+            'geohash4',
+            'geohash5',
+            'updatedAt'
+          ]) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['latitude']) ||
+            request.resource.data.exploreLocation.latitude is number
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['longitude']) ||
+            request.resource.data.exploreLocation.longitude is number
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['city']) ||
+            request.resource.data.exploreLocation.city is string
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['state']) ||
+            request.resource.data.exploreLocation.state is string
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['country']) ||
+            request.resource.data.exploreLocation.country is string
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['geohash3']) ||
+            request.resource.data.exploreLocation.geohash3 is string
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['geohash4']) ||
+            request.resource.data.exploreLocation.geohash4 is string
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['geohash5']) ||
+            request.resource.data.exploreLocation.geohash5 is string
+          ) &&
+          (
+            !request.resource.data.exploreLocation.keys().hasAny(['updatedAt']) ||
+            request.resource.data.exploreLocation.updatedAt == request.time
+          )
+        )
+      ) &&
+      (
         !request.resource.data.keys().hasAny(['scheduledDeletionAt']) ||
         request.resource.data.scheduledDeletionAt == null ||
         request.resource.data.scheduledDeletionAt is timestamp
@@ -575,6 +630,7 @@ service cloud.firestore {
           'acceptedTermsAt',
           'acceptedPrivacyAt',
           'acceptedProviderAgreementAt',
+          'exploreLocation',
           'updatedAt'
         ]) &&
         request.resource.data.createdAt == resource.data.createdAt;
@@ -610,6 +666,18 @@ service cloud.firestore {
         'moderatedBy',
         'moderatedAt',
         'lastReportedAt',
+        'discoverScore',
+        'discoverRankVersion',
+        'discoverScoreUpdatedAt',
+        'discoverEligible',
+        'nearbyEligible',
+        'feedGeohash3',
+        'feedGeohash4',
+        'feedGeohash5',
+        'feedLocationVersion',
+        'feedLocationUpdatedAt',
+        'feedCityKey',
+        'feedStateKey',
         'createdAtEpoch',
         'createdAt',
         'updatedAt'
@@ -617,9 +685,18 @@ service cloud.firestore {
       request.resource.data.id == request.resource.id &&
       request.resource.data.authorId == request.auth.uid &&
       request.resource.data.authorType == 'user' &&
-      request.resource.data.isAdminPost == false &&
-      request.resource.data.adminPriorityBoost == 0 &&
-      request.resource.data.recentEngagementScore == 0 &&
+      (
+        !request.resource.data.keys().hasAny(['isAdminPost']) ||
+        request.resource.data.isAdminPost == false
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['adminPriorityBoost']) ||
+        request.resource.data.adminPriorityBoost == 0
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['recentEngagementScore']) ||
+        request.resource.data.recentEngagementScore == 0
+      ) &&
       request.resource.data.imageUrls.size() > 0 &&
       request.resource.data.imageUrls.size() <= 5 &&
       request.resource.data.thumbnailUrls.size() == request.resource.data.imageUrls.size() &&
@@ -627,14 +704,77 @@ service cloud.firestore {
       request.resource.data.likeCount == 0 &&
       request.resource.data.commentCount == 0 &&
       request.resource.data.shareCount == 0 &&
-      request.resource.data.saveCount == 0 &&
+      (
+        !request.resource.data.keys().hasAny(['saveCount']) ||
+        request.resource.data.saveCount == 0
+      ) &&
       request.resource.data.reportCount == 0 &&
       request.resource.data.visibilityStatus == 'visible' &&
       request.resource.data.moderationStatus == 'approved' &&
-      request.resource.data.moderationReason == '' &&
-      request.resource.data.moderatedBy == '' &&
-      request.resource.data.moderatedAt == null &&
-      request.resource.data.lastReportedAt == null &&
+      (
+        !request.resource.data.keys().hasAny(['moderationReason']) ||
+        request.resource.data.moderationReason == ''
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['moderatedBy']) ||
+        request.resource.data.moderatedBy == ''
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['moderatedAt']) ||
+        request.resource.data.moderatedAt == null
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['lastReportedAt']) ||
+        request.resource.data.lastReportedAt == null
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['discoverScore']) ||
+        request.resource.data.discoverScore == 0
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['discoverRankVersion']) ||
+        request.resource.data.discoverRankVersion == 0
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['discoverScoreUpdatedAt']) ||
+        request.resource.data.discoverScoreUpdatedAt == null
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['discoverEligible']) ||
+        request.resource.data.discoverEligible == false
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['nearbyEligible']) ||
+        request.resource.data.nearbyEligible == false
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedGeohash3']) ||
+        request.resource.data.feedGeohash3 == ''
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedGeohash4']) ||
+        request.resource.data.feedGeohash4 == ''
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedGeohash5']) ||
+        request.resource.data.feedGeohash5 == ''
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedLocationVersion']) ||
+        request.resource.data.feedLocationVersion == 0
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedLocationUpdatedAt']) ||
+        request.resource.data.feedLocationUpdatedAt == null
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedCityKey']) ||
+        request.resource.data.feedCityKey == ''
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['feedStateKey']) ||
+        request.resource.data.feedStateKey == ''
+      ) &&
       request.resource.data.createdAt == request.time &&
       request.resource.data.updatedAt == request.time;
     }
@@ -674,6 +814,8 @@ service cloud.firestore {
         'authorDisplayName',
         'authorPhotoUrl',
         'authorCategoryLabel',
+        'authorCity',
+        'authorState',
         'updatedAt'
       ]) &&
       resource.data.authorId == request.auth.uid &&
@@ -683,6 +825,8 @@ service cloud.firestore {
       request.resource.data.authorPhotoUrl is string &&
       request.resource.data.authorCategoryLabel is string &&
       request.resource.data.authorCategoryLabel.size() > 0 &&
+      request.resource.data.authorCity is string &&
+      request.resource.data.authorState is string &&
       request.resource.data.updatedAt == request.time;
     }
 
@@ -1297,6 +1441,44 @@ service cloud.firestore {
       allow update: if false;
     }
 
+    match /userBlocks/{blockId} {
+      allow get: if signedIn() && resource.data.ownerUserId == request.auth.uid;
+      allow list: if signedIn() && resource.data.ownerUserId == request.auth.uid;
+      allow create: if requesterAccountIsActive() &&
+        request.resource.data.diff({}).changedKeys().hasOnly([
+          'ownerUserId',
+          'blockedUserId',
+          'createdAt'
+        ]) &&
+        request.resource.data.ownerUserId == request.auth.uid &&
+        request.resource.data.blockedUserId is string &&
+        request.resource.data.blockedUserId != request.auth.uid &&
+        request.resource.id == (request.resource.data.ownerUserId + '_' + request.resource.data.blockedUserId) &&
+        request.resource.data.createdAt == request.time;
+      allow delete: if requesterAccountIsActive() &&
+        resource.data.ownerUserId == request.auth.uid;
+      allow update: if false;
+    }
+
+    match /userMutes/{muteId} {
+      allow get: if signedIn() && resource.data.ownerUserId == request.auth.uid;
+      allow list: if signedIn() && resource.data.ownerUserId == request.auth.uid;
+      allow create: if requesterAccountIsActive() &&
+        request.resource.data.diff({}).changedKeys().hasOnly([
+          'ownerUserId',
+          'mutedUserId',
+          'createdAt'
+        ]) &&
+        request.resource.data.ownerUserId == request.auth.uid &&
+        request.resource.data.mutedUserId is string &&
+        request.resource.data.mutedUserId != request.auth.uid &&
+        request.resource.id == (request.resource.data.ownerUserId + '_' + request.resource.data.mutedUserId) &&
+        request.resource.data.createdAt == request.time;
+      allow delete: if requesterAccountIsActive() &&
+        resource.data.ownerUserId == request.auth.uid;
+      allow update: if false;
+    }
+
     match /hashtags/{tag} {
       allow read: if signedIn();
       allow create: if requesterAccountIsActive() && safeHashtagCreate(tag);
@@ -1402,6 +1584,14 @@ service cloud.firestore {
           allow update, delete: if false;
         }
       }
+    }
+
+    match /socialPostPrivate/{postId} {
+      allow read, write: if false;
+    }
+
+    match /nearbyFeedSessions/{sessionId} {
+      allow read, write: if false;
     }
 
     // Collection group queries for admin moderation need a path-agnostic
