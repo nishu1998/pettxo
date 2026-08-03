@@ -1,0 +1,1 @@
+enum ExploreFeedKind { discover, nearby }

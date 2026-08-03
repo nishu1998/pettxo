@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../../../core/utils/firebase_datetime_parser.dart';
+
 enum SocialPostAspectRatio { square, portrait, landscape }
 
 class SocialPostModel {
@@ -12,6 +14,15 @@ class SocialPostModel {
   final String authorCategoryLabel;
   final String authorCity;
   final String authorState;
+  final bool nearbyEligible;
+  final String feedGeohash3;
+  final String feedGeohash4;
+  final String feedGeohash5;
+  final int feedLocationVersion;
+  final Timestamp? feedLocationUpdatedAt;
+  final double? nearbyDistanceKm;
+  final String nearbyDistanceLabel;
+  final bool usesNearbyFallback;
   final bool isAdminPost;
   final int adminPriorityBoost;
   final double recentEngagementScore;
@@ -45,6 +56,15 @@ class SocialPostModel {
     required this.authorCategoryLabel,
     required this.authorCity,
     required this.authorState,
+    required this.nearbyEligible,
+    required this.feedGeohash3,
+    required this.feedGeohash4,
+    required this.feedGeohash5,
+    required this.feedLocationVersion,
+    required this.feedLocationUpdatedAt,
+    required this.nearbyDistanceKm,
+    required this.nearbyDistanceLabel,
+    required this.usesNearbyFallback,
     required this.isAdminPost,
     required this.adminPriorityBoost,
     required this.recentEngagementScore,
@@ -80,6 +100,18 @@ class SocialPostModel {
     Map<String, dynamic> data, {
     String fallbackId = '',
   }) {
+    final feedLocationUpdatedAt = parseFirebaseTimestamp(
+      data['feedLocationUpdatedAt'],
+    );
+    final moderatedAt = parseFirebaseTimestamp(data['moderatedAt']);
+    final lastReportedAt = parseFirebaseTimestamp(data['lastReportedAt']);
+    final createdAt = parseFirebaseTimestamp(data['createdAt']);
+    final updatedAt = parseFirebaseTimestamp(data['updatedAt']);
+    final createdAtEpoch =
+        parseFirebaseEpochMilliseconds(data['createdAtEpoch']) ??
+        createdAt?.millisecondsSinceEpoch ??
+        0;
+
     return SocialPostModel(
       id: (data['id'] as String? ?? fallbackId).trim(),
       authorId: (data['authorId'] as String? ?? '').trim(),
@@ -91,6 +123,16 @@ class SocialPostModel {
           .trim(),
       authorCity: (data['authorCity'] as String? ?? '').trim(),
       authorState: (data['authorState'] as String? ?? '').trim(),
+      nearbyEligible: data['nearbyEligible'] == true,
+      feedGeohash3: (data['feedGeohash3'] as String? ?? '').trim(),
+      feedGeohash4: (data['feedGeohash4'] as String? ?? '').trim(),
+      feedGeohash5: (data['feedGeohash5'] as String? ?? '').trim(),
+      feedLocationVersion: (data['feedLocationVersion'] as num?)?.toInt() ?? 0,
+      feedLocationUpdatedAt: feedLocationUpdatedAt,
+      nearbyDistanceKm: (data['nearbyDistanceKm'] as num?)?.toDouble(),
+      nearbyDistanceLabel: (data['nearbyDistanceLabel'] as String? ?? '')
+          .trim(),
+      usesNearbyFallback: data['usesNearbyFallback'] == true,
       isAdminPost: data['isAdminPost'] == true,
       adminPriorityBoost: (data['adminPriorityBoost'] as num?)?.toInt() ?? 0,
       recentEngagementScore:
@@ -113,14 +155,11 @@ class SocialPostModel {
           .trim(),
       moderationReason: (data['moderationReason'] as String? ?? '').trim(),
       moderatedBy: (data['moderatedBy'] as String? ?? '').trim(),
-      moderatedAt: data['moderatedAt'] as Timestamp?,
-      lastReportedAt: data['lastReportedAt'] as Timestamp?,
-      createdAtEpoch:
-          (data['createdAtEpoch'] as num?)?.toInt() ??
-          (data['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ??
-          0,
-      createdAt: data['createdAt'] as Timestamp?,
-      updatedAt: data['updatedAt'] as Timestamp?,
+      moderatedAt: moderatedAt,
+      lastReportedAt: lastReportedAt,
+      createdAtEpoch: createdAtEpoch,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
     );
   }
 
@@ -135,6 +174,16 @@ class SocialPostModel {
       'authorCategoryLabel': authorCategoryLabel,
       'authorCity': authorCity,
       'authorState': authorState,
+      'nearbyEligible': nearbyEligible,
+      'feedGeohash3': feedGeohash3,
+      'feedGeohash4': feedGeohash4,
+      'feedGeohash5': feedGeohash5,
+      'feedLocationVersion': feedLocationVersion,
+      'feedLocationUpdatedAt': feedLocationUpdatedAt,
+      if (nearbyDistanceKm != null) 'nearbyDistanceKm': nearbyDistanceKm,
+      if (nearbyDistanceLabel.isNotEmpty)
+        'nearbyDistanceLabel': nearbyDistanceLabel,
+      'usesNearbyFallback': usesNearbyFallback,
       'isAdminPost': isAdminPost,
       'adminPriorityBoost': adminPriorityBoost,
       'recentEngagementScore': recentEngagementScore,
@@ -170,6 +219,15 @@ class SocialPostModel {
     String? authorCategoryLabel,
     String? authorCity,
     String? authorState,
+    bool? nearbyEligible,
+    String? feedGeohash3,
+    String? feedGeohash4,
+    String? feedGeohash5,
+    int? feedLocationVersion,
+    Timestamp? feedLocationUpdatedAt,
+    double? nearbyDistanceKm,
+    String? nearbyDistanceLabel,
+    bool? usesNearbyFallback,
     bool? isAdminPost,
     int? adminPriorityBoost,
     double? recentEngagementScore,
@@ -203,6 +261,16 @@ class SocialPostModel {
       authorCategoryLabel: authorCategoryLabel ?? this.authorCategoryLabel,
       authorCity: authorCity ?? this.authorCity,
       authorState: authorState ?? this.authorState,
+      nearbyEligible: nearbyEligible ?? this.nearbyEligible,
+      feedGeohash3: feedGeohash3 ?? this.feedGeohash3,
+      feedGeohash4: feedGeohash4 ?? this.feedGeohash4,
+      feedGeohash5: feedGeohash5 ?? this.feedGeohash5,
+      feedLocationVersion: feedLocationVersion ?? this.feedLocationVersion,
+      feedLocationUpdatedAt:
+          feedLocationUpdatedAt ?? this.feedLocationUpdatedAt,
+      nearbyDistanceKm: nearbyDistanceKm ?? this.nearbyDistanceKm,
+      nearbyDistanceLabel: nearbyDistanceLabel ?? this.nearbyDistanceLabel,
+      usesNearbyFallback: usesNearbyFallback ?? this.usesNearbyFallback,
       isAdminPost: isAdminPost ?? this.isAdminPost,
       adminPriorityBoost: adminPriorityBoost ?? this.adminPriorityBoost,
       recentEngagementScore:
@@ -230,6 +298,9 @@ class SocialPostModel {
   }
 
   String get locationLabel {
+    if (nearbyDistanceLabel.isNotEmpty) {
+      return nearbyDistanceLabel;
+    }
     if (authorCity.isNotEmpty && authorState.isNotEmpty) {
       return '$authorCity, $authorState';
     }

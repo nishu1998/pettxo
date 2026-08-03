@@ -1,7 +1,10 @@
 import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
@@ -11,6 +14,12 @@ import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
+import '../../data/explore_feed_repository.dart';
+import '../../data/explore_location_repository.dart';
+import '../../data/explore_viewer_context_repository.dart';
+import '../../domain/models/explore_feed_kind.dart';
+import '../../domain/models/explore_feed_viewer_context.dart';
+import '../../domain/utils/nearby_error_message.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
@@ -19,8 +28,6 @@ import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
 import '../../../social/presentation/widgets/live_author_resolver.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
-
-const bool _debugExploreRanking = false;
 
 class ExploreScreen extends StatefulWidget {
   const ExploreScreen({super.key});
@@ -32,6 +39,11 @@ class ExploreScreen extends StatefulWidget {
 class _ExploreScreenState extends State<ExploreScreen> {
   static _ExploreCache? _memoryCache;
 
+  final ExploreFeedRepository _exploreFeedRepository = ExploreFeedRepository();
+  final ExploreLocationRepository _exploreLocationRepository =
+      ExploreLocationRepository();
+  final ExploreViewerContextRepository _viewerContextRepository =
+      ExploreViewerContextRepository();
   final SocialPostRepository _socialPostRepository = SocialPostRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
   final FollowRepository _followRepository = FollowRepository();
@@ -41,28 +53,43 @@ class _ExploreScreenState extends State<ExploreScreen> {
   final ScrollController _scrollController = ScrollController();
 
   Timer? _searchDebounce;
+  StreamSubscription<User?>? _authStateSubscription;
   bool _isLoadingSections = true;
+  bool _isLoadingMoreDiscoverPosts = false;
+  bool _isLoadingNearbyPosts = false;
+  bool _isLoadingMoreNearbyPosts = false;
   bool _isSearching = false;
   bool _isSearchBarVisible = true;
   String? _sectionsError;
+  String? _nearbyError;
   String? _searchError;
   String _searchQuery = '';
+  ExploreFeedKind _activeFeedKind = ExploreFeedKind.discover;
+  ExploreLocationAvailability _nearbyAvailability =
+      ExploreLocationAvailability.permissionNotRequested;
 
-  UserProfile? _viewerProfile;
-  List<SocialPostModel> _recentPostsCache = const <SocialPostModel>[];
-  List<SocialPostModel> _trendingPosts = const <SocialPostModel>[];
-  List<SocialPostModel> _prefetchedTrendingPosts = const <SocialPostModel>[];
-  List<SocialPostModel> _popularPosts = const <SocialPostModel>[];
-  List<SocialPostModel> _prefetchedPopularPosts = const <SocialPostModel>[];
+  ExploreFeedViewerContext _viewerContext = ExploreFeedViewerContext.empty;
+  List<SocialPostModel> _discoverPosts = const <SocialPostModel>[];
+  List<SocialPostModel> _nearbyPosts = const <SocialPostModel>[];
+  DocumentSnapshot<Map<String, dynamic>>? _discoverLastDocument;
+  Map<String, dynamic>? _nearbyCursor;
+  bool _hasMoreDiscoverPosts = true;
+  bool _hasMoreNearbyPosts = true;
+  double? _nearbyRadiusKm;
+  bool _nearbyUsedFallback = false;
+  String? _nearbyEmptyReason;
   List<ExploreHashtagSummary> _trendingHashtags =
       const <ExploreHashtagSummary>[];
   List<UserProfile> _profileResults = const <UserProfile>[];
   List<ExploreHashtagSummary> _hashtagSuggestions =
       const <ExploreHashtagSummary>[];
   List<SocialPostModel> _hashtagResults = const <SocialPostModel>[];
-  Set<String> _followingIds = <String>{};
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
+  double _discoverScrollOffset = 0;
+  double _nearbyScrollOffset = 0;
+  String _authGenerationUid = '';
+  int _nearbyRequestGeneration = 0;
 
   static const double _topBarTopResetOffset = 12;
   static const double _topBarHideThreshold = 32;
@@ -74,6 +101,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_logExploreAuthSnapshot());
+    _authGenerationUid = _currentUserId;
+    _authStateSubscription = _auth.authStateChanges().listen(
+      _handleAuthChanged,
+    );
     _scrollController.addListener(_handleScroll);
     _searchController.addListener(_handleSearchChanged);
     final cache = _memoryCache;
@@ -85,8 +117,24 @@ class _ExploreScreenState extends State<ExploreScreen> {
     }
   }
 
+  Future<void> _logExploreAuthSnapshot() async {
+    if (!kDebugMode) return;
+    final user = _auth.currentUser;
+    var tokenSuccess = false;
+    try {
+      final token = await user?.getIdToken(false);
+      tokenSuccess = token?.trim().isNotEmpty == true;
+    } catch (_) {
+      tokenSuccess = false;
+    }
+    debugPrint(
+      'Explore screen debug -> currentUserId=${user?.uid ?? ''}, tokenSuccess=$tokenSuccess',
+    );
+  }
+
   @override
   void dispose() {
+    _authStateSubscription?.cancel();
     _searchDebounce?.cancel();
     _scrollController.dispose();
     _searchController.removeListener(_handleSearchChanged);
@@ -95,38 +143,82 @@ class _ExploreScreenState extends State<ExploreScreen> {
     super.dispose();
   }
 
+  void _handleAuthChanged(User? user) {
+    final nextUid = user?.uid.trim() ?? '';
+    if (nextUid == _authGenerationUid) {
+      return;
+    }
+    _authGenerationUid = nextUid;
+    _nearbyRequestGeneration += 1;
+    if (!mounted) return;
+    setState(() {
+      _nearbyPosts = const <SocialPostModel>[];
+      _nearbyCursor = null;
+      _nearbyError = null;
+      _nearbyRadiusKm = null;
+      _nearbyUsedFallback = false;
+      _nearbyEmptyReason = null;
+      _hasMoreNearbyPosts = true;
+      _isLoadingNearbyPosts = false;
+      _isLoadingMoreNearbyPosts = false;
+    });
+    _saveCache();
+    debugPrint(
+      'Explore screen auth debug -> uidChanged nextUid=$nextUid requestGeneration=$_nearbyRequestGeneration',
+    );
+    if (_activeFeedKind == ExploreFeedKind.nearby && nextUid.isNotEmpty) {
+      unawaited(_loadNearbyPosts(forceRefresh: true, refreshLocation: true));
+    }
+  }
+
   void _applyCache(_ExploreCache cache) {
-    _viewerProfile = cache.viewerProfile;
-    _recentPostsCache = cache.recentPosts;
-    _trendingPosts = cache.trendingPosts;
-    _prefetchedTrendingPosts = cache.prefetchedTrendingPosts;
-    _popularPosts = cache.popularPosts;
-    _prefetchedPopularPosts = cache.prefetchedPopularPosts;
+    _viewerContext = cache.viewerContext;
+    _activeFeedKind = cache.activeFeedKind;
+    _discoverPosts = cache.discoverPosts;
+    _nearbyPosts = cache.nearbyPosts;
+    _discoverLastDocument = cache.lastDiscoverDocument;
+    _nearbyCursor = cache.nearbyCursor;
+    _hasMoreDiscoverPosts = cache.hasMoreDiscoverPosts;
+    _hasMoreNearbyPosts = cache.hasMoreNearbyPosts;
+    _nearbyRadiusKm = cache.nearbyRadiusKm;
+    _nearbyUsedFallback = cache.nearbyUsedFallback;
+    _nearbyAvailability = cache.nearbyAvailability;
+    _nearbyEmptyReason = cache.nearbyEmptyReason;
     _trendingHashtags = cache.trendingHashtags;
-    _followingIds = cache.followingIds;
+    _discoverScrollOffset = cache.discoverScrollOffset;
+    _nearbyScrollOffset = cache.nearbyScrollOffset;
     _sectionsError = null;
+    _nearbyError = null;
   }
 
   void _saveCache() {
     _memoryCache = _ExploreCache(
-      viewerProfile: _viewerProfile,
-      recentPosts: List<SocialPostModel>.from(_recentPostsCache),
-      trendingPosts: List<SocialPostModel>.from(_trendingPosts),
-      prefetchedTrendingPosts: List<SocialPostModel>.from(
-        _prefetchedTrendingPosts,
-      ),
-      popularPosts: List<SocialPostModel>.from(_popularPosts),
-      prefetchedPopularPosts: List<SocialPostModel>.from(
-        _prefetchedPopularPosts,
-      ),
+      viewerContext: _viewerContext,
+      activeFeedKind: _activeFeedKind,
+      discoverPosts: List<SocialPostModel>.from(_discoverPosts),
+      nearbyPosts: List<SocialPostModel>.from(_nearbyPosts),
+      lastDiscoverDocument: _discoverLastDocument,
+      nearbyCursor: _nearbyCursor == null
+          ? null
+          : Map<String, dynamic>.from(_nearbyCursor!),
+      hasMoreDiscoverPosts: _hasMoreDiscoverPosts,
+      hasMoreNearbyPosts: _hasMoreNearbyPosts,
+      nearbyRadiusKm: _nearbyRadiusKm,
+      nearbyUsedFallback: _nearbyUsedFallback,
+      nearbyAvailability: _nearbyAvailability,
+      nearbyEmptyReason: _nearbyEmptyReason,
       trendingHashtags: List<ExploreHashtagSummary>.from(_trendingHashtags),
-      followingIds: Set<String>.from(_followingIds),
+      discoverScrollOffset: _discoverScrollOffset,
+      nearbyScrollOffset: _nearbyScrollOffset,
     );
   }
 
   Future<void> _refreshExploreSections() async {
     _memoryCache = null;
     await _loadExploreSections(forceRefresh: true);
+    if (_activeFeedKind == ExploreFeedKind.nearby) {
+      await _loadNearbyPosts(forceRefresh: true, refreshLocation: true);
+    }
   }
 
   Future<void> _loadExploreSections({bool forceRefresh = false}) async {
@@ -149,155 +241,47 @@ class _ExploreScreenState extends State<ExploreScreen> {
     });
 
     try {
-      final currentUserId = _currentUserId;
-      final profileFuture = currentUserId.isEmpty
-          ? Future<UserProfile?>.value(null)
-          : _profileRepository.getCurrentUserProfile();
-      final followingFuture = currentUserId.isEmpty
-          ? Future<Set<String>>.value(<String>{})
-          : _followRepository.fetchFollowingIds(currentUserId);
-      final recentPostsFuture = _socialPostRepository.fetchRecentVisiblePosts(
-        limit: 40,
-      );
-      final popularPostsFuture = _socialPostRepository.fetchPopularPosts(
-        limit: 20,
-        allowLocalFallback: false,
-      );
+      final viewerContextFuture = _viewerContextRepository.load();
       final trendingHashtagsFuture = _socialPostRepository
           .fetchTrendingHashtags(limit: 10);
 
       final results = await Future.wait<dynamic>([
-        profileFuture,
-        followingFuture,
-        recentPostsFuture,
-        popularPostsFuture,
+        viewerContextFuture,
         trendingHashtagsFuture,
       ]);
 
-      final currentProfile = results[0] as UserProfile?;
-      final followingIds = results[1] as Set<String>;
-      final recentPosts = results[2] as List<SocialPostModel>;
-      var popularPosts = results[3] as List<SocialPostModel>;
-      final trendingHashtags = results[4] as List<ExploreHashtagSummary>;
-      final rankingContext = _ExploreRankingContext(
-        followingIds: followingIds,
-        userCity: currentProfile?.city ?? '',
-        userState: currentProfile?.state ?? '',
-      );
-      final rankedTrending = _rankPostsForExplore(
-        recentPosts,
-        rankingContext,
-        limit: 20,
-        debugLabel: 'trending',
+      final viewerContext = results[0] as ExploreFeedViewerContext;
+      final trendingHashtags = results[1] as List<ExploreHashtagSummary>;
+      final feedPage = await _exploreFeedRepository.fetchPage(
+        kind: ExploreFeedKind.discover,
+        viewerContext: viewerContext,
+        limit: 10,
       );
 
       if (!mounted) return;
       setState(() {
-        _viewerProfile = currentProfile;
-        _followingIds = followingIds;
-        _recentPostsCache = recentPosts;
-        _trendingPosts = rankedTrending.take(10).toList(growable: false);
-        _prefetchedTrendingPosts = rankedTrending
-            .skip(10)
-            .take(10)
-            .toList(growable: false);
-        _popularPosts = popularPosts.take(10).toList(growable: false);
-        _prefetchedPopularPosts = popularPosts
-            .skip(10)
-            .take(10)
-            .toList(growable: false);
+        _viewerContext = viewerContext;
+        _discoverPosts = feedPage.posts;
+        _discoverLastDocument = feedPage.lastDocument;
+        _hasMoreDiscoverPosts = feedPage.hasMore;
         _trendingHashtags = trendingHashtags;
       });
       _saveCache();
+
+      if (_activeFeedKind == ExploreFeedKind.nearby &&
+          _nearbyPosts.isEmpty &&
+          _nearbyError == null) {
+        unawaited(_loadNearbyPosts());
+      }
 
       if (_isSearchMode) {
         await _runSearch(_searchQuery);
       }
     } on FirebaseException catch (error) {
       if (!mounted) return;
-      if (error.code != 'failed-precondition') {
-        setState(() {
-          _sectionsError = error.message ?? error.toString();
-        });
-        return;
-      }
-
-      try {
-        final currentUserId = _currentUserId;
-        final profileFuture = currentUserId.isEmpty
-            ? Future<UserProfile?>.value(null)
-            : _profileRepository.getCurrentUserProfile();
-        final followingFuture = currentUserId.isEmpty
-            ? Future<Set<String>>.value(<String>{})
-            : _followRepository.fetchFollowingIds(currentUserId);
-        final recentPostsFuture = _socialPostRepository.fetchRecentVisiblePosts(
-          limit: 40,
-        );
-        final trendingHashtagsFuture = _socialPostRepository
-            .fetchTrendingHashtags(limit: 10);
-
-        final fallbackResults = await Future.wait<dynamic>([
-          profileFuture,
-          followingFuture,
-          recentPostsFuture,
-          trendingHashtagsFuture,
-        ]);
-
-        final currentProfile = fallbackResults[0] as UserProfile?;
-        final followingIds = fallbackResults[1] as Set<String>;
-        final recentPosts = fallbackResults[2] as List<SocialPostModel>;
-        final trendingHashtags =
-            fallbackResults[3] as List<ExploreHashtagSummary>;
-        final rankingContext = _ExploreRankingContext(
-          followingIds: followingIds,
-          userCity: currentProfile?.city ?? '',
-          userState: currentProfile?.state ?? '',
-        );
-        final rankedTrending = _rankPostsForExplore(
-          recentPosts,
-          rankingContext,
-          limit: 20,
-          debugLabel: 'trending-fallback',
-        );
-        final fallbackPopularPosts = _rankPostsForExplore(
-          recentPosts,
-          rankingContext,
-          limit: 20,
-          debugLabel: 'popular-fallback',
-        );
-
-        if (!mounted) return;
-        setState(() {
-          _viewerProfile = currentProfile;
-          _followingIds = followingIds;
-          _recentPostsCache = recentPosts;
-          _trendingPosts = rankedTrending.take(10).toList(growable: false);
-          _prefetchedTrendingPosts = rankedTrending
-              .skip(10)
-              .take(10)
-              .toList(growable: false);
-          _popularPosts = fallbackPopularPosts.take(10).toList(growable: false);
-          _prefetchedPopularPosts = fallbackPopularPosts
-              .skip(10)
-              .take(10)
-              .toList(growable: false);
-          _trendingHashtags = trendingHashtags;
-          _sectionsError = null;
-        });
-        _saveCache();
-
-        if (_isSearchMode) {
-          await _runSearch(_searchQuery);
-        }
-      } catch (fallbackError) {
-        if (!mounted) return;
-        setState(() {
-          _sectionsError = fallbackError.toString().replaceFirst(
-            'Exception: ',
-            '',
-          );
-        });
-      }
+      setState(() {
+        _sectionsError = error.message ?? error.toString();
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -310,132 +294,195 @@ class _ExploreScreenState extends State<ExploreScreen> {
     }
   }
 
-  List<SocialPostModel> _rankPostsForExplore(
-    List<SocialPostModel> posts,
-    _ExploreRankingContext context, {
-    int limit = 10,
-    String debugLabel = 'explore',
-  }) {
-    final candidatePool = posts.take(40).toList(growable: false);
-    final normalizedCity = context.userCity.trim().toLowerCase();
-    final normalizedState = context.userState.trim().toLowerCase();
-    final rankedEntries = <_RankedExplorePost>[];
-    final authorCounts = <String, int>{};
+  Future<void> _loadMoreDiscoverPosts() async {
+    if (_isLoadingMoreDiscoverPosts || !_hasMoreDiscoverPosts) return;
 
-    for (final post in candidatePool) {
-      final authorCity = post.authorCity.trim().toLowerCase();
-      final authorState = post.authorState.trim().toLowerCase();
-      final ageHours = _ageHoursFor(post.createdAtEpoch);
-      final baseScore =
-          (post.likeCount * 1.0) +
-          (post.commentCount * 2.0) +
-          post.recentEngagementScore;
-      final freshnessFactor = _freshnessFactorFor(post.createdAtEpoch);
-
-      var finalScore = baseScore * freshnessFactor;
-      var recencyBoost = 0.0;
-      var diversityPenaltyApplied = false;
-
-      if (context.followingIds.contains(post.authorId)) {
-        finalScore += 20;
-      }
-      if (normalizedCity.isNotEmpty && authorCity == normalizedCity) {
-        finalScore += 10;
-      } else if (normalizedState.isNotEmpty && authorState == normalizedState) {
-        finalScore += 5;
-      }
-      if (ageHours <= 2) {
-        recencyBoost += 5;
-      }
-      if (ageHours <= 1) {
-        recencyBoost += 3;
-      }
-      finalScore += recencyBoost;
-
-      final authorId = post.authorId;
-      final authorCount = authorCounts[authorId] ?? 0;
-      if (authorCount >= 2) {
-        finalScore *= 0.7;
-        diversityPenaltyApplied = true;
-      }
-      authorCounts[authorId] = authorCount + 1;
-
-      rankedEntries.add(
-        _RankedExplorePost(
-          post: post,
-          finalScore: finalScore,
-          baseScore: baseScore,
-          freshnessFactor: freshnessFactor,
-          recencyBoost: recencyBoost,
-          diversityPenaltyApplied: diversityPenaltyApplied,
-        ),
+    setState(() => _isLoadingMoreDiscoverPosts = true);
+    try {
+      final page = await _exploreFeedRepository.fetchPage(
+        kind: ExploreFeedKind.discover,
+        viewerContext: _viewerContext,
+        startAfter: _discoverLastDocument,
+        excludePostIds: _discoverPosts
+            .map((post) => post.id.trim())
+            .where((id) => id.isNotEmpty)
+            .toSet(),
+        limit: 10,
       );
-    }
-
-    rankedEntries.sort((a, b) {
-      final scoreCompare = b.finalScore.compareTo(a.finalScore);
-      if (scoreCompare != 0) return scoreCompare;
-
-      final createdCompare = b.post.createdAtEpoch.compareTo(
-        a.post.createdAtEpoch,
+      if (!mounted) return;
+      setState(() {
+        _discoverPosts = <SocialPostModel>[..._discoverPosts, ...page.posts];
+        _discoverLastDocument = page.lastDocument;
+        _hasMoreDiscoverPosts = page.hasMore && page.posts.isNotEmpty;
+      });
+      _saveCache();
+    } catch (_) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: 'We could not load more posts right now.',
+        tone: AppFeedbackTone.warning,
       );
-      if (createdCompare != 0) return createdCompare;
-
-      return a.post.id.compareTo(b.post.id);
-    });
-    final selected = rankedEntries.take(limit).toList(growable: false);
-
-    if (_debugExploreRanking) {
-      for (final entry in selected.take(5)) {
-        debugPrint(
-          '[ExploreRanking:$debugLabel] '
-          'post=${entry.post.id} '
-          'score=${entry.finalScore.toStringAsFixed(2)} '
-          'base=${entry.baseScore.toStringAsFixed(2)} '
-          'freshness=${entry.freshnessFactor.toStringAsFixed(1)} '
-          'recencyBoost=${entry.recencyBoost.toStringAsFixed(1)} '
-          'diversityPenalty=${entry.diversityPenaltyApplied} '
-          'likes=${entry.post.likeCount} '
-          'comments=${entry.post.commentCount} '
-          'recent=${entry.post.recentEngagementScore.toStringAsFixed(1)}',
-        );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingMoreDiscoverPosts = false);
       }
     }
-
-    return selected.map((entry) => entry.post).toList(growable: false);
   }
 
-  double _freshnessFactorFor(int createdAtEpoch) {
-    if (createdAtEpoch <= 0) return 0.2;
+  Future<void> _loadNearbyPosts({
+    bool forceRefresh = false,
+    bool requestPermission = false,
+    bool refreshLocation = false,
+  }) async {
+    if ((_isLoadingNearbyPosts || _isLoadingMoreNearbyPosts) && !forceRefresh) {
+      return;
+    }
 
-    final ageHours = _ageHoursFor(createdAtEpoch);
-
-    if (ageHours <= 6) return 1.0;
-    if (ageHours <= 24) return 0.8;
-    if (ageHours <= 72) return 0.6;
-    if (ageHours <= 168) return 0.4;
-    return 0.2;
-  }
-
-  double _ageHoursFor(int createdAtEpoch) {
-    if (createdAtEpoch <= 0) return 9999;
-    final age = DateTime.now().difference(
-      DateTime.fromMillisecondsSinceEpoch(createdAtEpoch),
-    );
-    return age.inMinutes / 60;
-  }
-
-  void _appendPrefetchedTrendingPosts() {
-    if (_prefetchedTrendingPosts.isEmpty) return;
-
+    final hasExistingPosts = _nearbyPosts.isNotEmpty && !forceRefresh;
     setState(() {
-      _trendingPosts = <SocialPostModel>[
-        ..._trendingPosts,
-        ..._prefetchedTrendingPosts,
-      ];
-      _prefetchedTrendingPosts = const <SocialPostModel>[];
+      if (forceRefresh || !hasExistingPosts) {
+        _isLoadingNearbyPosts = true;
+      } else {
+        _isLoadingMoreNearbyPosts = true;
+      }
+      _nearbyError = null;
+      if (forceRefresh) {
+        _nearbyCursor = null;
+        _hasMoreNearbyPosts = true;
+        _nearbyEmptyReason = null;
+        _nearbyRadiusKm = null;
+        _nearbyUsedFallback = false;
+      }
+    });
+
+    final requestGeneration = ++_nearbyRequestGeneration;
+    final requestUid = _authGenerationUid;
+    try {
+      final locationState = await _exploreLocationRepository.ensureLocation(
+        requestPermission: requestPermission,
+        refreshDeviceLocation: refreshLocation || forceRefresh,
+      );
+      final nextViewerContext = _viewerContext.copyWith(
+        locationSnapshot: locationState.snapshot,
+        city: locationState.snapshot.city.isNotEmpty
+            ? locationState.snapshot.city
+            : _viewerContext.city,
+        state: locationState.snapshot.state.isNotEmpty
+            ? locationState.snapshot.state
+            : _viewerContext.state,
+      );
+
+      if (!mounted ||
+          requestGeneration != _nearbyRequestGeneration ||
+          requestUid != _authGenerationUid) {
+        return;
+      }
+      setState(() {
+        _viewerContext = nextViewerContext;
+        _nearbyAvailability = locationState.availability;
+      });
+
+      final canLoadNearby =
+          locationState.availability == ExploreLocationAvailability.ready ||
+          nextViewerContext.normalizedCity.isNotEmpty ||
+          nextViewerContext.normalizedState.isNotEmpty;
+      if (!canLoadNearby) {
+        setState(() {
+          if (forceRefresh) {
+            _nearbyPosts = const <SocialPostModel>[];
+          }
+          _hasMoreNearbyPosts = false;
+        });
+        _saveCache();
+        return;
+      }
+
+      final page = await _exploreFeedRepository.fetchPage(
+        kind: ExploreFeedKind.nearby,
+        viewerContext: nextViewerContext,
+        cursor: forceRefresh ? null : _nearbyCursor,
+        excludePostIds: forceRefresh
+            ? const <String>{}
+            : _nearbyPosts
+                  .map((post) => post.id.trim())
+                  .where((id) => id.isNotEmpty)
+                  .toSet(),
+        limit: 10,
+      );
+
+      if (!mounted ||
+          requestGeneration != _nearbyRequestGeneration ||
+          requestUid != _authGenerationUid) {
+        return;
+      }
+      setState(() {
+        _nearbyPosts = forceRefresh
+            ? page.posts
+            : <SocialPostModel>[..._nearbyPosts, ...page.posts];
+        _nearbyCursor = page.nextCursor;
+        _hasMoreNearbyPosts = page.hasMore && page.nextCursor != null;
+        _nearbyRadiusKm = page.activeRadiusKm;
+        _nearbyUsedFallback = page.usedLocationFallback;
+        _nearbyEmptyReason = page.emptyStateReason;
+      });
+      _saveCache();
+    } on FirebaseFunctionsException catch (error) {
+      if (!mounted ||
+          requestGeneration != _nearbyRequestGeneration ||
+          requestUid != _authGenerationUid) {
+        return;
+      }
+      setState(() {
+        _nearbyError =
+            error.message ?? 'We could not load nearby posts right now.';
+      });
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Explore nearby parse debug -> error=$error');
+      }
+      if (!mounted ||
+          requestGeneration != _nearbyRequestGeneration ||
+          requestUid != _authGenerationUid) {
+        return;
+      }
+      setState(() {
+        _nearbyError = nearbyLoadErrorMessage(error);
+      });
+    } finally {
+      if (mounted &&
+          requestGeneration == _nearbyRequestGeneration &&
+          requestUid == _authGenerationUid) {
+        setState(() {
+          _isLoadingNearbyPosts = false;
+          _isLoadingMoreNearbyPosts = false;
+        });
+      }
+    }
+  }
+
+  void _handleFeedChanged(ExploreFeedKind kind) {
+    if (_activeFeedKind == kind) return;
+    setState(() {
+      _activeFeedKind = kind;
     });
     _saveCache();
+
+    if (kind == ExploreFeedKind.nearby &&
+        _nearbyPosts.isEmpty &&
+        !_isLoadingNearbyPosts) {
+      unawaited(_loadNearbyPosts());
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      final targetOffset = kind == ExploreFeedKind.discover
+          ? _discoverScrollOffset
+          : _nearbyScrollOffset;
+      _scrollController.jumpTo(
+        targetOffset.clamp(0, _scrollController.position.maxScrollExtent),
+      );
+    });
   }
 
   void _handleScroll() {
@@ -443,6 +490,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
     final position = _scrollController.position;
     final direction = position.userScrollDirection;
     final pixels = position.pixels;
+    if (_activeFeedKind == ExploreFeedKind.discover) {
+      _discoverScrollOffset = pixels;
+    } else {
+      _nearbyScrollOffset = pixels;
+    }
     final delta = pixels - _lastScrollOffset;
     _lastScrollOffset = pixels;
 
@@ -623,16 +675,24 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 post: post,
                 currentUserId: _currentUserId,
                 initiallyLiked: false,
-                initiallyFollowing: _followingIds.contains(post.authorId),
+                initiallyFollowing: _viewerContext.followingIds.contains(
+                  post.authorId,
+                ),
                 repository: _socialPostRepository,
                 followRepository: _followRepository,
                 onFollowChanged: (authorId, isFollowing) {
                   setState(() {
+                    final nextFollowingIds = Set<String>.from(
+                      _viewerContext.followingIds,
+                    );
                     if (isFollowing) {
-                      _followingIds.add(authorId);
+                      nextFollowingIds.add(authorId);
                     } else {
-                      _followingIds.remove(authorId);
+                      nextFollowingIds.remove(authorId);
                     }
+                    _viewerContext = _viewerContext.copyWith(
+                      followingIds: nextFollowingIds,
+                    );
                   });
                   _saveCache();
                 },
@@ -652,15 +712,19 @@ class _ExploreScreenState extends State<ExploreScreen> {
       final isFollowing = await _followRepository.toggleFollow(
         followerId: _currentUserId,
         followeeId: userId,
-        currentlyFollowing: _followingIds.contains(userId),
+        currentlyFollowing: _viewerContext.followingIds.contains(userId),
       );
       if (!mounted) return;
       setState(() {
+        final nextFollowingIds = Set<String>.from(_viewerContext.followingIds);
         if (isFollowing) {
-          _followingIds.add(userId);
+          nextFollowingIds.add(userId);
         } else {
-          _followingIds.remove(userId);
+          nextFollowingIds.remove(userId);
         }
+        _viewerContext = _viewerContext.copyWith(
+          followingIds: nextFollowingIds,
+        );
       });
       _saveCache();
       AppFeedback.show(
@@ -696,14 +760,22 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 onNotification: (notification) {
                   final metrics = notification.metrics;
                   if (_isSearchMode ||
-                      _prefetchedTrendingPosts.isEmpty ||
                       metrics.axis != Axis.vertical ||
                       metrics.maxScrollExtent <= 0) {
                     return false;
                   }
 
                   if (metrics.pixels >= metrics.maxScrollExtent - 320) {
-                    _appendPrefetchedTrendingPosts();
+                    if (_activeFeedKind == ExploreFeedKind.discover) {
+                      if (_hasMoreDiscoverPosts &&
+                          !_isLoadingMoreDiscoverPosts) {
+                        _loadMoreDiscoverPosts();
+                      }
+                    } else if (_hasMoreNearbyPosts &&
+                        !_isLoadingNearbyPosts &&
+                        !_isLoadingMoreNearbyPosts) {
+                      _loadNearbyPosts();
+                    }
                   }
                   return false;
                 },
@@ -811,9 +883,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
   }
 
   Widget _buildDiscoveryContent() {
-    final discoverPosts = _popularPosts.isNotEmpty
-        ? _popularPosts
-        : _trendingPosts;
+    final discoverPosts = _discoverPosts;
 
     if (_isLoadingSections) {
       return const _ExploreLoadingState();
@@ -829,29 +899,150 @@ class _ExploreScreenState extends State<ExploreScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_trendingHashtags.isNotEmpty) ...[
-          _FadeInSection(
-            child: _HashtagSection(
-              title: 'Trending tags',
-              hashtags: _trendingHashtags,
-              onTapHashtag: _applyHashtagSearch,
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
         _FadeInSection(
-          delay: const Duration(milliseconds: 40),
-          child: _DiscoverSection(
-            title: 'Discover',
-            posts: discoverPosts,
-            onOpenPost: _openPostDetail,
+          child: _ExploreFeedSwitcher(
+            activeKind: _activeFeedKind,
+            onChanged: _handleFeedChanged,
           ),
         ),
-        if (discoverPosts.isEmpty && _trendingHashtags.isEmpty)
-          const _ExploreEmptyState(
-            title: 'Nothing to explore yet',
-            message:
-                'Follow more pet parents and try again later. Trending posts and hashtags will show up here as Pettxo activity grows.',
+        const SizedBox(height: 16),
+        if (_activeFeedKind == ExploreFeedKind.discover) ...[
+          if (_trendingHashtags.isNotEmpty) ...[
+            _FadeInSection(
+              child: _HashtagSection(
+                title: 'Trending tags',
+                hashtags: _trendingHashtags,
+                onTapHashtag: _applyHashtagSearch,
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          _FadeInSection(
+            delay: const Duration(milliseconds: 40),
+            child: _DiscoverSection(
+              title: 'Discover',
+              posts: discoverPosts,
+              onOpenPost: _openPostDetail,
+            ),
+          ),
+          if (discoverPosts.isEmpty && _trendingHashtags.isEmpty)
+            const _ExploreEmptyState(
+              title: 'Nothing to explore yet',
+              message:
+                  'Follow more pet parents and try again later. Trending posts and hashtags will show up here as Pettxo activity grows.',
+            ),
+        ] else
+          _buildNearbyContent(),
+      ],
+    );
+  }
+
+  Widget _buildNearbyContent() {
+    if (_isLoadingNearbyPosts && _nearbyPosts.isEmpty) {
+      return const _ExploreLoadingState();
+    }
+
+    if (_nearbyError != null) {
+      return _ExploreErrorState(
+        message: _nearbyError!,
+        onRetry: () =>
+            _loadNearbyPosts(forceRefresh: true, refreshLocation: true),
+      );
+    }
+
+    if (_nearbyAvailability == ExploreLocationAvailability.serviceDisabled &&
+        _nearbyPosts.isEmpty) {
+      return _NearbyLocationStateCard(
+        title: 'Turn on location services',
+        message:
+            'Nearby uses your location to find posts close to you. Enable device location services to continue.',
+        actionLabel: 'Enable location services',
+        onAction: () async {
+          await _exploreLocationRepository.openLocationSettings();
+        },
+      );
+    }
+
+    if (_nearbyAvailability ==
+            ExploreLocationAvailability.permissionPermanentlyDenied &&
+        _nearbyPosts.isEmpty) {
+      return _NearbyLocationStateCard(
+        title: 'Location permission is off',
+        message:
+            'Nearby needs your location to rank posts by distance. Open app settings to allow location access.',
+        actionLabel: 'Open settings',
+        onAction: () async {
+          await _exploreLocationRepository.openAppSettings();
+        },
+      );
+    }
+
+    if ((_nearbyAvailability ==
+                ExploreLocationAvailability.permissionNotRequested ||
+            _nearbyAvailability ==
+                ExploreLocationAvailability.permissionDenied) &&
+        _nearbyPosts.isEmpty &&
+        _viewerContext.normalizedCity.isEmpty &&
+        _viewerContext.normalizedState.isEmpty) {
+      return _NearbyLocationStateCard(
+        title: 'Enable location for Nearby',
+        message:
+            'Nearby you uses your location to find posts around you. Discover continues working without location permission.',
+        actionLabel: 'Enable location',
+        onAction: () => _loadNearbyPosts(
+          forceRefresh: true,
+          requestPermission: true,
+          refreshLocation: true,
+        ),
+      );
+    }
+
+    if (_nearbyPosts.isEmpty) {
+      final radiusText = _nearbyRadiusKm == null
+          ? ''
+          : ' within ${_nearbyRadiusKm!.toStringAsFixed(0)} km';
+      return _ExploreEmptyState(
+        title: _nearbyUsedFallback
+            ? 'No posts in your area yet'
+            : 'No nearby posts yet',
+        message: _nearbyUsedFallback
+            ? 'Nearby is using your saved city/state right now, but we still could not find public posts near you.'
+            : _nearbyEmptyReason == 'missingLocation'
+            ? 'Enable location to see nearby posts.'
+            : 'There are no nearby posts$radiusText yet. Try again after more pet parents post nearby.',
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_nearbyUsedFallback || _nearbyRadiusKm != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              _nearbyUsedFallback
+                  ? 'Showing posts near your saved city/state.'
+                  : 'Showing posts within ${_nearbyRadiusKm!.toStringAsFixed(0)} km of you.',
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                height: 1.4,
+              ),
+            ),
+          ),
+        _FadeInSection(
+          child: _DiscoverSection(
+            title: 'Nearby you',
+            posts: _nearbyPosts,
+            onOpenPost: _openPostDetail,
+            showLocationLabel: true,
+          ),
+        ),
+        if (_isLoadingMoreNearbyPosts)
+          const Padding(
+            padding: EdgeInsets.only(top: 16),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2.4)),
           ),
       ],
     );
@@ -891,7 +1082,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
           const SizedBox(height: 12),
           ..._profileResults.map((profile) {
             final isCurrentUser = profile.uid == _currentUserId;
-            final isFollowing = _followingIds.contains(profile.uid);
+            final isFollowing = _viewerContext.followingIds.contains(
+              profile.uid,
+            );
             return Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: _ProfileResultCard(
@@ -944,60 +1137,44 @@ class _ExploreScreenState extends State<ExploreScreen> {
 }
 
 class _ExploreCache {
-  final UserProfile? viewerProfile;
-  final List<SocialPostModel> recentPosts;
-  final List<SocialPostModel> trendingPosts;
-  final List<SocialPostModel> prefetchedTrendingPosts;
-  final List<SocialPostModel> popularPosts;
-  final List<SocialPostModel> prefetchedPopularPosts;
+  final ExploreFeedViewerContext viewerContext;
+  final ExploreFeedKind activeFeedKind;
+  final List<SocialPostModel> discoverPosts;
+  final List<SocialPostModel> nearbyPosts;
+  final DocumentSnapshot<Map<String, dynamic>>? lastDiscoverDocument;
+  final Map<String, dynamic>? nearbyCursor;
+  final bool hasMoreDiscoverPosts;
+  final bool hasMoreNearbyPosts;
+  final double? nearbyRadiusKm;
+  final bool nearbyUsedFallback;
+  final ExploreLocationAvailability nearbyAvailability;
+  final String? nearbyEmptyReason;
   final List<ExploreHashtagSummary> trendingHashtags;
-  final Set<String> followingIds;
+  final double discoverScrollOffset;
+  final double nearbyScrollOffset;
 
   const _ExploreCache({
-    required this.viewerProfile,
-    required this.recentPosts,
-    required this.trendingPosts,
-    required this.prefetchedTrendingPosts,
-    required this.popularPosts,
-    required this.prefetchedPopularPosts,
+    required this.viewerContext,
+    required this.activeFeedKind,
+    required this.discoverPosts,
+    required this.nearbyPosts,
+    required this.lastDiscoverDocument,
+    required this.nearbyCursor,
+    required this.hasMoreDiscoverPosts,
+    required this.hasMoreNearbyPosts,
+    required this.nearbyRadiusKm,
+    required this.nearbyUsedFallback,
+    required this.nearbyAvailability,
+    required this.nearbyEmptyReason,
     required this.trendingHashtags,
-    required this.followingIds,
+    required this.discoverScrollOffset,
+    required this.nearbyScrollOffset,
   });
 
   bool get hasDiscoveryData =>
-      trendingPosts.isNotEmpty ||
-      popularPosts.isNotEmpty ||
+      discoverPosts.isNotEmpty ||
+      nearbyPosts.isNotEmpty ||
       trendingHashtags.isNotEmpty;
-}
-
-class _ExploreRankingContext {
-  final Set<String> followingIds;
-  final String userCity;
-  final String userState;
-
-  const _ExploreRankingContext({
-    required this.followingIds,
-    required this.userCity,
-    required this.userState,
-  });
-}
-
-class _RankedExplorePost {
-  final SocialPostModel post;
-  final double finalScore;
-  final double baseScore;
-  final double freshnessFactor;
-  final double recencyBoost;
-  final bool diversityPenaltyApplied;
-
-  const _RankedExplorePost({
-    required this.post,
-    required this.finalScore,
-    required this.baseScore,
-    required this.freshnessFactor,
-    required this.recencyBoost,
-    required this.diversityPenaltyApplied,
-  });
 }
 
 class _FadeInSection extends StatefulWidget {
@@ -1034,6 +1211,169 @@ class _FadeInSectionState extends State<_FadeInSection> {
         curve: Curves.easeOut,
         offset: _visible ? Offset.zero : const Offset(0, 0.03),
         child: widget.child,
+      ),
+    );
+  }
+}
+
+class _ExploreFeedSwitcher extends StatelessWidget {
+  final ExploreFeedKind activeKind;
+  final ValueChanged<ExploreFeedKind> onChanged;
+
+  const _ExploreFeedSwitcher({
+    required this.activeKind,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _ExploreFeedPill(
+              label: 'Discover',
+              selected: activeKind == ExploreFeedKind.discover,
+              onTap: () => onChanged(ExploreFeedKind.discover),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _ExploreFeedPill(
+              label: 'Nearby you',
+              selected: activeKind == ExploreFeedKind.nearby,
+              onTap: () => onChanged(ExploreFeedKind.nearby),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExploreFeedPill extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ExploreFeedPill({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          gradient: selected
+              ? const LinearGradient(
+                  colors: [Color(0xFFFF6B2C), Color(0xFFFF8B57)],
+                )
+              : null,
+          color: selected ? null : const Color(0xFFF7F3EF),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : AppColors.textDark,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NearbyLocationStateCard extends StatelessWidget {
+  final String title;
+  final String message;
+  final String actionLabel;
+  final Future<void> Function() onAction;
+
+  const _NearbyLocationStateCard({
+    required this.title,
+    required this.message,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.near_me_rounded, color: AppColors.primary, size: 28),
+          const SizedBox(height: 14),
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: () => unawaited(onAction()),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+              ),
+            ),
+            child: Text(actionLabel),
+          ),
+        ],
       ),
     );
   }
@@ -1267,54 +1607,76 @@ class _DiscoverSection extends StatelessWidget {
   final String title;
   final List<SocialPostModel> posts;
   final ValueChanged<SocialPostModel> onOpenPost;
+  final bool showLocationLabel;
 
   const _DiscoverSection({
     required this.title,
     required this.posts,
     required this.onOpenPost,
+    this.showLocationLabel = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textDark,
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.3,
-          ),
-        ),
-        const SizedBox(height: 14),
-        if (posts.isEmpty)
-          const _InlineEmptyState(message: 'No posts available right now.')
-        else
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              mainAxisExtent: 292,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const crossAxisCount = 2;
+        const crossAxisSpacing = 12.0;
+        const mainAxisSpacing = 12.0;
+        final availableWidth = constraints.maxWidth;
+        final cardWidth =
+            (availableWidth - crossAxisSpacing * (crossAxisCount - 1)) /
+            crossAxisCount;
+        final compactCard = cardWidth < 170;
+        final imageHeight = showLocationLabel
+            ? (compactCard ? 176.0 : 188.0)
+            : (compactCard ? 168.0 : 180.0);
+        final cardHeight = showLocationLabel
+            ? (compactCard ? 324.0 : 332.0)
+            : (compactCard ? 300.0 : 312.0);
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3,
+              ),
             ),
-            itemCount: posts.length,
-            itemBuilder: (context, index) {
-              final post = posts[index];
-              return _CompactPostCard(
-                post: post,
-                onTap: () => onOpenPost(post),
-                expandToAvailableWidth: true,
-                showUsername: false,
-                showShareStat: false,
-                imageHeightOverride: 196,
-              );
-            },
-          ),
-      ],
+            const SizedBox(height: 14),
+            if (posts.isEmpty)
+              const _InlineEmptyState(message: 'No posts available right now.')
+            else
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  mainAxisSpacing: mainAxisSpacing,
+                  crossAxisSpacing: crossAxisSpacing,
+                  mainAxisExtent: cardHeight,
+                ),
+                itemCount: posts.length,
+                itemBuilder: (context, index) {
+                  final post = posts[index];
+                  return _CompactPostCard(
+                    post: post,
+                    onTap: () => onOpenPost(post),
+                    expandToAvailableWidth: true,
+                    showUsername: false,
+                    showShareStat: false,
+                    showLocationLabel: showLocationLabel,
+                    imageHeightOverride: imageHeight,
+                  );
+                },
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1523,6 +1885,7 @@ class _CompactPostCard extends StatelessWidget {
   final bool expandToAvailableWidth;
   final bool showUsername;
   final bool showShareStat;
+  final bool showLocationLabel;
   final double? imageHeightOverride;
 
   const _CompactPostCard({
@@ -1531,6 +1894,7 @@ class _CompactPostCard extends StatelessWidget {
     this.expandToAvailableWidth = false,
     this.showUsername = true,
     this.showShareStat = true,
+    this.showLocationLabel = false,
     this.imageHeightOverride,
   });
 
@@ -1624,6 +1988,30 @@ class _CompactPostCard extends StatelessWidget {
                                   color: AppColors.textGrey,
                                   fontSize: compact ? 12 : 13,
                                   fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                            if (showLocationLabel &&
+                                post.locationLabel.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF4EC),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  post.locationLabel,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: AppColors.primary,
+                                    fontSize: compact ? 11.5 : 12.5,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
                               ),
                             ],
