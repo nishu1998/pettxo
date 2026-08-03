@@ -71,10 +71,12 @@ service firebase.storage {
 
     match /socialPosts/{userId}/{postId}/{folder}/{fileName} {
       allow read: if signedIn();
-      allow write: if isOwner(userId) &&
+      allow create, update: if isOwner(userId) &&
         folder in ['images', 'thumbs'] &&
         isSupportedImage() &&
         isMaxFiveMb();
+      allow delete: if isOwner(userId) &&
+        folder in ['images', 'thumbs'];
     }
 
     match /providerVerification/{userId}/identity/{fileName} {

@@ -101,6 +101,8 @@ class PostPublishCoordinator {
 
   PostPublishState get state => stateListenable.value;
 
+  PostPublishDraft? peekRecoverableDraft() => state.recoverableDraft;
+
   bool get isPublishing => state.isActive;
 
   PostPublishDraft? takeRecoverableDraft() {
@@ -108,6 +110,11 @@ class PostPublishCoordinator {
     if (draft == null) return null;
     stateListenable.value = state.copyWith(recoverableDraft: null);
     return draft;
+  }
+
+  void clearRecoverableDraft() {
+    if (state.recoverableDraft == null) return;
+    stateListenable.value = state.copyWith(recoverableDraft: null);
   }
 
   bool startPublish({

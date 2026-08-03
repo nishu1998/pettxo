@@ -106,6 +106,26 @@ class SocialPostRepository {
   final NotificationRepository _notificationRepository;
   final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
+  static const Set<String> _backendOwnedCreateFields = <String>{
+    'discoverScore',
+    'discoverRankVersion',
+    'discoverScoreUpdatedAt',
+    'discoverEligible',
+    'nearbyEligible',
+    'feedGeohash3',
+    'feedGeohash4',
+    'feedGeohash5',
+    'feedCityKey',
+    'feedStateKey',
+    'feedLocationVersion',
+    'feedLocationUpdatedAt',
+    'feedLatitudeBucket',
+    'feedLongitudeBucket',
+    'isAdminPost',
+    'adminPriorityBoost',
+    'recentEngagementScore',
+  };
+
   CollectionReference<Map<String, dynamic>> get _postsCollection =>
       _firestore.collection('socialPosts');
   CollectionReference<Map<String, dynamic>> get _hashtagsCollection =>
@@ -371,39 +391,18 @@ class SocialPostRepository {
       onProgress: onProgress,
     );
 
-    final payload = <String, dynamic>{
-      'id': postRef.id,
-      'authorId': authorId,
-      'authorType': 'user',
-      'authorDisplayName': profile.name,
-      'authorUsername': profile.displayUsername,
-      'authorPhotoUrl': profile.profileImageUrl,
-      'authorCategoryLabel': _buildCategoryLabel(profile),
-      'authorCity': profile.city,
-      'authorState': profile.state,
-      'isAdminPost': false,
-      'adminPriorityBoost': 0,
-      'recentEngagementScore': 0,
-      'imageUrls': uploads.fullSizeUrls,
-      'thumbnailUrls': uploads.thumbnailUrls,
-      'imageAspectRatio': aspectRatio.value,
-      'caption': caption.trim(),
-      'hashtags': hashtags,
-      'likeCount': 0,
-      'commentCount': 0,
-      'shareCount': 0,
-      'saveCount': 0,
-      'reportCount': 0,
-      'visibilityStatus': 'visible',
-      'moderationStatus': 'approved',
-      'moderationReason': '',
-      'moderatedBy': '',
-      'moderatedAt': null,
-      'lastReportedAt': null,
-      'createdAtEpoch': DateTime.now().millisecondsSinceEpoch,
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
+    final payload = buildCreatePostPayload(
+      postId: postRef.id,
+      authorId: authorId,
+      profile: profile,
+      imageUrls: uploads.fullSizeUrls,
+      thumbnailUrls: uploads.thumbnailUrls,
+      aspectRatio: aspectRatio,
+      caption: caption,
+      hashtags: hashtags,
+      createdAtEpoch: DateTime.now().millisecondsSinceEpoch,
+    );
+    _debugLogCreatePayload(payload);
 
     try {
       onProgress?.call(
@@ -415,6 +414,7 @@ class SocialPostRepository {
       );
       await postRef.set(payload);
     } on FirebaseException catch (error) {
+      await _cleanupUploadedImages(uploads);
       throw Exception(_mapCreatePostError(error));
     }
 
@@ -940,7 +940,7 @@ class SocialPostRepository {
     });
   }
 
-  String _buildCategoryLabel(UserProfile profile) {
+  static String _buildCategoryLabel(UserProfile profile) {
     if (profile.role == 'serviceProvider') {
       return 'Provider';
     }
@@ -1012,6 +1012,45 @@ class SocialPostRepository {
     return RegExp(r'^[a-z0-9_]+$').hasMatch(tag);
   }
 
+  @visibleForTesting
+  static Map<String, dynamic> buildCreatePostPayload({
+    required String postId,
+    required String authorId,
+    required UserProfile profile,
+    required List<String> imageUrls,
+    required List<String> thumbnailUrls,
+    required SocialPostAspectRatio aspectRatio,
+    required String caption,
+    required List<String> hashtags,
+    required int createdAtEpoch,
+  }) {
+    return <String, dynamic>{
+      'id': postId,
+      'authorId': authorId,
+      'authorType': 'user',
+      'authorDisplayName': profile.name,
+      'authorUsername': profile.displayUsername,
+      'authorPhotoUrl': profile.profileImageUrl,
+      'authorCategoryLabel': _buildCategoryLabel(profile),
+      'authorCity': profile.city,
+      'authorState': profile.state,
+      'imageUrls': imageUrls,
+      'thumbnailUrls': thumbnailUrls,
+      'imageAspectRatio': aspectRatio.value,
+      'caption': caption.trim(),
+      'hashtags': hashtags,
+      'likeCount': 0,
+      'commentCount': 0,
+      'shareCount': 0,
+      'reportCount': 0,
+      'visibilityStatus': 'visible',
+      'moderationStatus': 'approved',
+      'createdAtEpoch': createdAtEpoch,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+  }
+
   Future<_SocialUploadResult> _uploadImages({
     required String authorId,
     required String postId,
@@ -1021,6 +1060,8 @@ class SocialPostRepository {
   }) async {
     final fullSizeUrls = <String>[];
     final thumbnailUrls = <String>[];
+    final fullSizeRefs = <Reference>[];
+    final thumbnailRefs = <Reference>[];
     final totalUploads = images.length * 2;
     var completedUploads = 0;
 
@@ -1054,6 +1095,7 @@ class SocialPostRepository {
           processed.feedBytes,
           SettableMetadata(contentType: 'image/jpeg'),
         );
+        fullSizeRefs.add(imageRef);
         completedUploads += 1;
         onProgress?.call(
           SocialPostUploadProgress(
@@ -1066,6 +1108,7 @@ class SocialPostRepository {
           processed.thumbnailBytes,
           SettableMetadata(contentType: 'image/jpeg'),
         );
+        thumbnailRefs.add(thumbRef);
         completedUploads += 1;
         onProgress?.call(
           SocialPostUploadProgress(
@@ -1085,6 +1128,36 @@ class SocialPostRepository {
     return _SocialUploadResult(
       fullSizeUrls: fullSizeUrls,
       thumbnailUrls: thumbnailUrls,
+      fullSizeRefs: fullSizeRefs,
+      thumbnailRefs: thumbnailRefs,
+    );
+  }
+
+  Future<void> _cleanupUploadedImages(_SocialUploadResult uploads) async {
+    final refs = <Reference>[...uploads.fullSizeRefs, ...uploads.thumbnailRefs];
+    for (final ref in refs) {
+      try {
+        await ref.delete();
+      } on FirebaseException catch (error) {
+        debugPrint(
+          'SocialPostRepository cleanup debug -> failed deleting ${ref.fullPath}: ${error.code}',
+        );
+      } catch (error) {
+        debugPrint(
+          'SocialPostRepository cleanup debug -> failed deleting ${ref.fullPath}: $error',
+        );
+      }
+    }
+  }
+
+  void _debugLogCreatePayload(Map<String, dynamic> payload) {
+    if (!kDebugMode) return;
+    final keys = payload.keys.toList(growable: false)..sort();
+    final backendFieldsPresent = keys
+        .where(_backendOwnedCreateFields.contains)
+        .toList(growable: false);
+    debugPrint(
+      'SocialPostRepository create debug -> fields=$keys, backendOwnedFieldsPresent=$backendFieldsPresent',
     );
   }
 
@@ -1269,9 +1342,13 @@ class _ProcessedImageBytes {
 class _SocialUploadResult {
   final List<String> fullSizeUrls;
   final List<String> thumbnailUrls;
+  final List<Reference> fullSizeRefs;
+  final List<Reference> thumbnailRefs;
 
   const _SocialUploadResult({
     required this.fullSizeUrls,
     required this.thumbnailUrls,
+    required this.fullSizeRefs,
+    required this.thumbnailRefs,
   });
 }

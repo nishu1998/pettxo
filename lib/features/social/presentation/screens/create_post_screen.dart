@@ -41,13 +41,14 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   SocialPostAspectRatio _aspectRatio = SocialPostAspectRatio.square;
   bool _isPublishing = false;
   int _previewIndex = 0;
+  bool _restoredRecoverableDraft = false;
 
   @override
   void initState() {
     super.initState();
-    _restoreRecoverableDraft();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _restoreRecoverableDraft();
       if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(
         context,
       )) {
@@ -64,7 +65,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   }
 
   void _restoreRecoverableDraft() {
-    final draft = _publishCoordinator.takeRecoverableDraft();
+    if (_restoredRecoverableDraft) return;
+    _restoredRecoverableDraft = true;
+    final draft = _publishCoordinator.peekRecoverableDraft();
     if (draft == null) return;
 
     _captionController.text = draft.caption;
@@ -75,6 +78,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       ..clear()
       ..addAll(draft.hashtags);
     _aspectRatio = draft.aspectRatio;
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _publishCoordinator.clearRecoverableDraft();
+    });
   }
 
   Future<void> _pickImages() async {
