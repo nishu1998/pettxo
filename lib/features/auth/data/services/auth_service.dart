@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../../../core/services/firebase_app_scope.dart';
 import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/services/push_notification_service.dart';
 import 'pending_email_change_service.dart';
@@ -75,9 +76,8 @@ class AuthService {
     Future<Map<String, dynamic>> Function(String normalizedEmail)?
     passwordResetApprovalRequester,
     Future<void> Function(String normalizedEmail)? passwordResetEmailSender,
-  }) : _auth = auth ?? FirebaseAuth.instance,
-       _functions =
-           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1'),
+  }) : _auth = auth ?? FirebaseAppScope.auth(),
+       _functions = functions ?? FirebaseAppScope.functions(),
        _pendingEmailChangeService =
            pendingEmailChangeService ?? const PendingEmailChangeService(),
        _passwordResetApprovalRequester = passwordResetApprovalRequester,
@@ -91,6 +91,11 @@ class AuthService {
       final credential = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
+      );
+      await _logAuthenticatedUserState(
+        context: 'signUp',
+        user: credential.user,
+        forceRefreshToken: false,
       );
       await credential.user?.sendEmailVerification();
       await syncTrustedAuthIdentity();
@@ -112,6 +117,11 @@ class AuthService {
       final credential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
+      );
+      await _logAuthenticatedUserState(
+        context: 'login',
+        user: credential.user,
+        forceRefreshToken: false,
       );
       await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('login');
@@ -332,6 +342,11 @@ class AuthService {
         smsCode: smsCode,
       );
       final result = await _auth.signInWithCredential(credential);
+      await _logAuthenticatedUserState(
+        context: 'phone-otp-login',
+        user: result.user,
+        forceRefreshToken: true,
+      );
       await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('phone-otp-login');
       return result;
@@ -354,6 +369,11 @@ class AuthService {
     try {
       _debugLog('signInWithCredential:start provider=phone');
       final result = await _auth.signInWithCredential(credential);
+      await _logAuthenticatedUserState(
+        context: 'phone-auto-login',
+        user: result.user,
+        forceRefreshToken: true,
+      );
       await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('phone-auto-login');
       return result;
@@ -693,8 +713,16 @@ class AuthService {
   Future<void> syncTrustedAuthIdentity() async {
     if (_auth.currentUser == null) return;
     try {
+      FirebaseAppScope.debugLogPair(
+        context: 'syncTrustedAuthIdentity',
+        auth: _auth,
+        functions: _functions,
+      );
       final callable = _functions.httpsCallable('syncAuthIdentity');
       await callable.call<Map<String, dynamic>>();
+      _debugLog(
+        'syncTrustedAuthIdentity:success uid=${_auth.currentUser?.uid ?? ''}',
+      );
     } catch (error, stackTrace) {
       _logUnexpectedError('syncTrustedAuthIdentity:failed', error, stackTrace);
       rethrow;
@@ -741,6 +769,29 @@ class AuthService {
   User? get currentUser => _auth.currentUser;
 
   Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  Future<void> _logAuthenticatedUserState({
+    required String context,
+    required User? user,
+    required bool forceRefreshToken,
+  }) async {
+    if (!kDebugMode) return;
+    final uid = user?.uid.trim() ?? '';
+    final providerIds = (user?.providerData ?? const <UserInfo>[])
+        .map((provider) => provider.providerId.trim())
+        .where((providerId) => providerId.isNotEmpty)
+        .toList(growable: false);
+    var tokenSuccess = false;
+    try {
+      final token = await user?.getIdToken(forceRefreshToken);
+      tokenSuccess = token?.trim().isNotEmpty == true;
+    } catch (_) {
+      tokenSuccess = false;
+    }
+    _debugLog(
+      'Auth login debug -> context=$context uid=$uid tokenSuccess=$tokenSuccess providers=${providerIds.join(',')}',
+    );
+  }
 
   User _requireCurrentUser() {
     final currentUser = _auth.currentUser;

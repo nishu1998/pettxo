@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/foundation.dart';
 
 import 'core/services/analytics_service.dart';
 import 'core/services/app_loader.dart';
+import 'core/services/firebase_app_scope.dart';
 import 'core/services/network_status_service.dart';
 import 'core/services/policy_link_service.dart';
 import 'core/services/push_notification_service.dart';
@@ -50,7 +52,13 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  final app = await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  _debugStartupLog(
+    'App startup debug -> firebase initialized projectId=${app.options.projectId}, currentUserId=${FirebaseAuth.instance.currentUser?.uid ?? ''}',
+  );
+  FirebaseAppScope.debugLogPair(context: 'main.startup');
   FirebaseMessaging.onBackgroundMessage(
     pettxoFirebaseMessagingBackgroundHandler,
   );
