@@ -80,6 +80,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
   String? _canonicalActionType;
   String? _openingCanonicalBookingId;
   final Map<String, String> _bookingDiagnosticsSignatures = {};
+  bool _isHandlingBackNavigation = false;
 
   @override
   void initState() {
@@ -97,6 +98,22 @@ class _BookingsScreenState extends State<BookingsScreen> {
     _openingCanonicalBookingId = null;
     _timer.cancel();
     super.dispose();
+  }
+
+  Future<void> _handleBackNavigation() async {
+    if (!mounted || _isHandlingBackNavigation) return;
+    _isHandlingBackNavigation = true;
+    try {
+      final navigator = Navigator.of(context);
+      final isRootRoute = ModalRoute.of(context)?.isFirst ?? false;
+      if (!isRootRoute && navigator.canPop()) {
+        navigator.pop();
+        return;
+      }
+      await navigator.pushReplacementNamed('/home');
+    } finally {
+      _isHandlingBackNavigation = false;
+    }
   }
 
   BookingTab get _activeTab =>
@@ -739,111 +756,120 @@ class _BookingsScreenState extends State<BookingsScreen> {
     final currentUserId =
         widget.currentUserIdOverride ?? FirebaseAuth.instance.currentUser?.uid;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFFBF6EF),
-      extendBody: true,
-      body: Stack(
-        children: [
-          ListView(
-            padding: EdgeInsets.fromLTRB(
-              18,
-              topContentPadding,
-              18,
-              bottomContentPadding,
-            ),
-            children: [
-              _ContextToggle(
-                contextMode: _context,
-                onChanged: (contextMode) {
-                  setState(() => _context = contextMode);
-                },
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !mounted) return;
+        _handleBackNavigation();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFFBF6EF),
+        extendBody: true,
+        body: Stack(
+          children: [
+            ListView(
+              padding: EdgeInsets.fromLTRB(
+                18,
+                topContentPadding,
+                18,
+                bottomContentPadding,
               ),
-              const SizedBox(height: 8),
-              if (currentUserId == null)
-                GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onHorizontalDragEnd: (details) {
-                    final velocity = details.primaryVelocity ?? 0;
-                    if (velocity.abs() < 180) return;
-                    _handleTabSwipe(velocity < 0);
+              children: [
+                _ContextToggle(
+                  contextMode: _context,
+                  onChanged: (contextMode) {
+                    setState(() => _context = contextMode);
                   },
-                  child: _BookingSectionShell(
-                    subtabBar: _SubtabBar(
-                      contextMode: _context,
-                      activeTab: _activeTab,
-                      requestCount: 0,
-                      onChanged: _handleTabChanged,
-                    ),
-                    child: const _EmptyState(
-                      icon: Icons.lock_outline_rounded,
-                      title: 'Sign in to view bookings',
-                      subtitle:
-                          'Your requested and received bookings will appear here after sign in.',
-                    ),
-                  ),
-                )
-              else
-                _buildCanonicalRuntimeBody(currentUserId),
-            ],
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            child: GlassSurface(
-              padding: EdgeInsets.fromLTRB(18, topInset + 10, 18, 12),
-              borderRadius: BorderRadius.zero,
-              backgroundColor: Colors.white.withValues(alpha: 0.72),
-              blurSigma: 22,
-              border: Border(
-                bottom: BorderSide(color: Colors.white.withValues(alpha: 0.58)),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.05),
-                  blurRadius: 20,
-                  offset: const Offset(0, 10),
                 ),
+                const SizedBox(height: 8),
+                if (currentUserId == null)
+                  GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragEnd: (details) {
+                      final velocity = details.primaryVelocity ?? 0;
+                      if (velocity.abs() < 180) return;
+                      _handleTabSwipe(velocity < 0);
+                    },
+                    child: _BookingSectionShell(
+                      subtabBar: _SubtabBar(
+                        contextMode: _context,
+                        activeTab: _activeTab,
+                        requestCount: 0,
+                        onChanged: _handleTabChanged,
+                      ),
+                      child: const _EmptyState(
+                        icon: Icons.lock_outline_rounded,
+                        title: 'Sign in to view bookings',
+                        subtitle:
+                            'Your requested and received bookings will appear here after sign in.',
+                      ),
+                    ),
+                  )
+                else
+                  _buildCanonicalRuntimeBody(currentUserId),
               ],
-              child: Row(
-                children: [
-                  Container(
-                    width: 46,
-                    height: 46,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.84),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.7),
-                      ),
-                    ),
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(
-                        Icons.arrow_back_rounded,
-                        color: AppColors.textDark,
-                      ),
-                    ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: GlassSurface(
+                padding: EdgeInsets.fromLTRB(18, topInset + 10, 18, 12),
+                borderRadius: BorderRadius.zero,
+                backgroundColor: Colors.white.withValues(alpha: 0.72),
+                blurSigma: 22,
+                border: Border(
+                  bottom: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.58),
                   ),
-                  const SizedBox(width: 16),
-                  const Expanded(
-                    child: Text(
-                      'Bookings',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
-                      ),
-                    ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.05),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
                   ),
                 ],
+                child: Row(
+                  children: [
+                    Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.84),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.7),
+                        ),
+                      ),
+                      child: IconButton(
+                        onPressed: _handleBackNavigation,
+                        icon: const Icon(
+                          Icons.arrow_back_rounded,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    const Expanded(
+                      child: Text(
+                        'Bookings',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const SocialBottomNav(
-        activeTab: SocialAppTab.profile,
+          ],
+        ),
+        bottomNavigationBar: const SocialBottomNav(
+          activeTab: SocialAppTab.profile,
+        ),
       ),
     );
   }

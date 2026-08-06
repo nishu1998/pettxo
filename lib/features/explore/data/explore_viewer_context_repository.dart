@@ -39,12 +39,7 @@ class ExploreViewerContextRepository {
     final results = await Future.wait<dynamic>([
       _profileRepository.getCurrentUserProfile(),
       _followRepository.fetchFollowingIds(currentUserId),
-      _loadRelationIds(
-        collection: 'userBlocks',
-        ownerField: 'ownerUserId',
-        targetField: 'blockedUserId',
-        ownerUserId: currentUserId,
-      ),
+      _loadBlockedUserIds(),
       _loadRelationIds(
         collection: 'userMutes',
         ownerField: 'ownerUserId',
@@ -98,5 +93,12 @@ class ExploreViewerContextRepository {
         'We could not verify your blocked or muted accounts right now. Please try again.',
       );
     }
+  }
+
+  Future<Set<String>> _loadBlockedUserIds() async {
+    // User-to-user blocking is not currently a Pettxo product feature.
+    // Keep the viewer-context shape intact so block-based filtering can be
+    // enabled here later without changing the Discover/Near You consumers.
+    return const <String>{};
   }
 }

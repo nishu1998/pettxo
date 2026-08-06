@@ -72,6 +72,10 @@ void main() {
       );
 
       expect(payload.containsKey('discoverScore'), isFalse);
+      expect(payload.containsKey('homeScore'), isFalse);
+      expect(payload.containsKey('homeRankVersion'), isFalse);
+      expect(payload.containsKey('homeScoreUpdatedAt'), isFalse);
+      expect(payload.containsKey('homeEligible'), isFalse);
       expect(payload.containsKey('discoverRankVersion'), isFalse);
       expect(payload.containsKey('discoverScoreUpdatedAt'), isFalse);
       expect(payload.containsKey('discoverEligible'), isFalse);

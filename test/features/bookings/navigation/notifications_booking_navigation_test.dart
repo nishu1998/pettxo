@@ -47,4 +47,31 @@ void main() {
     expect(request.bookingId, isEmpty);
     expect(request.fallbackContextMode, BookingContextMode.receiving);
   });
+
+  test('in-app visibility includes explicit in-app channel', () {
+    expect(
+      NotificationsScreen.isVisibleInAppNotification({
+        'channels': ['push', 'in_app'],
+      }),
+      isTrue,
+    );
+  });
+
+  test('in-app visibility hides push-only notifications', () {
+    expect(
+      NotificationsScreen.isVisibleInAppNotification({
+        'channels': ['push'],
+      }),
+      isFalse,
+    );
+  });
+
+  test('in-app visibility keeps legacy notifications visible', () {
+    expect(
+      NotificationsScreen.isVisibleInAppNotification({
+        'type': 'payment_required',
+      }),
+      isTrue,
+    );
+  });
 }

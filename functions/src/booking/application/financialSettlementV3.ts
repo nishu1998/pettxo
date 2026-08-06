@@ -8,6 +8,7 @@ import {
   type CanonicalBookingDocumentV3,
 } from "../schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "../schema/timestampNormalization";
+import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 
 export const CANONICAL_DISPUTE_RESOLUTIONS_COLLECTION =
   "bookingDisputeResolutions";
@@ -376,28 +377,27 @@ function writeNotification(
     bookingId: string;
     actorId: string;
     now: Date;
+    channels?: ReadonlyArray<string>;
   },
 ): void {
   transaction.set(
     firestore.collection("notifications").doc(params.idempotencyKey),
-    {
-      userId: params.userId,
-      category: "booking",
-      type: params.type,
-      title: params.title,
-      body: params.body,
-      read: false,
-      isRead: false,
-      actorId: params.actorId,
-      bookingId: params.bookingId,
-      serviceId: "",
-      data: {
-        bookingId: params.bookingId,
+    buildStoredBookingNotificationDocument({
+      notification: {
+        recipientUserId: params.userId,
+        type: params.type,
+        title: params.title,
+        body: params.body,
+        channels: params.channels ?? ["in_app", "push"],
+        data: {
+          bookingId: params.bookingId,
+        },
       },
+      actorId: params.actorId,
       createdAt: Timestamp.fromDate(params.now),
       updatedAt: Timestamp.fromDate(params.now),
       source: "canonical_v3_financials",
-    },
+    }),
     {merge: true},
   );
 }

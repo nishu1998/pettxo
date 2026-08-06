@@ -241,6 +241,163 @@
       "fields": [
         { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
         { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "homeEligible", "order": "ASCENDING" },
+        { "fieldPath": "homeScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "discoverEligible", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "discoverEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedCityKey", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "discoverEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedStateKey", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "nearbyEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedGeohash5", "order": "ASCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "nearbyEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedGeohash5", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "nearbyEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedGeohash4", "order": "ASCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "nearbyEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedGeohash4", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "nearbyEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedGeohash3", "order": "ASCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "nearbyEligible", "order": "ASCENDING" },
+        { "fieldPath": "feedGeohash3", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "feedCityKey", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "feedStateKey", "order": "ASCENDING" },
+        { "fieldPath": "discoverScore", "order": "DESCENDING" },
+        { "fieldPath": "createdAtEpoch", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "discoverEligible", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "socialPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "visibilityStatus", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },

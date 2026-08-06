@@ -899,28 +899,27 @@ class _ExploreScreenState extends State<ExploreScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _FadeInSection(
-          child: _ExploreFeedSwitcher(
-            activeKind: _activeFeedKind,
-            onChanged: _handleFeedChanged,
-          ),
-        ),
-        const SizedBox(height: 16),
         if (_activeFeedKind == ExploreFeedKind.discover) ...[
           if (_trendingHashtags.isNotEmpty) ...[
             _FadeInSection(
               child: _HashtagSection(
-                title: 'Trending tags',
+                title: 'Trending Hashtags',
                 hashtags: _trendingHashtags,
                 onTapHashtag: _applyHashtagSearch,
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 18),
           ],
+          _FadeInSection(
+            child: _ExploreFeedSwitcher(
+              activeKind: _activeFeedKind,
+              onChanged: _handleFeedChanged,
+            ),
+          ),
           _FadeInSection(
             delay: const Duration(milliseconds: 40),
             child: _DiscoverSection(
-              title: 'Discover',
+              title: null,
               posts: discoverPosts,
               onOpenPost: _openPostDetail,
             ),
@@ -931,8 +930,15 @@ class _ExploreScreenState extends State<ExploreScreen> {
               message:
                   'Follow more pet parents and try again later. Trending posts and hashtags will show up here as Pettxo activity grows.',
             ),
-        ] else
+        ] else ...[
+          _FadeInSection(
+            child: _ExploreFeedSwitcher(
+              activeKind: _activeFeedKind,
+              onChanged: _handleFeedChanged,
+            ),
+          ),
           _buildNearbyContent(),
+        ],
       ],
     );
   }
@@ -1604,7 +1610,7 @@ class _HashtagPill extends StatelessWidget {
 }
 
 class _DiscoverSection extends StatelessWidget {
-  final String title;
+  final String? title;
   final List<SocialPostModel> posts;
   final ValueChanged<SocialPostModel> onOpenPost;
   final bool showLocationLabel;
@@ -1638,16 +1644,18 @@ class _DiscoverSection extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: const TextStyle(
-                color: AppColors.textDark,
-                fontSize: 22,
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.3,
+            if (title != null) ...[
+              Text(
+                title!,
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.3,
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
+              const SizedBox(height: 14),
+            ],
             if (posts.isEmpty)
               const _InlineEmptyState(message: 'No posts available right now.')
             else

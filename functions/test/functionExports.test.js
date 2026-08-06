@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 
 const expectedExportNames = [
   "applyUserRestriction",
+  "backfillSocialPostFeedMetadata",
+  "backfillSocialPostHomeMetadata",
   "cancelConfirmedBookingByCustomerV3",
   "cancelConfirmedBookingByProviderV3",
   "changeUsername",
@@ -31,6 +33,7 @@ const expectedExportNames = [
   "getCanonicalDisputeAdminDetailV3",
   "getCanonicalDisputeV3",
   "getCanonicalFinancialSummaryV3",
+  "getNearbySocialPosts",
   "getCanonicalRefundAdminDetailV3",
   "getCanonicalProviderPayoutAdminDetailV3",
   "getProviderPayoutV3",
@@ -56,6 +59,7 @@ const expectedExportNames = [
   "removeUserRestriction",
   "requestAccountDeletion",
   "requestPasswordReset",
+  "refreshSocialPostDiscoverScores",
   "razorpayWebhook",
   "restoreAccount",
   "resolveBookingDisputeV3",
@@ -70,6 +74,7 @@ const expectedExportNames = [
   "syncAuthIdentity",
   "syncNotificationToken",
   "syncProfileFollowCounts",
+  "syncSocialPostFeedMetadata",
   "syncProviderServicesOnVerificationUpdate",
   "syncServiceSlots",
   "retryProviderPayoutV3",

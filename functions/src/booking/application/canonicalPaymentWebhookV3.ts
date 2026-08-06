@@ -5,6 +5,7 @@ import {
   buildPaymentRefundRequiredNotification,
   type BookingNotificationPlan,
 } from "./bookingNotificationsV3";
+import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 import {BOOKING_CANCELLATION_COLLECTION} from "./cancellationOrchestrationV3";
 import {
   canonicalPaymentOrderMappingRef,
@@ -108,22 +109,13 @@ async function persistNotifications(params: {
     const notificationRef = params.firestore
       .collection("notifications")
       .doc(notification.idempotencyKey);
-    batch.set(notificationRef, {
-      userId: notification.recipientUserId,
-      category: "booking",
-      type: notification.type,
-      title: notification.title,
-      body: notification.body,
-      read: false,
-      isRead: false,
+    batch.set(notificationRef, buildStoredBookingNotificationDocument({
+      notification,
       actorId: params.actorId,
-      bookingId: notification.data.bookingId ?? "",
-      serviceId: notification.data.serviceId ?? "",
-      data: notification.data,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       source: "canonical_v3",
-    }, {merge: true});
+    }), {merge: true});
   }
   await batch.commit();
 }

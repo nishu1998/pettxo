@@ -4,6 +4,7 @@ import {HttpsError} from "firebase-functions/https";
 import type {CanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 import {buildBookingEventPlan} from "./bookingEventsWriter";
 import type {BookingNotificationPlan} from "./bookingNotificationsV3";
+import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 import {
   buildBookingFinalizedNotifications,
   buildBookingPayoutReadyNotifications,
@@ -211,22 +212,13 @@ function persistNotificationsInTransaction(params: {
     const notificationRef = params.firestore
       .collection("notifications")
       .doc(notification.idempotencyKey);
-    params.transaction.set(notificationRef, {
-      userId: notification.recipientUserId,
-      category: "booking",
-      type: notification.type,
-      title: notification.title,
-      body: notification.body,
-      read: false,
-      isRead: false,
+    params.transaction.set(notificationRef, buildStoredBookingNotificationDocument({
+      notification,
       actorId: params.actorId,
-      bookingId: notification.data.bookingId ?? "",
-      serviceId: notification.data.serviceId ?? "",
-      data: notification.data,
       createdAt: Timestamp.fromDate(params.createdAt),
       updatedAt: Timestamp.fromDate(params.createdAt),
       source: "canonical_v3",
-    }, {merge: true});
+    }), {merge: true});
   }
 }
 

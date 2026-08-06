@@ -7,6 +7,7 @@ const {
   buildRankingInputs,
   calculateDistanceKm,
   computeDiscoverScoreBreakdown,
+  computeHomeScoreBreakdown,
   computeNearbyScoreBreakdown,
   formatNearbyDistanceLabel,
   metadataMatchesCurrent,
@@ -14,6 +15,7 @@ const {
   runNearbyFeedQuery,
   runRefreshSocialPostDiscoverScores,
   runSocialPostFeedMetadataBackfill,
+  runSocialPostHomeMetadataBackfill,
 } = require("../lib/social/socialFeedFunctions.js");
 
 class FakeDocSnapshot {
@@ -275,6 +277,9 @@ function buildPost(overrides = {}) {
     moderationStatus: "approved",
     createdAtEpoch: now.getTime(),
     createdAt: Timestamp.fromDate(now),
+    homeScore: 0,
+    homeRankVersion: 0,
+    homeEligible: false,
     discoverScore: 0,
     discoverRankVersion: 0,
     discoverEligible: false,
@@ -341,6 +346,53 @@ test("comments and shares carry higher weight than likes for the same count", ()
   assert.ok(shares.discoverScore > comments.discoverScore);
 });
 
+test("home scoring applies freshness, admin boost, and report penalties", () => {
+  const nowMs = new Date("2026-07-31T12:00:00.000Z").getTime();
+  const freshPopular = computeHomeScoreBreakdown(
+    buildPost({
+      likeCount: 8,
+      commentCount: 3,
+      shareCount: 2,
+      recentEngagementScore: 4,
+      adminPriorityBoost: 8,
+    }),
+    nowMs,
+  );
+  const olderReported = computeHomeScoreBreakdown(
+    buildPost({
+      likeCount: 8,
+      commentCount: 3,
+      shareCount: 2,
+      recentEngagementScore: 4,
+      createdAtEpoch: nowMs - (72 * 60 * 60 * 1000),
+      createdAt: Timestamp.fromMillis(nowMs - (72 * 60 * 60 * 1000)),
+      reportCount: 4,
+    }),
+    nowMs,
+  );
+
+  assert.equal(freshPopular.homeEligible, true);
+  assert.ok(freshPopular.homeScore > olderReported.homeScore);
+  assert.ok(freshPopular.adminBoost > 0);
+  assert.ok(olderReported.reportPenalty > 0);
+});
+
+test("home scoring excludes non-visible or unapproved posts", () => {
+  const hidden = computeHomeScoreBreakdown(
+    buildPost({visibilityStatus: "hidden"}),
+    new Date("2026-07-31T12:00:00.000Z").getTime(),
+  );
+  const pending = computeHomeScoreBreakdown(
+    buildPost({moderationStatus: "pending"}),
+    new Date("2026-07-31T12:00:00.000Z").getTime(),
+  );
+
+  assert.equal(hidden.homeEligible, false);
+  assert.equal(hidden.homeScore, 0);
+  assert.equal(pending.homeEligible, false);
+  assert.equal(pending.homeScore, 0);
+});
+
 test("privacy-safe feed metadata keeps precise location private and only returns public geohash metadata", () => {
   const metadata = buildFeedMetadata(buildPost(), Date.now(), {
     authorLocation: {
@@ -374,6 +426,14 @@ test("ranking input guard ignores metadata-only changes and metadata match preve
   assert.equal(metadataMatchesCurrent(after, buildFeedMetadata(after, nowMs)), true);
 });
 
+test("feed metadata includes backend-owned home ranking fields", () => {
+  const metadata = buildFeedMetadata(buildPost({likeCount: 5}), Date.now());
+
+  assert.equal(typeof metadata.homeScore, "number");
+  assert.equal(metadata.homeEligible, true);
+  assert.equal(metadata.homeRankVersion > 0, true);
+});
+
 test("scheduled refresh updates scores after the post crosses an age bucket", async () => {
   const start = new Date("2026-07-31T12:00:00.000Z");
   const createdAt = new Date(start.getTime() - (5 * 60 * 60 * 1000));
@@ -401,6 +461,49 @@ test("scheduled refresh updates scores after the post crosses an age bucket", as
   assert.equal(summary.updated, 1);
   assert.ok(after.discoverScore > 0);
   assert.notEqual(after.discoverScore, beforeScore);
+  assert.ok(after.homeScore > 0);
+});
+
+test("home metadata backfill updates stale home ranking fields only", async () => {
+  const firestore = new FakeFirestore({
+    "socialPosts/postA": buildPost({
+      id: "postA",
+      likeCount: 10,
+      homeScore: 0,
+      homeRankVersion: 0,
+      homeEligible: false,
+    }),
+    "socialPosts/postB": buildPost({
+      id: "postB",
+      moderationStatus: "pending",
+      homeScore: 0,
+      homeRankVersion: 0,
+      homeEligible: false,
+    }),
+  });
+
+  const dryRun = await runSocialPostHomeMetadataBackfill({
+    firestore,
+    dryRun: true,
+    limit: 10,
+  });
+  assert.equal(dryRun.scanned, 2);
+  assert.equal(dryRun.updated, 2);
+
+  const summary = await runSocialPostHomeMetadataBackfill({
+    firestore,
+    dryRun: false,
+    limit: 10,
+  });
+  const updatedA = firestore.store.get("socialPosts/postA");
+  const updatedB = firestore.store.get("socialPosts/postB");
+
+  assert.equal(summary.updated, 2);
+  assert.ok(updatedA.homeScore > 0);
+  assert.equal(updatedA.homeEligible, true);
+  assert.equal(updatedA.homeRankVersion > 0, true);
+  assert.equal(updatedB.homeEligible, false);
+  assert.equal(updatedB.homeRankVersion > 0, true);
 });
 
 test("distance calculation and formatting support metre and kilometre labels", () => {

@@ -417,6 +417,8 @@ class ProfileRepository {
           role: normalizedRole,
           profileImageUrl: profileImageUrl?.trim(),
           displayName: name.trim(),
+          city: (normalizedLocationPayload['city'] as String? ?? '').trim(),
+          state: (normalizedLocationPayload['state'] as String? ?? '').trim(),
         );
       } on FirebaseException catch (error, stackTrace) {
         if (error.code != 'permission-denied') {
@@ -433,6 +435,8 @@ class ProfileRepository {
   Future<void> _syncCurrentUserRoleAcrossPosts({
     required String role,
     required String displayName,
+    required String city,
+    required String state,
     String? profileImageUrl,
   }) async {
     final roleLabel = profileTypeFromStoredValue(role).label;
@@ -455,6 +459,8 @@ class ProfileRepository {
         final update = <String, dynamic>{
           'authorCategoryLabel': roleLabel,
           'authorDisplayName': displayName,
+          'authorCity': city,
+          'authorState': state,
           'updatedAt': FieldValue.serverTimestamp(),
         };
         if (trimmedPhotoUrl.isNotEmpty) {

@@ -1,4 +1,9 @@
-export type BookingNotificationChannel = "push" | "in_app";
+import {
+  normalizeNotificationChannels,
+  type NotificationChannel,
+} from "../../notifications/notificationChannels";
+
+export type BookingNotificationChannel = NotificationChannel;
 
 export type BookingNotificationType =
   | "queued_request_created"
@@ -51,7 +56,7 @@ function buildPlan(
       params.idempotencyKey ?? `${params.type}:${params.bookingId}:${params.recipientUserId}`,
     recipientUserId: params.recipientUserId,
     type: params.type,
-    channels: params.channels,
+    channels: normalizeNotificationChannels(params.channels),
     title: params.title,
     body: params.body,
     data: {

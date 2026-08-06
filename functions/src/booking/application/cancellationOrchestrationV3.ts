@@ -6,6 +6,7 @@ import type {CanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 import type {CanonicalPaymentAttemptDocumentV3} from "../schema/paymentAttemptDocumentV3";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import type {BookingNotificationPlan} from "./bookingNotificationsV3";
+import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
@@ -1392,22 +1393,13 @@ export function writeConfirmedBookingCancellationTransactionV3(params: {
   for (const notification of params.result.notifications) {
     params.transaction.set(
       params.firestore.collection("notifications").doc(notification.idempotencyKey),
-      {
-        userId: notification.recipientUserId,
-        category: "booking",
-        type: notification.type,
-        title: notification.title,
-        body: notification.body,
-        read: false,
-        isRead: false,
+      buildStoredBookingNotificationDocument({
+        notification,
         actorId: params.result.cancellationRecord.actorId,
-        bookingId: notification.data.bookingId ?? "",
-        serviceId: notification.data.serviceId ?? "",
-        data: notification.data,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
         source: "canonical_v3",
-      },
+      }),
       {merge: true},
     );
   }

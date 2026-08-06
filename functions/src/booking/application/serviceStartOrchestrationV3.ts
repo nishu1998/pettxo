@@ -11,6 +11,7 @@ import {
   buildServiceStartedNotification,
   type BookingNotificationPlan,
 } from "./bookingNotificationsV3";
+import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 
 export const BOOKING_SERVICE_STARTS_COLLECTION = "bookingServiceStarts";
 export const BOOKING_NO_SHOWS_COLLECTION = "bookingNoShows";
@@ -885,22 +886,19 @@ export async function verifyBookingStartOtpV3(params: {
         },
         {merge: false},
       );
-      transaction.set(notificationRef, {
-        userId: notification.recipientUserId,
-        category: "booking",
-        type: notification.type,
-        title: notification.title,
-        body: notification.body,
-        read: false,
-        isRead: false,
+      transaction.set(notificationRef, buildStoredBookingNotificationDocument({
+        notification: {
+          ...notification,
+          data: {
+            ...notification.data,
+            serviceId: notification.data.serviceId ?? booking.serviceId,
+          },
+        },
         actorId: params.providerId,
-        bookingId: notification.data.bookingId ?? "",
-        serviceId: booking.serviceId,
-        data: notification.data,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
         source: "canonical_v3",
-      }, {merge: true});
+      }), {merge: true});
       checkpoint = "OTP_VERIFY_TRANSACTION_COMMITTED";
       console.info("OTP_VERIFY_TRANSACTION_COMMITTED", {
         bookingId: params.bookingId,
@@ -1086,22 +1084,19 @@ export async function finalizeCanonicalNoShowV3(params: {
       const ref = notification.recipientUserId === booking.parentId
         ? notificationRefs.parent
         : notificationRefs.provider;
-      transaction.set(ref, {
-        userId: notification.recipientUserId,
-        category: "booking",
-        type: notification.type,
-        title: notification.title,
-        body: notification.body,
-        read: false,
-        isRead: false,
+      transaction.set(ref, buildStoredBookingNotificationDocument({
+        notification: {
+          ...notification,
+          data: {
+            ...notification.data,
+            serviceId: notification.data.serviceId ?? booking.serviceId,
+          },
+        },
         actorId: "system",
-        bookingId: notification.data.bookingId ?? "",
-        serviceId: booking.serviceId,
-        data: notification.data,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
         source: "canonical_v3",
-      }, {merge: true});
+      }), {merge: true});
     }
     transaction.set(bookingFinancialRef, {
       bookingId: params.bookingId,

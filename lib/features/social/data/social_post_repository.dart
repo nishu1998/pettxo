@@ -107,6 +107,10 @@ class SocialPostRepository {
   final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
   static const Set<String> _backendOwnedCreateFields = <String>{
+    'homeScore',
+    'homeRankVersion',
+    'homeScoreUpdatedAt',
+    'homeEligible',
     'discoverScore',
     'discoverRankVersion',
     'discoverScoreUpdatedAt',

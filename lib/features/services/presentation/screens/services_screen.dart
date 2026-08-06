@@ -731,6 +731,23 @@ class _ServicesScreenState extends State<ServicesScreen> {
               left: 0,
               right: 0,
               top: 0,
+              child: IgnorePointer(
+                ignoring: true,
+                child: GlassSurface(
+                  padding: EdgeInsets.only(top: topInset),
+                  borderRadius: BorderRadius.zero,
+                  backgroundColor: AppColors.background.withValues(alpha: 0.72),
+                  blurSigma: 24,
+                  border: Border.all(color: Colors.transparent, width: 0),
+                  boxShadow: const [],
+                  child: const SizedBox(height: 4),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
               child: AnimatedSlide(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOutCubic,

@@ -15,6 +15,7 @@ export * from "./services/serviceFunctions";
 export * from "./moderation/moderationFunctions";
 export {
   backfillSocialPostFeedMetadata,
+  backfillSocialPostHomeMetadata,
   getNearbySocialPosts,
   refreshSocialPostDiscoverScores,
   syncSocialPostFeedMetadata,

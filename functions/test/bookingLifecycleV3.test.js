@@ -423,7 +423,7 @@ test("createBookingRequestV3 creates canonical SLOT request inside working hours
   assert.equal(result.booking.financials, null);
   assert.equal(result.booking.participants.parent.phoneNumber, undefined);
   assert.equal(result.notifications[0].type, "provider_action_required");
-  assert.deepEqual(result.notifications[0].channels, ["push", "in_app"]);
+  assert.deepEqual(result.notifications[0].channels, ["in_app", "push"]);
   assert.equal(result.notifications[0].recipientUserId, "provider-1");
   assert.equal(result.notifications[0].data.bookingId, "booking-1");
   assert.match(result.notifications[0].body, /Dog Walking/i);
@@ -577,7 +577,7 @@ test("queued requests can be activated once and only once", () => {
   assert.equal(created.ok, true);
   assert.equal(created.booking.state, "REQUESTED");
   assert.equal(created.notifications[0].type, "provider_action_required");
-  assert.deepEqual(created.notifications[0].channels, ["push", "in_app"]);
+  assert.deepEqual(created.notifications[0].channels, ["in_app", "push"]);
 
   const activated = activateQueuedBookingRequestV3({
     booking: created.booking,
@@ -974,4 +974,37 @@ test("payment-ready notifications include canonical payment identifiers for navi
   assert.equal(plan.data.recipientRole, "customer");
   assert.equal(plan.data.paymentAttemptId, "attempt-123");
   assert.equal(plan.data.bookingFlowVersion, "3.2");
+});
+
+test("notification channels normalize deterministically across booking flows", () => {
+  const queued = notifications.buildQueuedRequestCreatedNotification({
+    bookingId: "booking-1",
+    providerId: "provider-1",
+    bookingType: "SLOT",
+    state: "PENDING_PROVIDER",
+  });
+  const paymentRequired = notifications.buildPaymentRequiredNotification({
+    bookingId: "booking-1",
+    parentId: "parent-1",
+    bookingType: "SLOT",
+    state: "ACCEPTED_AWAITING_PAYMENT",
+  });
+  const [paymentConfirmed] = notifications.buildBookingConfirmedNotification({
+    bookingId: "booking-1",
+    parentId: "parent-1",
+    providerId: "provider-1",
+    bookingType: "SLOT",
+    state: "CONFIRMED",
+  });
+  const [inAppOnly] = notifications.buildPaymentCapturedProcessingNotification({
+    bookingId: "booking-1",
+    parentId: "parent-1",
+    bookingType: "SLOT",
+    state: "CAPTURE_REPORTED",
+  });
+
+  assert.deepEqual(queued.channels, ["in_app"]);
+  assert.deepEqual(paymentRequired.channels, ["in_app", "push"]);
+  assert.deepEqual(paymentConfirmed.channels, ["in_app", "push"]);
+  assert.deepEqual(inAppOnly.channels, ["in_app"]);
 });

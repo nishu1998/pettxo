@@ -221,6 +221,10 @@ class FakeFirestore {
 
 function persistNotifications(firestore, notifications, actorId) {
   for (const notification of notifications) {
+    const channels = Array.isArray(notification.channels) ?
+      ["in_app", "push", "whatsapp"].filter((channel) =>
+        notification.channels.includes(channel)) :
+      [];
     firestore._set(`notifications/${notification.idempotencyKey}`, {
       userId: notification.recipientUserId,
       category: "booking",
@@ -233,6 +237,8 @@ function persistNotifications(firestore, notifications, actorId) {
       bookingId: notification.data.bookingId ?? "",
       serviceId: notification.data.serviceId ?? "",
       data: notification.data,
+      channels,
+      visibleInApp: channels.includes("in_app"),
       source: "canonical_v3",
     }, {merge: true});
   }

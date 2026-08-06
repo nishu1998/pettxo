@@ -8,6 +8,7 @@ import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../bookings/domain/models/booking_flow_models.dart';
 import '../../../bookings/presentation/navigation/booking_navigation_resolver.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
+import '../../domain/notification_visibility.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../profile/presentation/widgets/profile_content_sections.dart';
 
@@ -31,6 +32,11 @@ class NotificationsScreen extends StatelessWidget {
           ? BookingContextMode.delivering
           : BookingContextMode.receiving,
     );
+  }
+
+  @visibleForTesting
+  static bool isVisibleInAppNotification(Map<String, dynamic> data) {
+    return NotificationVisibility.isVisibleInApp(data);
   }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _notificationsFor(String uid) {
@@ -98,7 +104,9 @@ class NotificationsScreen extends StatelessWidget {
                 stream: _notificationsFor(user.uid),
                 builder: (context, snapshot) {
                   final docs = _sortNotificationsByLatestFirst(
-                    snapshot.data?.docs ?? const [],
+                    (snapshot.data?.docs ?? const [])
+                        .where((doc) => isVisibleInAppNotification(doc.data()))
+                        .toList(growable: false),
                   );
                   final unreadCount = docs
                       .where((doc) => _isUnreadNotification(doc.data()))

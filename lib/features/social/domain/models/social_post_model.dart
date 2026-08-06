@@ -26,6 +26,10 @@ class SocialPostModel {
   final bool isAdminPost;
   final int adminPriorityBoost;
   final double recentEngagementScore;
+  final bool homeEligible;
+  final double homeScore;
+  final int homeRankVersion;
+  final Timestamp? homeScoreUpdatedAt;
   final List<String> imageUrls;
   final List<String> thumbnailUrls;
   final SocialPostAspectRatio imageAspectRatio;
@@ -68,6 +72,10 @@ class SocialPostModel {
     required this.isAdminPost,
     required this.adminPriorityBoost,
     required this.recentEngagementScore,
+    required this.homeEligible,
+    required this.homeScore,
+    required this.homeRankVersion,
+    required this.homeScoreUpdatedAt,
     required this.imageUrls,
     required this.thumbnailUrls,
     required this.imageAspectRatio,
@@ -107,6 +115,9 @@ class SocialPostModel {
     final lastReportedAt = parseFirebaseTimestamp(data['lastReportedAt']);
     final createdAt = parseFirebaseTimestamp(data['createdAt']);
     final updatedAt = parseFirebaseTimestamp(data['updatedAt']);
+    final homeScoreUpdatedAt = parseFirebaseTimestamp(
+      data['homeScoreUpdatedAt'],
+    );
     final createdAtEpoch =
         parseFirebaseEpochMilliseconds(data['createdAtEpoch']) ??
         createdAt?.millisecondsSinceEpoch ??
@@ -137,6 +148,10 @@ class SocialPostModel {
       adminPriorityBoost: (data['adminPriorityBoost'] as num?)?.toInt() ?? 0,
       recentEngagementScore:
           (data['recentEngagementScore'] as num?)?.toDouble() ?? 0,
+      homeEligible: data['homeEligible'] == true,
+      homeScore: (data['homeScore'] as num?)?.toDouble() ?? 0,
+      homeRankVersion: (data['homeRankVersion'] as num?)?.toInt() ?? 0,
+      homeScoreUpdatedAt: homeScoreUpdatedAt,
       imageUrls: _readStringList(data['imageUrls']),
       thumbnailUrls: _readStringList(data['thumbnailUrls']),
       imageAspectRatio: socialPostAspectRatioFromValue(
@@ -187,6 +202,10 @@ class SocialPostModel {
       'isAdminPost': isAdminPost,
       'adminPriorityBoost': adminPriorityBoost,
       'recentEngagementScore': recentEngagementScore,
+      'homeEligible': homeEligible,
+      'homeScore': homeScore,
+      'homeRankVersion': homeRankVersion,
+      'homeScoreUpdatedAt': homeScoreUpdatedAt,
       'imageUrls': imageUrls,
       'thumbnailUrls': thumbnailUrls,
       'imageAspectRatio': imageAspectRatio.value,
@@ -231,6 +250,10 @@ class SocialPostModel {
     bool? isAdminPost,
     int? adminPriorityBoost,
     double? recentEngagementScore,
+    bool? homeEligible,
+    double? homeScore,
+    int? homeRankVersion,
+    Timestamp? homeScoreUpdatedAt,
     List<String>? imageUrls,
     List<String>? thumbnailUrls,
     SocialPostAspectRatio? imageAspectRatio,
@@ -275,6 +298,10 @@ class SocialPostModel {
       adminPriorityBoost: adminPriorityBoost ?? this.adminPriorityBoost,
       recentEngagementScore:
           recentEngagementScore ?? this.recentEngagementScore,
+      homeEligible: homeEligible ?? this.homeEligible,
+      homeScore: homeScore ?? this.homeScore,
+      homeRankVersion: homeRankVersion ?? this.homeRankVersion,
+      homeScoreUpdatedAt: homeScoreUpdatedAt ?? this.homeScoreUpdatedAt,
       imageUrls: imageUrls ?? this.imageUrls,
       thumbnailUrls: thumbnailUrls ?? this.thumbnailUrls,
       imageAspectRatio: imageAspectRatio ?? this.imageAspectRatio,

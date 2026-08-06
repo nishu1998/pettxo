@@ -12,16 +12,19 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../../core/services/network_status_service.dart';
+import '../../data/home_feed_repository.dart';
+import '../../domain/home_feed_refresh_policy.dart';
+import '../../domain/home_feed_session.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/presentation/screens/offer_wall_screen.dart';
 import '../../../offers/presentation/widgets/offer_popup_dialog.dart';
+import '../../../notifications/domain/notification_visibility.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/services/post_publish_coordinator.dart';
 import '../../../social/data/social_post_repository.dart';
-import '../../../social/domain/social_feed_ranker.dart';
 import '../../../social/domain/models/social_post_model.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 import '../../../social/presentation/widgets/suggested_users_section.dart';
@@ -35,6 +38,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final OfferService _offerService = OfferService();
+  final HomeFeedRepository _homeFeedRepository = HomeFeedRepository();
+  final HomeFeedSession _homeFeedSession = HomeFeedSession();
   final SocialPostRepository _socialPostRepository = SocialPostRepository();
   final FollowRepository _followRepository = FollowRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
@@ -51,19 +56,20 @@ class _HomeScreenState extends State<HomeScreen> {
   DocumentSnapshot<Map<String, dynamic>>? _lastPostDocument;
   final List<SocialPostModel> _posts = <SocialPostModel>[];
   List<UserProfile> _suggestedUsers = const <UserProfile>[];
-  List<RankedPost> _rankedPosts = const <RankedPost>[];
+  List<HomeFeedEntry> _feedEntries = const <HomeFeedEntry>[];
   final Set<String> _likedPostIds = <String>{};
+  HomeFeedViewerContext _viewerContext = HomeFeedViewerContext.empty;
   String? _userCity;
   String? _userState;
   final Set<String> _followingIds = <String>{};
   final Set<String> _shownSuggestionIds = <String>{};
-  final Set<String> _userInterestTags = <String>{};
   int _suggestionFollowRefreshCounter = 0;
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
   late final VoidCallback _networkStatusListener;
   late final VoidCallback _postPublishListener;
   int _lastHandledPublishEventId = 0;
+  final HomeFeedRequestTracker _feedRequestTracker = HomeFeedRequestTracker();
 
   static const double _topBarTopResetOffset = 12;
   static const double _topBarHideThreshold = 32;
@@ -100,7 +106,6 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showEligibleOffers();
     });
-    _primeRankingContext();
     _loadInitialPosts();
   }
 
@@ -167,27 +172,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _primeRankingContext() async {
+  Future<HomeFeedViewerContext> _loadViewerContextForFeed() async {
     try {
-      final currentUserId = _auth.currentUser?.uid ?? '';
-      final results = await Future.wait<dynamic>([
-        _profileRepository.getCurrentUserProfile(),
-        _followRepository.fetchFollowingIds(currentUserId),
-      ]);
-      final profile = results[0] as UserProfile;
-      final followingIds = results[1] as Set<String>;
-      if (!mounted) return;
-      setState(() {
-        _userCity = profile.city;
-        _userState = profile.state;
-        _followingIds
-          ..clear()
-          ..addAll(followingIds);
-        _rankedPosts = _buildRankedPosts(_posts);
-      });
-      await _loadSuggestedUsers();
+      return await _homeFeedRepository.loadViewerContext();
     } catch (_) {
-      // Safe fallback: ranking works without profile context.
+      // Safe fallback: home feed still works without personalization context.
+      return _viewerContext;
     }
   }
 
@@ -233,46 +223,106 @@ class _HomeScreenState extends State<HomeScreen> {
     _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
     _shownSuggestionIds.clear();
     _suggestionFollowRefreshCounter = 0;
-    await _primeRankingContext();
-    await _loadInitialPosts();
+    await _loadInitialPosts(forceRefresh: true);
   }
 
-  Future<void> _loadInitialPosts() async {
+  Future<void> _loadInitialPosts({bool forceRefresh = false}) async {
+    final requestId = _feedRequestTracker.startRequest();
+    final hadExistingPosts = _feedEntries.isNotEmpty;
+    if (!mounted) return;
+
     setState(() {
-      _isLoadingFeed = true;
       _feedError = null;
-      _hasMorePosts = true;
-      _lastPostDocument = null;
-      _likedPostIds.clear();
+      if (!hadExistingPosts) {
+        _isLoadingFeed = true;
+        _hasMorePosts = true;
+        _lastPostDocument = null;
+        _likedPostIds.clear();
+      }
     });
 
     try {
-      final page = await _socialPostRepository.fetchVisiblePosts(limit: 10);
+      final viewerContext = await _loadViewerContextForFeed();
+      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+
+      final page = await _homeFeedRepository.fetchPage(
+        viewerContext: viewerContext,
+        limit: 10,
+        forceRefresh: forceRefresh,
+      );
+      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+
       final likedPostIds = await _socialPostRepository
           .fetchCurrentUserLikedPostIds(
             page.posts.map((post) => post.id).toList(growable: false),
           );
-      if (!mounted) return;
+      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+
+      final replacementPosts = HomeFeedRefreshPolicy.dedupeReplacementPosts(
+        page.posts,
+      );
+      final shouldReplaceVisibleFeed =
+          HomeFeedRefreshPolicy.shouldReplaceVisibleFeed(
+            hadExistingPosts: hadExistingPosts,
+            refreshedPosts: replacementPosts,
+          );
+      if (!shouldReplaceVisibleFeed) {
+        setState(() {
+          _viewerContext = viewerContext;
+          _userCity = viewerContext.city;
+          _userState = viewerContext.state;
+          _followingIds
+            ..clear()
+            ..addAll(viewerContext.followingIds);
+        });
+        unawaited(_loadSuggestedUsers());
+        return;
+      }
+
+      _homeFeedSession.reset(
+        candidates: replacementPosts,
+        viewerContext: viewerContext,
+        initialEntryCount: 10,
+        preserveSeenPosts: forceRefresh,
+      );
+
       setState(() {
+        _viewerContext = viewerContext;
+        _userCity = viewerContext.city;
+        _userState = viewerContext.state;
+        _followingIds
+          ..clear()
+          ..addAll(viewerContext.followingIds);
         _posts
           ..clear()
-          ..addAll(_dedupePosts(page.posts));
+          ..addAll(replacementPosts);
         _likedPostIds
           ..clear()
           ..addAll(likedPostIds);
-        _rankedPosts = _rankInitialPosts(_posts);
+        _feedEntries = _homeFeedSession.entries;
         _lastPostDocument = page.lastDocument;
         _hasMorePosts = page.hasMore;
       });
+      unawaited(_loadSuggestedUsers());
     } catch (error) {
-      if (!mounted) return;
-      setState(
-        () => _feedError = NetworkStatusService.instance.isOffline
-            ? 'You’re offline. Connect to the internet to load latest content.'
-            : error.toString().replaceFirst('Exception: ', ''),
-      );
+      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+      if (hadExistingPosts) {
+        AppFeedback.show(
+          context,
+          message: NetworkStatusService.instance.isOffline
+              ? 'You’re offline. Showing the existing home feed.'
+              : 'We could not refresh the home feed right now.',
+          tone: AppFeedbackTone.warning,
+        );
+      } else {
+        setState(
+          () => _feedError = NetworkStatusService.instance.isOffline
+              ? 'You’re offline. Connect to the internet to load latest content.'
+              : error.toString().replaceFirst('Exception: ', ''),
+        );
+      }
     } finally {
-      if (mounted) {
+      if (mounted && _feedRequestTracker.isCurrent(requestId)) {
         setState(() => _isLoadingFeed = false);
       }
     }
@@ -283,20 +333,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() => _isLoadingMore = true);
     try {
-      final page = await _socialPostRepository.fetchVisiblePosts(
+      final page = await _homeFeedRepository.fetchPage(
+        viewerContext: _viewerContext,
         startAfter: _lastPostDocument,
+        excludePostIds: _homeFeedSession.emittedPostIds,
         limit: 10,
       );
       final likedPostIds = await _socialPostRepository
           .fetchCurrentUserLikedPostIds(
             page.posts.map((post) => post.id).toList(growable: false),
           );
-      final uniqueNewPosts = _dedupePosts(page.posts);
+      final uniqueNewPosts = HomeFeedRefreshPolicy.dedupeAppendedPosts(
+        page.posts,
+        existingPostIds: _posts.map((post) => post.id),
+      );
+      _homeFeedSession.appendCandidates(
+        candidates: uniqueNewPosts,
+        viewerContext: _viewerContext,
+        count: 10,
+      );
       if (!mounted) return;
       setState(() {
         _posts.addAll(uniqueNewPosts);
         _likedPostIds.addAll(likedPostIds);
-        _mergeRankedPosts(uniqueNewPosts);
+        _feedEntries = _homeFeedSession.entries;
         _lastPostDocument = page.lastDocument;
         _hasMorePosts = page.hasMore && page.posts.isNotEmpty;
       });
@@ -358,33 +418,14 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  List<SocialPostModel> _dedupePosts(List<SocialPostModel> incoming) {
-    final existingIds = _posts.map((post) => post.id).toSet();
-    final uniqueIncoming = <SocialPostModel>[];
-
-    for (final post in incoming) {
-      if (existingIds.add(post.id)) {
-        uniqueIncoming.add(post);
-      }
-    }
-
-    return uniqueIncoming;
-  }
-
   void _handlePostUpdated(SocialPostModel updatedPost) {
     final index = _posts.indexWhere((post) => post.id == updatedPost.id);
     if (index == -1) return;
 
     setState(() {
       _posts[index] = updatedPost;
-      final rankedIndex = _rankedPosts.indexWhere(
-        (rankedPost) => rankedPost.post.id == updatedPost.id,
-      );
-      if (rankedIndex != -1) {
-        _rankedPosts[rankedIndex] = _rankedPosts[rankedIndex].copyWith(
-          post: updatedPost,
-        );
-      }
+      _homeFeedSession.replacePost(updatedPost);
+      _feedEntries = _homeFeedSession.entries;
     });
   }
 
@@ -394,14 +435,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _posts[index] = _posts[index].copyWith(likeCount: newLikeCount);
-      final rankedIndex = _rankedPosts.indexWhere(
-        (rankedPost) => rankedPost.post.id == postId,
-      );
-      if (rankedIndex != -1) {
-        _rankedPosts[rankedIndex] = _rankedPosts[rankedIndex].copyWith(
-          post: _posts[index],
-        );
-      }
+      _homeFeedSession.replacePost(_posts[index]);
+      _feedEntries = _homeFeedSession.entries;
       if (isLiked) {
         _likedPostIds.add(postId);
       } else {
@@ -416,14 +451,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _posts[index] = _posts[index].copyWith(commentCount: newCommentCount);
-      final rankedIndex = _rankedPosts.indexWhere(
-        (rankedPost) => rankedPost.post.id == postId,
-      );
-      if (rankedIndex != -1) {
-        _rankedPosts[rankedIndex] = _rankedPosts[rankedIndex].copyWith(
-          post: _posts[index],
-        );
-      }
+      _homeFeedSession.replacePost(_posts[index]);
+      _feedEntries = _homeFeedSession.entries;
     });
   }
 
@@ -431,9 +460,8 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _posts.removeWhere((post) => post.id == postId);
       _likedPostIds.remove(postId);
-      _rankedPosts = _rankedPosts
-          .where((rankedPost) => rankedPost.post.id != postId)
-          .toList(growable: false);
+      _homeFeedSession.removePost(postId);
+      _feedEntries = _homeFeedSession.entries;
     });
   }
 
@@ -448,7 +476,22 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         _followingIds.remove(authorId);
       }
-      _rankedPosts = _buildRankedPosts(_posts);
+      _viewerContext = HomeFeedViewerContext(
+        currentUserId: _viewerContext.currentUserId,
+        city: _viewerContext.city,
+        state: _viewerContext.state,
+        followingIds: Set<String>.from(_followingIds),
+        blockedUserIds: _viewerContext.blockedUserIds,
+        mutedUserIds: _viewerContext.mutedUserIds,
+        creatorsWhoBlockedViewerIds: _viewerContext.creatorsWhoBlockedViewerIds,
+      );
+      _homeFeedSession.reset(
+        candidates: List<SocialPostModel>.from(_posts),
+        viewerContext: _viewerContext,
+        initialEntryCount: _feedEntries.length,
+        preserveSeenPosts: true,
+      );
+      _feedEntries = _homeFeedSession.entries;
     });
     if (isFollowing && _suggestionFollowRefreshCounter >= 3) {
       unawaited(_refreshSuggestions(resetSession: true));
@@ -456,63 +499,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   bool get _shouldShowSuggestions =>
-      _suggestedUsers.isNotEmpty && _rankedPosts.length >= 3;
+      _suggestedUsers.isNotEmpty && _feedEntries.length >= 3;
 
-  int get _suggestionsInsertIndex => _rankedPosts.length >= 5 ? 4 : 3;
+  int get _suggestionsInsertIndex => _feedEntries.length >= 5 ? 4 : 3;
 
   int get _baseFeedItemCount =>
-      _rankedPosts.length + (_shouldShowSuggestions ? 1 : 0);
+      _feedEntries.length + (_shouldShowSuggestions ? 1 : 0);
 
   int _postIndexForFeedIndex(int feedIndex) {
     if (!_shouldShowSuggestions || feedIndex < _suggestionsInsertIndex) {
       return feedIndex;
     }
     return feedIndex - 1;
-  }
-
-  List<RankedPost> _rankInitialPosts(List<SocialPostModel> posts) {
-    return rankPosts(
-      posts: List<SocialPostModel>.from(posts),
-      currentUserId: _auth.currentUser?.uid,
-      userCity: _userCity,
-      userState: _userState,
-      followingIds: _followingIds,
-      userInterestTags: _userInterestTags,
-    );
-  }
-
-  void _mergeRankedPosts(List<SocialPostModel> newPosts) {
-    if (newPosts.isEmpty) return;
-
-    final decayedExisting = _rankedPosts
-        .map(
-          (rankedPost) => rankedPost.copyWith(score: rankedPost.score * 0.98),
-        )
-        .toList(growable: true);
-
-    final newRankedPosts = rankPosts(
-      posts: List<SocialPostModel>.from(newPosts),
-      currentUserId: _auth.currentUser?.uid,
-      userCity: _userCity,
-      userState: _userState,
-      followingIds: _followingIds,
-      userInterestTags: _userInterestTags,
-    );
-
-    decayedExisting.addAll(newRankedPosts);
-    sortRankedPostsInPlace(decayedExisting);
-    _rankedPosts = decayedExisting;
-  }
-
-  List<RankedPost> _buildRankedPosts(List<SocialPostModel> posts) {
-    return rankPosts(
-      posts: List<SocialPostModel>.from(posts),
-      currentUserId: _auth.currentUser?.uid,
-      userCity: _userCity,
-      userState: _userState,
-      followingIds: _followingIds,
-      userInterestTags: _userInterestTags,
-    );
   }
 
   @override
@@ -558,7 +556,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _loadInitialPosts,
                   );
                 }
-                if (_rankedPosts.isEmpty) {
+                if (_feedEntries.isEmpty) {
                   return _FeedStatusCard(
                     title: NetworkStatusService.instance.isOffline
                         ? 'You’re offline'
@@ -583,15 +581,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Center(child: CircularProgressIndicator()),
                   );
                 }
-                final rankedPost = _rankedPosts[_postIndexForFeedIndex(index)];
+                final entry = _feedEntries[_postIndexForFeedIndex(index)];
                 return SocialPostCard(
-                  key: ValueKey(rankedPost.post.id),
-                  post: rankedPost.post,
-                  rankingReason: rankedPost.reason,
+                  key: ValueKey(entry.post.id),
+                  post: entry.post,
+                  rankingReason: entry.rankingReason,
                   currentUserId: currentUserId,
-                  initiallyLiked: _likedPostIds.contains(rankedPost.post.id),
+                  initiallyLiked: _likedPostIds.contains(entry.post.id),
                   initiallyFollowing: _followingIds.contains(
-                    rankedPost.post.authorId,
+                    entry.post.authorId,
                   ),
                   repository: _socialPostRepository,
                   followRepository: _followRepository,
@@ -756,7 +754,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   int get _feedItemCount {
-    if (_isLoadingFeed || _feedError != null || _rankedPosts.isEmpty) {
+    if (_isLoadingFeed || _feedError != null || _feedEntries.isEmpty) {
       return 1;
     }
     return _baseFeedItemCount + (_isLoadingMore ? 1 : 0);
@@ -937,6 +935,7 @@ class _NotificationsBellButtonState extends State<_NotificationsBellButton>
         .listen((snapshot) {
           final hasUnread = snapshot.docs.any((doc) {
             final data = doc.data();
+            if (!NotificationVisibility.isVisibleInApp(data)) return false;
             return data['read'] != true && data['isRead'] != true;
           });
           _updateUnreadState(hasUnread);

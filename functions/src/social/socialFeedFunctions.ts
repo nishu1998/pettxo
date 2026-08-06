@@ -7,10 +7,13 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import {db} from "../shared/firebase";
 
 const DISCOVER_RANK_VERSION = 2;
+const HOME_RANK_VERSION = 1;
 const FEED_LOCATION_VERSION = 2;
 const HOUR_MS = 60 * 60 * 1000;
 const MAX_REPORT_PENALTY = 5;
 const REPORT_PENALTY_PER_REPORT = 0.75;
+const HOME_REPORT_PENALTY_PER_REPORT = 0.85;
+const HOME_MAX_REPORT_PENALTY = 6;
 const NEARBY_REPORT_PENALTY_PER_REPORT = 0.50;
 const NEARBY_MAX_REPORT_PENALTY = 3;
 const REFRESH_BATCH_SIZE = 100;
@@ -61,6 +64,9 @@ type FeedMetadata = NearbyLocationMetadata & {
   discoverScore: number;
   discoverRankVersion: number;
   discoverEligible: boolean;
+  homeScore: number;
+  homeRankVersion: number;
+  homeEligible: boolean;
 };
 
 type DiscoverScoreBreakdown = {
@@ -71,6 +77,17 @@ type DiscoverScoreBreakdown = {
   newPostBaseline: number;
   reportPenalty: number;
   discoverScore: number;
+};
+
+type HomeScoreBreakdown = {
+  homeEligible: boolean;
+  weightedEngagement: number;
+  engagementScore: number;
+  freshnessMultiplier: number;
+  newPostBaseline: number;
+  adminBoost: number;
+  reportPenalty: number;
+  homeScore: number;
 };
 
 type NearbyScoreBreakdown = {
@@ -95,6 +112,10 @@ type RankingInputs = {
   createdAtEpoch: number;
   authorCity: string;
   authorState: string;
+  recentEngagementScore: number;
+  adminPriorityBoost: number;
+  isAdminPost: boolean;
+  authorType: string;
 };
 
 type RefreshSummary = {
@@ -123,6 +144,17 @@ type BackfillSummary = {
   authorCacheHits: number;
   authorCacheMisses: number;
   postsProcessed: number;
+  reasonCounts?: Record<string, number>;
+};
+
+type HomeBackfillSummary = {
+  scanned: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+  dryRun: boolean;
   reasonCounts?: Record<string, number>;
 };
 
@@ -454,6 +486,24 @@ function newPostBaselineForAge(ageHours: number): number {
   return 0;
 }
 
+function homeFreshnessMultiplierForAge(ageHours: number): number {
+  if (ageHours <= 6) return 1.00;
+  if (ageHours <= 24) return 0.92;
+  if (ageHours <= 72) return 0.74;
+  if (ageHours <= 168) return 0.52;
+  if (ageHours <= 336) return 0.30;
+  if (ageHours <= 720) return 0.14;
+  return 0.06;
+}
+
+function homeNewPostBaselineForAge(ageHours: number): number {
+  if (ageHours <= 2) return 1.10;
+  if (ageHours <= 6) return 0.75;
+  if (ageHours <= 24) return 0.35;
+  if (ageHours <= 72) return 0.12;
+  return 0;
+}
+
 function nearbyFreshnessMultiplierForAge(ageHours: number): number {
   if (ageHours <= 6) return 1.00;
   if (ageHours <= 24) return 0.90;
@@ -482,6 +532,10 @@ export function buildRankingInputs(data: SocialPostSnapshot): RankingInputs {
     createdAtEpoch: createdAtMillisFromPost(data),
     authorCity: normalizeLocationKey(data.authorCity),
     authorState: normalizeLocationKey(data.authorState),
+    recentEngagementScore: asNumber(data.recentEngagementScore),
+    adminPriorityBoost: clampNonNegativeInteger(data.adminPriorityBoost),
+    isAdminPost: data.isAdminPost === true,
+    authorType: asTrimmedString(data.authorType),
   };
 }
 
@@ -497,7 +551,11 @@ export function rankingInputsEqual(
     left.moderationStatus === right.moderationStatus &&
     left.createdAtEpoch === right.createdAtEpoch &&
     left.authorCity === right.authorCity &&
-    left.authorState === right.authorState;
+    left.authorState === right.authorState &&
+    left.recentEngagementScore === right.recentEngagementScore &&
+    left.adminPriorityBoost === right.adminPriorityBoost &&
+    left.isAdminPost === right.isAdminPost &&
+    left.authorType === right.authorType;
 }
 
 export function computeDiscoverScoreBreakdown(
@@ -548,6 +606,71 @@ export function computeDiscoverScoreBreakdown(
     newPostBaseline,
     reportPenalty: roundScore(reportPenalty),
     discoverScore,
+  };
+}
+
+export function computeHomeScoreBreakdown(
+  data: SocialPostSnapshot,
+  nowMs = Date.now(),
+): HomeScoreBreakdown {
+  const inputs = buildRankingInputs(data);
+  const homeEligible =
+    inputs.visibilityStatus === "visible" &&
+    inputs.moderationStatus === "approved";
+
+  if (!homeEligible) {
+    return {
+      homeEligible: false,
+      weightedEngagement: 0,
+      engagementScore: 0,
+      freshnessMultiplier: 0,
+      newPostBaseline: 0,
+      adminBoost: 0,
+      reportPenalty: 0,
+      homeScore: 0,
+    };
+  }
+
+  const recentEngagementBoost = Math.min(
+    6,
+    Math.max(0, inputs.recentEngagementScore),
+  );
+  const weightedEngagement =
+    inputs.likeCount +
+    (inputs.commentCount * 3) +
+    (inputs.shareCount * 5) +
+    recentEngagementBoost;
+  const engagementScore = Math.log(1 + Math.max(0, weightedEngagement));
+  const ageHours = ageHoursFromCreatedAt(inputs.createdAtEpoch, nowMs);
+  const freshnessMultiplier = homeFreshnessMultiplierForAge(ageHours);
+  const newPostBaseline = homeNewPostBaselineForAge(ageHours);
+  const adminBoost = roundScore(
+    Math.min(1.8, inputs.adminPriorityBoost * 0.06) +
+      ((inputs.isAdminPost || inputs.authorType === "admin") ? 0.4 : 0),
+  );
+  const reportPenalty = Math.min(
+    inputs.reportCount * HOME_REPORT_PENALTY_PER_REPORT,
+    HOME_MAX_REPORT_PENALTY,
+  );
+  const homeScore = roundScore(
+    Math.max(
+      0,
+      newPostBaseline +
+        (engagementScore * freshnessMultiplier) +
+        adminBoost -
+        reportPenalty,
+    ),
+  );
+
+  return {
+    homeEligible: true,
+    weightedEngagement: roundScore(weightedEngagement),
+    engagementScore: roundScore(engagementScore),
+    freshnessMultiplier,
+    newPostBaseline,
+    adminBoost,
+    reportPenalty: roundScore(reportPenalty),
+    homeScore,
   };
 }
 
@@ -690,6 +813,7 @@ export function buildFeedMetadata(
   },
 ): FeedMetadata {
   const breakdown = computeDiscoverScoreBreakdown(data, nowMs);
+  const homeBreakdown = computeHomeScoreBreakdown(data, nowMs);
   const nearbyLocation = buildNearbyLocationMetadata(
     data,
     options?.authorLocation ?? null,
@@ -699,6 +823,9 @@ export function buildFeedMetadata(
     discoverScore: breakdown.discoverScore,
     discoverRankVersion: DISCOVER_RANK_VERSION,
     discoverEligible: breakdown.discoverEligible,
+    homeScore: homeBreakdown.homeScore,
+    homeRankVersion: HOME_RANK_VERSION,
+    homeEligible: homeBreakdown.homeEligible,
     ...nearbyLocation,
   };
 }
@@ -710,6 +837,9 @@ export function metadataMatchesCurrent(
   return asNumber(data.discoverScore) === next.discoverScore &&
     asInteger(data.discoverRankVersion) === next.discoverRankVersion &&
     data.discoverEligible === next.discoverEligible &&
+    asNumber(data.homeScore) === next.homeScore &&
+    asInteger(data.homeRankVersion) === next.homeRankVersion &&
+    data.homeEligible === next.homeEligible &&
     data.nearbyEligible === next.nearbyEligible &&
     asTrimmedString(data.feedGeohash3) === next.feedGeohash3 &&
     asTrimmedString(data.feedGeohash4) === next.feedGeohash4 &&
@@ -725,6 +855,7 @@ function buildPublicNearbyMetadataWrite(nextMetadata: FeedMetadata): Record<stri
     feedLatitudeBucket: FieldValue.delete(),
     feedLongitudeBucket: FieldValue.delete(),
     discoverScoreUpdatedAt: FieldValue.serverTimestamp(),
+    homeScoreUpdatedAt: FieldValue.serverTimestamp(),
     feedLocationUpdatedAt: FieldValue.serverTimestamp(),
   };
 }
@@ -744,6 +875,7 @@ function sanitizeNearbyResponseData(
     "createdAt",
     "updatedAt",
     "discoverScoreUpdatedAt",
+    "homeScoreUpdatedAt",
   ] as const;
   for (const field of timestampFields) {
     const date = asDateLike(payload[field]);
@@ -1961,6 +2093,7 @@ export async function runRefreshSocialPostDiscoverScores(params?: {
           batch.set(doc.ref, {
             ...nextMetadata,
             discoverScoreUpdatedAt: FieldValue.serverTimestamp(),
+            homeScoreUpdatedAt: FieldValue.serverTimestamp(),
           }, {merge: true});
           summary.updated += 1;
           pageUpdates += 1;
@@ -2014,6 +2147,27 @@ export const backfillSocialPostFeedMetadata = onCall(
     const cursor = asTrimmedString(request.data?.cursor);
 
     return runSocialPostFeedMetadataBackfill({
+      cursor: cursor || null,
+      limit,
+      dryRun,
+    });
+  },
+);
+
+export const backfillSocialPostHomeMetadata = onCall(
+  {region: "asia-south1"},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+    await requireAdminActor(uid);
+
+    const dryRun = request.data?.dryRun === true;
+    const limit = coerceBackfillLimit(request.data?.limit);
+    const cursor = asTrimmedString(request.data?.cursor);
+
+    return runSocialPostHomeMetadataBackfill({
       cursor: cursor || null,
       limit,
       dryRun,
@@ -2214,6 +2368,85 @@ export async function runSocialPostFeedMetadataBackfill(params?: {
             {merge: true},
           );
         }
+      }
+    } catch (_) {
+      summary.failed += 1;
+      summary.reasonCounts!.failed += 1;
+    }
+  }
+
+  if (batch != null && summary.updated > 0) {
+    await batch.commit();
+  }
+
+  summary.nextCursor = snapshot.docs[snapshot.docs.length - 1]?.id ?? null;
+  return summary;
+}
+
+export async function runSocialPostHomeMetadataBackfill(params?: {
+  cursor?: string | null;
+  limit?: number;
+  dryRun?: boolean;
+  authoritativeNow?: Date;
+  firestore?: typeof db;
+}): Promise<HomeBackfillSummary> {
+  const firestore = params?.firestore ?? db;
+  const authoritativeNow = params?.authoritativeNow ?? new Date();
+  const dryRun = params?.dryRun === true;
+  const limit = coerceBackfillLimit(params?.limit);
+  const cursor = asTrimmedString(params?.cursor);
+  let query = firestore
+    .collection("socialPosts")
+    .orderBy(FieldPath.documentId())
+    .limit(limit);
+  if (cursor.length > 0) {
+    query = query.startAfter(cursor);
+  }
+
+  const snapshot = await query.get();
+  const summary: HomeBackfillSummary = {
+    scanned: 0,
+    updated: 0,
+    skipped: 0,
+    failed: 0,
+    nextCursor: null,
+    hasMore: snapshot.size === limit,
+    dryRun,
+    reasonCounts: {
+      alreadyCurrent: 0,
+      updated: 0,
+      failed: 0,
+    },
+  };
+  const batch = dryRun ? null : firestore.batch();
+
+  for (const doc of snapshot.docs) {
+    summary.scanned += 1;
+    try {
+      const data = doc.data() ?? {};
+      const nextMetadata = buildFeedMetadata(data, authoritativeNow.getTime(), {
+        authorLocation: null,
+        privateLocation: null,
+      });
+      const homeUnchanged =
+        asNumber(data.homeScore) === nextMetadata.homeScore &&
+        asInteger(data.homeRankVersion) === nextMetadata.homeRankVersion &&
+        data.homeEligible === nextMetadata.homeEligible;
+      if (homeUnchanged) {
+        summary.skipped += 1;
+        summary.reasonCounts!.alreadyCurrent += 1;
+        continue;
+      }
+
+      summary.updated += 1;
+      summary.reasonCounts!.updated += 1;
+      if (batch != null) {
+        batch.set(doc.ref, {
+          homeScore: nextMetadata.homeScore,
+          homeRankVersion: nextMetadata.homeRankVersion,
+          homeEligible: nextMetadata.homeEligible,
+          homeScoreUpdatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
       }
     } catch (_) {
       summary.failed += 1;
