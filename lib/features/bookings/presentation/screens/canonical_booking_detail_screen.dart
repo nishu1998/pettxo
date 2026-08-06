@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
@@ -1382,10 +1383,13 @@ class _CanonicalBookingDetailScreenState
 
   String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
     if (booking.schedule case final CanonicalSlotBookingScheduleV3 schedule) {
-      return _minutesLabel(
-        schedule.totalDurationMinutes > 0
-            ? schedule.totalDurationMinutes
-            : booking.statistics.totalDurationMinutes,
+      final minutes = schedule.totalDurationMinutes > 0
+          ? schedule.totalDurationMinutes
+          : booking.statistics.totalDurationMinutes;
+      if (minutes == null || minutes <= 0) return 'Pending';
+      return formatServiceDurationLabel(
+        durationMinutes: minutes,
+        schedulingMode: booking.service.schedulingMode,
       );
     }
     if (booking.schedule case final CanonicalRangeBookingScheduleV3 schedule) {

@@ -346,6 +346,7 @@ service cloud.firestore {
         'description',
         'privateNotes',
         'pricePerSession',
+        'schedulingMode',
         'sessionDurationMinutes',
         'capacity',
         'availableDays',
@@ -384,6 +385,7 @@ service cloud.firestore {
         'privateNotes',
         'pricePerSession',
         'currency',
+        'schedulingMode',
         'sessionDurationMinutes',
         'capacity',
         'availableDays',
@@ -666,6 +668,10 @@ service cloud.firestore {
         'moderatedBy',
         'moderatedAt',
         'lastReportedAt',
+        'homeScore',
+        'homeRankVersion',
+        'homeScoreUpdatedAt',
+        'homeEligible',
         'discoverScore',
         'discoverRankVersion',
         'discoverScoreUpdatedAt',
@@ -726,6 +732,22 @@ service cloud.firestore {
       (
         !request.resource.data.keys().hasAny(['lastReportedAt']) ||
         request.resource.data.lastReportedAt == null
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['homeScore']) ||
+        request.resource.data.homeScore == 0
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['homeRankVersion']) ||
+        request.resource.data.homeRankVersion == 0
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['homeScoreUpdatedAt']) ||
+        request.resource.data.homeScoreUpdatedAt == null
+      ) &&
+      (
+        !request.resource.data.keys().hasAny(['homeEligible']) ||
+        request.resource.data.homeEligible == false
       ) &&
       (
         !request.resource.data.keys().hasAny(['discoverScore']) ||

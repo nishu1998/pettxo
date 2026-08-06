@@ -16,6 +16,7 @@ class ProfileServiceListing {
   final String description;
   final String rate;
   final int pricePerSession;
+  final String schedulingMode;
   final int durationMinutes;
   final String location;
   final String availability;
@@ -64,6 +65,7 @@ class ProfileServiceListing {
     required this.description,
     required this.rate,
     this.pricePerSession = 0,
+    this.schedulingMode = '',
     this.durationMinutes = 0,
     required this.location,
     required this.availability,
@@ -116,6 +118,7 @@ class ProfileServiceListing {
       description: description,
       rate: rate,
       pricePerSession: pricePerSession,
+      schedulingMode: schedulingMode,
       durationMinutes: durationMinutes,
       location: location,
       availability: availability,
@@ -223,6 +226,7 @@ class ProfileServiceListing {
       description: (data['description'] as String? ?? '').trim(),
       rate: (data['rate'] as String? ?? '').trim(),
       pricePerSession: (data['pricePerSession'] as num?)?.toInt() ?? 0,
+      schedulingMode: (data['schedulingMode'] as String? ?? '').trim(),
       durationMinutes: (data['durationMinutes'] as num?)?.toInt() ?? 0,
       location: (data['location'] as String? ?? '').trim(),
       availability: (data['availability'] as String? ?? '').trim(),
@@ -279,6 +283,7 @@ class ProfileServiceListing {
       'description': description,
       'rate': rate,
       'pricePerSession': pricePerSession,
+      'schedulingMode': schedulingMode,
       'durationMinutes': durationMinutes,
       'location': location,
       'availability': availability,

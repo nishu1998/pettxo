@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_snackbar.dart';
@@ -585,7 +586,10 @@ class _CanonicalProviderBookingRequestDetailScreenState
     CanonicalProviderBookingRequestView request,
   ) {
     return request.totalDurationMinutes > 0
-        ? '${request.totalDurationMinutes} min'
+        ? formatServiceDurationLabel(
+            durationMinutes: request.totalDurationMinutes,
+            schedulingMode: request.schedulingMode,
+          )
         : 'Pending';
   }
 
@@ -1278,7 +1282,12 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
       final minutes = schedule.totalDurationMinutes > 0
           ? schedule.totalDurationMinutes
           : (booking.statistics.totalDurationMinutes ?? 0);
-      return minutes > 0 ? '$minutes min' : 'Pending';
+      return minutes > 0
+          ? formatServiceDurationLabel(
+              durationMinutes: minutes,
+              schedulingMode: booking.service.schedulingMode,
+            )
+          : 'Pending';
     }
     if (schedule is CanonicalRangeBookingScheduleV3) {
       return schedule.nights > 0

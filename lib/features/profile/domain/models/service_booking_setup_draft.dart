@@ -1,6 +1,7 @@
 import 'service_location.dart';
 
 class ServiceBookingSetupDraft {
+  final String schedulingMode;
   final int sessionDurationMinutes;
   final bool hasConfirmedBookings;
   final int capacity;
@@ -12,6 +13,7 @@ class ServiceBookingSetupDraft {
   final ServiceLocation location;
 
   const ServiceBookingSetupDraft({
+    required this.schedulingMode,
     required this.sessionDurationMinutes,
     required this.hasConfirmedBookings,
     required this.capacity,

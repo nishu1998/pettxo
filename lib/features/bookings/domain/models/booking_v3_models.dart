@@ -401,6 +401,7 @@ class BookingServiceSnapshotV3 {
   final String category;
   final BookingV3Type bookingType;
   final String timezone;
+  final String schedulingMode;
   final int? serviceUnitPricePaise;
   final int? durationMinutes;
   final int? pricePerNightPaise;
@@ -421,6 +422,7 @@ class BookingServiceSnapshotV3 {
     required this.category,
     required this.bookingType,
     required this.timezone,
+    required this.schedulingMode,
     required this.serviceUnitPricePaise,
     required this.durationMinutes,
     required this.pricePerNightPaise,

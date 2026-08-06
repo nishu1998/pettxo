@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
@@ -1112,7 +1113,10 @@ class _CanonicalBookingPaymentScreenState
     if (duration == null || duration <= 0) {
       return '—';
     }
-    return '$duration min';
+    return formatServiceDurationLabel(
+      durationMinutes: duration,
+      schedulingMode: booking.service.schedulingMode,
+    );
   }
 
   String _formatTimeOfDay(DateTime dateTime) {

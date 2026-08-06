@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/repositories/booking_repository.dart';
@@ -18,6 +19,7 @@ class SlotSelectionScreen extends StatefulWidget {
   final String serviceName;
   final int price;
   final int durationMinutes;
+  final String schedulingMode;
   final String providerId;
   final DateTime? suggestedSlotStartAt;
   final String providerName;
@@ -29,6 +31,7 @@ class SlotSelectionScreen extends StatefulWidget {
     required this.serviceName,
     required this.price,
     required this.durationMinutes,
+    required this.schedulingMode,
     required this.providerId,
     this.suggestedSlotStartAt,
     this.providerName = '',
@@ -179,6 +182,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
           providerName: widget.providerName,
           serviceImageUrl: widget.serviceImageUrl,
           timezone: _effectiveTimezone,
+          schedulingMode: widget.schedulingMode,
         ),
       ),
     );
@@ -210,7 +214,10 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               _ServiceSummaryCard(
                 title: widget.serviceName,
                 providerName: widget.providerName,
-                durationLabel: _formatDuration(widget.durationMinutes),
+                durationLabel: formatServiceDurationLabel(
+                  durationMinutes: widget.durationMinutes,
+                  schedulingMode: widget.schedulingMode,
+                ),
                 price: widget.price,
                 imageUrl: widget.serviceImageUrl,
               ),
@@ -274,6 +281,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                 _CanonicalSelectionSummaryCard(
                   selectedSlots: _selectedCanonicalSlots,
                   unitPricePaise: _canonicalUnitPricePaise,
+                  schedulingMode: widget.schedulingMode,
                 ),
                 const SizedBox(height: 14),
               ],
@@ -498,15 +506,6 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   String _canonicalPayloadKey(SlotBookingSelectionV3 selection) {
     final slotIds = selection.slots.map((slot) => slot.slotId).join(',');
     return '${widget.serviceId}|${widget.providerId}|$slotIds|${selection.scheduledStartAt.toUtc().toIso8601String()}';
-  }
-
-  String _formatDuration(int minutes) {
-    if (minutes <= 0) return 'Duration varies';
-    if (minutes % 60 == 0 && minutes >= 60) {
-      final hours = minutes ~/ 60;
-      return '$hours hr${hours == 1 ? '' : 's'}';
-    }
-    return '$minutes min';
   }
 
   bool _isSameDay(DateTime a, DateTime b) {
@@ -1273,10 +1272,12 @@ class _CanonicalRequestInfoBanner extends StatelessWidget {
 class _CanonicalSelectionSummaryCard extends StatelessWidget {
   final List<ServiceSlotModel> selectedSlots;
   final int unitPricePaise;
+  final String schedulingMode;
 
   const _CanonicalSelectionSummaryCard({
     required this.selectedSlots,
     required this.unitPricePaise,
+    required this.schedulingMode,
   });
 
   @override
@@ -1320,7 +1321,7 @@ class _CanonicalSelectionSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '${sorted.length} slot${sorted.length == 1 ? '' : 's'} · ${_formatDuration(totalMinutes)} · Estimated subtotal ₹${(estimatedSubtotalPaise / 100).toStringAsFixed(0)}',
+            '${sorted.length} slot${sorted.length == 1 ? '' : 's'} · ${_formatDuration(totalMinutes, schedulingMode: schedulingMode)} · Estimated subtotal ₹${(estimatedSubtotalPaise / 100).toStringAsFixed(0)}',
             style: const TextStyle(
               color: AppColors.textGrey,
               fontSize: 13.5,
@@ -1342,13 +1343,11 @@ String _formatSlotTime(DateTime date) {
   return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
 }
 
-String _formatDuration(int minutes) {
-  if (minutes <= 0) return 'Duration varies';
-  if (minutes % 60 == 0 && minutes >= 60) {
-    final hours = minutes ~/ 60;
-    return '$hours hr${hours == 1 ? '' : 's'}';
-  }
-  return '$minutes min';
+String _formatDuration(int minutes, {String? schedulingMode}) {
+  return formatServiceDurationLabel(
+    durationMinutes: minutes,
+    schedulingMode: schedulingMode,
+  );
 }
 
 class _SlotBottomBar extends StatelessWidget {

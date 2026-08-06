@@ -203,6 +203,7 @@ class ServicesRepository {
       privateNotes: service.privateNotes,
       pricePerSession: service.pricePerSession,
       currency: service.currency,
+      schedulingMode: service.schedulingMode,
       sessionDurationMinutes: service.sessionDurationMinutes,
       capacity: service.capacity,
       availableDays: service.availableDays,

@@ -50,6 +50,7 @@ export type CanonicalServiceSource = CanonicalServiceWorkingHoursSource & {
   category?: string;
   serviceType?: string;
   currency?: string;
+  schedulingMode?: string;
   sessionDurationMinutes?: number;
   capacity?: number;
   stats?: Record<string, unknown>;
@@ -171,6 +172,7 @@ function buildServiceSnapshot(
     category: asString(service.category),
     bookingType: input.bookingType,
     timezone: asString(service.timezone) || "Asia/Kolkata",
+    schedulingMode: asString(service.schedulingMode) || undefined,
     capacitySnapshot: Math.max(asInt(service.capacity) ?? 1, 1),
     serviceLocationType: asString(service.serviceType) || "provider_location",
     currency: asString(service.currency) || "INR",

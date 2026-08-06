@@ -3,6 +3,7 @@ import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
@@ -29,14 +30,21 @@ class AddServiceBookingSetupScreen extends StatefulWidget {
 class _AddServiceBookingSetupScreenState
     extends State<AddServiceBookingSetupScreen> {
   static const Color _screenBackground = Color(0xFFFCF8F5);
-  static const Map<String, int> _durationOptions = {
-    '15 minutes': 15,
-    '30 minutes': 30,
-    '60 minutes': 60,
-    '90 minutes': 90,
-    '120 minutes': 120,
-    'Whole day': -1,
-  };
+  static final List<_DurationOption> _durationOptions = [
+    for (final durationMinutes in selectableFixedServiceDurations)
+      _DurationOption(
+        label: formatServiceDurationLabel(
+          durationMinutes: durationMinutes,
+          schedulingMode: serviceSchedulingModeFixedDuration,
+        ),
+        schedulingMode: serviceSchedulingModeFixedDuration,
+        durationMinutes: durationMinutes,
+      ),
+    const _DurationOption(
+      label: 'Day care',
+      schedulingMode: serviceSchedulingModeDayCare,
+    ),
+  ];
 
   static const List<String> _days = [
     'Mon',
@@ -58,7 +66,7 @@ class _AddServiceBookingSetupScreenState
   final GlobalKey _serviceTypeFieldKey = GlobalKey();
   final GlobalKey _locationFieldKey = GlobalKey();
 
-  String? _selectedDurationLabel;
+  _DurationOption? _selectedDurationOption;
   int _capacity = 1;
   final Set<String> _selectedDays = {'Mon', 'Tue', 'Wed', 'Thu', 'Fri'};
   int? _startMinutes = 9 * 60;
@@ -81,7 +89,10 @@ class _AddServiceBookingSetupScreenState
   @override
   void initState() {
     super.initState();
-    _selectedDurationLabel = '60 minutes';
+    _selectedDurationOption = _durationOptions.firstWhere(
+      (option) => option.durationMinutes == 60,
+      orElse: () => _durationOptions.first,
+    );
     _loadInitialLocation();
   }
 
@@ -91,10 +102,9 @@ class _AddServiceBookingSetupScreenState
   }
 
   bool get _isFormValid {
-    final duration = _durationOptions[_selectedDurationLabel];
     final location = _selectedLocation;
 
-    return duration != null &&
+    return _selectedDurationOption != null &&
         _capacity >= 1 &&
         _selectedDays.isNotEmpty &&
         _startMinutes != null &&
@@ -105,18 +115,46 @@ class _AddServiceBookingSetupScreenState
         location.displayAddress.trim().isNotEmpty;
   }
 
-  int? get _selectedDurationMinutes => _durationOptions[_selectedDurationLabel];
+  String? get _selectedDurationLabel => _selectedDurationOption?.label;
+
+  String? get _selectedSchedulingMode =>
+      _selectedDurationOption?.schedulingMode;
+
+  int? get _selectedDurationMinutes {
+    final option = _selectedDurationOption;
+    final start = _startMinutes;
+    final end = _endMinutes;
+    if (option == null) return null;
+    if (option.schedulingMode == serviceSchedulingModeDayCare) {
+      if (start == null || end == null || end <= start) return null;
+      return end - start;
+    }
+    return option.durationMinutes;
+  }
+
+  String get _durationHelperText {
+    final schedulingMode = _selectedSchedulingMode;
+    if (schedulingMode == null) {
+      return 'Choose how booking slots should be created for each available day.';
+    }
+    return serviceDurationHelperText(schedulingMode: schedulingMode);
+  }
 
   List<String> get _slotPreview {
+    final schedulingMode = _selectedSchedulingMode;
     final duration = _selectedDurationMinutes;
     final start = _startMinutes;
     final end = _endMinutes;
-    if (duration == null || start == null || end == null || end <= start) {
+    if (schedulingMode == null ||
+        duration == null ||
+        start == null ||
+        end == null ||
+        end <= start) {
       return const [];
     }
 
-    if (duration == -1) {
-      return ['Whole day (${_formatTime(start)} - ${_formatTime(end)})'];
+    if (schedulingMode == serviceSchedulingModeDayCare) {
+      return ['${_formatTime(start)} - ${_formatTime(end)}'];
     }
 
     final slots = <String>[];
@@ -135,7 +173,7 @@ class _AddServiceBookingSetupScreenState
 
   bool _validateForm() {
     setState(() {
-      _durationError = _selectedDurationLabel == null
+      _durationError = _selectedDurationOption == null
           ? 'Session duration is required'
           : null;
       _availabilityError = _selectedDays.isEmpty
@@ -362,7 +400,7 @@ class _AddServiceBookingSetupScreenState
   }
 
   _BookingFieldIssue? _firstInvalidField() {
-    if (_selectedDurationLabel == null) {
+    if (_selectedDurationOption == null) {
       return _BookingFieldIssue(
         field: _BookingSetupField.duration,
         key: _durationFieldKey,
@@ -537,6 +575,7 @@ class _AddServiceBookingSetupScreenState
           ),
           child: MediaQuery(
             data: mediaQuery.copyWith(
+              alwaysUse24HourFormat: false,
               textScaler: mediaQuery.textScaler.clamp(
                 minScaleFactor: 0.88,
                 maxScaleFactor: 1,
@@ -600,6 +639,7 @@ class _AddServiceBookingSetupScreenState
 
     final bookingSetupDraft = ServiceBookingSetupDraft(
       sessionDurationMinutes: _selectedDurationMinutes!,
+      schedulingMode: _selectedSchedulingMode!,
       hasConfirmedBookings: _hasConfirmedBookings,
       capacity: _capacity,
       availableDays: _days.where(_selectedDays.contains).toList(),
@@ -659,17 +699,22 @@ class _AddServiceBookingSetupScreenState
                       fieldKey: _durationFieldKey,
                       label: 'Session duration',
                       value: _selectedDurationLabel,
-                      options: _durationOptions.keys.toList(),
+                      options: _durationOptions
+                          .map((option) => option.label)
+                          .toList(),
                       helperText: _hasConfirmedBookings
                           ? 'Duration cannot be changed while bookings exist.'
-                          : 'Each booking reserves one session of this length.',
+                          : _durationHelperText,
                       errorText: _durationError,
                       isHighlighted:
                           _highlightedField == _BookingSetupField.duration,
                       enabled: !_hasConfirmedBookings,
                       onChanged: (value) {
                         setState(() {
-                          _selectedDurationLabel = value;
+                          _selectedDurationOption = _durationOptions.firstWhere(
+                            (option) => option.label == value,
+                            orElse: () => _selectedDurationOption!,
+                          );
                           _durationError = null;
                           if (_highlightedField ==
                               _BookingSetupField.duration) {
@@ -796,7 +841,7 @@ class _AddServiceBookingSetupScreenState
                   title: 'Slot Preview',
                   children: [
                     const Text(
-                      'This is a frontend helper preview of how slots will be generated from your duration and availability.',
+                      'This is a frontend helper preview of how slots will be generated from your duration mode and availability.',
                       style: TextStyle(
                         color: AppColors.textGrey,
                         fontSize: 13,
@@ -813,7 +858,7 @@ class _AddServiceBookingSetupScreenState
                           borderRadius: BorderRadius.circular(16),
                         ),
                         child: const Text(
-                          'Select a valid duration and time window to preview generated slots.',
+                          'Select a valid duration mode and time window to preview generated slots.',
                           style: TextStyle(
                             color: AppColors.textGrey,
                             fontSize: 13,
@@ -1524,6 +1569,18 @@ class _RadioDot extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DurationOption {
+  final String label;
+  final String schedulingMode;
+  final int? durationMinutes;
+
+  const _DurationOption({
+    required this.label,
+    required this.schedulingMode,
+    this.durationMinutes,
+  });
 }
 
 enum _BookingSetupField { duration, availability, serviceType, location }

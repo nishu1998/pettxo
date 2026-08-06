@@ -75,6 +75,7 @@ import {
   type CanonicalBookingDocumentV3,
 } from "./schema/bookingDocumentV3";
 import type {CanonicalPaymentAttemptDocumentV3} from "./schema/paymentAttemptDocumentV3";
+import {buildStoredBookingNotificationDocument} from "../notifications/notificationChannels";
 import type {
   RangeBookingSelection,
 } from "./domain/rangeBooking";
@@ -485,6 +486,7 @@ function buildCanonicalServiceSource(
     category: asString(service.category),
     serviceType: asString(service.serviceType),
     currency: asString(service.currency) || "INR",
+    schedulingMode: asString(service.schedulingMode) || undefined,
     sessionDurationMinutes: asInt(service.sessionDurationMinutes, 0),
     capacity: asInt(service.capacity, 1),
     stats:
@@ -1024,6 +1026,7 @@ function writeNotifications(
     idempotencyKey: string;
     recipientUserId: string;
     type: string;
+    channels: ReadonlyArray<string>;
     title: string;
     body: string;
     data: Record<string, string>;
@@ -1032,23 +1035,13 @@ function writeNotifications(
 ): void {
   for (const notification of notifications) {
     const notificationRef = db.collection("notifications").doc(notification.idempotencyKey);
-    transaction.set(notificationRef, {
-      userId: notification.recipientUserId,
-      category: "booking",
-      type: notification.type,
-      title: notification.title,
-      body: notification.body,
-      read: false,
-      isRead: false,
+    transaction.set(notificationRef, buildStoredBookingNotificationDocument({
+      notification,
       actorId,
-      bookingId: notification.data.bookingId ?? "",
-      serviceId: notification.data.serviceId ?? "",
-      recipientRole: notification.data.recipientRole ?? "",
-      data: notification.data,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       source: "canonical_v3",
-    }, {merge: true});
+    }), {merge: true});
   }
 }
 
@@ -1057,6 +1050,7 @@ async function persistNotifications(params: {
     idempotencyKey: string;
     recipientUserId: string;
     type: string;
+    channels: ReadonlyArray<string>;
     title: string;
     body: string;
     data: Record<string, string>;
@@ -1067,23 +1061,13 @@ async function persistNotifications(params: {
   const batch = db.batch();
   for (const notification of params.notifications) {
     const notificationRef = db.collection("notifications").doc(notification.idempotencyKey);
-    batch.set(notificationRef, {
-      userId: notification.recipientUserId,
-      category: "booking",
-      type: notification.type,
-      title: notification.title,
-      body: notification.body,
-      read: false,
-      isRead: false,
+    batch.set(notificationRef, buildStoredBookingNotificationDocument({
+      notification,
       actorId: params.actorId,
-      bookingId: notification.data.bookingId ?? "",
-      serviceId: notification.data.serviceId ?? "",
-      recipientRole: notification.data.recipientRole ?? "",
-      data: notification.data,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       source: "canonical_v3",
-    }, {merge: true});
+    }), {merge: true});
   }
   await batch.commit();
 }
@@ -1108,6 +1092,7 @@ async function applySchedulerLifecycleMutation(params: {
       idempotencyKey: string;
       recipientUserId: string;
       type: string;
+      channels: ReadonlyArray<string>;
       title: string;
       body: string;
       data: Record<string, string>;

@@ -33,6 +33,7 @@ import {
   normalizePhoneLoginNumber,
   validatePhoneLoginNumber,
 } from "./phoneLoginEligibility";
+import {notificationDeliversPush} from "./notifications/notificationChannels";
 import {
   calculateProviderVerificationDocumentDeletionAtMillis,
   cleanupReasonForVerificationStatus,
@@ -41,6 +42,12 @@ import {
   normalizeProviderVerificationDocumentPath,
   providerVerificationDocumentPathBelongsToUser,
 } from "./providerVerificationDocuments";
+import {
+  generateSlotWindows,
+  normalizeServiceSchedulingMode,
+  resolveSessionDurationMinutes,
+  SERVICE_SCHEDULING_MODE_DAY_CARE,
+} from "./serviceScheduling";
 import {db, messaging, storage} from "./shared/firebase";
 const istOffsetMinutes = 330;
 const slotGenerationDays = 30;
@@ -664,6 +671,7 @@ function serviceSlotConfigChanged(
   if (!before) return true;
   const keys = [
     "ownerUserId",
+    "schedulingMode",
     "sessionDurationMinutes",
     "capacity",
     "availableDays",
@@ -676,15 +684,6 @@ function serviceSlotConfigChanged(
     "isVisibleToMarketplace",
   ];
   return keys.some((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
-}
-
-function effectiveDurationMinutes(service: DocumentData): number {
-  const startMinutes = toInt(service.startMinutes, 0);
-  const endMinutes = toInt(service.endMinutes, 0);
-  const configured = toInt(service.sessionDurationMinutes, 60);
-  if (configured > 0) return configured;
-  if (endMinutes > startMinutes) return endMinutes - startMinutes;
-  return 24 * 60;
 }
 
 async function commitBatches(
@@ -736,7 +735,8 @@ async function regenerateServiceSlots(
     service.isVisibleToMarketplace === true;
 
   if (isServiceBookable) {
-    const durationMinutes = effectiveDurationMinutes(service);
+    const schedulingMode = normalizeServiceSchedulingMode(service);
+    const durationMinutes = resolveSessionDurationMinutes(service);
     const capacity = Math.max(toInt(service.capacity, 1), 1);
     const selectedDays = new Set(
       Array.isArray(service.availableDays) ? service.availableDays.map(String) : [],
@@ -757,11 +757,18 @@ async function regenerateServiceSlots(
         if (!selectedDays.has(parts.weekday)) continue;
 
         const key = dateKey(parts.year, parts.month, parts.day);
-        let cursor = startMinutes;
-        while (cursor + durationMinutes <= endMinutes) {
-          const slotStartMs = dayUtcMs + cursor * 60 * 1000;
-          const slotEndMs = slotStartMs + durationMinutes * 60 * 1000;
-          const slotId = `${key}_${cursor.toString().padStart(4, "0")}`;
+        const slotWindows = generateSlotWindows({
+          schedulingMode,
+          sessionDurationMinutes: durationMinutes,
+          startMinutes,
+          endMinutes,
+        });
+        for (const slotWindow of slotWindows) {
+          const slotStartMs = dayUtcMs + slotWindow.startMinutes * 60 * 1000;
+          const slotEndMs = dayUtcMs + slotWindow.endMinutes * 60 * 1000;
+          const slotId = schedulingMode === SERVICE_SCHEDULING_MODE_DAY_CARE ?
+            `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.endMinutes.toString().padStart(4, "0")}` :
+            `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}`;
           const slotRef = slotsRef.doc(slotId);
           queue((targetBatch) =>
             targetBatch.set(slotRef, {
@@ -770,9 +777,9 @@ async function regenerateServiceSlots(
               startAt: Timestamp.fromMillis(slotStartMs),
               endAt: Timestamp.fromMillis(slotEndMs),
               dateKey: key,
-              startMinutes: cursor,
-              endMinutes: cursor + durationMinutes,
-              durationMinutes,
+              startMinutes: slotWindow.startMinutes,
+              endMinutes: slotWindow.endMinutes,
+              durationMinutes: slotWindow.durationMinutes,
               capacity,
               acceptedCount: 0,
               isBookable: slotStartMs - now >= minimumBookingLeadMs,
@@ -782,7 +789,6 @@ async function regenerateServiceSlots(
               updatedAt: FieldValue.serverTimestamp(),
             }),
           );
-          cursor += durationMinutes;
         }
       }
     }
@@ -3108,6 +3114,18 @@ export const sendPushForNotification = onDocumentWritten(
       console.info("Notification skipped", {
         notificationId: event.params.notificationId,
         reason: "missing-recipient",
+        recipientUserId: recipientId,
+        senderUserId: senderId,
+        chatId,
+        notificationType,
+        tokenCount: 0,
+      });
+      return;
+    }
+    if (!notificationDeliversPush(notification.channels)) {
+      console.info("Notification skipped", {
+        notificationId: event.params.notificationId,
+        reason: "push-channel-disabled",
         recipientUserId: recipientId,
         senderUserId: senderId,
         chatId,

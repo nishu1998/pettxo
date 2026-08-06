@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../../../core/utils/service_duration.dart';
 import 'booking_v3_models.dart';
 
 const int canonicalBookingSchemaVersion = 3;
@@ -863,6 +864,10 @@ class _CanonicalBookingDocumentParser {
             _parseBookingType(map['bookingType'], 'service.bookingType') ??
             BookingV3Type.slot,
         timezone: _requiredString(map['timezone'], 'service.timezone'),
+        schedulingMode: normalizeServiceSchedulingMode(
+          _readString(map['schedulingMode']),
+          sessionDurationMinutes: _readInt(map['durationMinutes']),
+        ),
         serviceUnitPricePaise: _readInt(map['serviceUnitPricePaise']),
         durationMinutes: _readInt(map['durationMinutes']),
         pricePerNightPaise: _readInt(map['pricePerNightPaise']),

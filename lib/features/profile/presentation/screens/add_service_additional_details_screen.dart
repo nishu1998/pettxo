@@ -71,6 +71,7 @@ class _AddServiceAdditionalDetailsScreenState
         details.serviceName.trim().isNotEmpty &&
         details.pricePerSession > 0 &&
         details.description.trim().isNotEmpty &&
+        setup.schedulingMode.trim().isNotEmpty &&
         setup.sessionDurationMinutes > 0 &&
         setup.capacity > 0 &&
         setup.availableDays.isNotEmpty &&
@@ -449,6 +450,7 @@ class _AddServiceAdditionalDetailsScreenState
       privateNotes: _notesController.text.trim(),
       pricePerSession: details.pricePerSession,
       currency: 'INR',
+      schedulingMode: setup.schedulingMode,
       sessionDurationMinutes: setup.sessionDurationMinutes,
       capacity: setup.capacity,
       availableDays: setup.availableDays,

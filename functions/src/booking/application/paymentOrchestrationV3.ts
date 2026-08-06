@@ -26,6 +26,7 @@ import {
 } from "../schema/paymentAttemptDocumentV3";
 import {parseCanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "../schema/timestampNormalization";
+import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 import type {AuthenticatedParentIdentity, CanonicalServiceSource} from "./createBookingRequestV3";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import {
@@ -1713,29 +1714,24 @@ export async function persistFinalizePaymentResultV3(params: {
 
 async function persistCanonicalNotificationsV3(params: {
   firestore: Firestore;
-  notifications: ReadonlyArray<BookingNotificationPlan>;
+  notifications?: ReadonlyArray<BookingNotificationPlan> | null;
   actorId: string;
 }): Promise<void> {
-  if (params.notifications.length === 0) return;
+  const notifications = params.notifications ?? [];
+  if (notifications.length === 0) return;
   const batch = params.firestore.batch();
-  for (const notification of params.notifications) {
-    batch.set(params.firestore.collection("notifications").doc(notification.idempotencyKey), {
-      userId: notification.recipientUserId,
-      category: "booking",
-      type: notification.type,
-      title: notification.title,
-      body: notification.body,
-      read: false,
-      isRead: false,
-      actorId: params.actorId,
-      bookingId: notification.data.bookingId ?? "",
-      serviceId: notification.data.serviceId ?? "",
-      recipientRole: notification.data.recipientRole ?? "",
-      data: notification.data,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-      source: "canonical_v3",
-    }, {merge: true});
+  for (const notification of notifications) {
+    batch.set(
+      params.firestore.collection("notifications").doc(notification.idempotencyKey),
+      buildStoredBookingNotificationDocument({
+        notification,
+        actorId: params.actorId,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        source: "canonical_v3",
+      }),
+      {merge: true},
+    );
   }
   await batch.commit();
 }
@@ -1832,6 +1828,7 @@ async function loadLiveServiceSnapshotForPaymentV3(params: {
     category: asString(data.category) || undefined,
     serviceType: asString(data.serviceType) || undefined,
     currency: asString(data.currency) || "INR",
+    schedulingMode: asString(data.schedulingMode) || undefined,
     sessionDurationMinutes: asInt(data.sessionDurationMinutes, 0),
     capacity: asInt(data.capacity, 1),
     stats:

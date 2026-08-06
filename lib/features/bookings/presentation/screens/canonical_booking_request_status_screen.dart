@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
@@ -1168,7 +1169,10 @@ class _CanonicalBookingRequestStatusScreenState
   String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
     if (booking.schedule is CanonicalSlotBookingScheduleV3) {
       final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
-      return '${schedule.totalDurationMinutes} min';
+      return formatServiceDurationLabel(
+        durationMinutes: schedule.totalDurationMinutes,
+        schedulingMode: booking.service.schedulingMode,
+      );
     }
     final schedule = booking.schedule as CanonicalRangeBookingScheduleV3;
     return schedule.nights == 1 ? '1 night' : '${schedule.nights} nights';

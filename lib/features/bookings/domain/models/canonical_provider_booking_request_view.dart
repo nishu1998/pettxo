@@ -16,6 +16,7 @@ class CanonicalProviderBookingRequestView {
   final DateTime? scheduledEndAt;
   final int slotCount;
   final int totalDurationMinutes;
+  final String schedulingMode;
   final DateTime? timerStartsAt;
   final DateTime? acceptDeadlineAt;
   final DateTime? payDeadlineAt;
@@ -36,6 +37,7 @@ class CanonicalProviderBookingRequestView {
     required this.scheduledEndAt,
     required this.slotCount,
     required this.totalDurationMinutes,
+    required this.schedulingMode,
     required this.timerStartsAt,
     required this.acceptDeadlineAt,
     required this.payDeadlineAt,
@@ -73,6 +75,7 @@ class CanonicalProviderBookingRequestView {
       scheduledEndAt: slotSchedule?.scheduledEndAt,
       slotCount: slotSchedule?.slotCount ?? 0,
       totalDurationMinutes: slotSchedule?.totalDurationMinutes ?? 0,
+      schedulingMode: booking.service.schedulingMode,
       timerStartsAt: booking.lifecycle.timerStartsAt,
       acceptDeadlineAt: booking.lifecycle.acceptDeadlineAt,
       payDeadlineAt: booking.lifecycle.payDeadlineAt,

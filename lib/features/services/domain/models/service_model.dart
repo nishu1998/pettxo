@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/utils/geohash.dart';
 import '../../../../core/utils/service_ranking.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../profile/domain/models/profile_service_listing.dart';
 
 class ServiceModel {
@@ -19,6 +20,7 @@ class ServiceModel {
   final String privateNotes;
   final int pricePerSession;
   final String currency;
+  final String schedulingMode;
   final int sessionDurationMinutes;
   final int capacity;
   final List<String> availableDays;
@@ -80,6 +82,7 @@ class ServiceModel {
     required this.privateNotes,
     required this.pricePerSession,
     required this.currency,
+    required this.schedulingMode,
     required this.sessionDurationMinutes,
     required this.capacity,
     required this.availableDays,
@@ -167,6 +170,11 @@ class ServiceModel {
       privateNotes: (data['privateNotes'] as String? ?? '').trim(),
       pricePerSession: (data['pricePerSession'] as num?)?.toInt() ?? 0,
       currency: (data['currency'] as String? ?? 'INR').trim(),
+      schedulingMode: normalizeServiceSchedulingMode(
+        data['schedulingMode'] as String?,
+        sessionDurationMinutes:
+            (data['sessionDurationMinutes'] as num?)?.toInt() ?? 0,
+      ),
       sessionDurationMinutes:
           (data['sessionDurationMinutes'] as num?)?.toInt() ?? 0,
       capacity: (data['capacity'] as num?)?.toInt() ?? 1,
@@ -262,6 +270,7 @@ class ServiceModel {
       'privateNotes': privateNotes.trim(),
       'pricePerSession': pricePerSession,
       'currency': currency,
+      'schedulingMode': schedulingMode,
       'sessionDurationMinutes': sessionDurationMinutes,
       'capacity': capacity,
       'availableDays': availableDays,
@@ -317,13 +326,15 @@ class ServiceModel {
       description: description,
       rate: '₹$pricePerSession/session',
       pricePerSession: pricePerSession,
+      schedulingMode: schedulingMode,
       durationMinutes: sessionDurationMinutes,
       location: displayAddress,
       availability:
           '${availableDays.join(', ')} - ${_formatTime(startMinutes)} to ${_formatTime(endMinutes)}',
-      duration: sessionDurationMinutes >= 24 * 60
-          ? 'Whole day'
-          : '$sessionDurationMinutes min',
+      duration: formatServiceDurationLabel(
+        durationMinutes: sessionDurationMinutes,
+        schedulingMode: schedulingMode,
+      ),
       petSize: animalType,
       rating: ratingCount > 0 ? ratingLabel : 'No reviews yet',
       distance: '',

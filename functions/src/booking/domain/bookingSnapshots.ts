@@ -8,6 +8,7 @@ export type BookingServiceSnapshot = {
   category: string;
   bookingType: BookingType;
   timezone: string;
+  schedulingMode?: string;
   serviceUnitPricePaise?: number;
   durationMinutes?: number;
   pricePerNightPaise?: number;

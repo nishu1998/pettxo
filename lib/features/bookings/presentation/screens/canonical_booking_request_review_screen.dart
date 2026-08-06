@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/repositories/booking_repository.dart';
@@ -13,6 +14,7 @@ class CanonicalBookingRequestReviewScreen extends StatefulWidget {
   final String providerName;
   final String serviceImageUrl;
   final String timezone;
+  final String schedulingMode;
 
   const CanonicalBookingRequestReviewScreen({
     super.key,
@@ -21,6 +23,7 @@ class CanonicalBookingRequestReviewScreen extends StatefulWidget {
     required this.providerName,
     required this.serviceImageUrl,
     required this.timezone,
+    required this.schedulingMode,
   });
 
   @override
@@ -148,6 +151,7 @@ class _CanonicalBookingRequestReviewScreenState
                     label: 'Total duration',
                     value: _formatDuration(
                       _slotRequest.selection.totalDurationMinutes,
+                      schedulingMode: widget.schedulingMode,
                     ),
                   ),
                   _ReviewLine(
@@ -437,10 +441,9 @@ String _formatTime(DateTime date) {
   return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
 }
 
-String _formatDuration(int minutes) {
-  if (minutes % 60 == 0) {
-    final hours = minutes ~/ 60;
-    return '$hours hr${hours == 1 ? '' : 's'}';
-  }
-  return '$minutes min';
+String _formatDuration(int minutes, {String? schedulingMode}) {
+  return formatServiceDurationLabel(
+    durationMinutes: minutes,
+    schedulingMode: schedulingMode,
+  );
 }

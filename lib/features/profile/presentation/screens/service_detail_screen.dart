@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/utils/service_distance_utils.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
@@ -190,6 +191,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
           serviceName: service.title,
           price: _resolvedPrice,
           durationMinutes: _resolvedDurationMinutes,
+          schedulingMode: _resolvedSchedulingMode,
           providerId: service.ownerUserId,
           suggestedSlotStartAt: suggestedSlotStartAt,
           providerName: service.providerDisplayName,
@@ -212,6 +214,23 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
     if (service.duration.toLowerCase().contains('whole')) return 24 * 60;
     final match = RegExp(r'\d+').firstMatch(service.duration);
     return int.tryParse(match?.group(0) ?? '') ?? 60;
+  }
+
+  String get _resolvedSchedulingMode {
+    final rawMode = service.schedulingMode.trim();
+    if (rawMode.isNotEmpty) {
+      return normalizeServiceSchedulingMode(
+        rawMode,
+        sessionDurationMinutes: service.durationMinutes,
+      );
+    }
+    if (service.duration.toLowerCase().contains('whole')) {
+      return serviceSchedulingModeDayCare;
+    }
+    return normalizeServiceSchedulingMode(
+      null,
+      sessionDurationMinutes: _resolvedDurationMinutes,
+    );
   }
 
   @override

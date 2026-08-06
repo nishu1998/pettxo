@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import 'booking_deadline_countdown.dart';
@@ -188,7 +189,7 @@ class CanonicalProviderRequestCard extends StatelessWidget {
       return 'Schedule details are being prepared for this booking type.';
     }
     final duration = request.totalDurationMinutes > 0
-        ? ' · ${request.totalDurationMinutes} min'
+        ? ' · ${formatServiceDurationLabel(durationMinutes: request.totalDurationMinutes, schedulingMode: request.schedulingMode)}'
         : '';
     return '${_dateLabel(start)} · ${_timeLabel(start)} to ${_timeLabel(end)} · ${request.slotCount} slot${request.slotCount == 1 ? '' : 's'}$duration';
   }
