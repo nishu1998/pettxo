@@ -47,4 +47,43 @@ void main() {
       expect(result.acceptDeadlineAt, isNotNull);
     });
   });
+
+  group('CanonicalSlotRequestInput', () {
+    test('serializes additive selectedDays payload when provided', () {
+      final request = CanonicalSlotRequestInput(
+        selection: SlotBookingSelectionV3(
+          bookingType: BookingV3Type.slot,
+          slots: <BookingSlotSegmentV3>[],
+          slotCount: 0,
+          scheduledStartAt: DateTime.utc(2026, 8, 7, 3, 30),
+          scheduledEndAt: DateTime.utc(2026, 8, 7, 4, 30),
+          totalDurationMinutes: 0,
+        ),
+        estimatedSubtotalPaise: 0,
+        selectedDays: <CanonicalSelectedDaySlotInput>[
+          CanonicalSelectedDaySlotInput(
+            serviceDateKey: '2026-08-07',
+            slotIds: <String>['slot-1'],
+          ),
+          CanonicalSelectedDaySlotInput(
+            serviceDateKey: '2026-08-08',
+            slotIds: <String>['slot-2'],
+          ),
+        ],
+      );
+
+      expect(request.toCallableMap(), {
+        'selectedDays': [
+          {
+            'serviceDateKey': '2026-08-07',
+            'slotIds': ['slot-1'],
+          },
+          {
+            'serviceDateKey': '2026-08-08',
+            'slotIds': ['slot-2'],
+          },
+        ],
+      });
+    });
+  });
 }

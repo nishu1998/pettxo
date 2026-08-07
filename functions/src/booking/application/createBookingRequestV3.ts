@@ -11,6 +11,7 @@ import {
   CANONICAL_BOOKING_SCHEMA_VERSION,
 } from "../schema/bookingDocumentV3";
 import type {SlotBookingSelection} from "../domain/slotBooking";
+import {validateSlotBookingSelection} from "../domain/slotBooking";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import {
   buildCancelledByParentNotification,
@@ -189,6 +190,8 @@ function buildServiceSnapshot(
       durationMinutes: asInt(service.sessionDurationMinutes) ?? schedule.totalDurationMinutes,
       selectedSlotCount: schedule.slotCount,
       totalDurationMinutes: schedule.totalDurationMinutes,
+      selectedServiceDayCount: schedule.serviceDayCount,
+      scheduleSegmentCount: schedule.segmentCount,
     };
   }
   const range = input.schedule as RangeBookingSelection;
@@ -211,6 +214,7 @@ function buildSchedule(
       slots: schedule.slots.map((slot) => ({
         slotId: slot.slotId,
         dateKey: slot.dateKey,
+        serviceDateKey: slot.serviceDateKey,
         startAt: new Date(slot.startAt.getTime()),
         endAt: new Date(slot.endAt.getTime()),
         durationMinutes: slot.durationMinutes,
@@ -218,11 +222,28 @@ function buildSchedule(
         serviceId: slot.serviceId,
         providerId: slot.providerId,
         timezone: slot.timezone,
+        schedulingMode: slot.schedulingMode,
+      })),
+      segments: schedule.segments?.map((segment) => ({
+        serviceDateKey: segment.serviceDateKey,
+        slotIds: [...segment.slotIds],
+        startAt: new Date(segment.startAt.getTime()),
+        endAt: new Date(segment.endAt.getTime()),
+        durationMinutes: segment.durationMinutes,
+        schedulingMode: segment.schedulingMode,
       })),
       slotCount: schedule.slotCount,
       scheduledStartAt: new Date(schedule.scheduledStartAt.getTime()),
       scheduledEndAt: new Date(schedule.scheduledEndAt.getTime()),
       totalDurationMinutes: schedule.totalDurationMinutes,
+      firstSegmentEndAt: schedule.firstSegmentEndAt ?
+        new Date(schedule.firstSegmentEndAt.getTime()) :
+        undefined,
+      finalEndAt: schedule.finalEndAt ?
+        new Date(schedule.finalEndAt.getTime()) :
+        undefined,
+      serviceDayCount: schedule.serviceDayCount,
+      segmentCount: schedule.segmentCount,
       timezone: serviceTimezone,
       serviceAnchorAt: new Date(schedule.scheduledStartAt.getTime()),
     };
@@ -493,8 +514,22 @@ export function createBookingRequestV3(params: {
     };
   }
 
-  if (params.input.bookingType === "SLOT") {
-    const slotSchedule = params.input.schedule as SlotBookingSelection;
+  const normalizedInput: CreateBookingRequestV3Input =
+    params.input.bookingType === "SLOT" ?
+      (() => {
+        const validation = validateSlotBookingSelection(params.input.schedule as SlotBookingSelection);
+        if (!validation.ok || !validation.normalizedSelection) {
+          return params.input;
+        }
+        return {
+          ...params.input,
+          schedule: validation.normalizedSelection,
+        };
+      })() :
+      params.input;
+
+  if (normalizedInput.bookingType === "SLOT") {
+    const slotSchedule = normalizedInput.schedule as SlotBookingSelection;
     const wrongService = slotSchedule.slots.some((slot) => slot.serviceId !== params.service!.id);
     const wrongProvider = slotSchedule.slots.some((slot) => slot.providerId !== params.service!.ownerUserId);
     if (wrongService || wrongProvider) {
@@ -510,7 +545,7 @@ export function createBookingRequestV3(params: {
     bookingId: params.generatedBookingId,
     parent: params.parent,
     service: params.service,
-    input: params.input,
+    input: normalizedInput,
     requestedAt: params.authoritativeNow,
     timerStartsAt: timerStart.timerStartsAt,
     wasQueuedOutsideWorkingHours: timerStart.wasQueuedOutsideWorkingHours,

@@ -45,17 +45,41 @@ class CanonicalBookingRequestInput {
 class CanonicalSlotRequestInput {
   final SlotBookingSelectionV3 selection;
   final int estimatedSubtotalPaise;
+  final List<CanonicalSelectedDaySlotInput>? selectedDays;
 
   const CanonicalSlotRequestInput({
     required this.selection,
     required this.estimatedSubtotalPaise,
+    this.selectedDays,
   });
 
-  List<String> get slotIds =>
-      selection.slots.map((slot) => slot.slotId).toList();
+  List<String> get slotIds => selectedDays != null && selectedDays!.isNotEmpty
+      ? selectedDays!.expand((day) => day.slotIds).toList(growable: false)
+      : selection.slots.map((slot) => slot.slotId).toList(growable: false);
 
   Map<String, dynamic> toCallableMap() {
-    return {'slotIds': slotIds};
+    return {
+      if (selectedDays != null && selectedDays!.isNotEmpty)
+        'selectedDays': selectedDays!
+            .map((day) => day.toCallableMap())
+            .toList(growable: false)
+      else
+        'slotIds': slotIds,
+    };
+  }
+}
+
+class CanonicalSelectedDaySlotInput {
+  final String serviceDateKey;
+  final List<String> slotIds;
+
+  const CanonicalSelectedDaySlotInput({
+    required this.serviceDateKey,
+    required this.slotIds,
+  });
+
+  Map<String, dynamic> toCallableMap() {
+    return {'serviceDateKey': serviceDateKey, 'slotIds': slotIds};
   }
 }
 

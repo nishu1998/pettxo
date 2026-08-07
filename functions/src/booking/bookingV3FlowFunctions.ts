@@ -83,6 +83,7 @@ import type {
   SlotBookingSelection,
   SlotSegment,
 } from "./domain/slotBooking";
+import {validateSlotBookingSelection} from "./domain/slotBooking";
 
 type CanonicalBookingRequestResponse = {
   bookingId: string;
@@ -278,6 +279,10 @@ type CanonicalAuthorizationResult = {
 
 type SlotRequestPayload = {
   slotIds: string[];
+  selectedDays?: Array<{
+    serviceDateKey: string;
+    slotIds: string[];
+  }>;
 };
 
 type RangeRequestPayload = {
@@ -358,6 +363,42 @@ function asNullableDate(value: unknown): Date | null {
   return null;
 }
 
+function serviceDateKeyFromDate(date: Date, timezone: string): string {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone || "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const parts = formatter.formatToParts(date);
+    const year = parts.find((part) => part.type === "year")?.value ?? "1970";
+    const month = parts.find((part) => part.type === "month")?.value ?? "01";
+    const day = parts.find((part) => part.type === "day")?.value ?? "01";
+    return `${year}-${month}-${day}`;
+  } catch (_) {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+function sameSlotIdMultiset(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const counts = new Map<string, number>();
+  for (const slotId of left) {
+    counts.set(slotId, (counts.get(slotId) ?? 0) + 1);
+  }
+  for (const slotId of right) {
+    const current = counts.get(slotId) ?? 0;
+    if (current <= 0) return false;
+    if (current === 1) {
+      counts.delete(slotId);
+    } else {
+      counts.set(slotId, current - 1);
+    }
+  }
+  return counts.size === 0;
+}
+
 function inferBookingType(service: Record<string, unknown>): "SLOT" | "RANGE" {
   const explicit = asString(service.bookingType).toUpperCase();
   if (explicit === "RANGE") return "RANGE";
@@ -414,14 +455,39 @@ function parseCanonicalRequestInput(raw: unknown): ParsedCanonicalRequestInput {
     const slotIds = slotIdsRaw
       .map((entry) => asString(entry))
       .filter(Boolean);
-    if (slotIds.length === 0) {
-      throw new HttpsError("invalid-argument", "slotIds are required for SLOT requests.");
+    const selectedDaysRaw = Array.isArray(data.selectedDays) ? data.selectedDays : [];
+    const selectedDays = selectedDaysRaw.map((entry) => {
+      const day = asRecord(entry);
+      return {
+        serviceDateKey: asString(day.serviceDateKey),
+        slotIds: Array.isArray(day.slotIds) ?
+          day.slotIds.map((slotId) => asString(slotId)).filter(Boolean) :
+          [],
+      };
+    });
+    const groupedSlotIds = selectedDays.flatMap((day) => day.slotIds);
+
+    if (slotIds.length === 0 && groupedSlotIds.length === 0) {
+      throw new HttpsError("invalid-argument", "slotIds or selectedDays are required for SLOT requests.");
+    }
+    if (selectedDaysRaw.length > 0 && selectedDays.some((day) => day.slotIds.length === 0)) {
+      throw new HttpsError("invalid-argument", "Each selectedDays entry must include at least one slotId.", {
+        code: "INVALID_SLOT_SELECTION",
+      });
+    }
+    if (slotIds.length > 0 && groupedSlotIds.length > 0 && !sameSlotIdMultiset(slotIds, groupedSlotIds)) {
+      throw new HttpsError("invalid-argument", "slotIds and selectedDays must describe the same slot selection.", {
+        code: "INVALID_SLOT_SELECTION",
+      });
     }
     return {
       requestAttemptId,
       serviceId,
       bookingType,
-      slotRequest: {slotIds: [...new Set(slotIds)]},
+      slotRequest: {
+        slotIds: slotIds.length > 0 ? slotIds : groupedSlotIds,
+        selectedDays: selectedDaysRaw.length > 0 ? selectedDays : undefined,
+      },
       rangeRequest: null,
     };
   }
@@ -558,6 +624,8 @@ async function buildAuthoritativeSlotSelection(params: {
   providerId: string;
   slotIds: string[];
   unitPricePaise: number;
+  serviceTimezone: string;
+  schedulingMode: string;
 }): Promise<SlotBookingSelection> {
   const snapshots = await Promise.all(
     params.slotIds.map((slotId) =>
@@ -582,27 +650,41 @@ async function buildAuthoritativeSlotSelection(params: {
       serviceId: params.serviceId,
       providerId: params.providerId,
       timezone: asString(data.timezone) || "Asia/Kolkata",
-      dateKey: asString(data.dateKey),
+      dateKey:
+        asString(data.serviceDateKey) ||
+        asString(data.dateKey) ||
+        serviceDateKeyFromDate(startAt, asString(data.timezone) || params.serviceTimezone),
+      serviceDateKey:
+        asString(data.serviceDateKey) ||
+        asString(data.dateKey) ||
+        serviceDateKeyFromDate(startAt, asString(data.timezone) || params.serviceTimezone),
       startAt,
       endAt,
       durationMinutes: Math.round((endAt.getTime() - startAt.getTime()) / 60000),
       unitPricePaise: params.unitPricePaise,
+      schedulingMode: params.schedulingMode,
     };
   }).sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
-  const scheduledStartAt = slots[0].startAt;
-  const scheduledEndAt = slots[slots.length - 1].endAt;
-  const totalDurationMinutes = slots.reduce(
-    (sum, slot) => sum + slot.durationMinutes,
-    0,
-  );
-  return {
+
+  const rawSelection: SlotBookingSelection = {
     bookingType: "SLOT",
     slots,
     slotCount: slots.length,
-    scheduledStartAt,
-    scheduledEndAt,
-    totalDurationMinutes,
+    scheduledStartAt: slots[0].startAt,
+    scheduledEndAt: slots[slots.length - 1].endAt,
+    totalDurationMinutes: slots.reduce(
+      (sum, slot) => sum + slot.durationMinutes,
+      0,
+    ),
   };
+  const normalized = validateSlotBookingSelection(rawSelection);
+  if (!normalized.ok || !normalized.normalizedSelection) {
+    throw new HttpsError("failed-precondition", "Selected slots failed validation.", {
+      code: normalized.issues[0]?.code ?? "INVALID_SLOT_SELECTION",
+      issues: normalized.issues.map((entry) => `${entry.code}:${entry.message}`),
+    });
+  }
+  return normalized.normalizedSelection;
 }
 
 function buildAuthoritativeRangeSelection(params: {
@@ -1417,6 +1499,8 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
         providerId: canonicalService.ownerUserId,
         slotIds: parsed.slotRequest?.slotIds ?? [],
         unitPricePaise: Math.max(asInt(service.pricePerSession, 0) * 100, 0),
+        serviceTimezone: asString(canonicalService.timezone) || "Asia/Kolkata",
+        schedulingMode: canonicalService.schedulingMode ?? "",
       }) :
       buildAuthoritativeRangeSelection({
         service,
@@ -2513,11 +2597,14 @@ export const completeBookingServiceV3 = onCall(
         });
       }
       if (result.code === "PAYMENT_NOT_CONFIRMED" ||
+        result.code === "BOOKING_SERVICE_NOT_ENDED" ||
         result.code === "INVALID_STATE" ||
         result.code === "INVALID_BOOKING_DATA") {
         throw new HttpsError(
           "failed-precondition",
-          "This booking cannot be completed right now.",
+          result.code === "BOOKING_SERVICE_NOT_ENDED" ?
+            "The service has not ended yet. You can complete this booking after the final service end time." :
+            "This booking cannot be completed right now.",
           {
             code: result.code,
             state: result.state,

@@ -74,6 +74,7 @@ class CanonicalBookingParticipantsV3 {
 class CanonicalBookingSlotSegmentV3 {
   final String slotId;
   final String dateKey;
+  final String? serviceDateKey;
   final DateTime startAt;
   final DateTime endAt;
   final int durationMinutes;
@@ -81,10 +82,12 @@ class CanonicalBookingSlotSegmentV3 {
   final String serviceId;
   final String providerId;
   final String timezone;
+  final String? schedulingMode;
 
   const CanonicalBookingSlotSegmentV3({
     required this.slotId,
     required this.dateKey,
+    this.serviceDateKey,
     required this.startAt,
     required this.endAt,
     required this.durationMinutes,
@@ -92,6 +95,7 @@ class CanonicalBookingSlotSegmentV3 {
     required this.serviceId,
     required this.providerId,
     required this.timezone,
+    this.schedulingMode,
   });
 
   BookingSlotSegmentV3 toDomainSegment() {
@@ -101,12 +105,32 @@ class CanonicalBookingSlotSegmentV3 {
       providerId: providerId,
       timezone: timezone,
       dateKey: dateKey,
+      serviceDateKey: serviceDateKey,
       startAt: startAt,
       endAt: endAt,
       durationMinutes: durationMinutes,
       unitPricePaise: unitPricePaise,
+      schedulingMode: schedulingMode,
     );
   }
+}
+
+class CanonicalBookingScheduleSegmentV3 {
+  final String serviceDateKey;
+  final List<String> slotIds;
+  final DateTime startAt;
+  final DateTime endAt;
+  final int durationMinutes;
+  final String schedulingMode;
+
+  const CanonicalBookingScheduleSegmentV3({
+    required this.serviceDateKey,
+    required this.slotIds,
+    required this.startAt,
+    required this.endAt,
+    required this.durationMinutes,
+    required this.schedulingMode,
+  });
 }
 
 abstract class CanonicalBookingScheduleV3 {
@@ -127,6 +151,11 @@ class CanonicalSlotBookingScheduleV3 extends CanonicalBookingScheduleV3 {
   final DateTime scheduledStartAt;
   final DateTime scheduledEndAt;
   final int totalDurationMinutes;
+  final List<CanonicalBookingScheduleSegmentV3>? segments;
+  final DateTime? firstSegmentEndAt;
+  final DateTime? finalEndAt;
+  final int? serviceDayCount;
+  final int? segmentCount;
 
   const CanonicalSlotBookingScheduleV3({
     required super.serviceAnchorAt,
@@ -136,6 +165,11 @@ class CanonicalSlotBookingScheduleV3 extends CanonicalBookingScheduleV3 {
     required this.scheduledStartAt,
     required this.scheduledEndAt,
     required this.totalDurationMinutes,
+    this.segments,
+    this.firstSegmentEndAt,
+    this.finalEndAt,
+    this.serviceDayCount,
+    this.segmentCount,
   }) : super(bookingType: BookingV3Type.slot);
 }
 
@@ -873,6 +907,8 @@ class _CanonicalBookingDocumentParser {
         pricePerNightPaise: _readInt(map['pricePerNightPaise']),
         selectedSlotCount: _readInt(map['selectedSlotCount']),
         totalDurationMinutes: _readInt(map['totalDurationMinutes']),
+        selectedServiceDayCount: _readInt(map['selectedServiceDayCount']),
+        scheduleSegmentCount: _readInt(map['scheduleSegmentCount']),
         checkInDateTime: _readDate(
           map['checkInDateTime'],
           'service.checkInDateTime',
@@ -933,6 +969,9 @@ class _CanonicalBookingDocumentParser {
                 slot['dateKey'],
                 'schedule.slots.dateKey',
               ),
+              serviceDateKey: _readString(slot['serviceDateKey']).trim().isEmpty
+                  ? null
+                  : _readString(slot['serviceDateKey']),
               startAt:
                   _readDate(
                     slot['startAt'],
@@ -960,6 +999,40 @@ class _CanonicalBookingDocumentParser {
               timezone: _requiredString(
                 slot['timezone'],
                 'schedule.slots.timezone',
+              ),
+              schedulingMode: _readString(slot['schedulingMode']).trim().isEmpty
+                  ? null
+                  : _readString(slot['schedulingMode']),
+            ),
+          )
+          .toList(growable: false);
+      final segmentMaps = _readListOfMaps(map['segments']);
+      final parsedSegments = segmentMaps
+          .map(
+            (segment) => CanonicalBookingScheduleSegmentV3(
+              serviceDateKey: _requiredString(
+                segment['serviceDateKey'],
+                'schedule.segments.serviceDateKey',
+              ),
+              slotIds: _readStringList(segment['slotIds']),
+              startAt:
+                  _readDate(
+                    segment['startAt'],
+                    'schedule.segments.startAt',
+                    required: true,
+                  ) ??
+                  DateTime.fromMillisecondsSinceEpoch(0),
+              endAt:
+                  _readDate(
+                    segment['endAt'],
+                    'schedule.segments.endAt',
+                    required: true,
+                  ) ??
+                  DateTime.fromMillisecondsSinceEpoch(0),
+              durationMinutes: _readInt(segment['durationMinutes']) ?? 0,
+              schedulingMode: _requiredString(
+                segment['schedulingMode'],
+                'schedule.segments.schedulingMode',
               ),
             ),
           )
@@ -992,6 +1065,27 @@ class _CanonicalBookingDocumentParser {
           scheduledStartAt: scheduledStartAt,
           scheduledEndAt: scheduledEndAt,
           totalDurationMinutes: totalDurationMinutes,
+          segments: parsedSegments.isEmpty
+              ? null
+              : parsedSegments
+                    .map(
+                      (segment) => SlotBookingScheduleSegmentV3(
+                        serviceDateKey: segment.serviceDateKey,
+                        slotIds: segment.slotIds,
+                        startAt: segment.startAt,
+                        endAt: segment.endAt,
+                        durationMinutes: segment.durationMinutes,
+                        schedulingMode: segment.schedulingMode,
+                      ),
+                    )
+                    .toList(growable: false),
+          firstSegmentEndAt: _readDate(
+            map['firstSegmentEndAt'],
+            'schedule.firstSegmentEndAt',
+          ),
+          finalEndAt: _readDate(map['finalEndAt'], 'schedule.finalEndAt'),
+          serviceDayCount: _readInt(map['serviceDayCount']),
+          segmentCount: _readInt(map['segmentCount']),
         ),
       );
       if (!validation.ok) {
@@ -1028,6 +1122,22 @@ class _CanonicalBookingDocumentParser {
         scheduledStartAt: scheduledStartAt,
         scheduledEndAt: scheduledEndAt,
         totalDurationMinutes: totalDurationMinutes,
+        segments: validation.normalizedSelection?.segments
+            ?.map(
+              (segment) => CanonicalBookingScheduleSegmentV3(
+                serviceDateKey: segment.serviceDateKey,
+                slotIds: segment.slotIds,
+                startAt: segment.startAt,
+                endAt: segment.endAt,
+                durationMinutes: segment.durationMinutes,
+                schedulingMode: segment.schedulingMode,
+              ),
+            )
+            .toList(growable: false),
+        firstSegmentEndAt: validation.normalizedSelection?.firstSegmentEndAt,
+        finalEndAt: validation.normalizedSelection?.finalEndAt,
+        serviceDayCount: validation.normalizedSelection?.serviceDayCount,
+        segmentCount: validation.normalizedSelection?.segmentCount,
       );
     }
 

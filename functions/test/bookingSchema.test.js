@@ -11,6 +11,9 @@ test("parses valid canonical SLOT booking", () => {
   const parsed = schema.parseCanonicalBookingDocumentV3(booking);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.booking.bookingType, "SLOT");
+  assert.equal(parsed.booking.schedule.segmentCount, 1);
+  assert.equal(parsed.booking.schedule.serviceDayCount, 1);
+  assert.equal(parsed.booking.schedule.segments.length, 1);
 });
 
 test("parses valid canonical multi-slot booking", () => {
@@ -18,6 +21,20 @@ test("parses valid canonical multi-slot booking", () => {
   const parsed = schema.parseCanonicalBookingDocumentV3(booking);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.booking.schedule.slotCount, 3);
+});
+
+test("legacy canonical SLOT booking without explicit segments still parses with derived fallback segments", () => {
+  const booking = fixtures.buildRequestedSingleSlotBookingFixture();
+  delete booking.schedule.segments;
+  delete booking.schedule.firstSegmentEndAt;
+  delete booking.schedule.finalEndAt;
+  delete booking.schedule.serviceDayCount;
+  delete booking.schedule.segmentCount;
+
+  const parsed = schema.parseCanonicalBookingDocumentV3(booking);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.booking.schedule.segments.length, 1);
+  assert.equal(parsed.booking.schedule.firstSegmentEndAt.getTime(), booking.schedule.scheduledEndAt.getTime());
 });
 
 test("parses valid canonical RANGE booking", () => {

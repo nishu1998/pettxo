@@ -292,6 +292,10 @@ void main() {
       expect(result.isValid, isTrue);
       expect(result.booking?.bookingType, BookingV3Type.slot);
       expect(result.booking?.schedule, isA<CanonicalSlotBookingScheduleV3>());
+      final schedule =
+          result.booking?.schedule as CanonicalSlotBookingScheduleV3;
+      expect(schedule.segments?.length, 1);
+      expect(schedule.serviceDayCount, 1);
     });
 
     test('parses canonical multi-slot booking', () {

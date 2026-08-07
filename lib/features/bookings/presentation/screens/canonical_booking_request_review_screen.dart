@@ -5,6 +5,7 @@ import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/repositories/booking_repository.dart';
+import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
 import 'canonical_booking_request_status_screen.dart';
 
@@ -89,10 +90,24 @@ class _CanonicalBookingRequestReviewScreenState
 
   @override
   Widget build(BuildContext context) {
-    final slots = _slotRequest.selection.slots;
-    final start = _slotRequest.selection.scheduledStartAt;
-    final end = _slotRequest.selection.scheduledEndAt;
+    final selection = _slotRequest.selection;
+    final slots = selection.slots;
+    final segments =
+        selection.segments ?? const <SlotBookingScheduleSegmentV3>[];
     final estimatedSubtotal = _slotRequest.estimatedSubtotalPaise / 100;
+    final visibleSegments = segments.isNotEmpty
+        ? segments
+        : <SlotBookingScheduleSegmentV3>[
+            SlotBookingScheduleSegmentV3(
+              serviceDateKey: slots.first.serviceDateKey ?? slots.first.dateKey,
+              slotIds: slots.map((slot) => slot.slotId).toList(growable: false),
+              startAt: selection.scheduledStartAt,
+              endAt: selection.scheduledEndAt,
+              durationMinutes: selection.totalDurationMinutes,
+              schedulingMode: widget.schedulingMode,
+            ),
+          ];
+    final serviceDayCount = selection.serviceDayCount ?? visibleSegments.length;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -133,14 +148,21 @@ class _CanonicalBookingRequestReviewScreenState
             ),
             const SizedBox(height: 16),
             _ReviewCard(
-              title: 'Schedule',
+              title: 'Booking summary',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _ReviewLine(
-                    label: 'Selected time',
+                    label: 'Service days',
                     value:
-                        '${_formatDate(start)} · ${_formatTime(start)} - ${_formatTime(end)}',
+                        '$serviceDayCount day${serviceDayCount == 1 ? '' : 's'}',
+                  ),
+                  ...visibleSegments.map<Widget>(
+                    (segment) => _ReviewLine(
+                      label: _formatDate(segment.startAt),
+                      value:
+                          '${_formatTime(segment.startAt)} - ${_formatTime(segment.endAt)}',
+                    ),
                   ),
                   _ReviewLine(
                     label: 'Slots',
@@ -168,7 +190,7 @@ class _CanonicalBookingRequestReviewScreenState
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _ReviewLine(
-                    label: 'Estimated subtotal',
+                    label: 'Total service price',
                     value: '₹${estimatedSubtotal.toStringAsFixed(0)}',
                   ),
                   const _ReviewLine(

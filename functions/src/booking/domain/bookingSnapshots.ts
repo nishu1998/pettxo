@@ -14,6 +14,8 @@ export type BookingServiceSnapshot = {
   pricePerNightPaise?: number;
   selectedSlotCount?: number;
   totalDurationMinutes?: number;
+  selectedServiceDayCount?: number;
+  scheduleSegmentCount?: number;
   checkInDateTime?: Date;
   checkOutDateTime?: Date;
   capacitySnapshot: number;

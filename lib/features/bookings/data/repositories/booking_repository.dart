@@ -632,11 +632,19 @@ class BookingRepository {
         code = CanonicalBookingRequestFailureCode.invalidBookingType;
         break;
       case 'INVALID_SCHEDULE':
+      case 'INVALID_SLOT_SELECTION':
       case 'INVALID_RANGE':
       case 'INVALID_NIGHTS':
       case 'INVALID_SLOT_RANGE':
       case 'INVALID_SLOT_COUNT':
       case 'INVALID_TOTAL_DURATION':
+      case 'DUPLICATE_SLOT_SELECTION':
+      case 'NON_CONTIGUOUS_DAILY_SLOTS':
+      case 'NON_CONSECUTIVE_SERVICE_DATES':
+      case 'TOO_MANY_SERVICE_DAYS':
+      case 'OVERLAPPING_BOOKING_SEGMENTS':
+      case 'MIXED_SERVICE_SLOT_SELECTION':
+      case 'MIXED_SCHEDULING_MODE':
       case 'NON_CONTIGUOUS':
       case 'OVERLAPPING':
         code = CanonicalBookingRequestFailureCode.invalidSchedule;
@@ -847,7 +855,7 @@ class BookingRepository {
       case CanonicalPaymentFailureCode.serviceUnavailable:
         return 'This service is not available for payment right now.';
       case CanonicalPaymentFailureCode.capacityUnavailable:
-        return 'Availability changed before payment could be confirmed.';
+        return 'One or more selected slots are no longer available. Please review your booking.';
       case CanonicalPaymentFailureCode.couponInvalid:
         return 'This coupon can no longer be applied.';
       case CanonicalPaymentFailureCode.pricingChanged:

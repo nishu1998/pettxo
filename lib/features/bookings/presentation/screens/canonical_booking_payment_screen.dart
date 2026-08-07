@@ -6,7 +6,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/utils/service_duration.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
@@ -21,6 +20,7 @@ import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_payment_order.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
+import '../utils/canonical_booking_schedule_presentation.dart';
 import 'booking_confirmation_screen.dart';
 import '../widgets/booking_deadline_countdown.dart';
 
@@ -1084,64 +1084,15 @@ class _CanonicalBookingPaymentScreenState
   }
 
   String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {
-    final start = booking.scheduledStartAt;
-    if (start == null) {
-      return '—';
-    }
-    return '${start.day} ${_monthLabel(start.month)} ${start.year}';
+    return buildCanonicalBookingSchedulePresentation(booking).dateLabel;
   }
 
   String _bookingTimeLabel(CanonicalBookingDocumentV3 booking) {
-    final start = booking.scheduledStartAt;
-    if (start == null) {
-      return '—';
-    }
-    final end = booking.schedule is CanonicalSlotBookingScheduleV3
-        ? (booking.schedule as CanonicalSlotBookingScheduleV3).scheduledEndAt
-        : null;
-    if (end == null) {
-      return _formatTimeOfDay(start);
-    }
-    return '${_formatTimeOfDay(start)} to ${_formatTimeOfDay(end)}';
+    return buildCanonicalBookingSchedulePresentation(booking).timeLabel;
   }
 
   String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
-    final duration =
-        booking.statistics.totalDurationMinutes ??
-        booking.service.totalDurationMinutes ??
-        booking.service.durationMinutes;
-    if (duration == null || duration <= 0) {
-      return '—';
-    }
-    return formatServiceDurationLabel(
-      durationMinutes: duration,
-      schedulingMode: booking.service.schedulingMode,
-    );
-  }
-
-  String _formatTimeOfDay(DateTime dateTime) {
-    final hour = dateTime.hour % 12 == 0 ? 12 : dateTime.hour % 12;
-    final minute = dateTime.minute.toString().padLeft(2, '0');
-    final suffix = dateTime.hour >= 12 ? 'PM' : 'AM';
-    return '$hour:$minute $suffix';
-  }
-
-  String _monthLabel(int month) {
-    const months = <String>[
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return months[month - 1];
+    return buildCanonicalBookingSchedulePresentation(booking).durationLabel;
   }
 
   Future<void> _openPolicyDocument(LegalPolicyDocument document) {

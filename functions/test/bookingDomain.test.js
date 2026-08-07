@@ -14,24 +14,29 @@ function slot({
   slotId,
   startHour,
   endHour,
+  startAt: explicitStartAt,
+  endAt: explicitEndAt,
   serviceId = "service-1",
   providerId = "provider-1",
   timezone = "Asia/Kolkata",
   dateKey = "2026-07-22",
   unitPricePaise = 10000,
+  schedulingMode = "fixedDuration",
 }) {
-  const startAt = new Date(Date.UTC(2026, 6, 22, startHour));
-  const endAt = new Date(Date.UTC(2026, 6, 22, endHour));
+  const startAt = explicitStartAt ?? new Date(Date.UTC(2026, 6, 22, startHour));
+  const endAt = explicitEndAt ?? new Date(Date.UTC(2026, 6, 22, endHour));
   return {
     slotId,
     serviceId,
     providerId,
     timezone,
     dateKey,
+    serviceDateKey: dateKey,
     startAt,
     endAt,
     durationMinutes: (endAt.getTime() - startAt.getTime()) / 60000,
     unitPricePaise,
+    schedulingMode,
   };
 }
 
@@ -97,6 +102,7 @@ test("slot validator accepts one slot and multiple continuous slots", () => {
   });
   assert.equal(multi.ok, true);
   assert.equal(multi.normalizedSelection.slots[0].slotId, "slot-1");
+  assert.equal(multi.normalizedSelection.segmentCount, 1);
 });
 
 test("slot validator rejects gap, overlap, duplicate slot, mixed provider, mixed service, and mixed timezone", () => {
@@ -113,7 +119,7 @@ test("slot validator rejects gap, overlap, duplicate slot, mixed provider, mixed
     totalDurationMinutes: 120,
   });
   assert.equal(gapResult.ok, false);
-  assert.ok(gapResult.issues.some((issue) => issue.code === "NON_CONTIGUOUS"));
+  assert.ok(gapResult.issues.some((issue) => issue.code === "NON_CONTIGUOUS_DAILY_SLOTS"));
 
   const overlapResult = slotBooking.validateSlotBookingSelection({
     bookingType: "SLOT",
@@ -124,11 +130,150 @@ test("slot validator rejects gap, overlap, duplicate slot, mixed provider, mixed
     totalDurationMinutes: 180,
   });
   assert.equal(overlapResult.ok, false);
-  assert.ok(overlapResult.issues.some((issue) => issue.code === "DUPLICATE_SLOT"));
-  assert.ok(overlapResult.issues.some((issue) => issue.code === "OVERLAPPING"));
-  assert.ok(overlapResult.issues.some((issue) => issue.code === "MIXED_PROVIDER"));
-  assert.ok(overlapResult.issues.some((issue) => issue.code === "MIXED_SERVICE"));
+  assert.ok(overlapResult.issues.some((issue) => issue.code === "DUPLICATE_SLOT_SELECTION"));
+  assert.ok(overlapResult.issues.some((issue) => issue.code === "OVERLAPPING_BOOKING_SEGMENTS"));
+  assert.ok(overlapResult.issues.some((issue) => issue.code === "MIXED_PROVIDER_SLOT_SELECTION"));
+  assert.ok(overlapResult.issues.some((issue) => issue.code === "MIXED_SERVICE_SLOT_SELECTION"));
   assert.ok(overlapResult.issues.some((issue) => issue.code === "MIXED_TIMEZONE"));
+});
+
+test("slot validator normalizes three consecutive service dates into three segments", () => {
+  const result = slotBooking.validateSlotBookingSelection({
+    bookingType: "SLOT",
+    slots: [
+      slot({
+        slotId: "slot-1",
+        dateKey: "2026-08-01",
+        startAt: new Date("2026-08-01T03:30:00.000Z"),
+        endAt: new Date("2026-08-01T04:30:00.000Z"),
+      }),
+      slot({
+        slotId: "slot-2",
+        dateKey: "2026-08-02",
+        startAt: new Date("2026-08-02T08:30:00.000Z"),
+        endAt: new Date("2026-08-02T09:30:00.000Z"),
+      }),
+      slot({
+        slotId: "slot-3",
+        dateKey: "2026-08-03",
+        startAt: new Date("2026-08-03T05:30:00.000Z"),
+        endAt: new Date("2026-08-03T06:30:00.000Z"),
+      }),
+    ],
+    slotCount: 3,
+    scheduledStartAt: new Date("2026-08-01T03:30:00.000Z"),
+    scheduledEndAt: new Date("2026-08-03T06:30:00.000Z"),
+    totalDurationMinutes: 180,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.normalizedSelection.serviceDayCount, 3);
+  assert.equal(result.normalizedSelection.segmentCount, 3);
+  assert.equal(result.normalizedSelection.segments[1].serviceDateKey, "2026-08-02");
+});
+
+test("slot validator rejects missing middle service date", () => {
+  const result = slotBooking.validateSlotBookingSelection({
+    bookingType: "SLOT",
+    slots: [
+      slot({
+        slotId: "slot-1",
+        dateKey: "2026-08-01",
+        startAt: new Date("2026-08-01T03:30:00.000Z"),
+        endAt: new Date("2026-08-01T04:30:00.000Z"),
+      }),
+      slot({
+        slotId: "slot-2",
+        dateKey: "2026-08-03",
+        startAt: new Date("2026-08-03T03:30:00.000Z"),
+        endAt: new Date("2026-08-03T04:30:00.000Z"),
+      }),
+    ],
+    slotCount: 2,
+    scheduledStartAt: new Date("2026-08-01T03:30:00.000Z"),
+    scheduledEndAt: new Date("2026-08-03T04:30:00.000Z"),
+    totalDurationMinutes: 120,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === "NON_CONSECUTIVE_SERVICE_DATES"));
+});
+
+test("slot validator rejects more than 10 service dates", () => {
+  const slots = Array.from({length: 11}, (_, index) => {
+    const day = index + 1;
+    return slot({
+      slotId: `slot-${day}`,
+      dateKey: `2026-08-${String(day).padStart(2, "0")}`,
+      startAt: new Date(`2026-08-${String(day).padStart(2, "0")}T03:30:00.000Z`),
+      endAt: new Date(`2026-08-${String(day).padStart(2, "0")}T04:30:00.000Z`),
+    });
+  });
+  const result = slotBooking.validateSlotBookingSelection({
+    bookingType: "SLOT",
+    slots,
+    slotCount: 11,
+    scheduledStartAt: slots[0].startAt,
+    scheduledEndAt: slots[slots.length - 1].endAt,
+    totalDurationMinutes: 660,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === "TOO_MANY_SERVICE_DAYS"));
+});
+
+test("slot validator rejects overlapping cross-date segments and accepts touching 24-hour segments", () => {
+  const overlapping = slotBooking.validateSlotBookingSelection({
+    bookingType: "SLOT",
+    slots: [
+      slot({
+        slotId: "slot-1",
+        dateKey: "2026-08-01",
+        startAt: new Date("2026-08-01T13:30:00.000Z"),
+        endAt: new Date("2026-08-02T04:30:00.000Z"),
+        schedulingMode: "overnight",
+      }),
+      slot({
+        slotId: "slot-2",
+        dateKey: "2026-08-02",
+        startAt: new Date("2026-08-02T02:30:00.000Z"),
+        endAt: new Date("2026-08-03T02:30:00.000Z"),
+        schedulingMode: "twentyFourHours",
+      }),
+    ],
+    slotCount: 2,
+    scheduledStartAt: new Date("2026-08-01T13:30:00.000Z"),
+    scheduledEndAt: new Date("2026-08-03T02:30:00.000Z"),
+    totalDurationMinutes: 2340,
+  });
+  assert.equal(overlapping.ok, false);
+  assert.ok(overlapping.issues.some((issue) => issue.code === "OVERLAPPING_BOOKING_SEGMENTS"));
+
+  const touching = slotBooking.validateSlotBookingSelection({
+    bookingType: "SLOT",
+    slots: [
+      slot({
+        slotId: "slot-1",
+        dateKey: "2026-08-01",
+        startAt: new Date("2026-08-01T03:30:00.000Z"),
+        endAt: new Date("2026-08-02T03:30:00.000Z"),
+        schedulingMode: "twentyFourHours",
+      }),
+      slot({
+        slotId: "slot-2",
+        dateKey: "2026-08-02",
+        startAt: new Date("2026-08-02T03:30:00.000Z"),
+        endAt: new Date("2026-08-03T03:30:00.000Z"),
+        schedulingMode: "twentyFourHours",
+      }),
+    ],
+    slotCount: 2,
+    scheduledStartAt: new Date("2026-08-01T03:30:00.000Z"),
+    scheduledEndAt: new Date("2026-08-03T03:30:00.000Z"),
+    totalDurationMinutes: 2880,
+  });
+  assert.equal(touching.ok, true);
+  assert.equal(touching.normalizedSelection.segmentCount, 2);
 });
 
 test("range validator calculates nights by calendar date in provider timezone", () => {

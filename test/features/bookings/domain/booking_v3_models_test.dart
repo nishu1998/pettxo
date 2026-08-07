@@ -45,6 +45,7 @@ void main() {
       expect(result.normalizedSelection?.slots.first.slotId, 'slot-1');
       expect(result.normalizedSelection?.slotCount, 2);
       expect(result.normalizedSelection?.totalDurationMinutes, 120);
+      expect(result.normalizedSelection?.segmentCount, 1);
     });
 
     test('rejects gap between slots', () {
@@ -64,7 +65,8 @@ void main() {
       expect(result.ok, isFalse);
       expect(
         result.issues.any(
-          (issue) => issue.code == SlotBookingValidationCode.nonContiguous,
+          (issue) =>
+              issue.code == SlotBookingValidationCode.nonContiguousDailySlots,
         ),
         isTrue,
       );
@@ -93,28 +95,91 @@ void main() {
       expect(result.ok, isFalse);
       expect(
         result.issues.any(
-          (issue) => issue.code == SlotBookingValidationCode.duplicateSlot,
+          (issue) =>
+              issue.code == SlotBookingValidationCode.duplicateSlotSelection,
         ),
         isTrue,
       );
       expect(
         result.issues.any(
-          (issue) => issue.code == SlotBookingValidationCode.overlapping,
+          (issue) =>
+              issue.code ==
+              SlotBookingValidationCode.overlappingBookingSegments,
         ),
         isTrue,
       );
       expect(
         result.issues.any(
-          (issue) => issue.code == SlotBookingValidationCode.mixedProvider,
+          (issue) =>
+              issue.code ==
+              SlotBookingValidationCode.mixedProviderSlotSelection,
         ),
         isTrue,
       );
       expect(
         result.issues.any(
-          (issue) => issue.code == SlotBookingValidationCode.mixedService,
+          (issue) =>
+              issue.code == SlotBookingValidationCode.mixedServiceSlotSelection,
         ),
         isTrue,
       );
+    });
+
+    test('normalizes consecutive service dates into multiple segments', () {
+      BookingSlotSegmentV3 buildDatedSlot({
+        required String slotId,
+        required DateTime startAt,
+        required DateTime endAt,
+        required String dateKey,
+      }) {
+        return BookingSlotSegmentV3(
+          slotId: slotId,
+          serviceId: 'service-1',
+          providerId: 'provider-1',
+          timezone: 'Asia/Kolkata',
+          dateKey: dateKey,
+          serviceDateKey: dateKey,
+          startAt: startAt,
+          endAt: endAt,
+          durationMinutes: endAt.difference(startAt).inMinutes,
+          unitPricePaise: 10000,
+          schedulingMode: 'fixedDuration',
+        );
+      }
+
+      final result = validateSlotBookingSelectionV3(
+        SlotBookingSelectionV3(
+          bookingType: BookingV3Type.slot,
+          slots: [
+            buildDatedSlot(
+              slotId: 'slot-1',
+              dateKey: '2026-08-07',
+              startAt: DateTime.utc(2026, 8, 7, 3, 30),
+              endAt: DateTime.utc(2026, 8, 7, 4, 30),
+            ),
+            buildDatedSlot(
+              slotId: 'slot-2',
+              dateKey: '2026-08-08',
+              startAt: DateTime.utc(2026, 8, 8, 8, 30),
+              endAt: DateTime.utc(2026, 8, 8, 9, 30),
+            ),
+            buildDatedSlot(
+              slotId: 'slot-3',
+              dateKey: '2026-08-09',
+              startAt: DateTime.utc(2026, 8, 9, 5, 30),
+              endAt: DateTime.utc(2026, 8, 9, 6, 30),
+            ),
+          ],
+          slotCount: 3,
+          scheduledStartAt: DateTime.utc(2026, 8, 7, 3, 30),
+          scheduledEndAt: DateTime.utc(2026, 8, 9, 6, 30),
+          totalDurationMinutes: 180,
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      expect(result.normalizedSelection?.serviceDayCount, 3);
+      expect(result.normalizedSelection?.segments?.length, 3);
     });
   });
 

@@ -45,9 +45,11 @@ class SlotSelectionScreen extends StatefulWidget {
 class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   static const Color _screenBackground = Color(0xFFFCF8F5);
   static const Duration _availabilityRefreshInterval = Duration(minutes: 1);
+  static const int _maxSelectedServiceDays = 10;
   late DateTime _selectedDate;
   late DateTime _focusedMonth;
-  final List<ServiceSlotModel> _selectedCanonicalSlots = <ServiceSlotModel>[];
+  final Map<String, List<ServiceSlotModel>> _selectedSlotsByDate =
+      <String, List<ServiceSlotModel>>{};
   final BookingRequestAttemptIdController _requestAttemptIdController =
       BookingRequestAttemptIdController();
   String? _slotError;
@@ -129,7 +131,6 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     setState(() {
       _focusedMonth = next;
       _selectedDate = nextSelectedDate;
-      _selectedCanonicalSlots.clear();
       _slotError = null;
     });
   }
@@ -144,23 +145,16 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       });
       return;
     }
-    final selection = _buildCanonicalSelection(_selectedCanonicalSlots);
-    if (selection == null || selection.slots.isEmpty) {
-      setState(() => _slotError = 'Choose at least one available slot.');
-      return;
-    }
-    final validation = validateSlotBookingSelectionV3(selection);
-    if (!validation.ok || validation.normalizedSelection == null) {
+    final normalizedSelection = _normalizedSelection;
+    if (normalizedSelection == null || normalizedSelection.slots.isEmpty) {
       setState(() {
-        _slotError =
-            'Choose continuous slots from the same service to continue.';
+        _slotError = 'Choose continuous slots on consecutive service days.';
       });
       return;
     }
-
-    final normalizedSelection = validation.normalizedSelection!;
     final estimatedSubtotalPaise =
         normalizedSelection.slotCount * _canonicalUnitPricePaise;
+    final selectedDays = _buildSelectedDaysPayload(normalizedSelection);
     final requestInput = CanonicalBookingRequestInput(
       requestAttemptId: _requestAttemptIdController.idForPayload(
         _canonicalPayloadKey(normalizedSelection),
@@ -170,6 +164,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       slotRequest: CanonicalSlotRequestInput(
         selection: normalizedSelection,
         estimatedSubtotalPaise: estimatedSubtotalPaise,
+        selectedDays: selectedDays.length > 1 ? selectedDays : null,
       ),
     );
 
@@ -241,7 +236,6 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                   setState(() {
                     _selectedDate = date;
                     _focusedMonth = DateTime(date.year, date.month);
-                    _selectedCanonicalSlots.clear();
                     _slotError = null;
                   });
                 },
@@ -250,7 +244,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               ),
               const SizedBox(height: 22),
               const Text(
-                'Choose one or more continuous slots',
+                'Choose continuous slots on consecutive days',
                 style: TextStyle(
                   color: AppColors.textDark,
                   fontSize: 20,
@@ -259,7 +253,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Nothing will be charged now. Your selection is not reserved until payment succeeds.',
+                'Nothing will be charged now. Pick up to 10 consecutive service days and your selection will stay unreserved until payment succeeds.',
                 style: TextStyle(
                   color: AppColors.textGrey,
                   fontSize: 13.5,
@@ -277,9 +271,9 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                     _buildSlotSelector(context, snapshot),
               ),
               const SizedBox(height: 14),
-              if (_selectedCanonicalSlots.isNotEmpty) ...[
+              if (_normalizedSelection != null) ...[
                 _CanonicalSelectionSummaryCard(
-                  selectedSlots: _selectedCanonicalSlots,
+                  selection: _normalizedSelection!,
                   unitPricePaise: _canonicalUnitPricePaise,
                   schedulingMode: widget.schedulingMode,
                 ),
@@ -339,9 +333,9 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
         _SlotRail(
           slots: slots,
           selectedSlotId: null,
-          selectedSlotIds: _selectedCanonicalSlots
-              .map((slot) => slot.id)
-              .toSet(),
+          selectedSlotIds: _selectedSlotsForDate(
+            _selectedDateKey,
+          ).map((slot) => slot.id).toSet(),
           allowMultiSelect: true,
           isSlotBookable: _isSlotBookable,
           onSlotSelected: _handleSlotTapped,
@@ -380,7 +374,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   void _selectSuggestedSlotIfNeeded(List<ServiceSlotModel> slots) {
-    if (_selectedCanonicalSlots.isNotEmpty ||
+    if (_allSelectedSlots.isNotEmpty ||
         widget.suggestedSlotStartAt == null ||
         !_isSameDay(widget.suggestedSlotStartAt!, _selectedDate)) {
       return;
@@ -403,13 +397,13 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
-          _selectedCanonicalSlots.any((slot) => slot.id == suggestedSlot.id)) {
+          _allSelectedSlots.any((slot) => slot.id == suggestedSlot.id)) {
         return;
       }
       setState(() {
-        _selectedCanonicalSlots
-          ..clear()
-          ..add(suggestedSlot);
+        _selectedSlotsByDate[_selectedDateKey] = <ServiceSlotModel>[
+          suggestedSlot,
+        ];
         _slotError = null;
       });
     });
@@ -421,29 +415,53 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   void _toggleCanonicalSlot(ServiceSlotModel slot) {
-    final nextSelection = [..._selectedCanonicalSlots];
-    final existingIndex = nextSelection.indexWhere(
+    final targetDateKey = _serviceDateKeyForSlot(slot);
+    final currentDateSelection = [..._selectedSlotsForDate(targetDateKey)];
+    final existingIndex = currentDateSelection.indexWhere(
       (entry) => entry.id == slot.id,
     );
     if (existingIndex >= 0) {
-      nextSelection.removeAt(existingIndex);
+      final removingLastSlotForDate = currentDateSelection.length == 1;
+      if (removingLastSlotForDate &&
+          _wouldSplitSelectionOnDateRemoval(targetDateKey)) {
+        setState(() {
+          _slotError =
+              'Remove a selection from the first or last chosen day before removing this middle day.';
+        });
+        return;
+      }
+      currentDateSelection.removeAt(existingIndex);
       setState(() {
-        _selectedCanonicalSlots
-          ..clear()
-          ..addAll(nextSelection);
+        if (currentDateSelection.isEmpty) {
+          _selectedSlotsByDate.remove(targetDateKey);
+        } else {
+          _selectedSlotsByDate[targetDateKey] = _sortSlots(
+            currentDateSelection,
+          );
+        }
         _slotError = null;
       });
       return;
     }
 
-    nextSelection.add(slot);
-    if (!_isSelectionStillBookable(nextSelection)) {
+    final addDecision = _canAddServiceDate(targetDateKey);
+    if (!addDecision.allowed) {
+      setState(() {
+        _slotError = addDecision.message;
+      });
+      return;
+    }
+    currentDateSelection.add(slot);
+    if (!_isSelectionStillBookable(currentDateSelection)) {
       setState(() {
         _slotError = 'Please choose a slot that is still available to request.';
       });
       return;
     }
-    final selection = _buildCanonicalSelection(nextSelection);
+
+    final nextSelectionByDate = _cloneSelectionByDate();
+    nextSelectionByDate[targetDateKey] = _sortSlots(currentDateSelection);
+    final selection = _buildCanonicalSelection(nextSelectionByDate);
     if (selection == null) {
       setState(() {
         _slotError = 'We could not prepare those slots. Please try again.';
@@ -454,26 +472,27 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     if (!validation.ok) {
       setState(() {
         _slotError =
-            'Please choose continuous slots in order without gaps or overlaps.';
+            'Please choose continuous slots on each day without gaps or overlaps.';
       });
       return;
     }
 
     setState(() {
-      _selectedCanonicalSlots
+      _selectedSlotsByDate
         ..clear()
-        ..addAll(
-          [...nextSelection]..sort((a, b) => a.startAt.compareTo(b.startAt)),
-        );
+        ..addAll(nextSelectionByDate);
       _slotError = null;
     });
   }
 
   SlotBookingSelectionV3? _buildCanonicalSelection(
-    List<ServiceSlotModel> slots,
+    Map<String, List<ServiceSlotModel>> slotsByDate,
   ) {
+    final slots = slotsByDate.values
+        .expand((dateSlots) => dateSlots)
+        .toList(growable: false);
     if (slots.isEmpty) return null;
-    final sorted = [...slots]..sort((a, b) => a.startAt.compareTo(b.startAt));
+    final sorted = _sortSlots(slots);
     final segments = sorted
         .map(
           (slot) => BookingSlotSegmentV3(
@@ -482,10 +501,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
             providerId: widget.providerId,
             timezone: _effectiveTimezone,
             dateKey: slot.dateKey,
+            serviceDateKey: _serviceDateKeyForSlot(slot),
             startAt: slot.startAt,
             endAt: slot.endAt,
             durationMinutes: slot.endAt.difference(slot.startAt).inMinutes,
             unitPricePaise: _canonicalUnitPricePaise,
+            schedulingMode: widget.schedulingMode,
           ),
         )
         .toList(growable: false);
@@ -504,17 +525,38 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   String _canonicalPayloadKey(SlotBookingSelectionV3 selection) {
-    final slotIds = selection.slots.map((slot) => slot.slotId).join(',');
-    return '${widget.serviceId}|${widget.providerId}|$slotIds|${selection.scheduledStartAt.toUtc().toIso8601String()}';
+    final segmentKey =
+        (selection.segments ?? const <SlotBookingScheduleSegmentV3>[])
+            .map(
+              (segment) =>
+                  '${segment.serviceDateKey}:${segment.slotIds.join("-")}',
+            )
+            .join('|');
+    return '${widget.serviceId}|${widget.providerId}|$segmentKey|${selection.scheduledStartAt.toUtc().toIso8601String()}';
   }
 
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
-  bool get _hasValidSelection =>
-      _selectedCanonicalSlots.isNotEmpty &&
-      _isSelectionStillBookable(_selectedCanonicalSlots);
+  bool get _hasValidSelection => _normalizedSelection != null;
+
+  List<ServiceSlotModel> get _allSelectedSlots =>
+      _selectedSlotsByDate.values
+          .expand((slots) => slots)
+          .toList(growable: false)
+        ..sort((a, b) => a.startAt.compareTo(b.startAt));
+
+  String get _selectedDateKey => _dateKeyForDate(_selectedDate);
+
+  SlotBookingSelectionV3? get _normalizedSelection {
+    if (_selectedSlotsByDate.isEmpty) return null;
+    final selection = _buildCanonicalSelection(_selectedSlotsByDate);
+    if (selection == null) return null;
+    final validation = validateSlotBookingSelectionV3(selection);
+    if (!validation.ok) return null;
+    return validation.normalizedSelection;
+  }
 
   bool _isSlotBookable(ServiceSlotModel slot) {
     return slot.isOpen &&
@@ -534,25 +576,153 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   void _pruneInvalidSelection(List<ServiceSlotModel> availableSlots) {
-    if (_selectedCanonicalSlots.isEmpty) return;
+    final currentDateKey = _selectedDateKey;
+    final selectedSlots = _selectedSlotsForDate(currentDateKey);
+    if (selectedSlots.isEmpty) return;
     final currentSlotsById = {for (final slot in availableSlots) slot.id: slot};
-    final refreshedSelection = _selectedCanonicalSlots
+    final refreshedSelection = selectedSlots
         .map((slot) => currentSlotsById[slot.id])
         .whereType<ServiceSlotModel>()
         .toList(growable: false);
     if (_isSelectionStillBookable(refreshedSelection) &&
-        refreshedSelection.length == _selectedCanonicalSlots.length) {
+        refreshedSelection.length == selectedSlots.length) {
       return;
     }
+    final nextSelectionByDate = _cloneSelectionByDate();
+    if (refreshedSelection.isEmpty) {
+      nextSelectionByDate.remove(currentDateKey);
+    } else {
+      nextSelectionByDate[currentDateKey] = _sortSlots(refreshedSelection);
+    }
+    final hasSafeSelectionAfterRefresh =
+        nextSelectionByDate.isEmpty ||
+        (() {
+          final nextSelection = _buildCanonicalSelection(nextSelectionByDate);
+          if (nextSelection == null) return false;
+          return validateSlotBookingSelectionV3(nextSelection).ok;
+        })();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       setState(() {
-        _selectedCanonicalSlots.clear();
+        _selectedSlotsByDate
+          ..clear()
+          ..addAll(
+            hasSafeSelectionAfterRefresh ? nextSelectionByDate : const {},
+          );
+        if (!hasSafeSelectionAfterRefresh) {
+          _selectedSlotsByDate.clear();
+        }
         _slotError =
-            'Your selected slot is no longer available. Please choose another slot.';
+            'One or more selected slots are no longer available. Please review your booking.';
       });
     });
   }
+
+  Map<String, List<ServiceSlotModel>> _cloneSelectionByDate() {
+    return {
+      for (final entry in _selectedSlotsByDate.entries)
+        entry.key: [...entry.value]
+          ..sort((a, b) => a.startAt.compareTo(b.startAt)),
+    };
+  }
+
+  List<ServiceSlotModel> _selectedSlotsForDate(String dateKey) {
+    return _selectedSlotsByDate[dateKey] ?? const <ServiceSlotModel>[];
+  }
+
+  List<ServiceSlotModel> _sortSlots(List<ServiceSlotModel> slots) {
+    return [...slots]..sort((a, b) => a.startAt.compareTo(b.startAt));
+  }
+
+  String _serviceDateKeyForSlot(ServiceSlotModel slot) {
+    final key = slot.dateKey.trim();
+    if (key.isNotEmpty) return key;
+    return _dateKeyForDate(slot.startAt);
+  }
+
+  String _dateKeyForDate(DateTime date) {
+    final local = date.toLocal();
+    final month = local.month.toString().padLeft(2, '0');
+    final day = local.day.toString().padLeft(2, '0');
+    return '${local.year}-$month-$day';
+  }
+
+  List<String> _sortedSelectedDateKeys() {
+    final keys = _selectedSlotsByDate.keys.toList(growable: false);
+    keys.sort();
+    return keys;
+  }
+
+  _DateAddDecision _canAddServiceDate(String dateKey) {
+    final selectedDateKeys = _sortedSelectedDateKeys();
+    if (selectedDateKeys.isEmpty || selectedDateKeys.contains(dateKey)) {
+      return const _DateAddDecision.allowed();
+    }
+    if (selectedDateKeys.length >= _maxSelectedServiceDays) {
+      return const _DateAddDecision.denied(
+        'You can choose up to 10 consecutive service days in one booking.',
+      );
+    }
+    final first = DateTime.parse(selectedDateKeys.first);
+    final last = DateTime.parse(selectedDateKeys.last);
+    final target = DateTime.parse(dateKey);
+    final allowedPrevious = first.subtract(const Duration(days: 1));
+    final allowedNext = last.add(const Duration(days: 1));
+    if (_isSameDay(target, allowedPrevious) ||
+        _isSameDay(target, allowedNext)) {
+      return const _DateAddDecision.allowed();
+    }
+    return const _DateAddDecision.denied(
+      'Choose the previous or next consecutive service day to extend this booking.',
+    );
+  }
+
+  bool _wouldSplitSelectionOnDateRemoval(String dateKey) {
+    final selectedDateKeys = _sortedSelectedDateKeys();
+    if (selectedDateKeys.length <= 2) return false;
+    final index = selectedDateKeys.indexOf(dateKey);
+    return index > 0 && index < selectedDateKeys.length - 1;
+  }
+
+  List<CanonicalSelectedDaySlotInput> _buildSelectedDaysPayload(
+    SlotBookingSelectionV3 selection,
+  ) {
+    final segments =
+        selection.segments ?? const <SlotBookingScheduleSegmentV3>[];
+    if (segments.isEmpty) {
+      final slotIds = selection.slots
+          .map((slot) => slot.slotId)
+          .toList(growable: false);
+      return <CanonicalSelectedDaySlotInput>[
+        CanonicalSelectedDaySlotInput(
+          serviceDateKey:
+              selection.slots.first.serviceDateKey ??
+              selection.slots.first.dateKey,
+          slotIds: slotIds,
+        ),
+      ];
+    }
+    return segments
+        .map(
+          (segment) => CanonicalSelectedDaySlotInput(
+            serviceDateKey: segment.serviceDateKey,
+            slotIds: segment.slotIds,
+          ),
+        )
+        .toList(growable: false);
+  }
+}
+
+class _DateAddDecision {
+  final bool allowed;
+  final String? message;
+
+  const _DateAddDecision._({required this.allowed, this.message});
+
+  const _DateAddDecision.allowed() : this._(allowed: true);
+
+  const _DateAddDecision.denied(String message)
+    : this._(allowed: false, message: message);
 }
 
 class _SlotTopBar extends StatelessWidget {
@@ -1270,27 +1440,38 @@ class _CanonicalRequestInfoBanner extends StatelessWidget {
 }
 
 class _CanonicalSelectionSummaryCard extends StatelessWidget {
-  final List<ServiceSlotModel> selectedSlots;
+  final SlotBookingSelectionV3 selection;
   final int unitPricePaise;
   final String schedulingMode;
 
   const _CanonicalSelectionSummaryCard({
-    required this.selectedSlots,
+    required this.selection,
     required this.unitPricePaise,
     required this.schedulingMode,
   });
 
   @override
   Widget build(BuildContext context) {
-    final sorted = [...selectedSlots]
-      ..sort((a, b) => a.startAt.compareTo(b.startAt));
-    final start = sorted.first.startAt;
-    final end = sorted.last.endAt;
-    final totalMinutes = sorted.fold<int>(
-      0,
-      (sum, slot) => sum + slot.endAt.difference(slot.startAt).inMinutes,
-    );
-    final estimatedSubtotalPaise = sorted.length * unitPricePaise;
+    final segments =
+        selection.segments ?? const <SlotBookingScheduleSegmentV3>[];
+    final estimatedSubtotalPaise = selection.slotCount * unitPricePaise;
+    final serviceDayCount = selection.serviceDayCount ?? segments.length;
+    final visibleSegments = segments.isNotEmpty
+        ? segments
+        : <SlotBookingScheduleSegmentV3>[
+            SlotBookingScheduleSegmentV3(
+              serviceDateKey:
+                  selection.slots.first.serviceDateKey ??
+                  selection.slots.first.dateKey,
+              slotIds: selection.slots
+                  .map((slot) => slot.slotId)
+                  .toList(growable: false),
+              startAt: selection.scheduledStartAt,
+              endAt: selection.scheduledEndAt,
+              durationMinutes: selection.totalDurationMinutes,
+              schedulingMode: schedulingMode,
+            ),
+          ];
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1303,7 +1484,7 @@ class _CanonicalSelectionSummaryCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Selected schedule',
+            'Booking summary',
             style: TextStyle(
               color: AppColors.textDark,
               fontSize: 16,
@@ -1312,7 +1493,7 @@ class _CanonicalSelectionSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Text(
-            '${_formatSlotTime(start)} - ${_formatSlotTime(end)}',
+            '$serviceDayCount Service Day${serviceDayCount == 1 ? '' : 's'}',
             style: const TextStyle(
               color: AppColors.textDark,
               fontSize: 15,
@@ -1320,8 +1501,35 @@ class _CanonicalSelectionSummaryCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
+          ...visibleSegments.map(
+            (segment) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _formatSummaryDate(segment.startAt),
+                    style: const TextStyle(
+                      color: AppColors.textDark,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${_formatSlotTime(segment.startAt)} - ${_formatSlotTime(segment.endAt)}',
+                    style: const TextStyle(
+                      color: AppColors.textGrey,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
           Text(
-            '${sorted.length} slot${sorted.length == 1 ? '' : 's'} · ${_formatDuration(totalMinutes, schedulingMode: schedulingMode)} · Estimated subtotal ₹${(estimatedSubtotalPaise / 100).toStringAsFixed(0)}',
+            '${selection.slotCount} slot${selection.slotCount == 1 ? '' : 's'} · ${_formatDuration(selection.totalDurationMinutes, schedulingMode: schedulingMode)} · Total service price ₹${(estimatedSubtotalPaise / 100).toStringAsFixed(0)}',
             style: const TextStyle(
               color: AppColors.textGrey,
               fontSize: 13.5,
@@ -1341,6 +1549,25 @@ String _formatSlotTime(DateTime date) {
   final suffix = hour >= 12 ? 'PM' : 'AM';
   final displayHour = hour % 12 == 0 ? 12 : hour % 12;
   return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
+}
+
+String _formatSummaryDate(DateTime date) {
+  const months = <String>[
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final local = date.toLocal();
+  return '${months[local.month - 1]} ${local.day}';
 }
 
 String _formatDuration(int minutes, {String? schedulingMode}) {

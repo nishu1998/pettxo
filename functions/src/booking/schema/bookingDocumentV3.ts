@@ -42,6 +42,7 @@ export type CanonicalSlotScheduleV3 = {
   slots: Array<{
     slotId: string;
     dateKey: string;
+    serviceDateKey?: string;
     startAt: Date;
     endAt: Date;
     durationMinutes: number;
@@ -49,11 +50,24 @@ export type CanonicalSlotScheduleV3 = {
     serviceId: string;
     providerId: string;
     timezone: string;
+    schedulingMode?: string;
+  }>;
+  segments?: Array<{
+    serviceDateKey: string;
+    slotIds: string[];
+    startAt: Date;
+    endAt: Date;
+    durationMinutes: number;
+    schedulingMode: string;
   }>;
   slotCount: number;
   scheduledStartAt: Date;
   scheduledEndAt: Date;
   totalDurationMinutes: number;
+  firstSegmentEndAt?: Date;
+  finalEndAt?: Date;
+  serviceDayCount?: number;
+  segmentCount?: number;
   timezone: string;
 };
 
@@ -338,6 +352,7 @@ function parseSchedule(
       return {
         slotId: asString(slot.slotId),
         dateKey: asString(slot.dateKey),
+        serviceDateKey: asString(slot.serviceDateKey) || undefined,
         startAt: asNullableDate(slot.startAt) ?? new Date("invalid"),
         endAt: asNullableDate(slot.endAt) ?? new Date("invalid"),
         durationMinutes: asInteger(slot.durationMinutes) ?? -1,
@@ -345,8 +360,20 @@ function parseSchedule(
         serviceId: asString(slot.serviceId),
         providerId: asString(slot.providerId),
         timezone: asString(slot.timezone),
+        schedulingMode: asString(slot.schedulingMode) || asString(serviceSnapshot.schedulingMode) || undefined,
       };
     }) : [];
+    const segments = Array.isArray(raw.segments) ? raw.segments.map((entry) => {
+      const segment = asRecord(entry);
+      return {
+        serviceDateKey: asString(segment.serviceDateKey),
+        slotIds: asStringArray(segment.slotIds),
+        startAt: asNullableDate(segment.startAt) ?? new Date("invalid"),
+        endAt: asNullableDate(segment.endAt) ?? new Date("invalid"),
+        durationMinutes: asInteger(segment.durationMinutes) ?? -1,
+        schedulingMode: asString(segment.schedulingMode),
+      };
+    }) : undefined;
 
     const selection: SlotBookingSelection = {
       bookingType: "SLOT",
@@ -355,6 +382,11 @@ function parseSchedule(
       scheduledStartAt: asNullableDate(raw.scheduledStartAt) ?? new Date("invalid"),
       scheduledEndAt: asNullableDate(raw.scheduledEndAt) ?? new Date("invalid"),
       totalDurationMinutes: asInteger(raw.totalDurationMinutes) ?? -1,
+      segments,
+      firstSegmentEndAt: asNullableDate(raw.firstSegmentEndAt) ?? undefined,
+      finalEndAt: asNullableDate(raw.finalEndAt) ?? undefined,
+      serviceDayCount: asInteger(raw.serviceDayCount) ?? undefined,
+      segmentCount: asInteger(raw.segmentCount) ?? undefined,
     };
     const validation = validateSlotBookingSelection(selection);
     if (!validation.ok) {
@@ -372,10 +404,15 @@ function parseSchedule(
     return {
       bookingType: "SLOT",
       slots: validation.normalizedSelection.slots,
+      segments: validation.normalizedSelection.segments,
       slotCount: validation.normalizedSelection.slotCount,
       scheduledStartAt: validation.normalizedSelection.scheduledStartAt,
       scheduledEndAt: validation.normalizedSelection.scheduledEndAt,
       totalDurationMinutes: validation.normalizedSelection.totalDurationMinutes,
+      firstSegmentEndAt: validation.normalizedSelection.firstSegmentEndAt,
+      finalEndAt: validation.normalizedSelection.finalEndAt,
+      serviceDayCount: validation.normalizedSelection.serviceDayCount,
+      segmentCount: validation.normalizedSelection.segmentCount,
       timezone,
       serviceAnchorAt: validation.normalizedSelection.scheduledStartAt,
     };
