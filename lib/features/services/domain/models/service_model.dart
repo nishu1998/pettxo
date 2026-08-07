@@ -329,8 +329,13 @@ class ServiceModel {
       schedulingMode: schedulingMode,
       durationMinutes: sessionDurationMinutes,
       location: displayAddress,
-      availability:
-          '${availableDays.join(', ')} - ${_formatTime(startMinutes)} to ${_formatTime(endMinutes)}',
+      availability: formatServiceAvailabilityLabel(
+        availableDays: availableDays,
+        startMinutes: startMinutes,
+        endMinutes: endMinutes,
+        schedulingMode: schedulingMode,
+        sessionDurationMinutes: sessionDurationMinutes,
+      ),
       duration: formatServiceDurationLabel(
         durationMinutes: sessionDurationMinutes,
         schedulingMode: schedulingMode,
@@ -425,14 +430,6 @@ class ServiceModel {
     if (value is Timestamp) return value.toDate();
     if (value is DateTime) return value;
     return null;
-  }
-
-  static String _formatTime(int totalMinutes) {
-    final hour = (totalMinutes ~/ 60) % 24;
-    final minute = totalMinutes % 60;
-    final suffix = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
   }
 }
 
