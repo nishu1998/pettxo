@@ -47,6 +47,7 @@ import {
   normalizeServiceSchedulingMode,
   resolveSessionDurationMinutes,
   SERVICE_SCHEDULING_MODE_DAY_CARE,
+  SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS,
 } from "./serviceScheduling";
 import {db, messaging, storage} from "./shared/firebase";
 const istOffsetMinutes = 330;
@@ -746,11 +747,7 @@ async function regenerateServiceSlots(
     const today = localDatePartsFromUtcMs(now);
     const todayMidnight = localMidnightUtcMs(today.year, today.month, today.day);
 
-    if (
-      selectedDays.size > 0 &&
-      durationMinutes > 0 &&
-      endMinutes > startMinutes
-    ) {
+    if (selectedDays.size > 0 && durationMinutes > 0) {
       for (let dayOffset = 0; dayOffset < slotGenerationDays; dayOffset += 1) {
         const dayUtcMs = todayMidnight + dayOffset * 24 * 60 * 60 * 1000;
         const parts = localDatePartsFromUtcMs(dayUtcMs);
@@ -765,10 +762,18 @@ async function regenerateServiceSlots(
         });
         for (const slotWindow of slotWindows) {
           const slotStartMs = dayUtcMs + slotWindow.startMinutes * 60 * 1000;
-          const slotEndMs = dayUtcMs + slotWindow.endMinutes * 60 * 1000;
+          const slotEndMs = schedulingMode === SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS ?
+            slotStartMs + slotWindow.durationMinutes * 60 * 1000 :
+            slotWindow.endMinutes > slotWindow.startMinutes ?
+              dayUtcMs + slotWindow.endMinutes * 60 * 1000 :
+              slotStartMs + slotWindow.durationMinutes * 60 * 1000;
           const slotId = schedulingMode === SERVICE_SCHEDULING_MODE_DAY_CARE ?
             `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.endMinutes.toString().padStart(4, "0")}` :
-            `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}`;
+            schedulingMode === SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS ?
+              `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.durationMinutes.toString().padStart(4, "0")}` :
+              slotWindow.endMinutes < slotWindow.startMinutes ?
+                `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.endMinutes.toString().padStart(4, "0")}` :
+                `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}`;
           const slotRef = slotsRef.doc(slotId);
           queue((targetBatch) =>
             targetBatch.set(slotRef, {
@@ -777,6 +782,7 @@ async function regenerateServiceSlots(
               startAt: Timestamp.fromMillis(slotStartMs),
               endAt: Timestamp.fromMillis(slotEndMs),
               dateKey: key,
+              serviceDateKey: key,
               startMinutes: slotWindow.startMinutes,
               endMinutes: slotWindow.endMinutes,
               durationMinutes: slotWindow.durationMinutes,
