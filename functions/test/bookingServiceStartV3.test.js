@@ -130,6 +130,70 @@ function buildConfirmedBookingSeed() {
   };
 }
 
+function buildMultiSegmentConfirmedBookingSeed() {
+  const bookingId = "booking-start-multiday-1";
+  const booking = buildConfirmedSlotBookingFixture();
+  const firstStart = new Date("2026-07-23T06:00:00.000Z");
+  const firstEnd = new Date("2026-07-23T07:00:00.000Z");
+  const secondStart = new Date("2026-07-24T08:00:00.000Z");
+  const secondEnd = new Date("2026-07-24T09:00:00.000Z");
+  booking.schedule.slots = [
+    {
+      ...booking.schedule.slots[0],
+      slotId: "slot-1",
+      dateKey: "2026-07-23",
+      serviceDateKey: "2026-07-23",
+      startAt: firstStart,
+      endAt: firstEnd,
+      schedulingMode: "fixedDuration",
+    },
+    {
+      ...booking.schedule.slots[0],
+      slotId: "slot-2",
+      dateKey: "2026-07-24",
+      serviceDateKey: "2026-07-24",
+      startAt: secondStart,
+      endAt: secondEnd,
+      schedulingMode: "fixedDuration",
+    },
+  ];
+  booking.schedule.slotCount = 2;
+  booking.schedule.scheduledStartAt = firstStart;
+  booking.schedule.scheduledEndAt = secondEnd;
+  booking.schedule.totalDurationMinutes = 120;
+  booking.schedule.segments = [
+    {
+      serviceDateKey: "2026-07-23",
+      startAt: firstStart,
+      endAt: firstEnd,
+      slotIds: ["slot-1"],
+      durationMinutes: 60,
+      schedulingMode: "fixedDuration",
+    },
+    {
+      serviceDateKey: "2026-07-24",
+      startAt: secondStart,
+      endAt: secondEnd,
+      slotIds: ["slot-2"],
+      durationMinutes: 60,
+      schedulingMode: "fixedDuration",
+    },
+  ];
+  booking.schedule.firstSegmentEndAt = firstEnd;
+  booking.schedule.finalEndAt = secondEnd;
+  booking.schedule.serviceDayCount = 2;
+  booking.schedule.segmentCount = 2;
+  booking.service.selectedSlotCount = 2;
+  booking.service.totalDurationMinutes = 120;
+  booking.statistics.selectedSlotCount = 2;
+  booking.statistics.totalDurationMinutes = 120;
+  return {
+    bookingId,
+    booking,
+    privateDoc: buildPrivateDoc({bookingId, booking}),
+  };
+}
+
 function deepConvertDatesToTimestamps(value) {
   if (value instanceof Date) {
     return Timestamp.fromDate(value);
@@ -185,6 +249,25 @@ test("correct OTP is still allowed at the exact authoritative service end", asyn
     otpCandidate: "482913",
     requestAttemptId: "attempt-2",
     authoritativeNow: booking.schedule.scheduledEndAt,
+  });
+
+  assert.equal(result.code, "VERIFIED_STARTED");
+});
+
+test("correct OTP is still allowed at the first segment end for a multi-day slot booking", async () => {
+  const {bookingId, booking, privateDoc} = buildMultiSegmentConfirmedBookingSeed();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingPrivate/${bookingId}`]: privateDoc,
+  });
+
+  const result = await verifyBookingStartOtpV3({
+    firestore,
+    bookingId,
+    providerId: booking.providerId,
+    otpCandidate: "482913",
+    requestAttemptId: "attempt-2b",
+    authoritativeNow: booking.schedule.firstSegmentEndAt,
   });
 
   assert.equal(result.code, "VERIFIED_STARTED");
@@ -248,6 +331,37 @@ test("overdue confirmed booking finalizes to NO_SHOW exactly once", async () => 
   assert.equal(
     firestore.store.get(`payoutReadiness/${bookingId}`).eligibleAt.toDate().getTime(),
     booking.schedule.scheduledEndAt.getTime() + 24 * 60 * 60 * 1000,
+  );
+});
+
+test("multi-day confirmed booking finalizes to NO_SHOW from the first segment end", async () => {
+  const {bookingId, booking, privateDoc} = buildMultiSegmentConfirmedBookingSeed();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingPrivate/${bookingId}`]: privateDoc,
+  });
+  const authoritativeNow = new Date(
+    booking.schedule.firstSegmentEndAt.getTime() + 2 * 60 * 60 * 1000,
+  );
+
+  const result = await finalizeCanonicalNoShowV3({
+    firestore,
+    bookingId,
+    authoritativeNow,
+  });
+
+  assert.equal(result.code, "FINALIZED_NO_SHOW");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "NO_SHOW");
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).lifecycle.noShowAt.toDate().getTime(),
+    booking.schedule.firstSegmentEndAt.getTime(),
+  );
+  assert.equal(
+    firestore.store
+      .get(`bookings/${bookingId}`)
+      .lifecycle.disputeDeadlineAt.toDate()
+      .getTime(),
+    booking.schedule.firstSegmentEndAt.getTime() + 24 * 60 * 60 * 1000,
   );
 });
 

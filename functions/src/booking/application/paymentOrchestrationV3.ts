@@ -716,7 +716,10 @@ function claimSlotOccupancy(params: {
     const existingClaim = existing.bookingClaims[params.bookingId] ?? 0;
     const nextConfirmedUnits = existing.confirmedUnits - existingClaim + requestedUnits;
     if (nextConfirmedUnits > existing.capacitySnapshot) {
-      throw new HttpsError("failed-precondition", "Selected slot capacity is exhausted.");
+      throw new HttpsError(
+        "failed-precondition",
+        "One or more selected slots are no longer available. Please review your booking.",
+      );
     }
     writes[slotOccupancyPath(params.booking.serviceId, slot.slotId)] = {
       slotId: slot.slotId,

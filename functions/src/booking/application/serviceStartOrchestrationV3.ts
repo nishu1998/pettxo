@@ -133,6 +133,8 @@ export type ServiceEndResolutionResult = {
   expectedServiceEndAt: Date | null;
 };
 
+type SlotDeadlineKind = "no_show" | "completion";
+
 export type ServiceStartEligibilityResult = {
   code: ServiceStartEligibilityCode;
   serviceAnchorAt: Date | null;
@@ -203,6 +205,25 @@ function safeOtpMatches(expectedHash: string, bookingId: string, candidate: stri
 export function resolveAuthoritativeServiceEndV3(params: {
   booking: CanonicalBookingDocumentV3;
 }): ServiceEndResolutionResult {
+  return resolveCanonicalSlotLifecycleDeadlineV3({
+    booking: params.booking,
+    kind: "no_show",
+  });
+}
+
+export function resolveCanonicalCompletionAvailableAtV3(params: {
+  booking: CanonicalBookingDocumentV3;
+}): ServiceEndResolutionResult {
+  return resolveCanonicalSlotLifecycleDeadlineV3({
+    booking: params.booking,
+    kind: "completion",
+  });
+}
+
+function resolveCanonicalSlotLifecycleDeadlineV3(params: {
+  booking: CanonicalBookingDocumentV3;
+  kind: SlotDeadlineKind;
+}): ServiceEndResolutionResult {
   const booking = params.booking;
   const anchor = asDate(serviceAnchorAt(booking));
   if (anchor == null) {
@@ -248,21 +269,42 @@ export function resolveAuthoritativeServiceEndV3(params: {
     };
   }
 
+  const segmentEnds = (schedule.segments ?? [])
+    .map((segment) => asDate(segment.endAt))
+    .filter((value): value is Date => value != null);
+  const resolvedSegmentEnd =
+    segmentEnds.length > 0 ?
+      params.kind === "no_show" ?
+        segmentEnds.reduce((earliest, current) =>
+          current.getTime() < earliest.getTime() ? current : earliest) :
+        segmentEnds.reduce((latest, current) =>
+          current.getTime() > latest.getTime() ? current : latest) :
+      null;
   const slotEnds = schedule.slots
     .map((slot) => asDate(slot.endAt))
     .filter((value): value is Date => value != null);
-  const canonicalSlotEnd = slotEnds.length === schedule.slots.length && slotEnds.length > 0
-    ? slotEnds.reduce((latest, current) =>
-      current.getTime() > latest.getTime() ? current : latest)
-    : null;
+  const firstValidSlotEnd = slotEnds.length > 0 ?
+    slotEnds.reduce((earliest, current) =>
+      current.getTime() < earliest.getTime() ? current : earliest) :
+    null;
+  const lastValidSlotEnd = slotEnds.length > 0 ?
+    slotEnds.reduce((latest, current) =>
+      current.getTime() > latest.getTime() ? current : latest) :
+    null;
   const scheduledEndAt = asDate(schedule.scheduledEndAt);
   const totalDurationMinutes = asNonNegativeInteger(schedule.totalDurationMinutes);
   const derivedEndAt =
     totalDurationMinutes != null && totalDurationMinutes > 0
       ? new Date(scheduledStartAt.getTime() + totalDurationMinutes * 60 * 1000)
       : null;
+  const additiveEnd =
+    params.kind === "no_show" ?
+      asDate(schedule.firstSegmentEndAt) :
+      asDate(schedule.finalEndAt);
+  const compatibilitySlotEnd =
+    params.kind === "no_show" ? firstValidSlotEnd : lastValidSlotEnd;
 
-  const candidates = [canonicalSlotEnd, scheduledEndAt, derivedEndAt]
+  const candidates = [additiveEnd, resolvedSegmentEnd, scheduledEndAt, derivedEndAt]
     .filter((value): value is Date => value != null);
   if (candidates.length === 0) {
     return {
@@ -272,7 +314,12 @@ export function resolveAuthoritativeServiceEndV3(params: {
     };
   }
 
-  const resolved = canonicalSlotEnd ?? scheduledEndAt ?? derivedEndAt ?? null;
+  const resolved =
+    additiveEnd ??
+    resolvedSegmentEnd ??
+    scheduledEndAt ??
+    derivedEndAt ??
+    null;
   if (resolved == null) {
     return {
       code: "POLICY_NOT_CONFIGURED",
@@ -287,27 +334,18 @@ export function resolveAuthoritativeServiceEndV3(params: {
       expectedServiceEndAt: null,
     };
   }
-  if (canonicalSlotEnd != null &&
-      scheduledEndAt != null &&
-      canonicalSlotEnd.getTime() !== scheduledEndAt.getTime()) {
+  if (additiveEnd != null &&
+      resolvedSegmentEnd != null &&
+      additiveEnd.getTime() !== resolvedSegmentEnd.getTime()) {
     return {
       code: "INVALID_BOOKING_DATA",
       serviceAnchorAt: anchor,
       expectedServiceEndAt: null,
     };
   }
-  if (scheduledEndAt != null &&
-      derivedEndAt != null &&
-      scheduledEndAt.getTime() !== derivedEndAt.getTime()) {
-    return {
-      code: "INVALID_BOOKING_DATA",
-      serviceAnchorAt: anchor,
-      expectedServiceEndAt: null,
-    };
-  }
-  if (canonicalSlotEnd != null &&
-      derivedEndAt != null &&
-      canonicalSlotEnd.getTime() !== derivedEndAt.getTime()) {
+  if (resolvedSegmentEnd != null &&
+      compatibilitySlotEnd != null &&
+      resolvedSegmentEnd.getTime() !== compatibilitySlotEnd.getTime()) {
     return {
       code: "INVALID_BOOKING_DATA",
       serviceAnchorAt: anchor,

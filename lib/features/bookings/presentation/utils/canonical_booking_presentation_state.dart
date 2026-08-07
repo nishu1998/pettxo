@@ -10,8 +10,8 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationState(
     booking.state,
     booking.lifecycle.payDeadlineAt,
     bookingType: booking.bookingType,
-    slotScheduledEndAt: booking.schedule is CanonicalSlotBookingScheduleV3
-        ? (booking.schedule as CanonicalSlotBookingScheduleV3).scheduledEndAt
+    slotSchedule: booking.schedule is CanonicalSlotBookingScheduleV3
+        ? booking.schedule as CanonicalSlotBookingScheduleV3
         : null,
     rangeCheckOutDateTime: booking.schedule is CanonicalRangeBookingScheduleV3
         ? (booking.schedule as CanonicalRangeBookingScheduleV3).checkOutDateTime
@@ -26,7 +26,7 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
   CanonicalBookingStateV3 state,
   DateTime? payDeadlineAt, {
   BookingV3Type? bookingType,
-  DateTime? slotScheduledEndAt,
+  CanonicalSlotBookingScheduleV3? slotSchedule,
   DateTime? rangeCheckOutDateTime,
   DateTime? otpEnteredAt,
   String? paymentStatus,
@@ -39,9 +39,9 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
       !payDeadlineAt.isAfter(currentNow)) {
     return CanonicalBookingStateV3.paymentExpired;
   }
-  final serviceWindowEnd = canonicalBookingAuthoritativeServiceWindowEndFromRaw(
+  final noShowDeadlineAt = canonicalBookingNoShowDeadlineFromRaw(
     bookingType: bookingType,
-    slotScheduledEndAt: slotScheduledEndAt,
+    slotSchedule: slotSchedule,
     rangeCheckOutDateTime: rangeCheckOutDateTime,
   );
   final paymentIsConfirmed =
@@ -49,8 +49,8 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
   if (state == CanonicalBookingStateV3.confirmed &&
       paymentIsConfirmed &&
       otpEnteredAt == null &&
-      serviceWindowEnd != null &&
-      !serviceWindowEnd.isAfter(currentNow)) {
+      noShowDeadlineAt != null &&
+      !noShowDeadlineAt.isAfter(currentNow)) {
     return CanonicalBookingStateV3.noShow;
   }
   return state;
@@ -59,10 +59,10 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
 DateTime? canonicalBookingAuthoritativeServiceWindowEnd(
   CanonicalBookingDocumentV3 booking,
 ) {
-  return canonicalBookingAuthoritativeServiceWindowEndFromRaw(
+  return canonicalBookingCompletionAvailableAtFromRaw(
     bookingType: booking.bookingType,
-    slotScheduledEndAt: booking.schedule is CanonicalSlotBookingScheduleV3
-        ? (booking.schedule as CanonicalSlotBookingScheduleV3).scheduledEndAt
+    slotSchedule: booking.schedule is CanonicalSlotBookingScheduleV3
+        ? booking.schedule as CanonicalSlotBookingScheduleV3
         : null,
     rangeCheckOutDateTime: booking.schedule is CanonicalRangeBookingScheduleV3
         ? (booking.schedule as CanonicalRangeBookingScheduleV3).checkOutDateTime
@@ -70,15 +70,72 @@ DateTime? canonicalBookingAuthoritativeServiceWindowEnd(
   );
 }
 
-DateTime? canonicalBookingAuthoritativeServiceWindowEndFromRaw({
+DateTime? canonicalBookingNoShowDeadline(CanonicalBookingDocumentV3 booking) {
+  return canonicalBookingNoShowDeadlineFromRaw(
+    bookingType: booking.bookingType,
+    slotSchedule: booking.schedule is CanonicalSlotBookingScheduleV3
+        ? booking.schedule as CanonicalSlotBookingScheduleV3
+        : null,
+    rangeCheckOutDateTime: booking.schedule is CanonicalRangeBookingScheduleV3
+        ? (booking.schedule as CanonicalRangeBookingScheduleV3).checkOutDateTime
+        : null,
+  );
+}
+
+DateTime? canonicalBookingNoShowDeadlineFromRaw({
   BookingV3Type? bookingType,
-  DateTime? slotScheduledEndAt,
+  CanonicalSlotBookingScheduleV3? slotSchedule,
   DateTime? rangeCheckOutDateTime,
 }) {
   if (bookingType == BookingV3Type.range) {
     return rangeCheckOutDateTime;
   }
-  return slotScheduledEndAt;
+  final schedule = slotSchedule;
+  if (schedule == null) return null;
+  if (schedule.firstSegmentEndAt != null) return schedule.firstSegmentEndAt;
+  final firstSegment =
+      (schedule.segments ?? const <CanonicalBookingScheduleSegmentV3>[])
+          .where((segment) => segment.endAt.isAfter(segment.startAt))
+          .toList(growable: false);
+  if (firstSegment.isNotEmpty) {
+    return firstSegment.first.endAt;
+  }
+  return schedule.scheduledEndAt;
+}
+
+DateTime? canonicalBookingCompletionAvailableAt(
+  CanonicalBookingDocumentV3 booking,
+) {
+  return canonicalBookingCompletionAvailableAtFromRaw(
+    bookingType: booking.bookingType,
+    slotSchedule: booking.schedule is CanonicalSlotBookingScheduleV3
+        ? booking.schedule as CanonicalSlotBookingScheduleV3
+        : null,
+    rangeCheckOutDateTime: booking.schedule is CanonicalRangeBookingScheduleV3
+        ? (booking.schedule as CanonicalRangeBookingScheduleV3).checkOutDateTime
+        : null,
+  );
+}
+
+DateTime? canonicalBookingCompletionAvailableAtFromRaw({
+  BookingV3Type? bookingType,
+  CanonicalSlotBookingScheduleV3? slotSchedule,
+  DateTime? rangeCheckOutDateTime,
+}) {
+  if (bookingType == BookingV3Type.range) {
+    return rangeCheckOutDateTime;
+  }
+  final schedule = slotSchedule;
+  if (schedule == null) return null;
+  if (schedule.finalEndAt != null) return schedule.finalEndAt;
+  final segments =
+      (schedule.segments ?? const <CanonicalBookingScheduleSegmentV3>[])
+          .where((segment) => segment.endAt.isAfter(segment.startAt))
+          .toList(growable: false);
+  if (segments.isNotEmpty) {
+    return segments.last.endAt;
+  }
+  return schedule.scheduledEndAt;
 }
 
 DateTime? effectiveCanonicalNoShowDisputeDeadline(
@@ -103,7 +160,7 @@ DateTime? effectiveCanonicalNoShowTimestamp(
   if (effectiveState != CanonicalBookingStateV3.noShow) {
     return null;
   }
-  return canonicalBookingAuthoritativeServiceWindowEnd(booking);
+  return canonicalBookingNoShowDeadline(booking);
 }
 
 bool hasActiveCanonicalPaymentWindow(DateTime? payDeadlineAt) {

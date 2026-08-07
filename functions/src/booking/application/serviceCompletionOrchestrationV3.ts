@@ -11,6 +11,7 @@ import {
   buildBookingReviewReceivedNotification,
   buildServiceCompletedNotification,
 } from "./bookingNotificationsV3";
+import {resolveCanonicalCompletionAvailableAtV3} from "./serviceStartOrchestrationV3";
 
 export const BOOKING_SERVICE_COMPLETIONS_COLLECTION = "bookingServiceCompletions";
 export const BOOKING_COMPLETION_DISPUTES_COLLECTION = "disputes";
@@ -20,6 +21,7 @@ export const CANONICAL_REVIEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 export type CompletionOutcomeCode =
   | "COMPLETED_PENDING_REVIEW"
   | "ALREADY_COMPLETED"
+  | "BOOKING_SERVICE_NOT_ENDED"
   | "INVALID_STATE"
   | "PAYMENT_NOT_CONFIRMED"
   | "UNAUTHORIZED"
@@ -373,6 +375,16 @@ export async function completeBookingServiceV3(params: {
         reviewWindowEndsAt: booking.lifecycle.reviewWindowEndsAt,
       };
     }
+    if (booking.lifecycle.otpEnteredAt == null) {
+      return {
+        code: "INVALID_STATE",
+        bookingId: params.bookingId,
+        state: booking.state,
+        idempotentReplay: false,
+        completedAt: null,
+        reviewWindowEndsAt: null,
+      };
+    }
     if (!isPaymentConfirmedV3(booking)) {
       return {
         code: "PAYMENT_NOT_CONFIRMED",
@@ -386,6 +398,30 @@ export async function completeBookingServiceV3(params: {
     if (booking.financials == null) {
       return {
         code: "INVALID_BOOKING_DATA",
+        bookingId: params.bookingId,
+        state: booking.state,
+        idempotentReplay: false,
+        completedAt: null,
+        reviewWindowEndsAt: null,
+      };
+    }
+    const completionAvailableAt = resolveCanonicalCompletionAvailableAtV3({
+      booking,
+    });
+    if (completionAvailableAt.code !== "RESOLVED" ||
+        completionAvailableAt.expectedServiceEndAt == null) {
+      return {
+        code: "INVALID_BOOKING_DATA",
+        bookingId: params.bookingId,
+        state: booking.state,
+        idempotentReplay: false,
+        completedAt: null,
+        reviewWindowEndsAt: null,
+      };
+    }
+    if (authoritativeNow.getTime() < completionAvailableAt.expectedServiceEndAt.getTime()) {
+      return {
+        code: "BOOKING_SERVICE_NOT_ENDED",
         bookingId: params.bookingId,
         state: booking.state,
         idempotentReplay: false,

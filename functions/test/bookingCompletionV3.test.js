@@ -103,6 +103,65 @@ function buildInProgressBooking() {
   return booking;
 }
 
+function buildMultiSegmentInProgressBooking() {
+  const booking = buildInProgressBooking();
+  const firstStart = new Date("2026-07-23T06:00:00.000Z");
+  const firstEnd = new Date("2026-07-23T07:00:00.000Z");
+  const secondStart = new Date("2026-07-24T08:00:00.000Z");
+  const secondEnd = new Date("2026-07-24T09:00:00.000Z");
+  booking.schedule.slots = [
+    {
+      ...booking.schedule.slots[0],
+      slotId: "slot-1",
+      dateKey: "2026-07-23",
+      serviceDateKey: "2026-07-23",
+      startAt: firstStart,
+      endAt: firstEnd,
+      schedulingMode: "fixedDuration",
+    },
+    {
+      ...booking.schedule.slots[0],
+      slotId: "slot-2",
+      dateKey: "2026-07-24",
+      serviceDateKey: "2026-07-24",
+      startAt: secondStart,
+      endAt: secondEnd,
+      schedulingMode: "fixedDuration",
+    },
+  ];
+  booking.schedule.slotCount = 2;
+  booking.schedule.scheduledStartAt = firstStart;
+  booking.schedule.scheduledEndAt = secondEnd;
+  booking.schedule.totalDurationMinutes = 120;
+  booking.schedule.segments = [
+    {
+      serviceDateKey: "2026-07-23",
+      startAt: firstStart,
+      endAt: firstEnd,
+      slotIds: ["slot-1"],
+      durationMinutes: 60,
+      schedulingMode: "fixedDuration",
+    },
+    {
+      serviceDateKey: "2026-07-24",
+      startAt: secondStart,
+      endAt: secondEnd,
+      slotIds: ["slot-2"],
+      durationMinutes: 60,
+      schedulingMode: "fixedDuration",
+    },
+  ];
+  booking.schedule.firstSegmentEndAt = firstEnd;
+  booking.schedule.finalEndAt = secondEnd;
+  booking.schedule.serviceDayCount = 2;
+  booking.schedule.segmentCount = 2;
+  booking.service.selectedSlotCount = 2;
+  booking.service.totalDurationMinutes = 120;
+  booking.statistics.selectedSlotCount = 2;
+  booking.statistics.totalDurationMinutes = 120;
+  return booking;
+}
+
 function assertNoLiteralDottedKeys(value, path = "") {
   if (Array.isArray(value)) {
     value.forEach((entry, index) =>
@@ -141,7 +200,7 @@ test("provider completion moves IN_PROGRESS booking into COMPLETED_PENDING_REVIE
     firestore,
     bookingId,
     providerUid: booking.providerId,
-    authoritativeNow: new Date(booking.lifecycle.otpEnteredAt.getTime() + 5 * 60 * 1000),
+    authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() + 5 * 60 * 1000),
   });
 
   assert.equal(result.code, "COMPLETED_PENDING_REVIEW");
@@ -173,6 +232,60 @@ test("provider completion moves IN_PROGRESS booking into COMPLETED_PENDING_REVIE
     firestore.store.get(`bookings/${bookingId}/events/service_completed`).event,
     "service_completed",
   );
+});
+
+test("provider completion is rejected before the single-slot service end", async () => {
+  const bookingId = "booking-complete-too-early";
+  const booking = buildInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await completeBookingServiceV3({
+    firestore,
+    bookingId,
+    providerUid: booking.providerId,
+    authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() - 1),
+  });
+
+  assert.equal(result.code, "BOOKING_SERVICE_NOT_ENDED");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
+});
+
+test("provider completion is rejected after the first segment but before the final segment ends", async () => {
+  const bookingId = "booking-complete-multiday-too-early";
+  const booking = buildMultiSegmentInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await completeBookingServiceV3({
+    firestore,
+    bookingId,
+    providerUid: booking.providerId,
+    authoritativeNow: new Date(booking.schedule.firstSegmentEndAt.getTime() + 15 * 60 * 1000),
+  });
+
+  assert.equal(result.code, "BOOKING_SERVICE_NOT_ENDED");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
+});
+
+test("provider completion succeeds once the final segment ends for a multi-day booking", async () => {
+  const bookingId = "booking-complete-multiday-success";
+  const booking = buildMultiSegmentInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await completeBookingServiceV3({
+    firestore,
+    bookingId,
+    providerUid: booking.providerId,
+    authoritativeNow: new Date(booking.schedule.finalEndAt.getTime() + 1),
+  });
+
+  assert.equal(result.code, "COMPLETED_PENDING_REVIEW");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "COMPLETED_PENDING_REVIEW");
 });
 
 test("review submission is idempotent and updates the service review document once", async () => {

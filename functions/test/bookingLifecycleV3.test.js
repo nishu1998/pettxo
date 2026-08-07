@@ -165,6 +165,57 @@ function multiSlotSchedule() {
   };
 }
 
+function multiDaySlotSchedule() {
+  return {
+    bookingType: "SLOT",
+    slots: [
+      {
+        slotId: "slot-1",
+        serviceId: "service-1",
+        providerId: "provider-1",
+        timezone: "Asia/Kolkata",
+        dateKey: "2026-08-07",
+        serviceDateKey: "2026-08-07",
+        startAt: new Date("2026-08-07T03:30:00.000Z"),
+        endAt: new Date("2026-08-07T04:30:00.000Z"),
+        durationMinutes: 60,
+        unitPricePaise: 25000,
+        schedulingMode: "fixedDuration",
+      },
+      {
+        slotId: "slot-2",
+        serviceId: "service-1",
+        providerId: "provider-1",
+        timezone: "Asia/Kolkata",
+        dateKey: "2026-08-08",
+        serviceDateKey: "2026-08-08",
+        startAt: new Date("2026-08-08T08:30:00.000Z"),
+        endAt: new Date("2026-08-08T09:30:00.000Z"),
+        durationMinutes: 60,
+        unitPricePaise: 25000,
+        schedulingMode: "fixedDuration",
+      },
+      {
+        slotId: "slot-3",
+        serviceId: "service-1",
+        providerId: "provider-1",
+        timezone: "Asia/Kolkata",
+        dateKey: "2026-08-09",
+        serviceDateKey: "2026-08-09",
+        startAt: new Date("2026-08-09T05:30:00.000Z"),
+        endAt: new Date("2026-08-09T06:30:00.000Z"),
+        durationMinutes: 60,
+        unitPricePaise: 25000,
+        schedulingMode: "fixedDuration",
+      },
+    ],
+    slotCount: 3,
+    scheduledStartAt: new Date("2026-08-07T03:30:00.000Z"),
+    scheduledEndAt: new Date("2026-08-09T06:30:00.000Z"),
+    totalDurationMinutes: 180,
+  };
+}
+
 function rangeSchedule({checkIn} = {}) {
   const checkInDateTime = checkIn ?? new Date("2026-07-25T06:30:00.000Z");
   const checkOutDateTime = new Date(checkInDateTime.getTime() + 2 * 24 * 60 * 60 * 1000);
@@ -444,6 +495,31 @@ test("createBookingRequestV3 creates canonical multi-slot request", () => {
   });
   assert.equal(result.ok, true);
   assert.equal(result.booking.schedule.slotCount, 3);
+});
+
+test("createBookingRequestV3 stores additive multi-day slot segments and snapshot summaries", () => {
+  const result = createBookingRequestV3({
+    parent: parent(),
+    service: baseService(),
+    input: {
+      requestAttemptId: "attempt-2b",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: multiDaySlotSchedule(),
+    },
+    authoritativeNow: new Date("2026-08-06T04:00:00.000Z"),
+    generatedBookingId: "booking-2b",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.booking.service.selectedServiceDayCount, 3);
+  assert.equal(result.booking.service.scheduleSegmentCount, 3);
+  assert.equal(result.booking.schedule.serviceDayCount, 3);
+  assert.equal(result.booking.schedule.segmentCount, 3);
+  assert.equal(result.booking.schedule.firstSegmentEndAt.toISOString(), "2026-08-07T04:30:00.000Z");
+  assert.equal(result.booking.schedule.finalEndAt.toISOString(), "2026-08-09T06:30:00.000Z");
+  assert.equal(result.booking.schedule.segments.length, 3);
+  assert.equal(result.booking.schedule.slots.length, 3);
 });
 
 test("createBookingRequestV3 creates canonical RANGE request", () => {
