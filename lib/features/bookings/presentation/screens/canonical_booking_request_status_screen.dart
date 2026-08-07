@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/utils/service_duration.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
@@ -13,6 +12,7 @@ import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
+import '../utils/canonical_booking_schedule_presentation.dart';
 import '../widgets/booking_deadline_countdown.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
@@ -525,7 +525,7 @@ class _CanonicalBookingRequestStatusScreenState
     CanonicalBookingDocumentV3? booking,
   ) {
     final category = booking?.service.category.trim() ?? '';
-    return [
+    final rows = <StatusSummaryRowModel>[
       StatusSummaryRowModel(
         label: 'Service',
         value: booking?.service.serviceTitle.trim().isNotEmpty == true
@@ -543,31 +543,46 @@ class _CanonicalBookingRequestStatusScreenState
       ),
       StatusSummaryRowModel(
         label: 'Booking Date',
-        value: booking == null ? 'Pending' : _bookingDateLabel(booking),
+        value: booking == null
+            ? 'Pending'
+            : _schedulePresentation(booking).dateLabel,
         icon: Icons.calendar_today_outlined,
       ),
       StatusSummaryRowModel(
         label: 'Time',
-        value: booking == null ? 'Pending' : _bookingTimeLabel(booking),
+        value: booking == null
+            ? 'Pending'
+            : _schedulePresentation(booking).timeLabel,
         icon: Icons.access_time_rounded,
       ),
       StatusSummaryRowModel(
         label: 'Duration',
-        value: booking == null ? 'Pending' : _bookingDurationLabel(booking),
+        value: booking == null
+            ? 'Pending'
+            : _schedulePresentation(booking).durationLabel,
         icon: Icons.timelapse_outlined,
       ),
-      if (category.isNotEmpty)
+    ];
+    if (booking != null) {
+      rows.addAll(_scheduleDetailRows(booking));
+    }
+    if (category.isNotEmpty) {
+      rows.add(
         StatusSummaryRowModel(
           label: 'Category',
           value: category,
           icon: Icons.category_outlined,
         ),
+      );
+    }
+    rows.add(
       StatusSummaryRowModel(
         label: 'Request ID',
         value: widget.bookingId.toUpperCase(),
         icon: Icons.confirmation_number_outlined,
       ),
-    ];
+    );
+    return rows;
   }
 
   StatusCardPresentationModel _buildActiveStatusCard(
@@ -695,17 +710,17 @@ class _CanonicalBookingRequestStatusScreenState
       ),
       StatusSummaryRowModel(
         label: 'Booking Date',
-        value: _bookingDateLabel(booking),
+        value: _schedulePresentation(booking).dateLabel,
         icon: Icons.calendar_today_outlined,
       ),
       StatusSummaryRowModel(
         label: 'Time',
-        value: _bookingTimeLabel(booking),
+        value: _schedulePresentation(booking).timeLabel,
         icon: Icons.access_time_rounded,
       ),
       StatusSummaryRowModel(
         label: 'Duration',
-        value: _bookingDurationLabel(booking),
+        value: _schedulePresentation(booking).durationLabel,
         icon: Icons.timelapse_outlined,
       ),
     ];
@@ -719,6 +734,7 @@ class _CanonicalBookingRequestStatusScreenState
         ),
       );
     }
+    rows.addAll(_scheduleDetailRows(booking));
     rows.add(
       StatusSummaryRowModel(
         label: 'Booking ID',
@@ -1148,60 +1164,30 @@ class _CanonicalBookingRequestStatusScreenState
     }
   }
 
-  String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {
-    if (booking.schedule is CanonicalSlotBookingScheduleV3) {
-      final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
-      return _calendarDateLabel(schedule.scheduledStartAt);
-    }
-    final schedule = booking.schedule as CanonicalRangeBookingScheduleV3;
-    return _calendarDateLabel(schedule.checkInDateTime);
-  }
+  CanonicalBookingSchedulePresentation _schedulePresentation(
+    CanonicalBookingDocumentV3 booking,
+  ) => buildCanonicalBookingSchedulePresentation(booking);
 
-  String _bookingTimeLabel(CanonicalBookingDocumentV3 booking) {
-    if (booking.schedule is CanonicalSlotBookingScheduleV3) {
-      final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
-      return '${_timeLabel(schedule.scheduledStartAt)} to ${_timeLabel(schedule.scheduledEndAt)}';
+  List<StatusSummaryRowModel> _scheduleDetailRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final presentation = _schedulePresentation(booking);
+    if (!presentation.isSlotBooking || !presentation.isMultiDayPackage) {
+      return const <StatusSummaryRowModel>[];
     }
-    final schedule = booking.schedule as CanonicalRangeBookingScheduleV3;
-    return '${_timeLabel(schedule.checkInDateTime)} to ${_timeLabel(schedule.checkOutDateTime)}';
-  }
-
-  String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
-    if (booking.schedule is CanonicalSlotBookingScheduleV3) {
-      final schedule = booking.schedule as CanonicalSlotBookingScheduleV3;
-      return formatServiceDurationLabel(
-        durationMinutes: schedule.totalDurationMinutes,
-        schedulingMode: booking.service.schedulingMode,
-      );
-    }
-    final schedule = booking.schedule as CanonicalRangeBookingScheduleV3;
-    return schedule.nights == 1 ? '1 night' : '${schedule.nights} nights';
-  }
-
-  String _calendarDateLabel(DateTime value) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
+    return [
+      StatusSummaryRowModel(
+        label: 'Service days',
+        value: '${presentation.serviceDayCount}',
+        icon: Icons.date_range_outlined,
+      ),
+      for (final row in presentation.perSegmentDisplayRows)
+        StatusSummaryRowModel(
+          label: row.label,
+          value: row.value,
+          icon: Icons.schedule_outlined,
+        ),
     ];
-    return '${value.day} ${months[value.month - 1]} ${value.year}';
-  }
-
-  String _timeLabel(DateTime value) {
-    final hour = value.hour;
-    final minute = value.minute;
-    final suffix = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
   }
 
   int _fallbackServiceSubtotalPaise(CanonicalBookingDocumentV3 booking) {

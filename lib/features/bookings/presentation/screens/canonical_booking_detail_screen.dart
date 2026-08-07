@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
@@ -21,6 +20,7 @@ import '../../domain/models/canonical_booking_private.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
 import '../utils/canonical_booking_presentation_state.dart';
+import '../utils/canonical_booking_schedule_presentation.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
 
 class CanonicalBookingDetailScreen extends StatefulWidget {
@@ -68,6 +68,7 @@ class _CanonicalBookingDetailScreenState
   bool _isOpeningChat = false;
   bool _reviewSubmittedLocally = false;
   int _privateRetryTick = 0;
+  Timer? _completionAvailabilityTicker;
   StreamSubscription<BookingReadModel?>? _serviceStartStateSubscription;
   final TextEditingController _reviewCommentController =
       TextEditingController();
@@ -83,11 +84,23 @@ class _CanonicalBookingDetailScreenState
       : FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
 
   @override
+  void initState() {
+    super.initState();
+    _completionAvailabilityTicker = Timer.periodic(const Duration(minutes: 1), (
+      _,
+    ) {
+      if (!mounted) return;
+      setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
     _reviewCommentController.dispose();
     _disputeReasonController.dispose();
     _disputeDescriptionController.dispose();
     _serviceStartStateSubscription?.cancel();
+    _completionAvailabilityTicker?.cancel();
     if (_ownsPrivateController) {
       _privateController.dispose();
     }
@@ -333,35 +346,9 @@ class _CanonicalBookingDetailScreenState
   }
 
   static List<Widget> _scheduleRows(CanonicalBookingDocumentV3 booking) {
+    final presentation = buildCanonicalBookingSchedulePresentation(booking);
     final rows = <Widget>[_InfoRow('Type', _bookingTypeLabel(booking))];
     final schedule = booking.schedule;
-    if (schedule is CanonicalSlotBookingScheduleV3) {
-      if (!_hasValidSlotWindow(schedule)) {
-        rows.add(const _InfoRow('Window', 'Schedule unavailable'));
-        return rows;
-      }
-      rows.add(_InfoRow('Date', _calendarDate(schedule.scheduledStartAt)));
-      rows.add(
-        _InfoRow(
-          'Time',
-          '${_timeOnly(schedule.scheduledStartAt)} to ${_timeOnly(schedule.scheduledEndAt)}',
-        ),
-      );
-      rows.add(
-        _InfoRow(
-          'Duration',
-          _minutesLabel(
-            schedule.totalDurationMinutes > 0
-                ? schedule.totalDurationMinutes
-                : booking.statistics.totalDurationMinutes,
-          ),
-        ),
-      );
-      if (schedule.slotCount > 1) {
-        rows.add(_InfoRow('Slots', '${schedule.slotCount} continuous slots'));
-      }
-      return rows;
-    }
     if (schedule is CanonicalRangeBookingScheduleV3) {
       if (!_hasValidRangeWindow(schedule)) {
         rows.add(const _InfoRow('Window', 'Schedule unavailable'));
@@ -376,7 +363,25 @@ class _CanonicalBookingDetailScreenState
       rows.add(_InfoRow('Duration', _nightsLabel(schedule.nights)));
       return rows;
     }
-    rows.add(const _InfoRow('Window', 'Schedule unavailable'));
+    if (presentation.effectiveSegments.isEmpty) {
+      rows.add(const _InfoRow('Window', 'Schedule unavailable'));
+      return rows;
+    }
+    rows.add(_InfoRow('Package', presentation.dateLabel));
+    rows.add(_InfoRow('Time', presentation.timeLabel));
+    rows.add(_InfoRow('Duration', presentation.durationLabel));
+    rows.add(_InfoRow('Service days', '${presentation.serviceDayCount}'));
+    if (presentation.slotCount > 0) {
+      rows.add(
+        _InfoRow(
+          'Sessions',
+          '${presentation.slotCount} slot${presentation.slotCount == 1 ? '' : 's'}',
+        ),
+      );
+    }
+    for (final row in presentation.perSegmentDisplayRows) {
+      rows.add(_InfoRow(row.label, row.value));
+    }
     return rows;
   }
 
@@ -421,11 +426,6 @@ class _CanonicalBookingDetailScreenState
     ];
     if (month < 1 || month > 12) return month.toString();
     return months[month - 1];
-  }
-
-  static String _minutesLabel(int? minutes) {
-    if (minutes == null || minutes <= 0) return 'Pending';
-    return '$minutes min';
   }
 
   static String _nightsLabel(int nights) {
@@ -756,7 +756,6 @@ class _CanonicalBookingDetailScreenState
     }
 
     final canCancel = effectiveState == CanonicalBookingStateV3.confirmed;
-    final canComplete = effectiveState == CanonicalBookingStateV3.inProgress;
     return SafeArea(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
@@ -798,7 +797,11 @@ class _CanonicalBookingDetailScreenState
               onEnterOtp: effectiveState == CanonicalBookingStateV3.confirmed
                   ? () => _startServiceFlow(bookingId: widget.bookingId)
                   : null,
-              onCompleteService: canComplete
+              completionAvailableAt: canonicalBookingCompletionAvailableAt(
+                booking,
+              ),
+              onCompleteService:
+                  effectiveState == CanonicalBookingStateV3.inProgress
                   ? () => _completeServiceFlow(bookingId: widget.bookingId)
                   : null,
             ),
@@ -941,17 +944,17 @@ class _CanonicalBookingDetailScreenState
       ),
       StatusSummaryRowModel(
         label: 'Booking Date',
-        value: _bookingDateLabel(booking),
+        value: _schedulePresentation(booking).dateLabel,
         icon: Icons.calendar_today_outlined,
       ),
       StatusSummaryRowModel(
         label: 'Time',
-        value: _bookingTimeLabel(booking),
+        value: _schedulePresentation(booking).timeLabel,
         icon: Icons.access_time_rounded,
       ),
       StatusSummaryRowModel(
         label: 'Duration',
-        value: _bookingDurationLabel(booking),
+        value: _schedulePresentation(booking).durationLabel,
         icon: Icons.timelapse_outlined,
       ),
     ];
@@ -986,17 +989,17 @@ class _CanonicalBookingDetailScreenState
       ),
       StatusSummaryRowModel(
         label: 'Date',
-        value: _bookingDateLabel(booking),
+        value: _schedulePresentation(booking).dateLabel,
         icon: Icons.calendar_today_outlined,
       ),
       StatusSummaryRowModel(
         label: 'Time',
-        value: _bookingTimeLabel(booking),
+        value: _schedulePresentation(booking).timeLabel,
         icon: Icons.access_time_rounded,
       ),
       StatusSummaryRowModel(
         label: 'Duration',
-        value: _bookingDurationLabel(booking),
+        value: _schedulePresentation(booking).durationLabel,
         icon: Icons.hourglass_bottom_rounded,
       ),
     ];
@@ -1027,17 +1030,17 @@ class _CanonicalBookingDetailScreenState
       ),
       StatusSummaryRowModel(
         label: 'Booking Date',
-        value: _bookingDateLabel(booking),
+        value: _schedulePresentation(booking).dateLabel,
         icon: Icons.calendar_today_outlined,
       ),
       StatusSummaryRowModel(
         label: 'Time',
-        value: _bookingTimeLabel(booking),
+        value: _schedulePresentation(booking).timeLabel,
         icon: Icons.access_time_rounded,
       ),
       StatusSummaryRowModel(
         label: 'Duration',
-        value: _bookingDurationLabel(booking),
+        value: _schedulePresentation(booking).durationLabel,
         icon: Icons.timelapse_outlined,
       ),
       StatusSummaryRowModel(
@@ -1072,17 +1075,17 @@ class _CanonicalBookingDetailScreenState
     return [
       StatusSummaryRowModel(
         label: 'Date',
-        value: _bookingDateLabel(booking),
+        value: _schedulePresentation(booking).dateLabel,
         icon: Icons.calendar_today_outlined,
       ),
       StatusSummaryRowModel(
         label: 'Time',
-        value: _bookingTimeLabel(booking),
+        value: _schedulePresentation(booking).timeLabel,
         icon: Icons.access_time_rounded,
       ),
       StatusSummaryRowModel(
         label: 'Duration',
-        value: _bookingDurationLabel(booking),
+        value: _schedulePresentation(booking).durationLabel,
         icon: Icons.hourglass_bottom_rounded,
       ),
       StatusSummaryRowModel(
@@ -1364,38 +1367,19 @@ class _CanonicalBookingDetailScreenState
         participantPrivateData.hasAddress;
   }
 
-  String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {
-    final startAt = _scheduledStartAt(booking);
-    return startAt == null ? 'Pending' : _calendarDate(startAt);
-  }
+  CanonicalBookingSchedulePresentation _schedulePresentation(
+    CanonicalBookingDocumentV3 booking,
+  ) => buildCanonicalBookingSchedulePresentation(booking);
 
-  String _bookingTimeLabel(CanonicalBookingDocumentV3 booking) {
-    if (booking.schedule case final CanonicalSlotBookingScheduleV3 schedule) {
-      if (!_hasValidSlotWindow(schedule)) return 'Pending';
-      return '${_timeOnly(schedule.scheduledStartAt)} to ${_timeOnly(schedule.scheduledEndAt)}';
+  bool _canProviderCompleteBookingNow(CanonicalBookingDocumentV3 booking) {
+    final completionAvailableAt = canonicalBookingCompletionAvailableAt(
+      booking,
+    );
+    if (booking.lifecycle.otpEnteredAt == null ||
+        completionAvailableAt == null) {
+      return false;
     }
-    if (booking.schedule case final CanonicalRangeBookingScheduleV3 schedule) {
-      if (!_hasValidRangeWindow(schedule)) return 'Pending';
-      return '${_timeOnly(schedule.checkInDateTime)} to ${_timeOnly(schedule.checkOutDateTime)}';
-    }
-    return 'Pending';
-  }
-
-  String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
-    if (booking.schedule case final CanonicalSlotBookingScheduleV3 schedule) {
-      final minutes = schedule.totalDurationMinutes > 0
-          ? schedule.totalDurationMinutes
-          : booking.statistics.totalDurationMinutes;
-      if (minutes == null || minutes <= 0) return 'Pending';
-      return formatServiceDurationLabel(
-        durationMinutes: minutes,
-        schedulingMode: booking.service.schedulingMode,
-      );
-    }
-    if (booking.schedule case final CanonicalRangeBookingScheduleV3 schedule) {
-      return _nightsLabel(schedule.nights);
-    }
-    return 'Pending';
+    return !completionAvailableAt.isAfter(DateTime.now());
   }
 
   DateTime? _scheduledStartAt(CanonicalBookingDocumentV3 booking) {
@@ -1421,7 +1405,9 @@ class _CanonicalBookingDetailScreenState
         effectiveState == CanonicalBookingStateV3.confirmed &&
         (isParent || isProvider);
     final canComplete =
-        effectiveState == CanonicalBookingStateV3.inProgress && isProvider;
+        effectiveState == CanonicalBookingStateV3.inProgress &&
+        isProvider &&
+        _canProviderCompleteBookingNow(booking);
     if (!canCancel && !canComplete) {
       return const SizedBox.shrink();
     }
@@ -1779,13 +1765,15 @@ class _CanonicalBookingDetailScreenState
       if (!mounted) return;
       final confirmed = await showDialog<bool>(
         context: context,
+        barrierDismissible: true,
         builder: (context) => AlertDialog(
           title: Text(isProvider ? 'Cancel booking?' : 'Cancel this booking?'),
           content: Text(
             preview.allowed
                 ? isProvider
                       ? 'Customer refund: ${_moneyFromPaise(preview.grossCustomerRefundPaise)} (100%).\n\nRefunds go back to the original payment instrument in normal speed, typically within 5–7 working days.'
-                      : 'Time band: ${_labelForTimingBand(preview.timingBand)}\n'
+                      : '${_schedulePresentation(latest.booking).cancellationConfirmationMessage}\n\n'
+                            'Time band: ${_labelForTimingBand(preview.timingBand)}\n'
                             'Amount paid: ${_moneyFromPaise(preview.customerPaidPaise)}\n'
                             'Estimated refund: ${_moneyFromPaise(preview.grossCustomerRefundPaise)} '
                             '(${_percentLabel(preview.refundPercentageBasisPoints)})\n\n'
@@ -1881,12 +1869,23 @@ class _CanonicalBookingDetailScreenState
           '[CanonicalServiceCompletion] unexpected_error callable=completeBookingServiceV3 bookingId=$bookingId error=$error',
         );
       }
+      await _repository.fetchCanonicalBooking(bookingId);
       if (!mounted) return;
       final text = '$error';
+      final functionCode = error is FirebaseFunctionsException
+          ? (error.details is Map
+                ? '${(error.details as Map)['code'] ?? ''}'
+                : '')
+          : '';
+      final isServiceNotEnded =
+          functionCode == 'BOOKING_SERVICE_NOT_ENDED' ||
+          text.contains('BOOKING_SERVICE_NOT_ENDED');
       AppSnackbar.showError(
         context,
         error is TimeoutException
             ? 'Service completion is still refreshing. Please wait a moment.'
+            : isServiceNotEnded
+            ? 'The service has not ended yet. You can complete this booking after the final service end time.'
             : text.contains('failed-precondition')
             ? 'This booking cannot be completed right now.'
             : 'Could not complete this service right now.',
@@ -3514,12 +3513,14 @@ class _ProviderServiceDetailsCard extends StatelessWidget {
 class _ProviderUnifiedServiceActionCard extends StatelessWidget {
   const _ProviderUnifiedServiceActionCard({
     required this.booking,
+    required this.completionAvailableAt,
     required this.isBusy,
     required this.onEnterOtp,
     required this.onCompleteService,
   });
 
   final CanonicalBookingDocumentV3 booking;
+  final DateTime? completionAvailableAt;
   final bool isBusy;
   final VoidCallback? onEnterOtp;
   final VoidCallback? onCompleteService;
@@ -3531,6 +3532,11 @@ class _ProviderUnifiedServiceActionCard extends StatelessWidget {
         effectiveState == CanonicalBookingStateV3.inProgress ||
         booking.lifecycle.otpEnteredAt != null;
     final isNoShow = effectiveState == CanonicalBookingStateV3.noShow;
+    final canCompleteNow =
+        hasStarted &&
+        onCompleteService != null &&
+        completionAvailableAt != null &&
+        !completionAvailableAt!.isAfter(DateTime.now());
 
     return BookingDetailsSurfaceCard(
       backgroundColor: const Color(0xFFF5F9FF),
@@ -3586,8 +3592,12 @@ class _ProviderUnifiedServiceActionCard extends StatelessWidget {
                       ),
                     if (hasStarted) ...[
                       const SizedBox(height: 8),
-                      const Text(
-                        'The customer OTP was verified successfully. You can now complete the service when the work is finished.',
+                      Text(
+                        canCompleteNow
+                            ? 'The customer OTP was verified successfully. You can now complete the service when the work is finished.'
+                            : completionAvailableAt == null
+                            ? 'The customer OTP was verified successfully. Completion will be available after the service ends.'
+                            : 'The customer OTP was verified successfully. Completion available after ${_CanonicalBookingDetailScreenState._dateTimeWithMeridiem(completionAvailableAt!)}.',
                         style: TextStyle(
                           color: AppColors.textGrey,
                           fontWeight: FontWeight.w600,
@@ -3607,7 +3617,9 @@ class _ProviderUnifiedServiceActionCard extends StatelessWidget {
               label: hasStarted
                   ? (isBusy ? 'Completing...' : 'Complete service')
                   : (isBusy ? 'Verifying...' : 'Enter customer OTP'),
-              onPressed: hasStarted ? onCompleteService : onEnterOtp,
+              onPressed: hasStarted
+                  ? (canCompleteNow ? onCompleteService : null)
+                  : onEnterOtp,
               size: AppButtonSize.compact,
               isLoading: isBusy,
             ),

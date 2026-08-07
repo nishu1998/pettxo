@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import 'booking_deadline_countdown.dart';
@@ -183,15 +182,17 @@ class CanonicalProviderRequestCard extends StatelessWidget {
   }
 
   String get _metaLine {
-    final start = request.scheduledStartAt;
-    final end = request.scheduledEndAt;
-    if (start == null || end == null) {
+    final summary = request.schedulePresentation.compactScheduleSummary;
+    if (summary == 'Schedule unavailable') {
       return 'Schedule details are being prepared for this booking type.';
     }
-    final duration = request.totalDurationMinutes > 0
-        ? ' · ${formatServiceDurationLabel(durationMinutes: request.totalDurationMinutes, schedulingMode: request.schedulingMode)}'
+    final duration = request.schedulePresentation.durationLabel == 'Pending'
+        ? ''
+        : ' · ${request.schedulePresentation.durationLabel}';
+    final slotLabel = request.slotCount > 0
+        ? ' · ${request.slotCount} slot${request.slotCount == 1 ? '' : 's'}'
         : '';
-    return '${_dateLabel(start)} · ${_timeLabel(start)} to ${_timeLabel(end)} · ${request.slotCount} slot${request.slotCount == 1 ? '' : 's'}$duration';
+    return '$summary$slotLabel$duration';
   }
 
   String _supportingLine(String? countdownText) {

@@ -1,5 +1,6 @@
 import 'booking_document_v3.dart';
 import 'booking_v3_models.dart';
+import '../../presentation/utils/canonical_booking_schedule_presentation.dart';
 import '../../presentation/utils/canonical_booking_presentation_state.dart';
 
 class CanonicalProviderBookingRequestView {
@@ -22,6 +23,7 @@ class CanonicalProviderBookingRequestView {
   final DateTime? payDeadlineAt;
   final String timezone;
   final int? estimatedProviderPayoutPaise;
+  final CanonicalBookingSchedulePresentation schedulePresentation;
 
   const CanonicalProviderBookingRequestView({
     required this.bookingId,
@@ -43,6 +45,7 @@ class CanonicalProviderBookingRequestView {
     required this.payDeadlineAt,
     required this.timezone,
     required this.estimatedProviderPayoutPaise,
+    required this.schedulePresentation,
   });
 
   factory CanonicalProviderBookingRequestView.fromBooking(
@@ -58,6 +61,9 @@ class CanonicalProviderBookingRequestView {
       if (booking.participants.parent.lastInitial.trim().isNotEmpty)
         '${booking.participants.parent.lastInitial.trim()}.',
     ].join(' ');
+    final schedulePresentation = buildCanonicalBookingSchedulePresentation(
+      booking,
+    );
 
     return CanonicalProviderBookingRequestView(
       bookingId: bookingId,
@@ -81,6 +87,7 @@ class CanonicalProviderBookingRequestView {
       payDeadlineAt: booking.lifecycle.payDeadlineAt,
       timezone: booking.schedule.timezone,
       estimatedProviderPayoutPaise: booking.financials?.providerPayoutPaise,
+      schedulePresentation: schedulePresentation,
     );
   }
 

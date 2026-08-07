@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_snackbar.dart';
@@ -15,6 +14,7 @@ import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../utils/canonical_booking_presentation_state.dart';
+import '../utils/canonical_booking_schedule_presentation.dart';
 import '../widgets/booking_deadline_countdown.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
 
@@ -368,14 +368,6 @@ class _CanonicalProviderBookingRequestDetailScreenState
     return '${value.day} ${months[value.month - 1]} ${value.year} · $displayHour:${minute.toString().padLeft(2, '0')} $suffix';
   }
 
-  String _timeLabel(DateTime value) {
-    final hour = value.hour;
-    final minute = value.minute;
-    final suffix = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
-  }
-
   List<StatusSummaryRowModel> _buildActiveSummaryRows(
     CanonicalProviderBookingRequestView request,
     CanonicalBookingDocumentV3? booking,
@@ -418,6 +410,25 @@ class _CanonicalProviderBookingRequestDetailScreenState
         icon: Icons.timelapse_outlined,
       ),
     ]);
+    if (request.schedulePresentation.isSlotBooking &&
+        request.schedulePresentation.isMultiDayPackage) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Service days',
+          value: '${request.schedulePresentation.serviceDayCount}',
+          icon: Icons.date_range_outlined,
+        ),
+      );
+      rows.addAll(
+        request.schedulePresentation.perSegmentDisplayRows.map(
+          (row) => StatusSummaryRowModel(
+            label: row.label,
+            value: row.value,
+            icon: Icons.schedule_outlined,
+          ),
+        ),
+      );
+    }
     if (request.slotCount > 0) {
       rows.add(
         StatusSummaryRowModel(
@@ -570,45 +581,17 @@ class _CanonicalProviderBookingRequestDetailScreenState
   }
 
   String _activeBookingDateLabel(CanonicalProviderBookingRequestView request) {
-    return request.scheduledStartAt == null
-        ? 'Pending'
-        : _calendarDate(request.scheduledStartAt!);
+    return request.schedulePresentation.dateLabel;
   }
 
   String _activeBookingTimeLabel(CanonicalProviderBookingRequestView request) {
-    if (request.scheduledStartAt == null || request.scheduledEndAt == null) {
-      return 'Pending';
-    }
-    return '${_timeLabel(request.scheduledStartAt!)} - ${_timeLabel(request.scheduledEndAt!)}';
+    return request.schedulePresentation.timeLabel;
   }
 
   String _activeBookingDurationLabel(
     CanonicalProviderBookingRequestView request,
   ) {
-    return request.totalDurationMinutes > 0
-        ? formatServiceDurationLabel(
-            durationMinutes: request.totalDurationMinutes,
-            schedulingMode: request.schedulingMode,
-          )
-        : 'Pending';
-  }
-
-  String _calendarDate(DateTime value) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${value.day} ${months[value.month - 1]} ${value.year}';
+    return request.schedulePresentation.durationLabel;
   }
 }
 
@@ -782,6 +765,28 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
         icon: Icons.timelapse_outlined,
       ),
     ]);
+    final schedulePresentation = buildCanonicalBookingSchedulePresentation(
+      booking,
+    );
+    if (schedulePresentation.isSlotBooking &&
+        schedulePresentation.isMultiDayPackage) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Service days',
+          value: '${schedulePresentation.serviceDayCount}',
+          icon: Icons.date_range_outlined,
+        ),
+      );
+      rows.addAll(
+        schedulePresentation.perSegmentDisplayRows.map(
+          (row) => StatusSummaryRowModel(
+            label: row.label,
+            value: row.value,
+            icon: Icons.schedule_outlined,
+          ),
+        ),
+      );
+    }
 
     final slotLabel = _slotCountLabel(booking);
     if (slotLabel != null) {
@@ -1242,59 +1247,16 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
     return parts.isEmpty ? 'Customer' : parts.join(' ');
   }
 
-  static DateTime? _scheduleStart(CanonicalBookingDocumentV3 booking) {
-    final schedule = booking.schedule;
-    if (schedule is CanonicalSlotBookingScheduleV3) {
-      return schedule.scheduledStartAt;
-    }
-    if (schedule is CanonicalRangeBookingScheduleV3) {
-      return schedule.checkInDateTime;
-    }
-    return null;
-  }
-
-  static DateTime? _scheduleEnd(CanonicalBookingDocumentV3 booking) {
-    final schedule = booking.schedule;
-    if (schedule is CanonicalSlotBookingScheduleV3) {
-      return schedule.scheduledEndAt;
-    }
-    if (schedule is CanonicalRangeBookingScheduleV3) {
-      return schedule.checkOutDateTime;
-    }
-    return null;
-  }
-
   static String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {
-    final start = _scheduleStart(booking);
-    return start == null ? 'Pending' : _calendarDate(start);
+    return buildCanonicalBookingSchedulePresentation(booking).dateLabel;
   }
 
   static String _bookingTimeLabel(CanonicalBookingDocumentV3 booking) {
-    final start = _scheduleStart(booking);
-    final end = _scheduleEnd(booking);
-    if (start == null || end == null) return 'Pending';
-    return '${_timeLabel(start)} - ${_timeLabel(end)}';
+    return buildCanonicalBookingSchedulePresentation(booking).timeLabel;
   }
 
   static String _bookingDurationLabel(CanonicalBookingDocumentV3 booking) {
-    final schedule = booking.schedule;
-    if (schedule is CanonicalSlotBookingScheduleV3) {
-      final minutes = schedule.totalDurationMinutes > 0
-          ? schedule.totalDurationMinutes
-          : (booking.statistics.totalDurationMinutes ?? 0);
-      return minutes > 0
-          ? formatServiceDurationLabel(
-              durationMinutes: minutes,
-              schedulingMode: booking.service.schedulingMode,
-            )
-          : 'Pending';
-    }
-    if (schedule is CanonicalRangeBookingScheduleV3) {
-      return schedule.nights > 0
-          ? '${schedule.nights} night${schedule.nights == 1 ? '' : 's'}'
-          : 'Pending';
-    }
-    return 'Pending';
+    return buildCanonicalBookingSchedulePresentation(booking).durationLabel;
   }
 
   static String? _slotCountLabel(CanonicalBookingDocumentV3 booking) {

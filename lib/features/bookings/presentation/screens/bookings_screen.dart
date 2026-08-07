@@ -21,6 +21,7 @@ import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../navigation/booking_navigation_resolver.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../utils/canonical_booking_presentation_state.dart';
+import '../utils/canonical_booking_schedule_presentation.dart';
 import '../widgets/booking_deadline_countdown.dart';
 import '../widgets/canonical_provider_request_card.dart';
 
@@ -1363,14 +1364,9 @@ class _CanonicalBookingListCard extends StatelessWidget {
   }
 
   static String _scheduleLabel(CanonicalBookingDocumentV3 booking) {
-    final start = booking.scheduledStartAt ?? booking.serviceAnchorAt;
-    final end = booking.schedule is CanonicalSlotBookingScheduleV3
-        ? (booking.schedule as CanonicalSlotBookingScheduleV3).scheduledEndAt
-        : null;
-    final day = _dateLabel(start);
-    final startTime = _timeLabel(start);
-    if (end == null) return '$day · $startTime';
-    return '$day · $startTime to ${_timeLabel(end)}';
+    return buildCanonicalBookingSchedulePresentation(
+      booking,
+    ).compactScheduleSummary;
   }
 
   static String _supportingLine(
@@ -1441,32 +1437,6 @@ class _CanonicalBookingListCard extends StatelessWidget {
   ) {
     final failureCode = booking.payment.failureCode.trim().toUpperCase();
     return failureCode.isNotEmpty && !_isAvailabilityLostAfterCapture(booking);
-  }
-
-  static String _dateLabel(DateTime value) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${value.day} ${months[value.month - 1]}';
-  }
-
-  static String _timeLabel(DateTime value) {
-    final hour = value.hour;
-    final minute = value.minute;
-    final suffix = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '$displayHour:${minute.toString().padLeft(2, '0')} $suffix';
   }
 }
 
