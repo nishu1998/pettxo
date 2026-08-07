@@ -9,6 +9,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/services/policy_link_service.dart';
+import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
@@ -65,20 +66,35 @@ class _AddServiceAdditionalDetailsScreenState
   bool get _hasValidFlowDraft {
     final details = widget.draft.details;
     final setup = widget.draft.bookingSetup;
+    final schedulingValidation = validateServiceSchedulingSetup(
+      schedulingMode: setup.schedulingMode,
+      sessionDurationMinutes: setup.sessionDurationMinutes,
+      startMinutes: setup.startMinutes,
+      endMinutes: setup.endMinutes,
+      availableDays: setup.availableDays,
+    );
 
     return details.resolvedAnimalType.isNotEmpty &&
         details.resolvedCategory.isNotEmpty &&
         details.serviceName.trim().isNotEmpty &&
         details.pricePerSession > 0 &&
         details.description.trim().isNotEmpty &&
-        setup.schedulingMode.trim().isNotEmpty &&
-        setup.sessionDurationMinutes > 0 &&
         setup.capacity > 0 &&
-        setup.availableDays.isNotEmpty &&
-        setup.endMinutes > setup.startMinutes &&
+        schedulingValidation.isValid &&
         setup.location.displayAddress.trim().isNotEmpty &&
         setup.location.hasValidCoordinates &&
         setup.serviceType.trim().isNotEmpty;
+  }
+
+  ServiceSchedulingValidationResult get _schedulingValidation {
+    final setup = widget.draft.bookingSetup;
+    return validateServiceSchedulingSetup(
+      schedulingMode: setup.schedulingMode,
+      sessionDurationMinutes: setup.sessionDurationMinutes,
+      startMinutes: setup.startMinutes,
+      endMinutes: setup.endMinutes,
+      availableDays: setup.availableDays,
+    );
   }
 
   @override
@@ -240,6 +256,21 @@ class _AddServiceAdditionalDetailsScreenState
       }
       _notesFocusNode.requestFocus();
       return;
+    }
+
+    if (kDebugMode) {
+      final setup = widget.draft.bookingSetup;
+      final validation = _schedulingValidation;
+      debugPrint(
+        'ServicePublishValidation: '
+        'mode=${setup.schedulingMode} '
+        'bookingSetupValid=${validation.isValid} '
+        'reason=${validation.reason} '
+        'startMinutes=${setup.startMinutes} '
+        'endMinutes=${setup.endMinutes} '
+        'sessionDurationMinutes=${setup.sessionDurationMinutes} '
+        'availableDays=${setup.availableDays.join(",")}',
+      );
     }
 
     AppFeedback.show(

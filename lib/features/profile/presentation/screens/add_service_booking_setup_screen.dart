@@ -44,6 +44,14 @@ class _AddServiceBookingSetupScreenState
       label: 'Day care',
       schedulingMode: serviceSchedulingModeDayCare,
     ),
+    const _DurationOption(
+      label: 'Overnight',
+      schedulingMode: serviceSchedulingModeOvernight,
+    ),
+    const _DurationOption(
+      label: '24 hours',
+      schedulingMode: serviceSchedulingModeTwentyFourHours,
+    ),
   ];
 
   static const List<String> _days = [
@@ -108,8 +116,7 @@ class _AddServiceBookingSetupScreenState
         _capacity >= 1 &&
         _selectedDays.isNotEmpty &&
         _startMinutes != null &&
-        _endMinutes != null &&
-        _endMinutes! > _startMinutes! &&
+        _hasValidTimeWindow &&
         _selectedServiceType != null &&
         location != null &&
         location.displayAddress.trim().isNotEmpty;
@@ -120,11 +127,47 @@ class _AddServiceBookingSetupScreenState
   String? get _selectedSchedulingMode =>
       _selectedDurationOption?.schedulingMode;
 
+  bool get _isOvernightMode =>
+      _selectedSchedulingMode == serviceSchedulingModeOvernight;
+
+  bool get _isTwentyFourHourMode =>
+      _selectedSchedulingMode == serviceSchedulingModeTwentyFourHours;
+
+  bool get _requiresEndTimePicker => !_isTwentyFourHourMode;
+
+  int? get _storedEndMinutes =>
+      _isTwentyFourHourMode ? _startMinutes : _endMinutes;
+
+  bool get _hasValidTimeWindow {
+    return validateServiceSchedulingSetup(
+      schedulingMode: _selectedSchedulingMode,
+      sessionDurationMinutes: _selectedDurationMinutes,
+      startMinutes: _startMinutes,
+      endMinutes: _storedEndMinutes,
+      availableDays: _selectedDays,
+    ).isValid;
+  }
+
   int? get _selectedDurationMinutes {
     final option = _selectedDurationOption;
     final start = _startMinutes;
-    final end = _endMinutes;
+    final end = _storedEndMinutes;
     if (option == null) return null;
+    if (option.schedulingMode == serviceSchedulingModeTwentyFourHours) {
+      if (start == null) return null;
+      return 24 * 60;
+    }
+    if (option.schedulingMode == serviceSchedulingModeOvernight) {
+      if (start == null || end == null) return null;
+      final duration = deriveOvernightDurationMinutes(
+        startMinutes: start,
+        endMinutes: end,
+      );
+      if (duration == null || duration <= 0 || duration >= 24 * 60) {
+        return null;
+      }
+      return duration;
+    }
     if (option.schedulingMode == serviceSchedulingModeDayCare) {
       if (start == null || end == null || end <= start) return null;
       return end - start;
@@ -140,18 +183,61 @@ class _AddServiceBookingSetupScreenState
     return serviceDurationHelperText(schedulingMode: schedulingMode);
   }
 
+  String? get _availabilityValidationMessage {
+    if (_startMinutes == null) {
+      return _requiresEndTimePicker
+          ? 'Start and end time are required'
+          : 'Start time is required';
+    }
+    if (_requiresEndTimePicker && _endMinutes == null) {
+      return 'Start and end time are required';
+    }
+    if (_isTwentyFourHourMode) {
+      return null;
+    }
+    final validation = validateServiceSchedulingSetup(
+      schedulingMode: _selectedSchedulingMode,
+      sessionDurationMinutes: _selectedDurationMinutes,
+      startMinutes: _startMinutes,
+      endMinutes: _storedEndMinutes,
+      availableDays: _selectedDays,
+    );
+    if (validation.isValid) return null;
+    if (_isOvernightMode) {
+      return 'Overnight end time must be on the next day and less than 24 hours after the start time';
+    }
+    return 'End time must be after start time';
+  }
+
   List<String> get _slotPreview {
     final schedulingMode = _selectedSchedulingMode;
     final duration = _selectedDurationMinutes;
     final start = _startMinutes;
-    final end = _endMinutes;
-    if (schedulingMode == null ||
-        duration == null ||
-        start == null ||
-        end == null ||
-        end <= start) {
+    final end = _storedEndMinutes;
+    if (schedulingMode == null || duration == null || start == null) {
       return const [];
     }
+
+    if (schedulingMode == serviceSchedulingModeTwentyFourHours) {
+      return ['${_formatTime(start)} - ${_formatTime(start)} next day'];
+    }
+
+    if (end == null) return const [];
+
+    if (schedulingMode == serviceSchedulingModeOvernight) {
+      final overnightDuration = deriveOvernightDurationMinutes(
+        startMinutes: start,
+        endMinutes: end,
+      );
+      if (overnightDuration == null ||
+          overnightDuration <= 0 ||
+          overnightDuration >= 24 * 60) {
+        return const [];
+      }
+      return ['${_formatTime(start)} - ${_formatTime(end)} next day'];
+    }
+
+    if (end <= start) return const [];
 
     if (schedulingMode == serviceSchedulingModeDayCare) {
       return ['${_formatTime(start)} - ${_formatTime(end)}'];
@@ -178,11 +264,7 @@ class _AddServiceBookingSetupScreenState
           : null;
       _availabilityError = _selectedDays.isEmpty
           ? 'Select at least one available day'
-          : _startMinutes == null || _endMinutes == null
-          ? 'Start and end time are required'
-          : _endMinutes! <= _startMinutes!
-          ? 'End time must be after start time'
-          : null;
+          : _availabilityValidationMessage;
       _serviceTypeError = _selectedServiceType == null
           ? 'Service type is required'
           : null;
@@ -416,19 +498,12 @@ class _AddServiceBookingSetupScreenState
       );
     }
 
-    if (_startMinutes == null || _endMinutes == null) {
+    final availabilityMessage = _availabilityValidationMessage;
+    if (availabilityMessage != null) {
       return _BookingFieldIssue(
         field: _BookingSetupField.availability,
         key: _availabilitySectionKey,
-        message: 'Set both a start time and an end time.',
-      );
-    }
-
-    if (_endMinutes! <= _startMinutes!) {
-      return _BookingFieldIssue(
-        field: _BookingSetupField.availability,
-        key: _availabilitySectionKey,
-        message: 'End time must be after start time.',
+        message: availabilityMessage,
       );
     }
 
@@ -487,7 +562,7 @@ class _AddServiceBookingSetupScreenState
   }
 
   Future<void> _pickTime({required bool isStart}) async {
-    final currentMinutes = isStart ? _startMinutes : _endMinutes;
+    final currentMinutes = isStart ? _startMinutes : _storedEndMinutes;
     final initialTime = currentMinutes == null
         ? const TimeOfDay(hour: 9, minute: 0)
         : TimeOfDay(hour: currentMinutes ~/ 60, minute: currentMinutes % 60);
@@ -611,6 +686,9 @@ class _AddServiceBookingSetupScreenState
     setState(() {
       if (isStart) {
         _startMinutes = roundedMinutes;
+        if (_isTwentyFourHourMode) {
+          _endMinutes = roundedMinutes;
+        }
       } else {
         _endMinutes = roundedMinutes;
       }
@@ -644,7 +722,7 @@ class _AddServiceBookingSetupScreenState
       capacity: _capacity,
       availableDays: _days.where(_selectedDays.contains).toList(),
       startMinutes: _startMinutes!,
-      endMinutes: _endMinutes!,
+      endMinutes: _storedEndMinutes!,
       sameForAllDays: true,
       serviceType: _selectedServiceType!,
       location: _selectedLocation!,
@@ -711,11 +789,17 @@ class _AddServiceBookingSetupScreenState
                       enabled: !_hasConfirmedBookings,
                       onChanged: (value) {
                         setState(() {
-                          _selectedDurationOption = _durationOptions.firstWhere(
+                          final nextOption = _durationOptions.firstWhere(
                             (option) => option.label == value,
                             orElse: () => _selectedDurationOption!,
                           );
+                          _selectedDurationOption = nextOption;
+                          if (nextOption.schedulingMode ==
+                              serviceSchedulingModeTwentyFourHours) {
+                            _endMinutes = _startMinutes;
+                          }
                           _durationError = null;
+                          _availabilityError = null;
                           if (_highlightedField ==
                               _BookingSetupField.duration) {
                             _highlightedField = null;
@@ -814,26 +898,43 @@ class _AddServiceBookingSetupScreenState
                             },
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _TimePickerField(
-                            label: 'End time',
-                            value: _formatTime(_endMinutes),
-                            isHighlighted:
-                                _highlightedField ==
-                                _BookingSetupField.availability,
-                            onTap: () async {
-                              await _pickTime(isStart: false);
-                              if (!mounted) return;
-                              if (_highlightedField ==
-                                  _BookingSetupField.availability) {
-                                setState(() => _highlightedField = null);
-                              }
-                            },
+                        if (_requiresEndTimePicker) ...[
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _TimePickerField(
+                              label: _isOvernightMode
+                                  ? 'End time (next day)'
+                                  : 'End time',
+                              value: _formatTime(_endMinutes),
+                              isHighlighted:
+                                  _highlightedField ==
+                                  _BookingSetupField.availability,
+                              onTap: () async {
+                                await _pickTime(isStart: false);
+                                if (!mounted) return;
+                                if (_highlightedField ==
+                                    _BookingSetupField.availability) {
+                                  setState(() => _highlightedField = null);
+                                }
+                              },
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
+                    if (_isTwentyFourHourMode) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _startMinutes == null
+                            ? 'Ends automatically 24 hours after the selected start time.'
+                            : 'Ends automatically at ${_formatTime(_startMinutes)} the next day.',
+                        style: const TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 13,
+                          height: 1.5,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 18),
