@@ -690,6 +690,9 @@ class _ServicesScreenState extends State<ServicesScreen> {
                         ),
                       ...discoveryPresentation.primaryServices.map((entry) {
                         return Padding(
+                          key: ValueKey(
+                            'marketplace-service-${entry.service.id}',
+                          ),
                           padding: const EdgeInsets.only(bottom: 16),
                           child: _MarketplaceServiceCard(
                             service: entry.service,
@@ -714,6 +717,9 @@ class _ServicesScreenState extends State<ServicesScreen> {
                           ),
                         ...discoveryPresentation.secondaryServices.map((entry) {
                           return Padding(
+                            key: ValueKey(
+                              'marketplace-service-${entry.service.id}',
+                            ),
                             padding: const EdgeInsets.only(bottom: 16),
                             child: _MarketplaceServiceCard(
                               service: entry.service,
@@ -1295,6 +1301,9 @@ class _MarketplaceServiceCard extends StatelessWidget {
                           ),
                           const SizedBox(height: 3),
                           LiveUserIdentityResolver(
+                            key: ValueKey(
+                              'service-owner-${service.id}-${service.ownerUserId}',
+                            ),
                             userId: service.ownerUserId,
                             fallbackName: service.ownerName,
                             fallbackUsername: service.ownerUsername,
