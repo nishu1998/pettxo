@@ -11,6 +11,7 @@ import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../domain/notification_visibility.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../profile/presentation/widgets/profile_content_sections.dart';
+import '../../../support/presentation/screens/support_ticket_detail_screen.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -215,11 +216,23 @@ class NotificationsScreen extends StatelessWidget {
     final recipientId =
         '${data['userId'] ?? data['recipientId'] ?? data['data']?['recipientId'] ?? ''}';
     final postId = '${data['postId'] ?? data['data']?['postId'] ?? ''}';
+    final ticketId = '${data['ticketId'] ?? data['data']?['ticketId'] ?? ''}'
+        .trim();
     if ((type == 'chat' || type == 'chatMessage' || category == 'chat') &&
         chatId.isNotEmpty) {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
+      );
+      return;
+    }
+    if ((category == 'support' || type == 'supportReply') &&
+        ticketId.isNotEmpty) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SupportTicketDetailScreen(ticketId: ticketId),
+        ),
       );
       return;
     }
@@ -486,6 +499,9 @@ class _NotificationTile extends StatelessWidget {
       if (type == 'socialLike') return Icons.favorite_rounded;
       if (type == 'socialComment') return Icons.mode_comment_rounded;
       return Icons.notifications_none_rounded;
+    }
+    if (category == 'support' || type == 'supportReply') {
+      return Icons.support_agent_rounded;
     }
     if (type.contains('Otp')) return Icons.password_rounded;
     if (type.contains('Accepted')) return Icons.verified_rounded;

@@ -14,6 +14,7 @@ import '../../data/services/settings_service.dart';
 import '../../domain/models/app_settings.dart';
 import 'account_security_screen.dart';
 import '../../../auth/presentation/screens/auth_gateway_screen.dart';
+import '../../../support/presentation/screens/help_support_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -402,6 +403,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           onTap: () =>
                               Navigator.pushNamed(context, '/settings/legal'),
+                        ),
+                        const Divider(height: 1),
+                        _NavTile(
+                          icon: Icons.support_agent_rounded,
+                          title: 'Help & Support',
+                          subtitle: const Text(
+                            'FAQs, support tickets, and replies from Pettxo',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => HelpSupportScreen(),
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ),

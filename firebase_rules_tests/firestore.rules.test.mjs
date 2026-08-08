@@ -93,6 +93,14 @@ function capacityReleaseDoc(db, bookingId) {
   return doc(db, 'capacityReleases', bookingId);
 }
 
+function supportTicketDoc(db, ticketId) {
+  return doc(db, 'supportTickets', ticketId);
+}
+
+function supportTicketMessageDoc(db, ticketId, messageId) {
+  return doc(db, 'supportTickets', ticketId, 'messages', messageId);
+}
+
 function ownerPayload(uid, overrides = {}) {
   return {
     userId: uid,
@@ -332,6 +340,126 @@ test('provider payout reads stay provider-or-admin only and clients cannot write
   await assertFails(
     updateDoc(providerPayoutDoc(authedDb(providerUid), 'booking-1'), {
       status: 'PAID',
+    }),
+  );
+});
+
+test('support tickets are readable by the owning customer and support admins only', async () => {
+  const ownerUid = 'supportOwner';
+  const otherUid = 'supportOther';
+  const supportAdminUid = 'supportAdmin';
+  const financeAdminUid = 'supportFinance';
+  await seedUser(ownerUid);
+  await seedUser(otherUid);
+  await seedUser(supportAdminUid, {adminRole: 'customerSupportAdmin'});
+  await seedUser(financeAdminUid, {adminRole: 'financeAdmin'});
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(supportTicketDoc(db, 'ticket-1'), {
+      ticketId: 'ticket-1',
+      userId: ownerUid,
+      category: 'technical_issue',
+      subject: 'App issue',
+      initialMessage: 'Something broke.',
+      status: 'open',
+      customerUnreadCount: 0,
+      adminUnreadCount: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastMessageAt: new Date(),
+      lastMessagePreview: 'Something broke.',
+      lastMessageSenderType: 'customer',
+    });
+    await setDoc(supportTicketMessageDoc(db, 'ticket-1', 'message-1'), {
+      messageId: 'message-1',
+      senderId: ownerUid,
+      senderType: 'customer',
+      message: 'Something broke.',
+      createdAt: new Date(),
+    });
+  });
+
+  await assertSucceeds(getDoc(supportTicketDoc(authedDb(ownerUid), 'ticket-1')));
+  await assertSucceeds(
+    getDoc(supportTicketDoc(authedDb(supportAdminUid), 'ticket-1')),
+  );
+  await assertFails(getDoc(supportTicketDoc(authedDb(otherUid), 'ticket-1')));
+  await assertFails(
+    getDoc(supportTicketDoc(authedDb(financeAdminUid), 'ticket-1')),
+  );
+
+  await assertSucceeds(
+    getDoc(supportTicketMessageDoc(authedDb(ownerUid), 'ticket-1', 'message-1')),
+  );
+  await assertSucceeds(
+    getDoc(
+      supportTicketMessageDoc(
+        authedDb(supportAdminUid),
+        'ticket-1',
+        'message-1',
+      ),
+    ),
+  );
+  await assertFails(
+    getDoc(supportTicketMessageDoc(authedDb(otherUid), 'ticket-1', 'message-1')),
+  );
+  await assertFails(
+    getDoc(
+      supportTicketMessageDoc(
+        authedDb(financeAdminUid),
+        'ticket-1',
+        'message-1',
+      ),
+    ),
+  );
+});
+
+test('support ticket documents remain client write blocked', async () => {
+  const ownerUid = 'supportWriteOwner';
+  const supportAdminUid = 'supportWriteAdmin';
+  await seedUser(ownerUid);
+  await seedUser(supportAdminUid, {adminRole: 'customerSupportAdmin'});
+
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(supportTicketDoc(db, 'ticket-2'), {
+      ticketId: 'ticket-2',
+      userId: ownerUid,
+      category: 'account',
+      subject: 'Need help',
+      initialMessage: 'Hello',
+      status: 'open',
+      customerUnreadCount: 0,
+      adminUnreadCount: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastMessageAt: new Date(),
+      lastMessagePreview: 'Hello',
+      lastMessageSenderType: 'customer',
+    });
+  });
+
+  await assertFails(
+    updateDoc(supportTicketDoc(authedDb(ownerUid), 'ticket-2'), {
+      status: 'resolved',
+    }),
+  );
+  await assertFails(
+    setDoc(
+      supportTicketMessageDoc(authedDb(ownerUid), 'ticket-2', 'message-2'),
+      {
+        messageId: 'message-2',
+        senderId: ownerUid,
+        senderType: 'customer',
+        message: 'Client should not write directly.',
+        createdAt: new Date(),
+      },
+    ),
+  );
+  await assertFails(
+    updateDoc(supportTicketDoc(authedDb(supportAdminUid), 'ticket-2'), {
+      status: 'awaiting_customer',
     }),
   );
 });

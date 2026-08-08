@@ -23,3 +23,4 @@ export {
 export * from "./providerVerification/providerVerificationFunctions";
 export * from "./offers/offerFunctions";
 export * from "./booking/bookingFunctions";
+export * from "./support/supportFunctions";

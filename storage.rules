@@ -24,6 +24,13 @@ service firebase.storage {
         ).data.adminRole in ["superAdmin", "customerSupportAdmin"];
     }
 
+    function canManageSupportTickets() {
+      return signedIn() &&
+        firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ).data.adminRole in ["superAdmin", "customerSupportAdmin"];
+    }
+
     function isSupportedImage() {
       return request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
     }
@@ -85,6 +92,25 @@ service firebase.storage {
         isSupportedVerificationDocument() &&
         isMaxTenMb();
       allow delete: if isOwner(userId);
+    }
+
+    match /supportTickets/{userId}/{ticketId}/{fileName} {
+      allow read: if (
+        isOwner(userId) &&
+        firestore.get(
+          /databases/(default)/documents/supportTickets/$(ticketId)
+        ).data.userId == userId
+      ) || canManageSupportTickets();
+      allow create, update: if isOwner(userId) &&
+        firestore.get(
+          /databases/(default)/documents/supportTickets/$(ticketId)
+        ).data.userId == userId &&
+        isSupportedImage() &&
+        isMaxFiveMb();
+      allow delete: if isOwner(userId) &&
+        firestore.get(
+          /databases/(default)/documents/supportTickets/$(ticketId)
+        ).data.userId == userId;
     }
 
     match /admin/{allPaths=**} {

@@ -135,6 +135,15 @@ service cloud.firestore {
         ];
     }
 
+    function canManageSupportTickets() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.adminRole in [
+          "superAdmin",
+          "customerSupportAdmin"
+        ];
+    }
+
     function existingOwnerId() {
       return resource.data.ownerUserId;
     }
@@ -2005,6 +2014,24 @@ service cloud.firestore {
               get(/databases/$(database)/documents/chats/$(chatId)).data
             ) ||
             canMonitorChats()
+          );
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /supportTickets/{ticketId} {
+      allow read: if signedIn() &&
+        (
+          resource.data.userId == request.auth.uid ||
+          canManageSupportTickets()
+        );
+      allow create, update, delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn() &&
+          (
+            get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.userId == request.auth.uid ||
+            canManageSupportTickets()
           );
         allow create, update, delete: if false;
       }

@@ -51,6 +51,29 @@ async function seedUser(uid, data = {}) {
   });
 }
 
+async function seedSupportTicket(ticketId, userId) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = getFirestore(context.app);
+    await setDoc(doc(db, 'supportTickets', ticketId), {
+      ticketId,
+      userId,
+      category: 'technical_issue',
+      subject: 'Support ticket',
+      initialMessage: 'Need help',
+      status: 'awaiting_support',
+      customerUnreadCount: 0,
+      adminUnreadCount: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastMessageAt: new Date(),
+      lastMessagePreview: 'Need help',
+      lastMessageSenderType: 'customer',
+      contactNumber: '+919999999999',
+      attachments: [],
+    });
+  });
+}
+
 before(async () => {
   testEnv = await initializeTestEnvironment({
     projectId,
@@ -196,4 +219,109 @@ test('unauthenticated users cannot read, upload, or delete verification files', 
     }),
   );
   await assertFails(deleteObject(publicRef));
+});
+
+test('support ticket owner can upload and read their own support attachment', async () => {
+  const uid = 'support-storage-owner';
+  const ticketId = 'support-ticket-1';
+  await seedUser(uid);
+  await seedSupportTicket(ticketId, uid);
+  const storage = authedStorage(uid);
+  const imageRef = ref(storage, `supportTickets/${uid}/${ticketId}/one.jpg`);
+
+  await assertSucceeds(
+    uploadBytes(imageRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/jpeg',
+    }),
+  );
+  await assertSucceeds(getBytes(imageRef));
+});
+
+test('support admins can read support attachments but finance admins cannot', async () => {
+  const ownerUid = 'support-storage-owner-2';
+  const supportAdminUid = 'support-storage-admin';
+  const financeAdminUid = 'support-storage-finance';
+  const ticketId = 'support-ticket-2';
+  await seedUser(ownerUid);
+  await seedUser(supportAdminUid, {adminRole: 'customerSupportAdmin'});
+  await seedUser(financeAdminUid, {adminRole: 'financeAdmin'});
+  await seedSupportTicket(ticketId, ownerUid);
+
+  const ownerStorage = authedStorage(ownerUid);
+  const supportStorage = authedStorage(supportAdminUid);
+  const financeStorage = authedStorage(financeAdminUid);
+  const ownerRef = ref(
+    ownerStorage,
+    `supportTickets/${ownerUid}/${ticketId}/one.jpg`,
+  );
+  const supportRef = ref(
+    supportStorage,
+    `supportTickets/${ownerUid}/${ticketId}/one.jpg`,
+  );
+  const financeRef = ref(
+    financeStorage,
+    `supportTickets/${ownerUid}/${ticketId}/one.jpg`,
+  );
+
+  await assertSucceeds(
+    uploadBytes(ownerRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/jpeg',
+    }),
+  );
+  await assertSucceeds(getBytes(supportRef));
+  await assertFails(getBytes(financeRef));
+});
+
+test('other users cannot upload or read another user support attachment', async () => {
+  const ownerUid = 'support-storage-owner-3';
+  const otherUid = 'support-storage-other-3';
+  const ticketId = 'support-ticket-3';
+  await seedUser(ownerUid);
+  await seedUser(otherUid);
+  await seedSupportTicket(ticketId, ownerUid);
+
+  const ownerStorage = authedStorage(ownerUid);
+  const otherStorage = authedStorage(otherUid);
+  const ownerRef = ref(
+    ownerStorage,
+    `supportTickets/${ownerUid}/${ticketId}/one.jpg`,
+  );
+  const otherRef = ref(
+    otherStorage,
+    `supportTickets/${ownerUid}/${ticketId}/one.jpg`,
+  );
+
+  await assertSucceeds(
+    uploadBytes(ownerRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/jpeg',
+    }),
+  );
+  await assertFails(getBytes(otherRef));
+  await assertFails(
+    uploadBytes(otherRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/jpeg',
+    }),
+  );
+});
+
+test('support attachment uploads reject unsupported files and oversize images', async () => {
+  const uid = 'support-storage-owner-4';
+  const ticketId = 'support-ticket-4';
+  await seedUser(uid);
+  await seedSupportTicket(ticketId, uid);
+  const storage = authedStorage(uid);
+  const textRef = ref(storage, `supportTickets/${uid}/${ticketId}/bad.txt`);
+  const largeRef = ref(storage, `supportTickets/${uid}/${ticketId}/big.jpg`);
+  const tooLarge = new Uint8Array(5 * 1024 * 1024 + 1);
+
+  await assertFails(
+    uploadBytes(textRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'text/plain',
+    }),
+  );
+  await assertFails(
+    uploadBytes(largeRef, tooLarge, {
+      contentType: 'image/jpeg',
+    }),
+  );
 });
