@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.pettexo.app",
+      "sha256_cert_fingerprints": [
+        "0A:56:5F:52:24:D4:16:86:79:DA:F9:CB:6D:FF:14:0B:80:82:36:7B:87:08:A6:EB:51:D8:11:05:03:3E:3D:01"
+      ]
+    }
+  }
+]

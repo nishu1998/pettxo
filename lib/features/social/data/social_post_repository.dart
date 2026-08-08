@@ -311,6 +311,13 @@ class SocialPostRepository {
     return visiblePosts;
   }
 
+  Future<SocialPostModel?> fetchVisiblePostById(String postId) async {
+    final normalizedPostId = postId.trim();
+    if (normalizedPostId.isEmpty) return null;
+    final posts = await fetchPostsByIds(<String>[normalizedPostId], limit: 1);
+    return posts.isEmpty ? null : posts.first;
+  }
+
   Future<List<SocialPostModel>> fetchPopularPosts({
     int limit = 10,
     bool allowLocalFallback = true,

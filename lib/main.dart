@@ -12,6 +12,7 @@ import 'core/services/firebase_app_scope.dart';
 import 'core/services/network_status_service.dart';
 import 'core/services/policy_link_service.dart';
 import 'core/services/push_notification_service.dart';
+import 'core/services/social_post_deep_link_service.dart';
 import 'core/widgets/network_status_banner.dart';
 import 'features/auth/presentation/screens/profile_type_screen.dart';
 import 'features/auth/presentation/screens/auth_gateway_screen.dart';
@@ -92,6 +93,13 @@ void main() async {
       await UserRestrictionService.instance.initialize();
     } catch (error) {
       _debugStartupLog('App startup debug -> restriction init skipped: $error');
+    }
+  });
+  Future<void>(() async {
+    try {
+      await SocialPostDeepLinkService.instance.initialize();
+    } catch (error) {
+      _debugStartupLog('App startup debug -> deep link init skipped: $error');
     }
   });
 }

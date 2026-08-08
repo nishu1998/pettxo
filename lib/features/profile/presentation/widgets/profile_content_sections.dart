@@ -604,44 +604,89 @@ class _ProfilePostLoaderScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repository = ProfileContentRepository();
+    final socialPostRepository = SocialPostRepository();
+    final trimmedAuthorId = authorId.trim();
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: StreamBuilder<List<SocialPostModel>>(
-        stream: repository.watchPostsForAuthorId(authorId),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return const _ProfilePostDetailStateMessage(
+    if (trimmedAuthorId.isNotEmpty) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        body: StreamBuilder<List<SocialPostModel>>(
+          stream: repository.watchPostsForAuthorId(trimmedAuthorId),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const _ProfilePostDetailStateMessage(
+                title: 'Unable to load post',
+                message: 'Please try again in a moment.',
+              );
+            }
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(
+                child: CircularProgressIndicator(color: AppColors.primary),
+              );
+            }
+
+            final posts = snapshot.data ?? const <SocialPostModel>[];
+            if (posts.isEmpty) {
+              return const _ProfilePostDetailStateMessage(
+                title: 'Post unavailable',
+                message:
+                    'This post may have been removed or is no longer visible.',
+              );
+            }
+
+            final resolvedIndex = posts.indexWhere(
+              (post) => post.id == initialPostId,
+            );
+
+            return _ProfilePostFeedScreen(
+              posts: posts,
+              initialIndex: resolvedIndex < 0 ? 0 : resolvedIndex,
+              currentUserId: currentUserId,
+            );
+          },
+        ),
+      );
+    }
+
+    return FutureBuilder<SocialPostModel?>(
+      future: socialPostRepository.fetchVisiblePostById(initialPostId),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Scaffold(
+            backgroundColor: AppColors.background,
+            body: _ProfilePostDetailStateMessage(
               title: 'Unable to load post',
               message: 'Please try again in a moment.',
-            );
-          }
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(
+            ),
+          );
+        }
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(
+            backgroundColor: AppColors.background,
+            body: Center(
               child: CircularProgressIndicator(color: AppColors.primary),
-            );
-          }
+            ),
+          );
+        }
 
-          final posts = snapshot.data ?? const <SocialPostModel>[];
-          if (posts.isEmpty) {
-            return const _ProfilePostDetailStateMessage(
+        final post = snapshot.data;
+        if (post == null || post.authorId.trim().isEmpty) {
+          return const Scaffold(
+            backgroundColor: AppColors.background,
+            body: _ProfilePostDetailStateMessage(
               title: 'Post unavailable',
               message:
                   'This post may have been removed or is no longer visible.',
-            );
-          }
-
-          final resolvedIndex = posts.indexWhere(
-            (post) => post.id == initialPostId,
+            ),
           );
+        }
 
-          return _ProfilePostFeedScreen(
-            posts: posts,
-            initialIndex: resolvedIndex < 0 ? 0 : resolvedIndex,
-            currentUserId: currentUserId,
-          );
-        },
-      ),
+        return _ProfilePostLoaderScreen(
+          authorId: post.authorId,
+          initialPostId: initialPostId,
+          currentUserId: currentUserId,
+        );
+      },
     );
   }
 }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/utils/social_post_share.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
@@ -351,7 +352,7 @@ class _SocialPostCardState extends State<SocialPostCard> {
   }
 
   Future<void> _handleShareTap() async {
-    final shareText = _buildShareText();
+    final shareText = buildSocialPostShareText(_post);
     final box = context.findRenderObject() as RenderBox?;
 
     try {
@@ -397,33 +398,6 @@ class _SocialPostCardState extends State<SocialPostCard> {
         tone: AppFeedbackTone.error,
       );
     }
-  }
-
-  String _buildShareText() {
-    final lines = <String>[
-      'Check out this post on Pettxo',
-      if (_post.authorDisplayName.trim().isNotEmpty)
-        'By ${_post.authorDisplayName.trim()}',
-    ];
-
-    final caption = _post.caption.trim();
-    if (caption.isNotEmpty) {
-      lines.add('');
-      lines.add(caption);
-    }
-
-    if (_post.hashtags.isNotEmpty) {
-      lines.add('');
-      lines.add(_post.hashtags.map((tag) => '#$tag').join(' '));
-    }
-
-    final leadImageUrl = _post.imageUrls.isEmpty ? '' : _post.imageUrls.first;
-    if (leadImageUrl.isNotEmpty) {
-      lines.add('');
-      lines.add(leadImageUrl);
-    }
-
-    return lines.join('\n');
   }
 
   Future<void> _openComments() async {
