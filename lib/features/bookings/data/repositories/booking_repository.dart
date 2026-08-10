@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../../../core/services/firebase_resilience_service.dart';
 import '../mappers/booking_document_mapper.dart';
 import '../../domain/models/booking_payment_order.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
@@ -61,18 +62,23 @@ class BookingRepository {
     final userId = currentUserId.trim();
     if (userId.isEmpty) return Stream.value(const []);
 
-    return _firestore
-        .collection('bookings')
-        .where('customerId', isEqualTo: userId)
-        .orderBy('scheduledStartAt', descending: true)
-        .limit(limit)
-        .snapshots()
-        .map((snapshot) {
-          return snapshot.docs
-              .map(mapBookingDocumentSnapshot)
-              .whereType<CanonicalBookingReadModel>()
-              .toList(growable: false);
-        });
+    return FirebaseResilienceService.retryTransientStream<
+      List<BookingReadModel>
+    >(
+      operationName: 'BookingRepository.watchReceivingBookingReadModels',
+      streamFactory: () => _firestore
+          .collection('bookings')
+          .where('customerId', isEqualTo: userId)
+          .orderBy('scheduledStartAt', descending: true)
+          .limit(limit)
+          .snapshots()
+          .map((snapshot) {
+            return snapshot.docs
+                .map(mapBookingDocumentSnapshot)
+                .whereType<CanonicalBookingReadModel>()
+                .toList(growable: false);
+          }),
+    );
   }
 
   Stream<List<BookingReadModel>> watchDeliveringBookingReadModels(
@@ -82,17 +88,22 @@ class BookingRepository {
     final userId = currentUserId.trim();
     if (userId.isEmpty) return Stream.value(const []);
 
-    return _firestore
-        .collection('bookings')
-        .where('serviceOwnerId', isEqualTo: userId)
-        .orderBy('scheduledStartAt', descending: true)
-        .limit(limit)
-        .snapshots()
-        .map(
-          (snapshot) => snapshot.docs
-              .map(mapBookingDocumentSnapshot)
-              .toList(growable: false),
-        );
+    return FirebaseResilienceService.retryTransientStream<
+      List<BookingReadModel>
+    >(
+      operationName: 'BookingRepository.watchDeliveringBookingReadModels',
+      streamFactory: () => _firestore
+          .collection('bookings')
+          .where('serviceOwnerId', isEqualTo: userId)
+          .orderBy('scheduledStartAt', descending: true)
+          .limit(limit)
+          .snapshots()
+          .map(
+            (snapshot) => snapshot.docs
+                .map(mapBookingDocumentSnapshot)
+                .toList(growable: false),
+          ),
+    );
   }
 
   Stream<List<CanonicalProviderBookingRequestView>>
@@ -100,45 +111,51 @@ class BookingRepository {
     final userId = currentUserId.trim();
     if (userId.isEmpty) return Stream.value(const []);
 
-    return _firestore
-        .collection('bookings')
-        .where('serviceOwnerId', isEqualTo: userId)
-        .where(
-          'stateQueryValue',
-          whereIn: const [
-            'REQUESTED',
-            'PENDING_PROVIDER',
-            'ACCEPTED_AWAITING_PAYMENT',
-          ],
-        )
-        .limit(limit)
-        .snapshots()
-        .map((snapshot) {
-          final requests = snapshot.docs
-              .map(mapBookingDocumentSnapshot)
-              .whereType<CanonicalBookingReadModel>()
-              .map(
-                (readModel) => CanonicalProviderBookingRequestView.fromBooking(
-                  readModel.bookingId,
-                  readModel.booking,
-                ),
-              )
-              .toList(growable: false);
-          requests.sort((left, right) {
-            final leftTime =
-                left.timerStartsAt ??
-                left.acceptDeadlineAt ??
-                left.scheduledStartAt ??
-                DateTime.fromMillisecondsSinceEpoch(0);
-            final rightTime =
-                right.timerStartsAt ??
-                right.acceptDeadlineAt ??
-                right.scheduledStartAt ??
-                DateTime.fromMillisecondsSinceEpoch(0);
-            return rightTime.compareTo(leftTime);
-          });
-          return requests;
-        });
+    return FirebaseResilienceService.retryTransientStream<
+      List<CanonicalProviderBookingRequestView>
+    >(
+      operationName: 'BookingRepository.watchProviderCanonicalRequests',
+      streamFactory: () => _firestore
+          .collection('bookings')
+          .where('serviceOwnerId', isEqualTo: userId)
+          .where(
+            'stateQueryValue',
+            whereIn: const [
+              'REQUESTED',
+              'PENDING_PROVIDER',
+              'ACCEPTED_AWAITING_PAYMENT',
+            ],
+          )
+          .limit(limit)
+          .snapshots()
+          .map((snapshot) {
+            final requests = snapshot.docs
+                .map(mapBookingDocumentSnapshot)
+                .whereType<CanonicalBookingReadModel>()
+                .map(
+                  (readModel) =>
+                      CanonicalProviderBookingRequestView.fromBooking(
+                        readModel.bookingId,
+                        readModel.booking,
+                      ),
+                )
+                .toList(growable: false);
+            requests.sort((left, right) {
+              final leftTime =
+                  left.timerStartsAt ??
+                  left.acceptDeadlineAt ??
+                  left.scheduledStartAt ??
+                  DateTime.fromMillisecondsSinceEpoch(0);
+              final rightTime =
+                  right.timerStartsAt ??
+                  right.acceptDeadlineAt ??
+                  right.scheduledStartAt ??
+                  DateTime.fromMillisecondsSinceEpoch(0);
+              return rightTime.compareTo(leftTime);
+            });
+            return requests;
+          }),
+    );
   }
 
   Stream<BookingReadModel?> watchBookingReadModel(String bookingId) {

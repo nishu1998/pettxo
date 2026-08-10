@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../../../core/services/firebase_resilience_service.dart';
 import '../../../core/services/network_status_service.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../social/data/follow_repository.dart';
@@ -171,7 +172,12 @@ class HomeFeedRepository {
     }
 
     try {
-      return await query.get();
+      return await FirebaseResilienceService.retryTransient<
+        QuerySnapshot<Map<String, dynamic>>
+      >(
+        operationName: 'HomeFeedRepository.fetchPage:serverQuery',
+        operation: query.get,
+      );
     } on FirebaseException catch (error) {
       if (error.code == 'failed-precondition') {
         throw Exception(
@@ -230,10 +236,16 @@ class HomeFeedRepository {
     required String targetField,
     required String ownerUserId,
   }) async {
-    final snapshot = await _firestore
-        .collection(collection)
-        .where(ownerField, isEqualTo: ownerUserId)
-        .get();
+    final snapshot =
+        await FirebaseResilienceService.retryTransient<
+          QuerySnapshot<Map<String, dynamic>>
+        >(
+          operationName: 'HomeFeedRepository.loadRelationIds:$collection',
+          operation: () => _firestore
+              .collection(collection)
+              .where(ownerField, isEqualTo: ownerUserId)
+              .get(),
+        );
 
     return snapshot.docs
         .map((doc) => (doc.data()[targetField] as String? ?? '').trim())

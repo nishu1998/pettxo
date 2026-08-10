@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/firebase_resilience_service.dart';
 
 class PostImageCarousel extends StatefulWidget {
   final List<String> imageUrls;
@@ -185,10 +186,23 @@ class _ProgressiveNetworkImage extends StatelessWidget {
           fit: fit,
           fadeInDuration: const Duration(milliseconds: 120),
           placeholder: (context, nestedUrl) => const _ImagePlaceholder(),
-          errorWidget: (context, nestedUrl, error) =>
-              const _ImageErrorFallback(),
+          errorWidget: (context, nestedUrl, error) {
+            FirebaseResilienceService.logImageFailure(
+              operationName: '_ProgressiveNetworkImage.thumbnail',
+              error: error,
+              imageUrl: nestedUrl,
+            );
+            return const _ImageErrorFallback();
+          },
         ),
-        errorWidget: (context, imageUrl, error) => const _ImageErrorFallback(),
+        errorWidget: (context, imageUrl, error) {
+          FirebaseResilienceService.logImageFailure(
+            operationName: '_ProgressiveNetworkImage.fullsize',
+            error: error,
+            imageUrl: imageUrl,
+          );
+          return const _ImageErrorFallback();
+        },
         memCacheWidth: 1080,
       ),
     );

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../services/firebase_resilience_service.dart';
+
 class AppUserAvatar extends StatelessWidget {
   static const double defaultRadius = 12;
 
@@ -45,7 +47,14 @@ class AppUserAvatar extends StatelessWidget {
             fit: BoxFit.cover,
             fadeInDuration: fadeInDuration ?? Duration.zero,
             placeholder: (context, imageUrl) => fallback,
-            errorWidget: (context, imageUrl, error) => fallback,
+            errorWidget: (context, imageUrl, error) {
+              FirebaseResilienceService.logImageFailure(
+                operationName: 'AppUserAvatar.cachedImage',
+                error: error,
+                imageUrl: imageUrl,
+              );
+              return fallback;
+            },
           ),
         );
       }
@@ -56,7 +65,14 @@ class AppUserAvatar extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => fallback,
+          errorBuilder: (_, child, error) {
+            FirebaseResilienceService.logImageFailure(
+              operationName: 'AppUserAvatar.imageNetwork',
+              error: error ?? StateError('Unknown network image failure'),
+              imageUrl: normalizedImageUrl,
+            );
+            return fallback;
+          },
         ),
       );
     }

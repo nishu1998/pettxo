@@ -49,6 +49,22 @@ void _debugStartupLog(String message) {
   debugPrint(message);
 }
 
+void _installFirebaseStartupDiagnostics() {
+  if (!kDebugMode) return;
+
+  FirebaseAuth.instance.authStateChanges().listen((user) {
+    _debugStartupLog(
+      'Firebase startup diagnostics -> timestamp=${DateTime.now().toIso8601String()} event=authStateChanges currentUserPresent=${user?.uid.trim().isNotEmpty == true} currentUserId=${user?.uid ?? ''}',
+    );
+  });
+
+  FirebaseAuth.instance.idTokenChanges().listen((user) {
+    _debugStartupLog(
+      'Firebase startup diagnostics -> timestamp=${DateTime.now().toIso8601String()} event=idTokenChanges currentUserPresent=${user?.uid.trim().isNotEmpty == true} currentUserId=${user?.uid ?? ''}',
+    );
+  });
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -57,9 +73,10 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
   _debugStartupLog(
-    'App startup debug -> firebase initialized projectId=${app.options.projectId}, currentUserId=${FirebaseAuth.instance.currentUser?.uid ?? ''}',
+    'App startup debug -> timestamp=${DateTime.now().toIso8601String()} firebase initialized projectId=${app.options.projectId}, currentUserId=${FirebaseAuth.instance.currentUser?.uid ?? ''}',
   );
   FirebaseAppScope.debugLogPair(context: 'main.startup');
+  _installFirebaseStartupDiagnostics();
   FirebaseMessaging.onBackgroundMessage(
     pettxoFirebaseMessagingBackgroundHandler,
   );

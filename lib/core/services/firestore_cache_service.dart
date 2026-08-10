@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
+import 'firebase_resilience_service.dart';
 import 'network_status_service.dart';
 
 class FirestoreCacheService {
@@ -33,7 +34,14 @@ class FirestoreCacheService {
       if (NetworkStatusService.instance.isOffline) rethrow;
     }
 
-    final serverSnapshot = await reference.get().timeout(serverTimeout);
+    final serverSnapshot =
+        await FirebaseResilienceService.retryTransient<
+          DocumentSnapshot<Map<String, dynamic>>
+        >(
+          operationName:
+              'FirestoreCacheService.getDocCacheFirst:${reference.path}',
+          operation: () => reference.get().timeout(serverTimeout),
+        );
     debugPrint(
       'FirestoreCacheService debug -> server read completed for doc=${reference.path}',
     );
@@ -67,7 +75,14 @@ class FirestoreCacheService {
       if (NetworkStatusService.instance.isOffline) rethrow;
     }
 
-    final serverSnapshot = await query.get().timeout(serverTimeout);
+    final serverSnapshot =
+        await FirebaseResilienceService.retryTransient<
+          QuerySnapshot<Map<String, dynamic>>
+        >(
+          operationName:
+              'FirestoreCacheService.getCollectionCacheFirst:${query.parameters}',
+          operation: () => query.get().timeout(serverTimeout),
+        );
     debugPrint(
       'FirestoreCacheService debug -> server read completed for query=${query.runtimeType}',
     );
