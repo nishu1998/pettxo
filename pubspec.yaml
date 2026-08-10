@@ -2,7 +2,7 @@ name: pettexo
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.2+13q
+version: 1.0.3+14
 
 environment:
   sdk: ^3.11.1
@@ -45,6 +45,7 @@ dependencies:
   connectivity_plus: ^6.1.5
   file_selector: ^1.0.3
   pdfx: ^2.9.2
+  in_app_review: ^2.0.12
 
 dev_dependencies:
   flutter_test:
@@ -59,6 +60,7 @@ flutter:
     - assets/lottie/
     - assets/onboarding/
     - assets/brand/
+    - assets/images/review/
     - assets/data/
     - assets/splash_bg.png
     - assets/logo1024.png

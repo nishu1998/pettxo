@@ -11,6 +11,7 @@ import 'core/services/app_loader.dart';
 import 'core/services/firebase_app_scope.dart';
 import 'core/services/network_status_service.dart';
 import 'core/services/policy_link_service.dart';
+import 'core/services/play_store_review_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'core/services/social_post_deep_link_service.dart';
 import 'core/widgets/network_status_banner.dart';
@@ -91,6 +92,13 @@ void main() async {
 
   await NetworkStatusService.instance.initialize();
 
+  Future<void>(() async {
+    try {
+      await PlayStoreReviewService.instance.initialize();
+    } catch (error) {
+      _debugStartupLog('App startup debug -> play review init skipped: $error');
+    }
+  });
   Future<void>(() async {
     try {
       await PolicyLinkService.initialize();

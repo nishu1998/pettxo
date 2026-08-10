@@ -1443,6 +1443,66 @@ service cloud.firestore {
         requesterAccountMissingOrActive() &&
         safeUserPrivateOwnerUpdate(userId);
       allow delete: if false;
+
+      // User-facing Play review state is private per UID and user-to-user
+      // sharing is not a product feature.
+      match /playStoreReview/{docId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) &&
+          requesterAccountMissingOrActive() &&
+          docId == 'state' &&
+          request.resource.data.uid == userId &&
+          request.resource.data.diff({}).changedKeys().hasOnly([
+            'uid',
+            'createdAt',
+            'updatedAt',
+            'appOpenCount',
+            'successfulPostCount',
+            'completedBookingMilestoneCount',
+            'completedBookingMilestoneUnlocked',
+            'secondSocialPostMilestoneUnlocked',
+            'appOpenFallbackMilestoneUnlocked',
+            'pendingOpportunity',
+            'pendingOpportunitySource',
+            'requestCount',
+            'lastRequestedAt'
+          ]) &&
+          request.resource.data.createdAt == request.time &&
+          request.resource.data.updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          requesterAccountMissingOrActive() &&
+          docId == 'state' &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'updatedAt',
+            'appOpenCount',
+            'successfulPostCount',
+            'completedBookingMilestoneCount',
+            'completedBookingMilestoneUnlocked',
+            'secondSocialPostMilestoneUnlocked',
+            'appOpenFallbackMilestoneUnlocked',
+            'pendingOpportunity',
+            'pendingOpportunitySource',
+            'requestCount',
+            'lastRequestedAt'
+          ]) &&
+          request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
+
+      match /playStoreReviewCompletedBookings/{bookingId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) &&
+          requesterAccountMissingOrActive() &&
+          request.resource.data.diff({}).changedKeys().hasOnly([
+            'bookingId',
+            'processedAt'
+          ]) &&
+          request.resource.data.bookingId == bookingId &&
+          request.resource.data.processedAt == request.time;
+        allow update, delete: if false;
+      }
     }
 
     match /offerCampaigns/{offerId} {
