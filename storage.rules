@@ -17,6 +17,13 @@ service firebase.storage {
         ).data.adminRole in ["superAdmin", "customerSupportAdmin", "financeAdmin"];
     }
 
+    function canManageOfferWalls() {
+      return signedIn() &&
+        firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ).data.adminRole in ["superAdmin", "financeAdmin"];
+    }
+
     function canReviewProviderVerificationDocuments() {
       return signedIn() &&
         firestore.get(
@@ -33,6 +40,14 @@ service firebase.storage {
 
     function isSupportedImage() {
       return request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
+    }
+
+    function hasSupportedImageExtension(fileName) {
+      return fileName.matches('(?i).+\\.(jpg|jpeg|png|webp)$');
+    }
+
+    function isSupportedOfferWallImage(fileName) {
+      return isSupportedImage() || hasSupportedImageExtension(fileName);
     }
 
     function isSupportedVerificationDocument() {
@@ -111,6 +126,14 @@ service firebase.storage {
         firestore.get(
           /databases/(default)/documents/supportTickets/$(ticketId)
         ).data.userId == userId;
+    }
+
+    match /offerWalls/{campaignId}/{fileName} {
+      allow read: if signedIn();
+      allow create, update: if canManageOfferWalls() &&
+        isSupportedOfferWallImage(fileName) &&
+        isMaxFiveMb();
+      allow delete: if canManageOfferWalls();
     }
 
     match /admin/{allPaths=**} {

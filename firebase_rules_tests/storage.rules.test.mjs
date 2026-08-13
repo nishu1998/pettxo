@@ -272,6 +272,131 @@ test('support admins can read support attachments but finance admins cannot', as
   await assertFails(getBytes(financeRef));
 });
 
+test('super admin can upload an offer wall creative', async () => {
+  const uid = 'offer-wall-super';
+  await seedUser(uid, {adminRole: 'superAdmin'});
+  const storage = authedStorage(uid);
+  const imageRef = ref(storage, 'offerWalls/campaign-1/creative.png');
+
+  await assertSucceeds(
+    uploadBytes(imageRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+});
+
+test('finance admin can upload an offer wall creative', async () => {
+  const uid = 'offer-wall-finance';
+  await seedUser(uid, {adminRole: 'financeAdmin'});
+  const storage = authedStorage(uid);
+  const imageRef = ref(storage, 'offerWalls/campaign-2/creative.webp');
+
+  await assertSucceeds(
+    uploadBytes(imageRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/webp',
+    }),
+  );
+});
+
+test('customer support admin cannot upload an offer wall creative', async () => {
+  const uid = 'offer-wall-support';
+  await seedUser(uid, {adminRole: 'customerSupportAdmin'});
+  const storage = authedStorage(uid);
+  const imageRef = ref(storage, 'offerWalls/campaign-3/creative.png');
+
+  await assertFails(
+    uploadBytes(imageRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+});
+
+test('normal users and unauthenticated users cannot upload an offer wall creative', async () => {
+  const uid = 'offer-wall-normal';
+  await seedUser(uid);
+  const userStorage = authedStorage(uid);
+  const guestStorage = unauthedStorage();
+  const userRef = ref(userStorage, 'offerWalls/campaign-4/creative.png');
+  const guestRef = ref(guestStorage, 'offerWalls/campaign-4/creative.png');
+
+  await assertFails(
+    uploadBytes(userRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+  await assertFails(
+    uploadBytes(guestRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+});
+
+test('offer wall creatives allow jpeg png and webp but deny non-images', async () => {
+  const uid = 'offer-wall-mime';
+  await seedUser(uid, {adminRole: 'superAdmin'});
+  const storage = authedStorage(uid);
+
+  await assertSucceeds(
+    uploadBytes(
+      ref(storage, 'offerWalls/campaign-5/creative.jpg'),
+      Uint8Array.from([1, 2, 3]),
+      {contentType: 'image/jpeg'},
+    ),
+  );
+  await assertSucceeds(
+    uploadBytes(
+      ref(storage, 'offerWalls/campaign-5/creative.png'),
+      Uint8Array.from([1, 2, 3]),
+      {contentType: 'image/png'},
+    ),
+  );
+  await assertSucceeds(
+    uploadBytes(
+      ref(storage, 'offerWalls/campaign-5/creative.webp'),
+      Uint8Array.from([1, 2, 3]),
+      {contentType: 'image/webp'},
+    ),
+  );
+  await assertFails(
+    uploadBytes(
+      ref(storage, 'offerWalls/campaign-5/creative.txt'),
+      Uint8Array.from([1, 2, 3]),
+      {contentType: 'text/plain'},
+    ),
+  );
+});
+
+test('offer wall upload still succeeds when admin clients omit contentType metadata but keep a supported extension', async () => {
+  const uid = 'offer-wall-no-metadata';
+  await seedUser(uid, {adminRole: 'superAdmin'});
+  const storage = authedStorage(uid);
+  const imageRef = ref(storage, 'offerWalls/campaign-6/creative.png');
+
+  await assertSucceeds(uploadBytes(imageRef, Uint8Array.from([1, 2, 3])));
+});
+
+test('authenticated users can read offer wall creatives but unauthenticated users cannot', async () => {
+  const adminUid = 'offer-wall-read-admin';
+  const userUid = 'offer-wall-read-user';
+  await seedUser(adminUid, {adminRole: 'financeAdmin'});
+  await seedUser(userUid);
+
+  const adminStorage = authedStorage(adminUid);
+  const userStorage = authedStorage(userUid);
+  const guestStorage = unauthedStorage();
+  const adminRef = ref(adminStorage, 'offerWalls/campaign-7/creative.png');
+  const userRef = ref(userStorage, 'offerWalls/campaign-7/creative.png');
+  const guestRef = ref(guestStorage, 'offerWalls/campaign-7/creative.png');
+
+  await assertSucceeds(
+    uploadBytes(adminRef, Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+  await assertSucceeds(getBytes(userRef));
+  await assertFails(getBytes(guestRef));
+});
+
 test('other users cannot upload or read another user support attachment', async () => {
   const ownerUid = 'support-storage-owner-3';
   const otherUid = 'support-storage-other-3';

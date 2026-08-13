@@ -23,5 +23,6 @@ export {
 } from "./social/socialFeedFunctions";
 export * from "./providerVerification/providerVerificationFunctions";
 export * from "./offers/offerFunctions";
+export * from "./offerWall/offerWallFunctions";
 export * from "./booking/bookingFunctions";
 export * from "./support/supportFunctions";

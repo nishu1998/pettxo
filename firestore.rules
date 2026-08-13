@@ -1503,10 +1503,27 @@ service cloud.firestore {
           request.resource.data.processedAt == request.time;
         allow update, delete: if false;
       }
+
+      // Offer Wall state is server-owned so app-launch counting and
+      // impression limits remain authoritative per user and campaign.
+      match /offerWallState/{campaignId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
+      }
+
+      match /offerWallLaunchSessions/{sessionId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
+      }
     }
 
     match /offerCampaigns/{offerId} {
       allow read: if isAdmin() || (signedIn() && resource.data.isActive == true);
+      allow create, update, delete: if false;
+    }
+
+    match /offerWallCampaigns/{campaignId} {
+      allow read: if isAdmin();
       allow create, update, delete: if false;
     }
 

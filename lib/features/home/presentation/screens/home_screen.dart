@@ -15,10 +15,8 @@ import '../../../../core/services/network_status_service.dart';
 import '../../data/home_feed_repository.dart';
 import '../../domain/home_feed_refresh_policy.dart';
 import '../../domain/home_feed_session.dart';
-import '../../../offers/data/services/offer_service.dart';
-import '../../../offers/presentation/screens/offer_wall_screen.dart';
-import '../../../offers/presentation/widgets/offer_popup_dialog.dart';
 import '../../../notifications/domain/notification_visibility.dart';
+import '../../../offer_wall/data/services/offer_wall_coordinator.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
@@ -37,7 +35,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final OfferService _offerService = OfferService();
   final HomeFeedRepository _homeFeedRepository = HomeFeedRepository();
   final HomeFeedSession _homeFeedSession = HomeFeedSession();
   final SocialPostRepository _socialPostRepository = SocialPostRepository();
@@ -47,7 +44,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   late int _suggestionSeed;
 
-  bool _checkedOffers = false;
   bool _isLoadingFeed = true;
   bool _isLoadingMore = false;
   bool _isTopBarVisible = true;
@@ -103,10 +99,10 @@ class _HomeScreenState extends State<HomeScreen> {
     PostPublishCoordinator.instance.stateListenable.addListener(
       _postPublishListener,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _showEligibleOffers();
-    });
     _loadInitialPosts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(OfferWallCoordinator.instance.handleAuthenticatedShellReady());
+    });
   }
 
   @override
@@ -119,57 +115,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     _scrollController.dispose();
     super.dispose();
-  }
-
-  Future<void> _showEligibleOffers() async {
-    if (_checkedOffers || !mounted) return;
-    _checkedOffers = true;
-
-    try {
-      final result = await _offerService.getEligibleOffers(screen: 'home');
-      if (!mounted) return;
-
-      final offerWall = result.offerWall;
-      if (offerWall != null &&
-          await _offerService.shouldShowOffer(offerWall.id)) {
-        await _offerService.markOfferShown(offerWall.id);
-        if (!mounted) return;
-        final claimed = await Navigator.push<bool>(
-          context,
-          MaterialPageRoute(builder: (_) => OfferWallScreen(offer: offerWall)),
-        );
-        if (!mounted) return;
-        if (claimed == true) {
-          AppFeedback.show(
-            context,
-            message: 'Offer claimed successfully.',
-            tone: AppFeedbackTone.success,
-          );
-        } else {
-          await _offerService.recordOfferDismissed(offerWall.id);
-        }
-        return;
-      }
-
-      final popup = result.popup;
-      if (popup != null && await _offerService.shouldShowOffer(popup.id)) {
-        await _offerService.markOfferShown(popup.id);
-        if (!mounted) return;
-        final claimed = await OfferPopupDialog.show(context, offer: popup);
-        if (!mounted) return;
-        if (claimed == true) {
-          AppFeedback.show(
-            context,
-            message: 'Offer claimed successfully.',
-            tone: AppFeedbackTone.success,
-          );
-        } else {
-          await _offerService.recordOfferDismissed(popup.id);
-        }
-      }
-    } catch (_) {
-      // Offer fetch failures should not interrupt the home experience.
-    }
   }
 
   Future<HomeFeedViewerContext> _loadViewerContextForFeed() async {
