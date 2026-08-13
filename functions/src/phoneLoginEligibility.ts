@@ -22,6 +22,7 @@ export function evaluatePhoneLoginEligibility(params: {
   accountStatus: string;
   hasPublicProfile: boolean;
   hasPrivateProfile: boolean;
+  hasCompletedPublicProfile: boolean;
 }): PhoneLoginEligibilityStatus {
   if (params.disabled) return "blocked";
   if (
@@ -36,8 +37,11 @@ export function evaluatePhoneLoginEligibility(params: {
   ) {
     return "blocked";
   }
-  if (!params.hasPublicProfile || !params.hasPrivateProfile) {
+  if (params.hasCompletedPublicProfile) {
+    return "active";
+  }
+  if (!params.hasPublicProfile && !params.hasPrivateProfile) {
     return "incompleteSignup";
   }
-  return "active";
+  return "incompleteSignup";
 }

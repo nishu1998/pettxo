@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../features/auth/data/services/auth_onboarding_service.dart';
+import '../../features/auth/domain/utils/auth_onboarding_resolver.dart';
 import '../../features/profile/presentation/widgets/profile_content_sections.dart';
 import '../utils/social_post_share.dart';
 import 'app_loader.dart';
@@ -27,6 +29,7 @@ class SocialPostDeepLinkService {
   DateTime _serviceStartedAt = DateTime.now();
   bool _initialized = false;
   bool _isNavigating = false;
+  final AuthOnboardingService _authOnboardingService = AuthOnboardingService();
 
   Future<void> initialize() async {
     if (_initialized) return;
@@ -70,6 +73,16 @@ class SocialPostDeepLinkService {
     final postId = _pendingPostId?.trim() ?? '';
     if (postId.isEmpty) return;
     if (FirebaseAuth.instance.currentUser == null) return;
+
+    AuthOnboardingResolution resolution;
+    try {
+      resolution = await _authOnboardingService.resolveCurrentState();
+    } catch (_) {
+      return;
+    }
+    if (resolution.state != AuthOnboardingState.authenticated) {
+      return;
+    }
 
     final navigator = AppLoader.navigatorKey.currentState;
     if (navigator == null || AppLoader.navigatorKey.currentContext == null) {

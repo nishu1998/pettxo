@@ -54,6 +54,23 @@ void main() {
       expect(decision, PhoneLoginEligibilityDecision.startOtp);
     });
 
+    test('starts OTP for incomplete signup that can continue onboarding', () {
+      final parsed = const ParsedPhoneLoginEligibility(
+        exists: true,
+        canLogin: true,
+        reason: PhoneLoginEligibilityReason.incompleteSignup,
+      );
+
+      expect(
+        phoneLoginDecisionForParsedResult(parsed),
+        PhoneLoginEligibilityDecision.startOtp,
+      );
+      expect(
+        phoneLoginMessageForParsedResult(parsed),
+        'Your account setup is incomplete. Continue to finish onboarding.',
+      );
+    });
+
     test('shows signup-first message for not_found', () {
       final parsed = const ParsedPhoneLoginEligibility(
         exists: false,

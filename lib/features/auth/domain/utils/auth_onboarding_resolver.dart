@@ -5,7 +5,9 @@ enum AuthOnboardingState {
   accountRecoveryRequired,
   emailVerificationRequired,
   phoneLinkRequired,
-  profileCompletionRequired,
+  onboardingConsentRequired,
+  roleSelectionRequired,
+  profileDetailsRequired,
   authenticated,
 }
 
@@ -36,9 +38,16 @@ class ProfileCompletionSnapshot {
   final String usernameLowercase;
   final String state;
   final String city;
+  final String address;
+  final String legacyLocation;
   final bool usernameReservationMatchesUid;
+  final bool hasPublicProfile;
+  final bool hasPrivateProfile;
   final String accountStatus;
   final DateTime? scheduledDeletionAt;
+  final DateTime? acceptedTermsAt;
+  final DateTime? acceptedPrivacyAt;
+  final DateTime? acceptedProviderAgreementAt;
 
   const ProfileCompletionSnapshot({
     required this.uid,
@@ -48,21 +57,39 @@ class ProfileCompletionSnapshot {
     required this.usernameLowercase,
     required this.state,
     required this.city,
+    required this.address,
+    required this.legacyLocation,
     required this.usernameReservationMatchesUid,
+    required this.hasPublicProfile,
+    required this.hasPrivateProfile,
     required this.accountStatus,
     required this.scheduledDeletionAt,
+    required this.acceptedTermsAt,
+    required this.acceptedPrivacyAt,
+    required this.acceptedProviderAgreementAt,
   });
+
+  bool get hasPersistedLegalAcceptance =>
+      acceptedTermsAt != null && acceptedPrivacyAt != null;
 }
 
 class AuthOnboardingResolution {
   final AuthOnboardingState state;
   final AuthIdentitySnapshot? auth;
   final ProfileCompletionSnapshot? profile;
+  final bool hasPendingSignupConsent;
+  final bool persistedAccountComplete;
+  final bool ignoredStaleOnboardingState;
+  final String reason;
 
   const AuthOnboardingResolution({
     required this.state,
     required this.auth,
     required this.profile,
+    this.hasPendingSignupConsent = false,
+    this.persistedAccountComplete = false,
+    this.ignoredStaleOnboardingState = false,
+    this.reason = '',
   });
 }
 
@@ -84,16 +111,22 @@ bool linkedUidRemainsUnchanged({
       expectedUid.trim() == actualUid.trim();
 }
 
-bool isProfileComplete({
-  required AuthIdentitySnapshot auth,
-  required ProfileCompletionSnapshot? profile,
-}) {
+bool profileHasAnyPersistedLocation(ProfileCompletionSnapshot? profile) {
   if (profile == null) return false;
-  if (profile.uid.trim() != auth.uid.trim()) return false;
+  if (profile.state.trim().isNotEmpty && profile.city.trim().isNotEmpty) {
+    return true;
+  }
+  if (profile.address.trim().isNotEmpty) return true;
+  if (profile.legacyLocation.trim().isNotEmpty) return true;
+  return false;
+}
+
+bool isPersistedAccountComplete(ProfileCompletionSnapshot? profile) {
+  if (profile == null) return false;
+  if (!profile.hasPublicProfile) return false;
   if (profile.displayName.trim().isEmpty) return false;
   if (profile.role.trim().isEmpty) return false;
-  if (profile.state.trim().isEmpty) return false;
-  if (profile.city.trim().isEmpty) return false;
+  if (!profileHasAnyPersistedLocation(profile)) return false;
 
   final normalizedUsername = normalizeUsername(
     profile.usernameLowercase.isNotEmpty
@@ -104,20 +137,57 @@ bool isProfileComplete({
     return false;
   }
 
-  return profile.usernameReservationMatchesUid;
+  return true;
+}
+
+bool isProfileComplete({
+  required AuthIdentitySnapshot auth,
+  required ProfileCompletionSnapshot? profile,
+}) {
+  if (profile == null) return false;
+  if (profile.uid.trim() != auth.uid.trim()) return false;
+  return isPersistedAccountComplete(profile);
+}
+
+bool profileHasPersistedRole(ProfileCompletionSnapshot? profile) {
+  return profile != null && profile.role.trim().isNotEmpty;
+}
+
+bool profileNeedsDetails(ProfileCompletionSnapshot? profile) {
+  if (profile == null) return false;
+  if (!profile.hasPublicProfile) return false;
+  if (profile.role.trim().isEmpty) return false;
+  if (profile.displayName.trim().isEmpty) return true;
+  if (!profileHasAnyPersistedLocation(profile)) return true;
+
+  final normalizedUsername = normalizeUsername(
+    profile.usernameLowercase.isNotEmpty
+        ? profile.usernameLowercase
+        : profile.username,
+  );
+  return validateNormalizedUsername(normalizedUsername) != null;
 }
 
 AuthOnboardingResolution resolveAuthOnboardingState({
   required AuthIdentitySnapshot? auth,
   required ProfileCompletionSnapshot? profile,
+  bool hasPendingSignupConsent = false,
 }) {
   if (auth == null) {
     return const AuthOnboardingResolution(
       state: AuthOnboardingState.signedOut,
       auth: null,
       profile: null,
+      reason: 'signed-out',
     );
   }
+
+  final persistedAccountComplete =
+      profile != null &&
+      profile.uid.trim() == auth.uid.trim() &&
+      isPersistedAccountComplete(profile);
+  final ignoredStaleOnboardingState =
+      persistedAccountComplete && hasPendingSignupConsent;
 
   final accountStatus = profile?.accountStatus.trim();
   if (accountStatus == 'pendingDeletion' ||
@@ -126,6 +196,10 @@ AuthOnboardingResolution resolveAuthOnboardingState({
       state: AuthOnboardingState.accountRecoveryRequired,
       auth: auth,
       profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: persistedAccountComplete,
+      ignoredStaleOnboardingState: ignoredStaleOnboardingState,
+      reason: 'account-recovery-required',
     );
   }
 
@@ -136,6 +210,10 @@ AuthOnboardingResolution resolveAuthOnboardingState({
       state: AuthOnboardingState.emailVerificationRequired,
       auth: auth,
       profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: persistedAccountComplete,
+      ignoredStaleOnboardingState: ignoredStaleOnboardingState,
+      reason: 'email-verification-required',
     );
   }
 
@@ -144,14 +222,62 @@ AuthOnboardingResolution resolveAuthOnboardingState({
       state: AuthOnboardingState.phoneLinkRequired,
       auth: auth,
       profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: persistedAccountComplete,
+      ignoredStaleOnboardingState: ignoredStaleOnboardingState,
+      reason: 'phone-link-required',
     );
   }
 
-  if (!isProfileComplete(auth: auth, profile: profile)) {
+  if (persistedAccountComplete) {
     return AuthOnboardingResolution(
-      state: AuthOnboardingState.profileCompletionRequired,
+      state: AuthOnboardingState.authenticated,
       auth: auth,
       profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: true,
+      ignoredStaleOnboardingState: ignoredStaleOnboardingState,
+      reason: ignoredStaleOnboardingState
+          ? 'authenticated-persisted-account'
+          : 'authenticated',
+    );
+  }
+
+  final hasPersistedLegalAcceptance =
+      profile?.hasPersistedLegalAcceptance == true;
+  if (!hasPersistedLegalAcceptance && !hasPendingSignupConsent) {
+    return AuthOnboardingResolution(
+      state: AuthOnboardingState.onboardingConsentRequired,
+      auth: auth,
+      profile: profile,
+      hasPendingSignupConsent: false,
+      persistedAccountComplete: false,
+      ignoredStaleOnboardingState: false,
+      reason: 'signup-consent-required',
+    );
+  }
+
+  if (!profileHasPersistedRole(profile)) {
+    return AuthOnboardingResolution(
+      state: AuthOnboardingState.roleSelectionRequired,
+      auth: auth,
+      profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: false,
+      ignoredStaleOnboardingState: false,
+      reason: 'role-selection-required',
+    );
+  }
+
+  if (profileNeedsDetails(profile) || profile == null) {
+    return AuthOnboardingResolution(
+      state: AuthOnboardingState.profileDetailsRequired,
+      auth: auth,
+      profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: false,
+      ignoredStaleOnboardingState: false,
+      reason: 'profile-details-required',
     );
   }
 
@@ -159,5 +285,9 @@ AuthOnboardingResolution resolveAuthOnboardingState({
     state: AuthOnboardingState.authenticated,
     auth: auth,
     profile: profile,
+    hasPendingSignupConsent: hasPendingSignupConsent,
+    persistedAccountComplete: persistedAccountComplete,
+    ignoredStaleOnboardingState: ignoredStaleOnboardingState,
+    reason: 'authenticated-fallback',
   );
 }

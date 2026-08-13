@@ -7,10 +7,13 @@ import '../../../home/presentation/screens/home_screen.dart';
 import '../../../onboarding/data/services/onboarding_state_service.dart';
 import '../../../onboarding/screens/onboarding_screen.dart';
 import '../../data/services/auth_onboarding_service.dart';
+import '../../domain/models/profile_type.dart';
 import '../../domain/utils/auth_onboarding_resolver.dart';
 import 'account_recovery_screen.dart';
 import 'email_verification_screen.dart';
 import 'link_phone_screen.dart';
+import 'onboarding_consent_screen.dart';
+import 'profile_details_screen.dart';
 import 'profile_type_screen.dart';
 import 'signin_screen.dart';
 
@@ -77,10 +80,26 @@ class _AuthGatewayScreenState extends State<AuthGatewayScreen> {
         case AuthOnboardingState.phoneLinkRequired:
           _replaceWith(const LinkPhoneScreen());
           return;
-        case AuthOnboardingState.profileCompletionRequired:
+        case AuthOnboardingState.onboardingConsentRequired:
+          _replaceWith(
+            OnboardingConsentScreen(existingRole: resolution.profile?.role),
+          );
+          return;
+        case AuthOnboardingState.roleSelectionRequired:
           _replaceWith(const ProfileTypeScreen());
           return;
+        case AuthOnboardingState.profileDetailsRequired:
+          final role = (resolution.profile?.role ?? '').trim();
+          if (role.isEmpty) {
+            _replaceWith(const ProfileTypeScreen());
+            return;
+          }
+          _replaceWith(
+            ProfileDetailsScreen(type: profileTypeFromStoredValue(role)),
+          );
+          return;
         case AuthOnboardingState.authenticated:
+          _onboardingService.clearObsoleteSignupState();
           _replaceWith(const HomeScreen());
           return;
       }

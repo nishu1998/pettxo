@@ -12,16 +12,27 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../../widgets/custom_button.dart';
+import '../../data/services/auth_onboarding_service.dart';
 import '../../data/services/user_service.dart';
 import '../../domain/models/profile_type.dart';
+import '../../domain/utils/auth_onboarding_resolver.dart';
 import '../widgets/auth_input_field.dart';
 import '../widgets/auth_shell.dart';
 import '../widgets/searchable_selection_field.dart';
+import 'onboarding_consent_screen.dart';
+import 'profile_type_screen.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
   final ProfileType type;
+  final AuthOnboardingService? onboardingService;
+  final UserService? userService;
 
-  const ProfileDetailsScreen({super.key, required this.type});
+  const ProfileDetailsScreen({
+    super.key,
+    required this.type,
+    this.onboardingService,
+    this.userService,
+  });
 
   @override
   State<ProfileDetailsScreen> createState() => _ProfileDetailsScreenState();
@@ -32,10 +43,13 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   final usernameController = TextEditingController();
   final nameFocus = FocusNode();
   final usernameFocus = FocusNode();
-  final UserService _userService = UserService();
+  late final UserService _userService = widget.userService ?? UserService();
+  late final AuthOnboardingService _onboardingService =
+      widget.onboardingService ?? AuthOnboardingService();
   final AnalyticsService _analytics = AnalyticsService.instance;
   bool isLoading = false;
   bool isLocationLoading = true;
+  bool _isCheckingAccess = true;
   bool _acceptedProviderAgreement = false;
   String? usernameError;
   String? stateError;
@@ -97,10 +111,51 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     _authPhoneNumber =
         FirebaseAuth.instance.currentUser?.phoneNumber?.trim() ?? '';
     _fullPhoneNumber = _authPhoneNumber;
+    _guardScreenAccess();
     _loadLocations();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _analytics.logProfileDetailsView(profileType: profileTypeName);
     });
+  }
+
+  Future<void> _guardScreenAccess() async {
+    try {
+      final resolution = await _onboardingService.resolveCurrentState();
+      if (!mounted) return;
+      switch (resolution.state) {
+        case AuthOnboardingState.authenticated:
+        case AuthOnboardingState.accountRecoveryRequired:
+        case AuthOnboardingState.emailVerificationRequired:
+        case AuthOnboardingState.phoneLinkRequired:
+          Navigator.of(
+            context,
+          ).pushNamedAndRemoveUntil('/auth-gate', (route) => false);
+          return;
+        case AuthOnboardingState.onboardingConsentRequired:
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (_) => OnboardingConsentScreen(
+                existingRole: resolution.profile?.role,
+              ),
+            ),
+          );
+          return;
+        case AuthOnboardingState.roleSelectionRequired:
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
+          );
+          return;
+        case AuthOnboardingState.profileDetailsRequired:
+        case AuthOnboardingState.signedOut:
+          break;
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCheckingAccess = false;
+        });
+      }
+    }
   }
 
   Future<void> _loadLocations() async {
@@ -114,6 +169,35 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
   Future<void> saveProfile() async {
     FocusScope.of(context).unfocus();
+
+    final resolution = await _onboardingService.resolveCurrentState();
+    if (!mounted) return;
+    switch (resolution.state) {
+      case AuthOnboardingState.authenticated:
+      case AuthOnboardingState.accountRecoveryRequired:
+      case AuthOnboardingState.emailVerificationRequired:
+      case AuthOnboardingState.phoneLinkRequired:
+        Navigator.of(
+          context,
+        ).pushNamedAndRemoveUntil('/auth-gate', (route) => false);
+        return;
+      case AuthOnboardingState.onboardingConsentRequired:
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) =>
+                OnboardingConsentScreen(existingRole: resolution.profile?.role),
+          ),
+        );
+        return;
+      case AuthOnboardingState.roleSelectionRequired:
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
+        );
+        return;
+      case AuthOnboardingState.profileDetailsRequired:
+      case AuthOnboardingState.signedOut:
+        break;
+    }
 
     final usernameResult = normalizeAndValidateUsername(
       usernameController.text,
@@ -164,10 +248,23 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       final hasSignupConsent = await LegalAcceptanceSessionService.instance
           .readPendingSignupConsent();
       if (!hasSignupConsent) {
-        throw Exception('Please accept the required Pettxo terms to continue.');
+        if (!mounted) return;
+        AppFeedback.show(
+          context,
+          message:
+              'Please review and accept the Pettxo terms before continuing.',
+          tone: AppFeedbackTone.info,
+        );
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) =>
+                OnboardingConsentScreen(existingRole: profileTypeName),
+          ),
+        );
+        return;
       }
 
-      await _userService.createUserProfile(
+      final result = await _userService.createUserProfile(
         role: profileTypeName,
         name: nameController.text.trim(),
         username: normalizedUsername,
@@ -180,15 +277,19 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             _acceptedProviderAgreement,
       );
       LegalAcceptanceSessionService.instance.clearSignupConsent();
-      await _analytics.logProfileCompleted(profileType: profileTypeName);
+      if (result.isNewlyCompleted) {
+        await _analytics.logProfileCompleted(profileType: profileTypeName);
+      }
 
       if (!mounted) return;
 
-      AppFeedback.show(
-        context,
-        message: "Account created successfully",
-        tone: AppFeedbackTone.success,
-      );
+      if (result.isNewlyCompleted) {
+        AppFeedback.show(
+          context,
+          message: "Account created successfully",
+          tone: AppFeedbackTone.success,
+        );
+      }
       Navigator.pushNamedAndRemoveUntil(
         context,
         '/auth-gate',
@@ -225,6 +326,9 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isCheckingAccess) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     final compact = MediaQuery.sizeOf(context).width < 380;
     final isPetParent = widget.type == ProfileType.petParent;
     final denseLayout = isPetParent || compact;

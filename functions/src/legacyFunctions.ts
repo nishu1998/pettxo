@@ -23,6 +23,7 @@ import {
   usernameReservationBelongsToUid,
 } from "./accountDeletionUtils";
 import {normalizeUsername, validateNormalizedUsername} from "./identity/username";
+import {isPersistedCompletedAccount} from "./identity/onboardingProfileUtils";
 import {
   evaluatePasswordResetEligibility,
   normalizePasswordResetEmail,
@@ -2692,7 +2693,7 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
   const targetUsernameRef = usernamesRef.doc(requestedUsername);
   const now = FieldValue.serverTimestamp();
 
-  const username = await db.runTransaction(async (transaction) => {
+  const completion = await db.runTransaction(async (transaction) => {
     const [userSnapshot, privateSnapshot, targetUsernameSnapshot] = await Promise.all([
       transaction.get(userRef),
       transaction.get(privateUserRef),
@@ -2705,6 +2706,14 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
         user,
         "This account cannot complete onboarding right now.",
       );
+      if (isPersistedCompletedAccount({uid, publicUser: user})) {
+        return {
+          username: normalizeUsername(
+            asTrimmedString(user.usernameLowercase || user.username),
+          ),
+          status: "alreadyComplete" as const,
+        };
+      }
     }
 
     const currentUsername = normalizeUsername(
@@ -2776,13 +2785,17 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
       updatedAt: now,
     }, {merge: true});
 
-    return requestedUsername;
+    return {
+      username: requestedUsername,
+      status: "completed" as const,
+    };
   });
 
   return {
     ok: true,
     uid,
-    username,
+    username: completion.username,
+    status: completion.status,
   };
 });
 
@@ -2941,6 +2954,17 @@ export const checkPhoneLoginEligibility = onCall(
     ]);
     const publicUser = publicUserSnapshot.data() ?? {};
     const privateUser = privateUserSnapshot.data() ?? {};
+    const normalizedUsername = normalizeUsername(
+      asTrimmedString(publicUser.usernameLowercase || publicUser.username),
+    );
+    const hasCompletedPublicProfile =
+      publicUserSnapshot.exists &&
+      asTrimmedString(publicUser.uid) === authUser.uid &&
+      asTrimmedString(publicUser.role).length > 0 &&
+      displayNameFromUser(publicUser, "").length > 0 &&
+      asTrimmedString(publicUser.state).length > 0 &&
+      asTrimmedString(publicUser.city).length > 0 &&
+      validateNormalizedUsername(normalizedUsername) == null;
     const trustedAccountStatus = asTrimmedString(
       privateUser.accountStatus ?? publicUser.accountStatus,
     ) || "active";
@@ -2958,10 +2982,12 @@ export const checkPhoneLoginEligibility = onCall(
       accountStatus: trustedAccountStatus,
       hasPublicProfile: publicUserSnapshot.exists,
       hasPrivateProfile: privateUserSnapshot.exists,
+      hasCompletedPublicProfile,
     });
     const response = {
       exists: true,
-      canLogin: eligibilityStatus === "active",
+      canLogin:
+        eligibilityStatus === "active" || eligibilityStatus === "incompleteSignup",
       reason: phoneLoginAppCodeForStatus(eligibilityStatus),
     };
     console.info("Phone login eligibility response", {

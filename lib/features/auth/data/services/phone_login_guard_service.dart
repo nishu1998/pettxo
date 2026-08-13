@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 
 import '../../domain/utils/auth_onboarding_resolver.dart';
 import 'auth_onboarding_service.dart';
-import 'auth_service.dart';
 
 class PhoneLoginGuardResult {
   final bool allowAccess;
@@ -13,13 +12,9 @@ class PhoneLoginGuardResult {
 
 class PhoneLoginGuardService {
   final AuthOnboardingService _onboardingService;
-  final AuthService _authService;
 
-  PhoneLoginGuardService({
-    AuthOnboardingService? onboardingService,
-    AuthService? authService,
-  }) : _onboardingService = onboardingService ?? AuthOnboardingService(),
-       _authService = authService ?? AuthService();
+  PhoneLoginGuardService({AuthOnboardingService? onboardingService})
+    : _onboardingService = onboardingService ?? AuthOnboardingService();
 
   Future<PhoneLoginGuardResult> verifyExistingPhoneLoginAccount() async {
     final resolution = await _onboardingService.resolveCurrentState(
@@ -31,11 +26,10 @@ class PhoneLoginGuardService {
       );
     }
 
-    if (resolution.state == AuthOnboardingState.profileCompletionRequired) {
-      await _authService.logout();
+    if (resolution.state == AuthOnboardingState.signedOut) {
       return const PhoneLoginGuardResult(
         allowAccess: false,
-        message: 'Your registration is incomplete. Please complete sign up.',
+        message: 'We could not restore your Pettxo account right now.',
       );
     }
 

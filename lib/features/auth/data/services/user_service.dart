@@ -19,7 +19,7 @@ class UserService {
     return _firestore.collection('userPrivate').doc(uid);
   }
 
-  Future<void> createUserProfile({
+  Future<OnboardingProfileCompletionResult> createUserProfile({
     required String role,
     required String name,
     required String username,
@@ -39,7 +39,7 @@ class UserService {
       throw Exception(usernameResult.error);
     }
 
-    await _authService.completeOnboardingProfile(
+    final result = await _authService.completeOnboardingProfile(
       role: role,
       displayName: name.trim(),
       username: usernameResult.normalized,
@@ -50,6 +50,7 @@ class UserService {
       acceptedProviderAgreement: acceptedProviderAgreement,
     );
     await _authService.syncTrustedAuthIdentity();
+    return result;
   }
 
   Future<bool> hasAcceptedProviderAgreement() async {

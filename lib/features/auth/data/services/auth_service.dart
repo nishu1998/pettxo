@@ -24,6 +24,19 @@ class AccountDeletionScheduleResult {
   });
 }
 
+class OnboardingProfileCompletionResult {
+  const OnboardingProfileCompletionResult({
+    required this.username,
+    required this.status,
+  });
+
+  final String username;
+  final String status;
+
+  bool get isAlreadyComplete => status == 'alreadyComplete';
+  bool get isNewlyCompleted => status == 'completed';
+}
+
 enum PhoneLoginEligibilityStatus {
   active,
   invalidPhone,
@@ -56,7 +69,9 @@ class PhoneLoginEligibilityResult {
   });
 
   bool get isApproved =>
-      canLogin && status == PhoneLoginEligibilityStatus.active;
+      canLogin &&
+      (status == PhoneLoginEligibilityStatus.active ||
+          status == PhoneLoginEligibilityStatus.incompleteSignup);
 }
 
 class AuthService {
@@ -610,7 +625,7 @@ class AuthService {
     }
   }
 
-  Future<String> completeOnboardingProfile({
+  Future<OnboardingProfileCompletionResult> completeOnboardingProfile({
     required String role,
     required String displayName,
     required String username,
@@ -633,7 +648,10 @@ class AuthService {
         'acceptedProviderAgreement': acceptedProviderAgreement,
       });
       final data = Map<String, dynamic>.from(result.data);
-      return (data['username'] as String? ?? '').trim();
+      return OnboardingProfileCompletionResult(
+        username: (data['username'] as String? ?? '').trim(),
+        status: (data['status'] as String? ?? 'completed').trim(),
+      );
     } on FirebaseFunctionsException catch (e) {
       throw mapFunctionsActionException(e);
     }

@@ -27,6 +27,7 @@ test("evaluatePhoneLoginEligibility approves complete active accounts", () => {
       accountStatus: "active",
       hasPublicProfile: true,
       hasPrivateProfile: true,
+      hasCompletedPublicProfile: true,
     }),
     "active",
   );
@@ -39,6 +40,7 @@ test("evaluatePhoneLoginEligibility returns blocked, recovery, and incomplete st
       accountStatus: "active",
       hasPublicProfile: true,
       hasPrivateProfile: true,
+      hasCompletedPublicProfile: true,
     }),
     "blocked",
   );
@@ -48,6 +50,7 @@ test("evaluatePhoneLoginEligibility returns blocked, recovery, and incomplete st
       accountStatus: "restricted",
       hasPublicProfile: true,
       hasPrivateProfile: true,
+      hasCompletedPublicProfile: true,
     }),
     "blocked",
   );
@@ -57,6 +60,7 @@ test("evaluatePhoneLoginEligibility returns blocked, recovery, and incomplete st
       accountStatus: "pendingDeletion",
       hasPublicProfile: true,
       hasPrivateProfile: true,
+      hasCompletedPublicProfile: true,
     }),
     "accountRecoveryRequired",
   );
@@ -66,6 +70,7 @@ test("evaluatePhoneLoginEligibility returns blocked, recovery, and incomplete st
       accountStatus: "active",
       hasPublicProfile: false,
       hasPrivateProfile: true,
+      hasCompletedPublicProfile: false,
     }),
     "incompleteSignup",
   );
@@ -75,7 +80,21 @@ test("evaluatePhoneLoginEligibility returns blocked, recovery, and incomplete st
       accountStatus: "active",
       hasPublicProfile: true,
       hasPrivateProfile: false,
+      hasCompletedPublicProfile: false,
     }),
     "incompleteSignup",
+  );
+});
+
+test("evaluatePhoneLoginEligibility allows completed public profiles while private repair catches up", () => {
+  assert.equal(
+    evaluatePhoneLoginEligibility({
+      disabled: false,
+      accountStatus: "active",
+      hasPublicProfile: true,
+      hasPrivateProfile: false,
+      hasCompletedPublicProfile: true,
+    }),
+    "active",
   );
 });

@@ -12,9 +12,16 @@ void main() {
       usernameLowercase: 'nishant.pet',
       state: 'Maharashtra',
       city: 'Mumbai',
+      address: '',
+      legacyLocation: '',
       usernameReservationMatchesUid: true,
+      hasPublicProfile: true,
+      hasPrivateProfile: true,
       accountStatus: 'active',
       scheduledDeletionAt: null,
+      acceptedTermsAt: null,
+      acceptedPrivacyAt: null,
+      acceptedProviderAgreementAt: null,
     );
 
     test('returns signedOut when auth is missing', () {
@@ -53,7 +60,7 @@ void main() {
     });
 
     test(
-      'returns profileCompletionRequired for fully linked user without profile',
+      'returns onboardingConsentRequired for linked user without profile',
       () {
         final resolution = resolveAuthOnboardingState(
           auth: const AuthIdentitySnapshot(
@@ -64,9 +71,84 @@ void main() {
             providerIds: ['password', 'phone'],
           ),
           profile: null,
+          hasPendingSignupConsent: false,
         );
 
-        expect(resolution.state, AuthOnboardingState.profileCompletionRequired);
+        expect(resolution.state, AuthOnboardingState.onboardingConsentRequired);
+      },
+    );
+
+    test(
+      'returns roleSelectionRequired after consent when role is missing',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'uid_123',
+            email: '',
+            phoneNumber: '+919999999999',
+            emailVerified: false,
+            providerIds: ['phone'],
+          ),
+          profile: const ProfileCompletionSnapshot(
+            uid: 'uid_123',
+            role: '',
+            displayName: '',
+            username: '',
+            usernameLowercase: '',
+            state: '',
+            city: '',
+            address: '',
+            legacyLocation: '',
+            usernameReservationMatchesUid: false,
+            hasPublicProfile: false,
+            hasPrivateProfile: true,
+            accountStatus: 'active',
+            scheduledDeletionAt: null,
+            acceptedTermsAt: null,
+            acceptedPrivacyAt: null,
+            acceptedProviderAgreementAt: null,
+          ),
+          hasPendingSignupConsent: true,
+        );
+
+        expect(resolution.state, AuthOnboardingState.roleSelectionRequired);
+      },
+    );
+
+    test(
+      'returns profileDetailsRequired when role exists but details are incomplete',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'uid_123',
+            email: '',
+            phoneNumber: '+919999999999',
+            emailVerified: false,
+            providerIds: ['phone'],
+          ),
+          profile: const ProfileCompletionSnapshot(
+            uid: 'uid_123',
+            role: 'petParent',
+            displayName: '',
+            username: '',
+            usernameLowercase: '',
+            state: '',
+            city: '',
+            address: '',
+            legacyLocation: '',
+            usernameReservationMatchesUid: false,
+            hasPublicProfile: true,
+            hasPrivateProfile: true,
+            accountStatus: 'active',
+            scheduledDeletionAt: null,
+            acceptedTermsAt: null,
+            acceptedPrivacyAt: null,
+            acceptedProviderAgreementAt: null,
+          ),
+          hasPendingSignupConsent: true,
+        );
+
+        expect(resolution.state, AuthOnboardingState.profileDetailsRequired);
       },
     );
 
@@ -117,9 +199,16 @@ void main() {
           usernameLowercase: 'nishant.pet',
           state: 'Maharashtra',
           city: 'Mumbai',
+          address: '',
+          legacyLocation: '',
           usernameReservationMatchesUid: true,
+          hasPublicProfile: true,
+          hasPrivateProfile: true,
           accountStatus: 'pendingDeletion',
           scheduledDeletionAt: null,
+          acceptedTermsAt: null,
+          acceptedPrivacyAt: null,
+          acceptedProviderAgreementAt: null,
         ),
       );
 
@@ -127,7 +216,7 @@ void main() {
     });
 
     test(
-      'returns profileCompletionRequired for username reservation mismatch',
+      'keeps completed accounts authenticated even when username reservation lookup mismatches',
       () {
         final resolution = resolveAuthOnboardingState(
           auth: const AuthIdentitySnapshot(
@@ -145,13 +234,79 @@ void main() {
             usernameLowercase: 'nishant.pet',
             state: 'Maharashtra',
             city: 'Mumbai',
+            address: '',
+            legacyLocation: '',
             usernameReservationMatchesUid: false,
+            hasPublicProfile: true,
+            hasPrivateProfile: true,
             accountStatus: 'active',
             scheduledDeletionAt: null,
+            acceptedTermsAt: null,
+            acceptedPrivacyAt: null,
+            acceptedProviderAgreementAt: null,
           ),
         );
 
-        expect(resolution.state, AuthOnboardingState.profileCompletionRequired);
+        expect(resolution.state, AuthOnboardingState.authenticated);
+      },
+    );
+
+    test(
+      'completed persisted account overrides stale pending signup consent',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'uid_123',
+            email: '',
+            phoneNumber: '+919999999999',
+            emailVerified: false,
+            providerIds: ['phone'],
+          ),
+          profile: completeProfile,
+          hasPendingSignupConsent: true,
+        );
+
+        expect(resolution.state, AuthOnboardingState.authenticated);
+        expect(resolution.persistedAccountComplete, isTrue);
+        expect(resolution.ignoredStaleOnboardingState, isTrue);
+      },
+    );
+
+    test(
+      'legacy location fields still count as a completed persisted account',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'uid_123',
+            email: '',
+            phoneNumber: '+919999999999',
+            emailVerified: false,
+            providerIds: ['phone'],
+          ),
+          profile: const ProfileCompletionSnapshot(
+            uid: 'uid_123',
+            role: 'petParent',
+            displayName: 'Nishant',
+            username: 'nishant.pet',
+            usernameLowercase: 'nishant.pet',
+            state: '',
+            city: '',
+            address: '',
+            legacyLocation: 'Mumbai, Maharashtra',
+            usernameReservationMatchesUid: true,
+            hasPublicProfile: true,
+            hasPrivateProfile: true,
+            accountStatus: 'active',
+            scheduledDeletionAt: null,
+            acceptedTermsAt: null,
+            acceptedPrivacyAt: null,
+            acceptedProviderAgreementAt: null,
+          ),
+          hasPendingSignupConsent: true,
+        );
+
+        expect(resolution.state, AuthOnboardingState.authenticated);
+        expect(resolution.persistedAccountComplete, isTrue);
       },
     );
   });

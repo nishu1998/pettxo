@@ -112,12 +112,17 @@ PhoneLoginEligibilityDecision phoneLoginDecisionForParsedResult(
   if (result.canLogin && result.reason == PhoneLoginEligibilityReason.active) {
     return PhoneLoginEligibilityDecision.startOtp;
   }
+  if (result.canLogin &&
+      result.reason == PhoneLoginEligibilityReason.incompleteSignup) {
+    return PhoneLoginEligibilityDecision.startOtp;
+  }
   switch (result.reason) {
     case PhoneLoginEligibilityReason.notFound:
       return PhoneLoginEligibilityDecision.showNotFound;
-    case PhoneLoginEligibilityReason.incompleteSignup:
     case PhoneLoginEligibilityReason.blocked:
       return PhoneLoginEligibilityDecision.showBlocked;
+    case PhoneLoginEligibilityReason.incompleteSignup:
+      return PhoneLoginEligibilityDecision.startOtp;
     case PhoneLoginEligibilityReason.accountRecoveryRequired:
       return PhoneLoginEligibilityDecision.showRecovery;
     case PhoneLoginEligibilityReason.active:
@@ -153,7 +158,7 @@ String phoneLoginMessageForParsedResult(ParsedPhoneLoginEligibility result) {
     case PhoneLoginEligibilityReason.notFound:
       return 'No account exists with this phone number. Please sign up first.';
     case PhoneLoginEligibilityReason.incompleteSignup:
-      return 'Your registration is incomplete. Please complete sign up.';
+      return 'Your account setup is incomplete. Continue to finish onboarding.';
     case PhoneLoginEligibilityReason.blocked:
       return 'This account cannot sign in right now.';
     case PhoneLoginEligibilityReason.accountRecoveryRequired:
