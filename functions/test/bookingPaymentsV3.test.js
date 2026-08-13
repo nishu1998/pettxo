@@ -106,7 +106,6 @@ test("previewCanonicalPaymentPricingV3 applies valid coupons and supports zero-p
   const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
   const claimedOffer = {
     id: "claimed-free",
-    claimedOfferId: "claimed-free",
     offerId: "campaign-free",
     couponCode: "FREEWALK",
     discountType: "flat",
@@ -158,8 +157,9 @@ function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
     razorpayPaymentId: "",
     amountPaise: pricing.financialSnapshot.customerPaidPaise,
     currency: "INR",
-    couponId: "",
-    couponClaimId: "",
+    offerCampaignId: pricing.couponSnapshot?.offerCampaignId ?? "",
+    couponId: pricing.couponSnapshot?.couponId ?? "",
+    couponClaimId: pricing.couponSnapshot?.couponClaimId ?? "",
     pricingHash: pricing.pricingHash,
     availabilityHash: `availability-${paymentAttemptId}`,
     state: "ORDER_CREATED",
@@ -186,7 +186,7 @@ function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
     retryCount: 0,
     updatedAt: new Date("2026-07-22T10:21:30.000Z"),
     pricingSnapshot: {financials: pricing.financialSnapshot},
-    couponSnapshot: null,
+    couponSnapshot: pricing.couponSnapshot,
   };
 }
 
@@ -390,20 +390,43 @@ class FakeQuery {
 class FakeTransaction {
   constructor(firestore) {
     this.firestore = firestore;
+    this.pendingWrites = [];
+    this.readVersions = new Map();
   }
 
   async get(ref) {
-    return ref.get();
+    await this.firestore._beforeTransactionGet(ref.path);
+    const pending = this.pendingWrites
+      .filter((entry) => entry.path === ref.path)
+      .reduce(
+        (data, entry) => this.firestore._applySetData(data, entry.data, entry.options),
+        this.firestore._clone(this.firestore.store.get(ref.path)),
+      );
+    this.readVersions.set(ref.path, this.firestore._getVersion(ref.path));
+    return new FakeDocSnapshot(this.firestore, ref.path, pending);
   }
 
   set(ref, data, options) {
-    this.firestore._set(ref.path, data, options);
+    this.pendingWrites.push({path: ref.path, data, options});
+  }
+
+  async commit() {
+    for (const [path, version] of this.readVersions.entries()) {
+      if (this.firestore._getVersion(path) !== version) {
+        return false;
+      }
+    }
+    for (const write of this.pendingWrites) {
+      this.firestore._set(write.path, write.data, write.options);
+    }
+    return true;
   }
 }
 
 class FakeFirestore {
   constructor(seed = {}) {
     this.store = new Map(Object.entries(seed));
+    this.versions = new Map([...this.store.keys()].map((path) => [path, 0]));
   }
 
   collection(path) {
@@ -423,12 +446,124 @@ class FakeFirestore {
   }
 
   async runTransaction(handler) {
-    return handler(new FakeTransaction(this));
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = new FakeTransaction(this);
+      const result = await handler(transaction);
+      const committed = await transaction.commit();
+      if (committed) {
+        return result;
+      }
+    }
+    throw new Error("transaction-conflict");
   }
 
   _set(path, data, options = {}) {
-    const existing = this.store.get(path) ?? {};
-    this.store.set(path, options.merge ? {...existing, ...data} : {...data});
+    const existing = this.store.get(path);
+    this.store.set(path, this._applySetData(existing, data, options));
+    this.versions.set(path, this._getVersion(path) + 1);
+  }
+
+  _getVersion(path) {
+    return this.versions.get(path) ?? 0;
+  }
+
+  _clone(value) {
+    if (value == null) return value;
+    if (value instanceof Date) {
+      return new Date(value.getTime());
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => this._clone(entry));
+    }
+    if (typeof value === "object") {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        return value;
+      }
+      const clone = {};
+      for (const [key, entry] of Object.entries(value)) {
+        clone[key] = this._clone(entry);
+      }
+      return clone;
+    }
+    return value;
+  }
+
+  _applySetData(existing, data, options = {}) {
+    const base = options.merge ? this._clone(existing) ?? {} : {};
+    const result = Array.isArray(base) ? [...base] : {...base};
+    for (const [key, value] of Object.entries(data)) {
+      result[key] = this._resolveFirestoreValue(existing?.[key], value);
+    }
+    return result;
+  }
+
+  _resolveFirestoreValue(existingValue, incomingValue) {
+    if (Array.isArray(incomingValue)) {
+      return incomingValue.map((entry) => this._clone(entry));
+    }
+    if (incomingValue instanceof Date || incomingValue == null) {
+      return incomingValue;
+    }
+    const ctorName = incomingValue?.constructor?.name;
+    if (ctorName === "NumericIncrementTransform") {
+      const base = typeof existingValue === "number" && Number.isFinite(existingValue) ?
+        existingValue :
+        0;
+      return base + (incomingValue.operand ?? 0);
+    }
+    if (ctorName === "ArrayUnionTransform") {
+      const base = Array.isArray(existingValue) ? [...existingValue] : [];
+      for (const element of incomingValue.elements ?? []) {
+        if (!base.some((entry) => Object.is(entry, element))) {
+          base.push(this._clone(element));
+        }
+      }
+      return base;
+    }
+    if (ctorName === "ServerTimestampTransform") {
+      return new Date("2026-08-13T00:00:00.000Z");
+    }
+    if (typeof incomingValue === "object") {
+      const nestedBase = typeof existingValue === "object" && existingValue != null ?
+        existingValue :
+        {};
+      const nested = {};
+      for (const [key, value] of Object.entries(incomingValue)) {
+        nested[key] = this._resolveFirestoreValue(nestedBase[key], value);
+      }
+      return nested;
+    }
+    return incomingValue;
+  }
+
+  async _beforeTransactionGet(_path) {
+    return undefined;
+  }
+}
+
+class RacingOfferUsageFirestore extends FakeFirestore {
+  constructor(seed = {}, expectedReads = 2) {
+    super(seed);
+    this.expectedReads = expectedReads;
+    this.waitingReads = 0;
+    this.releaseReads = null;
+  }
+
+  async _beforeTransactionGet(path) {
+    if (!path.includes("/offerUsage/")) {
+      return undefined;
+    }
+    this.waitingReads += 1;
+    if (this.waitingReads >= this.expectedReads && this.releaseReads) {
+      this.releaseReads();
+    }
+    if (this.waitingReads < this.expectedReads) {
+      await new Promise((resolve) => {
+        this.releaseReads = resolve;
+      });
+    }
+    return undefined;
   }
 }
 
@@ -551,7 +686,6 @@ test("resolveCanonicalPricingV3 keeps provider payout unaffected by Pettxo coupo
     claimedOffer: {
       status: "claimed",
       offerId: "offer-1",
-      claimedOfferId: "claim-1",
       discountType: "flat",
       discountValue: 300,
       usageLimit: 1,
@@ -573,7 +707,6 @@ test("resolveCanonicalPricingV3 supports a 100 percent Pettxo-funded coupon", ()
     claimedOffer: {
       status: "claimed",
       offerId: "offer-100",
-      claimedOfferId: "claim-100",
       discountType: "flat",
       discountValue: 250,
       usageLimit: 1,
@@ -1417,6 +1550,240 @@ test("persistFinalizePaymentResultV3 keeps paid-only unlock docs absent for refu
   assertNoPaidUnlocks(firestore, bookingId);
 });
 
+test("persistFinalizePaymentResultV3 consumes coupon usage exactly once for the same booking", async () => {
+  const bookingId = "booking-coupon-idempotent-1";
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const pricing = resolveCanonicalPricingV3({
+    booking,
+    claimedOffer: {
+      status: "claimed",
+      offerCampaignId: "campaign-idempotent-1",
+      offerId: "campaign-idempotent-1",
+      discountType: "flat",
+      discountValue: 250,
+      usageLimit: 1,
+      usedCount: 0,
+      couponCode: "IDEMPOTENT250",
+    },
+  });
+  booking.financials = pricing.financialSnapshot;
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId,
+    booking,
+    paymentAttempt: {
+      ...buildAttempt({
+        booking,
+        pricing,
+        paymentAttemptId: "attempt-coupon-idempotent-1",
+        razorpayOrderId: "order_coupon_idempotent_1",
+      }),
+      bookingId,
+    },
+    parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_coupon_idempotent_1",
+      orderId: "order_coupon_idempotent_1",
+      status: "captured",
+      amountPaise: pricing.financialSnapshot.customerPaidPaise,
+      currency: "INR",
+      createdAt: new Date("2026-07-22T10:25:00.000Z"),
+      capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+    },
+    authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+    verificationSource: "callable",
+  });
+
+  assert.equal(result.ok, true);
+  const firestore = new FakeFirestore();
+  await persistFinalizePaymentResultV3({firestore, result, bookingId});
+  await persistFinalizePaymentResultV3({firestore, result, bookingId});
+
+  const usage = firestore.store.get("users/parent-1/offerUsage/campaign-idempotent-1");
+  assert.equal(usage.usedCount, 1);
+  assert.deepEqual(usage.consumedBookingIds, [bookingId]);
+});
+
+test("persistFinalizePaymentResultV3 prevents concurrent cross-booking over-consumption for a single remaining use", async () => {
+  const makeResult = ({
+    bookingId,
+    paymentAttemptId,
+    paymentId,
+  }) => {
+    const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+    const pricing = resolveCanonicalPricingV3({
+      booking,
+      claimedOffer: {
+        status: "claimed",
+        offerCampaignId: "campaign-race-1",
+        offerId: "campaign-race-1",
+        discountType: "flat",
+        discountValue: 250,
+        usageLimit: 1,
+        usedCount: 0,
+        couponCode: "RACE250",
+      },
+    });
+    booking.financials = pricing.financialSnapshot;
+    return finalizeCapturedBookingPaymentV3({
+      bookingId,
+      booking,
+      paymentAttempt: {
+        ...buildAttempt({
+          booking,
+          pricing,
+          paymentAttemptId,
+          razorpayOrderId: `order_${paymentAttemptId}`,
+        }),
+        bookingId,
+      },
+      parent: parentIdentity(),
+      providerPrivate: providerPrivateIdentity(),
+      service: liveService(),
+      slotOccupancy: {},
+      rangeOccupancy: {},
+      razorpayPayment: {
+        id: paymentId,
+        orderId: `order_${paymentAttemptId}`,
+        status: "captured",
+        amountPaise: pricing.financialSnapshot.customerPaidPaise,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+      },
+      authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+      verificationSource: "callable",
+    });
+  };
+
+  const firestore = new RacingOfferUsageFirestore({}, 2);
+  const first = makeResult({
+    bookingId: "booking-coupon-race-1a",
+    paymentAttemptId: "attempt-coupon-race-1a",
+    paymentId: "pay_coupon_race_1a",
+  });
+  const second = makeResult({
+    bookingId: "booking-coupon-race-1b",
+    paymentAttemptId: "attempt-coupon-race-1b",
+    paymentId: "pay_coupon_race_1b",
+  });
+
+  await Promise.all([
+    persistFinalizePaymentResultV3({
+      firestore,
+      result: first,
+      bookingId: "booking-coupon-race-1a",
+    }),
+    persistFinalizePaymentResultV3({
+      firestore,
+      result: second,
+      bookingId: "booking-coupon-race-1b",
+    }),
+  ]);
+
+  const usage = firestore.store.get("users/parent-1/offerUsage/campaign-race-1");
+  assert.equal(usage.usedCount, 1);
+  assert.equal(usage.consumedBookingIds.length, 1);
+  assert.equal(
+    ["booking-coupon-race-1a", "booking-coupon-race-1b"].includes(
+      usage.consumedBookingIds[0],
+    ),
+    true,
+  );
+});
+
+test("persistFinalizePaymentResultV3 respects multiple remaining uses during concurrent finalization", async () => {
+  const makeResult = ({
+    bookingId,
+    paymentAttemptId,
+    paymentId,
+  }) => {
+    const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+    const pricing = resolveCanonicalPricingV3({
+      booking,
+      claimedOffer: {
+        status: "claimed",
+        offerCampaignId: "campaign-race-2",
+        offerId: "campaign-race-2",
+        discountType: "flat",
+        discountValue: 150,
+        usageLimit: 2,
+        usedCount: 0,
+        couponCode: "RACE150",
+      },
+    });
+    booking.financials = pricing.financialSnapshot;
+    return finalizeCapturedBookingPaymentV3({
+      bookingId,
+      booking,
+      paymentAttempt: {
+        ...buildAttempt({
+          booking,
+          pricing,
+          paymentAttemptId,
+          razorpayOrderId: `order_${paymentAttemptId}`,
+        }),
+        bookingId,
+      },
+      parent: parentIdentity(),
+      providerPrivate: providerPrivateIdentity(),
+      service: liveService(),
+      slotOccupancy: {},
+      rangeOccupancy: {},
+      razorpayPayment: {
+        id: paymentId,
+        orderId: `order_${paymentAttemptId}`,
+        status: "captured",
+        amountPaise: pricing.financialSnapshot.customerPaidPaise,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+      },
+      authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+      verificationSource: "callable",
+    });
+  };
+
+  const firestore = new RacingOfferUsageFirestore({}, 2);
+  await Promise.all([
+    persistFinalizePaymentResultV3({
+      firestore,
+      result: makeResult({
+        bookingId: "booking-coupon-race-2a",
+        paymentAttemptId: "attempt-coupon-race-2a",
+        paymentId: "pay_coupon_race_2a",
+      }),
+      bookingId: "booking-coupon-race-2a",
+    }),
+    persistFinalizePaymentResultV3({
+      firestore,
+      result: makeResult({
+        bookingId: "booking-coupon-race-2b",
+        paymentAttemptId: "attempt-coupon-race-2b",
+        paymentId: "pay_coupon_race_2b",
+      }),
+      bookingId: "booking-coupon-race-2b",
+    }),
+    persistFinalizePaymentResultV3({
+      firestore,
+      result: makeResult({
+        bookingId: "booking-coupon-race-2c",
+        paymentAttemptId: "attempt-coupon-race-2c",
+        paymentId: "pay_coupon_race_2c",
+      }),
+      bookingId: "booking-coupon-race-2c",
+    }),
+  ]);
+
+  const usage = firestore.store.get("users/parent-1/offerUsage/campaign-race-2");
+  assert.equal(usage.usedCount, 2);
+  assert.equal(usage.consumedBookingIds.length, 2);
+});
+
 test("finalizer keeps bookingPrivate and OTP absent across pre-confirmation and refund states", () => {
   const preConfirmationStates = [
     "REQUESTED",
@@ -1649,7 +2016,6 @@ test("zero-payable capacity loss stays unconfirmed without creating a Razorpay r
     claimedOffer: {
       status: "claimed",
       offerId: "offer-100",
-      claimedOfferId: "claim-100",
       discountType: "flat",
       discountValue: 250,
       usageLimit: 1,

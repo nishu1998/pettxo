@@ -50,6 +50,13 @@ import {
   SERVICE_SCHEDULING_MODE_DAY_CARE,
   SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS,
 } from "./serviceScheduling";
+import {
+  normalizeOfferAudienceInput,
+  type OfferAudience,
+} from "./offers/domain/offerAudience";
+import {
+  sanitizeOfferCampaignMutationInput,
+} from "./offers/application/offerAdminContract";
 import {db, messaging, storage} from "./shared/firebase";
 const istOffsetMinutes = 330;
 const slotGenerationDays = 30;
@@ -67,39 +74,14 @@ const providerVerificationCleanupBatchLimit = 20;
 
 const restrictionTypes = ["social", "booking", "hard"] as const;
 const adminRoles = ["superAdmin", "customerSupportAdmin", "financeAdmin"] as const;
-const offerDisplayTypes = ["offerWall", "popup"] as const;
 const offerCampaignTypes = ["firstBooking", "festival", "general", "rebooking"] as const;
 const offerDiscountTypes = ["flat", "percent"] as const;
-const offerClaimValidityTypes = ["lifelong", "fixedDate", "daysAfterClaim"] as const;
 const socialNotificationTypes = ["socialFollow", "socialLike", "socialComment"] as const;
-const offerCampaignMutableFields = [
-  "title",
-  "description",
-  "imageUrl",
-  "couponCode",
-  "displayType",
-  "campaignType",
-  "discountType",
-  "discountValue",
-  "maxDiscountAmount",
-  "minBookingAmount",
-  "isActive",
-  "startAt",
-  "endAt",
-  "claimValidityType",
-  "claimValidUntil",
-  "validDaysAfterClaim",
-  "usageLimitPerUser",
-  "targeting",
-  "priority",
-] as const;
 
 type RestrictionType = typeof restrictionTypes[number];
 type AdminRole = typeof adminRoles[number];
-type OfferDisplayType = typeof offerDisplayTypes[number];
 type OfferCampaignType = typeof offerCampaignTypes[number];
 type OfferDiscountType = typeof offerDiscountTypes[number];
-type OfferClaimValidityType = typeof offerClaimValidityTypes[number];
 type SocialNotificationType = typeof socialNotificationTypes[number];
 type AccountStatus = "active" | "restricted" | "hardBanned";
 type PublicAccountStatus = AccountStatus | "pendingDeletion" | "deletionInProgress";
@@ -117,9 +99,7 @@ type OfferTargeting = {
 type OfferPayload = {
   title: string;
   description: string;
-  imageUrl: string;
   couponCode: string;
-  displayType: OfferDisplayType;
   campaignType: OfferCampaignType;
   discountType: OfferDiscountType;
   discountValue: number;
@@ -128,30 +108,10 @@ type OfferPayload = {
   isActive: boolean;
   startAt: Date;
   endAt: Date | null;
-  claimValidityType: OfferClaimValidityType;
-  claimValidUntil: Date | null;
-  validDaysAfterClaim: number | null;
   usageLimitPerUser: number;
   targeting: OfferTargeting;
+  audience: OfferAudience;
   priority: number;
-};
-type EligibleOfferResponse = {
-  id: string;
-  title: string;
-  description: string;
-  imageUrl: string;
-  couponCode: string;
-  displayType: OfferDisplayType;
-  campaignType: OfferCampaignType;
-  discountType: OfferDiscountType;
-  discountValue: number;
-  maxDiscountAmount: number | null;
-  minBookingAmount: number | null;
-  claimValidityType: OfferClaimValidityType;
-  usageLimitPerUser: number;
-  priority: number;
-  startAt: string | null;
-  endAt: string | null;
 };
 type AccountDeletionJobStatus = "scheduled" | "inProgress" | "completed" | "failed";
 type AccountDeletionStage =
@@ -246,20 +206,12 @@ function isAdminRole(value: string): value is AdminRole {
   return adminRoles.includes(value as AdminRole);
 }
 
-function isOfferDisplayType(value: string): value is OfferDisplayType {
-  return offerDisplayTypes.includes(value as OfferDisplayType);
-}
-
 function isOfferCampaignType(value: string): value is OfferCampaignType {
   return offerCampaignTypes.includes(value as OfferCampaignType);
 }
 
 function isOfferDiscountType(value: string): value is OfferDiscountType {
   return offerDiscountTypes.includes(value as OfferDiscountType);
-}
-
-function isOfferClaimValidityType(value: string): value is OfferClaimValidityType {
-  return offerClaimValidityTypes.includes(value as OfferClaimValidityType);
 }
 
 function normalizeRestrictionState(value: unknown): RestrictionState {
@@ -414,139 +366,42 @@ function writeOfferAuditLog(
   });
 }
 
-function toIsoStringOrNull(value: Date | null): string | null {
-  return value ? value.toISOString() : null;
-}
-
-function isOfferLive(offer: OfferPayload, now: Date): boolean {
-  if (!offer.isActive) return false;
-  if (offer.startAt.getTime() > now.getTime()) return false;
-  if (offer.endAt && offer.endAt.getTime() < now.getTime()) return false;
-  return true;
-}
-
-function toEligibleOfferResponse(id: string, offer: OfferPayload): EligibleOfferResponse {
-  return {
-    id,
-    title: offer.title,
-    description: offer.description,
-    imageUrl: offer.imageUrl,
-    couponCode: offer.couponCode,
-    displayType: offer.displayType,
-    campaignType: offer.campaignType,
-    discountType: offer.discountType,
-    discountValue: offer.discountValue,
-    maxDiscountAmount: offer.maxDiscountAmount,
-    minBookingAmount: offer.minBookingAmount,
-    claimValidityType: offer.claimValidityType,
-    usageLimitPerUser: offer.usageLimitPerUser,
-    priority: offer.priority,
-    startAt: toIsoStringOrNull(offer.startAt),
-    endAt: toIsoStringOrNull(offer.endAt),
-  };
-}
-
-async function getCompletedBookingCountForUser(
-  uid: string,
-  userData?: Record<string, unknown>,
-): Promise<number> {
-  const explicitCount =
-    asOptionalPositiveInt(userData?.completedBookingCount) ??
-    asOptionalPositiveInt(userData?.completedBookingsCount);
-  if (explicitCount != null) return explicitCount;
-
-  const aggregate = await db
-    .collection("bookings")
-    .where("customerId", "==", uid)
-    .where("status", "==", "completed")
-    .count()
-    .get();
-  return aggregate.data().count;
-}
-
-async function hasClaimedOfferCampaign(uid: string, campaignId: string): Promise<boolean> {
-  const snapshot = await db
-    .collection("users")
-    .doc(uid)
-    .collection("claimedOffers")
-    .where("offerId", "==", campaignId)
-    .limit(1)
-    .get();
-  return !snapshot.empty;
-}
-
-function isOfferEligibleForUser(
-  offer: OfferPayload,
-  completedBookingCount: number,
-): boolean {
-  if (offer.targeting.firstBookingOnly && completedBookingCount > 0) {
-    return false;
-  }
-  if (offer.targeting.rebookingOnly && completedBookingCount <= 0) {
-    return false;
-  }
-  return true;
-}
-
-function computeOfferValidUntil(offer: OfferPayload, now: Date): Timestamp | null {
-  if (offer.claimValidityType === "lifelong") return null;
-  if (offer.claimValidityType === "fixedDate") {
-    return offer.claimValidUntil ? Timestamp.fromDate(offer.claimValidUntil) : null;
-  }
-  if (offer.validDaysAfterClaim == null) return null;
-  return Timestamp.fromMillis(now.getTime() + (offer.validDaysAfterClaim * 24 * hourMs));
-}
-
-function computeOfferDiscount(
-  bookingAmount: number,
-  discountType: OfferDiscountType,
-  discountValue: number,
-  maxDiscountAmount: number | null,
-): {discountAmount: number; finalAmount: number} {
-  const safeBookingAmount = Math.max(0, bookingAmount);
-  let discountAmount = discountType === "flat" ?
-    Math.min(discountValue, safeBookingAmount) :
-    (safeBookingAmount * discountValue) / 100;
-  if (maxDiscountAmount != null) {
-    discountAmount = Math.min(discountAmount, maxDiscountAmount);
-  }
-  discountAmount = roundTo(Math.max(0, discountAmount), 2);
-  const finalAmount = roundTo(Math.max(safeBookingAmount - discountAmount, 0), 2);
-  return {discountAmount, finalAmount};
-}
-
 function normalizeOfferPayload(
   data: Record<string, unknown>,
   options: {requireAllFields: boolean},
 ): OfferPayload {
   const title = asTrimmedString(data.title);
   const couponCode = asTrimmedString(data.couponCode);
-  const displayType = asTrimmedString(data.displayType);
   const campaignType = asTrimmedString(data.campaignType);
   const discountType = asTrimmedString(data.discountType);
-  const claimValidityType = asTrimmedString(data.claimValidityType);
   const startAt = asDate(data.startAt);
   const endAt = asDate(data.endAt);
-  const claimValidUntil = asDate(data.claimValidUntil);
   const discountValue = asOptionalFiniteNumber(data.discountValue);
   const maxDiscountAmount = asOptionalFiniteNumber(data.maxDiscountAmount);
   const minBookingAmount = asOptionalFiniteNumber(data.minBookingAmount);
-  const validDaysAfterClaim = asOptionalPositiveInt(data.validDaysAfterClaim);
   const usageLimitPerUser = asOptionalPositiveInt(data.usageLimitPerUser);
   const targetingData = asRecord(data.targeting);
   const targeting: OfferTargeting = {
     firstBookingOnly: asBoolean(targetingData.firstBookingOnly),
     rebookingOnly: asBoolean(targetingData.rebookingOnly),
   };
+  let audience: OfferAudience;
+  try {
+    audience = normalizeOfferAudienceInput(data.audience, {
+      allowLegacyMissing: true,
+    });
+  } catch (error) {
+    throw new HttpsError(
+      "invalid-argument",
+      error instanceof Error ? error.message : "audience is invalid.",
+    );
+  }
 
   if (!title) {
     throw new HttpsError("invalid-argument", "title is required.");
   }
   if (!couponCode) {
     throw new HttpsError("invalid-argument", "couponCode is required.");
-  }
-  if (!isOfferDisplayType(displayType)) {
-    throw new HttpsError("invalid-argument", "displayType must be offerWall or popup.");
   }
   if (!isOfferCampaignType(campaignType)) {
     throw new HttpsError(
@@ -572,21 +427,6 @@ function normalizeOfferPayload(
   if (endAt && endAt.getTime() <= startAt.getTime()) {
     throw new HttpsError("invalid-argument", "endAt must be after startAt.");
   }
-  if (!isOfferClaimValidityType(claimValidityType)) {
-    throw new HttpsError(
-      "invalid-argument",
-      "claimValidityType must be lifelong, fixedDate, or daysAfterClaim.",
-    );
-  }
-  if (claimValidityType === "fixedDate" && !claimValidUntil) {
-    throw new HttpsError("invalid-argument", "claimValidUntil is required for fixedDate.");
-  }
-  if (claimValidityType === "fixedDate" && claimValidUntil && claimValidUntil.getTime() <= startAt.getTime()) {
-    throw new HttpsError("invalid-argument", "claimValidUntil must be after startAt.");
-  }
-  if (claimValidityType === "daysAfterClaim" && validDaysAfterClaim == null) {
-    throw new HttpsError("invalid-argument", "validDaysAfterClaim must be greater than 0.");
-  }
   if (targeting.firstBookingOnly && targeting.rebookingOnly) {
     throw new HttpsError(
       "invalid-argument",
@@ -597,9 +437,7 @@ function normalizeOfferPayload(
   return {
     title,
     description: asTrimmedString(data.description),
-    imageUrl: asTrimmedString(data.imageUrl),
     couponCode,
-    displayType,
     campaignType,
     discountType,
     discountValue,
@@ -608,11 +446,9 @@ function normalizeOfferPayload(
     isActive: asBoolean(data.isActive, options.requireAllFields ? false : false),
     startAt,
     endAt,
-    claimValidityType,
-    claimValidUntil: claimValidityType === "fixedDate" ? claimValidUntil : null,
-    validDaysAfterClaim: claimValidityType === "daysAfterClaim" ? validDaysAfterClaim : null,
     usageLimitPerUser,
     targeting,
+    audience,
     priority: toInt(data.priority, 0),
   };
 }
@@ -633,11 +469,6 @@ function assertAllowedOfferKeys(
 function toInt(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
-}
-
-function roundTo(value: number, decimals: number): number {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
 }
 
 function dateKey(year: number, month: number, day: number): string {
@@ -1261,7 +1092,7 @@ async function closeChatsForDeletedAccount(
   );
 }
 
-async function cleanupAccountFirestoreData(
+export async function cleanupAccountFirestoreData(
   uid: string,
   stats: AccountDeletionStats,
 ): Promise<void> {
@@ -1270,6 +1101,8 @@ async function cleanupAccountFirestoreData(
   await deleteCollectionTree(userRef.collection("notificationTokens"), stats);
   await deleteCollectionTree(userRef.collection("pets"), stats);
   await deleteCollectionTree(userRef.collection("claimedOffers"), stats);
+  // User-to-campaign usage records remain backend-owned until permanent deletion.
+  await deleteCollectionTree(userRef.collection("offerUsage"), stats);
   await deleteCollectionTree(userRef.collection("providerVerification"), stats);
   await deleteCollectionTree(userRef.collection("providerBankDetails"), stats);
 
@@ -3818,15 +3651,22 @@ export const createOfferCampaign = onCall(async (request) => {
   const admin = await requireAdminActor(adminUid);
   assertOfferMutationPermission(admin.role);
 
-  const data = asRecord(request.data);
-  assertAllowedOfferKeys(data, offerCampaignMutableFields);
-  const normalized = normalizeOfferPayload(data, {requireAllFields: true});
+  const mutation = sanitizeOfferCampaignMutationInput({
+    rawData: request.data,
+    requireCampaignId: false,
+  });
+  const normalized = normalizeOfferPayload({
+    ...mutation.payload,
+    displayType: "offerWall",
+  }, {requireAllFields: true});
 
   const campaignRef = db.collection("offerCampaigns").doc();
   const batch = db.batch();
   batch.set(campaignRef, {
     ...normalized,
-    isActive: asBoolean(data.isActive, false),
+    displayType: "offerWall",
+    isActive: asBoolean(mutation.payload.isActive, false),
+    isDeleted: false,
     createdAt: FieldValue.serverTimestamp(),
     createdBy: admin.uid,
     createdByRole: admin.role,
@@ -3836,8 +3676,8 @@ export const createOfferCampaign = onCall(async (request) => {
   });
   writeOfferAuditLog(batch, admin, "offerCampaign.create", campaignRef.id, {
     couponCode: normalized.couponCode,
-    displayType: normalized.displayType,
     campaignType: normalized.campaignType,
+    ignoredLegacyFields: mutation.ignoredLegacyFields,
   });
   await batch.commit();
 
@@ -3849,19 +3689,15 @@ export const updateOfferCampaign = onCall(async (request) => {
   const admin = await requireAdminActor(adminUid);
   assertOfferMutationPermission(admin.role);
 
-  const data = asRecord(request.data);
-  const campaignId = asTrimmedString(data.campaignId);
-  if (!campaignId) {
-    throw new HttpsError("invalid-argument", "campaignId is required.");
-  }
-
-  const updateData: Record<string, unknown> = {...data};
-  delete updateData.campaignId;
-  assertAllowedOfferKeys(updateData, offerCampaignMutableFields);
-  if (Object.keys(updateData).length === 0) {
+  const mutation = sanitizeOfferCampaignMutationInput({
+    rawData: request.data,
+    requireCampaignId: true,
+  });
+  if (Object.keys(mutation.payload).length === 0) {
     throw new HttpsError("invalid-argument", "At least one offer field must be provided.");
   }
 
+  const campaignId = mutation.campaignId;
   const campaignRef = db.collection("offerCampaigns").doc(campaignId);
   const snapshot = await campaignRef.get();
   if (!snapshot.exists) {
@@ -3869,24 +3705,34 @@ export const updateOfferCampaign = onCall(async (request) => {
   }
 
   const existingData = snapshot.data() ?? {};
+  if (existingData.isDeleted === true) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Deleted offer campaigns cannot be edited.",
+    );
+  }
   const mergedData: Record<string, unknown> = {
     ...existingData,
-    ...updateData,
-    targeting: updateData.targeting === undefined ?
+    ...mutation.payload,
+    displayType: asTrimmedString(existingData.displayType) || "offerWall",
+    targeting: mutation.payload.targeting === undefined ?
       existingData.targeting :
-      {...asRecord(existingData.targeting), ...asRecord(updateData.targeting)},
+      {...asRecord(existingData.targeting), ...asRecord(mutation.payload.targeting)},
   };
   const normalized = normalizeOfferPayload(mergedData, {requireAllFields: true});
 
   const batch = db.batch();
   batch.set(campaignRef, {
     ...normalized,
+    displayType: asTrimmedString(existingData.displayType) || "offerWall",
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: admin.uid,
     updatedByRole: admin.role,
   }, {merge: true});
   writeOfferAuditLog(batch, admin, "offerCampaign.update", campaignId, {
-    updatedFields: Object.keys(updateData),
+    updatedFields: Object.keys(mutation.payload),
+    ignoredLegacyFields: mutation.ignoredLegacyFields,
+    usedLegacyIdentityAlias: mutation.usedLegacyIdentityAlias,
   });
   await batch.commit();
 
@@ -3913,6 +3759,12 @@ export const setOfferCampaignStatus = onCall(async (request) => {
   if (!snapshot.exists) {
     throw new HttpsError("not-found", "Offer campaign not found.");
   }
+  if (snapshot.data()?.isDeleted === true) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Deleted offer campaigns cannot be reactivated or paused.",
+    );
+  }
 
   const isActive = data.isActive;
   const batch = db.batch();
@@ -3934,268 +3786,39 @@ export const setOfferCampaignStatus = onCall(async (request) => {
   return {ok: true, campaignId, isActive};
 });
 
-export const getEligibleOffers = onCall(async (request) => {
-  const uid = requireUid(request.auth);
-  const userRef = db.collection("users").doc(uid);
-  const userSnapshot = await userRef.get();
-  if (!userSnapshot.exists) {
-    throw new HttpsError("not-found", "User document not found.");
-  }
+export const deleteOfferCampaign = onCall(async (request) => {
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  assertOfferMutationPermission(admin.role);
 
-  const userData = userSnapshot.data() ?? {};
-  const completedBookingCount = await getCompletedBookingCountForUser(uid, userData);
-  const now = new Date();
-  const campaignsSnapshot = await db
-    .collection("offerCampaigns")
-    .where("isActive", "==", true)
-    .get();
-
-  const offersWithMeta = await Promise.all(campaignsSnapshot.docs.map(async (doc) => {
-    const normalized = normalizeOfferPayload(doc.data() ?? {}, {requireAllFields: true});
-    if (!isOfferLive(normalized, now)) return null;
-    if (!isOfferEligibleForUser(normalized, completedBookingCount)) return null;
-    if (await hasClaimedOfferCampaign(uid, doc.id)) return null;
-    return {
-      id: doc.id,
-      createdAt: asDate(doc.data().createdAt),
-      offer: toEligibleOfferResponse(doc.id, normalized),
-    };
-  }));
-
-  const offers = offersWithMeta
-    .filter((entry): entry is NonNullable<typeof entry> => entry != null)
-    .sort((left, right) => {
-      if (right.offer.priority !== left.offer.priority) {
-        return right.offer.priority - left.offer.priority;
-      }
-      const rightCreatedAt = right.createdAt?.getTime() ?? 0;
-      const leftCreatedAt = left.createdAt?.getTime() ?? 0;
-      return rightCreatedAt - leftCreatedAt;
-    })
-    .map((entry) => entry.offer);
-
-  return {
-    ok: true,
-    offerWall: offers.find((offer) => offer.displayType === "offerWall") ?? null,
-    popup: offers.find((offer) => offer.displayType === "popup") ?? null,
-    offers,
-  };
-});
-
-export const claimOffer = onCall(async (request) => {
-  const uid = requireUid(request.auth);
   const data = asRecord(request.data);
+  assertAllowedOfferKeys(data, ["campaignId"]);
   const campaignId = asTrimmedString(data.campaignId);
-  const sourceDisplayType = asTrimmedString(data.sourceDisplayType);
-
   if (!campaignId) {
     throw new HttpsError("invalid-argument", "campaignId is required.");
   }
-  if (!isOfferDisplayType(sourceDisplayType)) {
-    throw new HttpsError("invalid-argument", "sourceDisplayType must be offerWall or popup.");
-  }
 
-  const userRef = db.collection("users").doc(uid);
   const campaignRef = db.collection("offerCampaigns").doc(campaignId);
-  const claimedOfferRef = userRef.collection("claimedOffers").doc(campaignId);
-  const now = new Date();
-
-  const [userSnapshot, campaignSnapshot] = await Promise.all([
-    userRef.get(),
-    campaignRef.get(),
-  ]);
-  if (!userSnapshot.exists) {
-    throw new HttpsError("not-found", "User document not found.");
-  }
-  if (!campaignSnapshot.exists) {
+  const snapshot = await campaignRef.get();
+  if (!snapshot.exists) {
     throw new HttpsError("not-found", "Offer campaign not found.");
   }
 
-  const userData = userSnapshot.data() ?? {};
-  const completedBookingCount = await getCompletedBookingCountForUser(uid, userData);
+  const batch = db.batch();
+  batch.set(campaignRef, {
+    isActive: false,
+    isDeleted: true,
+    deletedAt: FieldValue.serverTimestamp(),
+    deletedBy: admin.uid,
+    deletedByRole: admin.role,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: admin.uid,
+    updatedByRole: admin.role,
+  }, {merge: true});
+  writeOfferAuditLog(batch, admin, "offerCampaign.delete", campaignId, {});
+  await batch.commit();
 
-  await db.runTransaction(async (transaction) => {
-    const [freshCampaignSnapshot, freshClaimedSnapshot] = await Promise.all([
-      transaction.get(campaignRef),
-      transaction.get(claimedOfferRef),
-    ]);
-
-    if (!freshCampaignSnapshot.exists) {
-      throw new HttpsError("not-found", "Offer campaign not found.");
-    }
-    if (freshClaimedSnapshot.exists) {
-      throw new HttpsError("already-exists", "Offer already claimed.");
-    }
-
-    const normalized = normalizeOfferPayload(freshCampaignSnapshot.data() ?? {}, {requireAllFields: true});
-    if (!isOfferLive(normalized, now)) {
-      throw new HttpsError("failed-precondition", "Offer is no longer available.");
-    }
-    if (!isOfferEligibleForUser(normalized, completedBookingCount)) {
-      throw new HttpsError("failed-precondition", "You are not eligible for this offer.");
-    }
-
-    const validUntil = computeOfferValidUntil(normalized, now);
-    transaction.set(claimedOfferRef, {
-      offerId: campaignId,
-      couponCode: normalized.couponCode,
-      discountType: normalized.discountType,
-      discountValue: normalized.discountValue,
-      maxDiscountAmount: normalized.maxDiscountAmount,
-      minBookingAmount: normalized.minBookingAmount,
-      claimedAt: FieldValue.serverTimestamp(),
-      validUntil,
-      usageLimit: normalized.usageLimitPerUser,
-      usedCount: 0,
-      status: "claimed",
-      sourceDisplayType,
-      campaignSnapshot: {
-        title: normalized.title,
-        description: normalized.description,
-        imageUrl: normalized.imageUrl,
-        couponCode: normalized.couponCode,
-        displayType: normalized.displayType,
-        campaignType: normalized.campaignType,
-        discountType: normalized.discountType,
-        discountValue: normalized.discountValue,
-        maxDiscountAmount: normalized.maxDiscountAmount,
-        minBookingAmount: normalized.minBookingAmount,
-        claimValidityType: normalized.claimValidityType,
-        usageLimitPerUser: normalized.usageLimitPerUser,
-        startAt: Timestamp.fromDate(normalized.startAt),
-        endAt: normalized.endAt ? Timestamp.fromDate(normalized.endAt) : null,
-        version: 1,
-      },
-    });
-    transaction.set(campaignRef, {
-      claimCount: FieldValue.increment(1),
-      updatedAt: FieldValue.serverTimestamp(),
-    }, {merge: true});
-    transaction.set(db.collection("adminAuditLogs").doc(), {
-      action: "offer.claim",
-      targetType: "offerCampaign",
-      targetId: campaignId,
-      performedBy: uid,
-      performedByRole: "user",
-      createdAt: FieldValue.serverTimestamp(),
-      metadata: {
-        claimedOfferId: claimedOfferRef.id,
-        sourceDisplayType,
-      },
-    });
-  });
-
-  return {
-    ok: true,
-    claimedOfferId: claimedOfferRef.id,
-  };
-});
-
-export const previewOfferForBooking = onCall(async (request) => {
-  const uid = requireUid(request.auth);
-  const data = asRecord(request.data);
-  const claimedOfferId = asTrimmedString(data.claimedOfferId);
-  const bookingAmount = asOptionalFiniteNumber(data.bookingAmount);
-
-  if (!claimedOfferId) {
-    throw new HttpsError("invalid-argument", "claimedOfferId is required.");
-  }
-  if (bookingAmount == null || bookingAmount < 0) {
-    throw new HttpsError("invalid-argument", "bookingAmount must be 0 or greater.");
-  }
-
-  const claimedOfferSnapshot = await db
-    .collection("users")
-    .doc(uid)
-    .collection("claimedOffers")
-    .doc(claimedOfferId)
-    .get();
-
-  if (!claimedOfferSnapshot.exists) {
-    return {
-      ok: true,
-      isValid: false,
-      message: "Claimed offer not found.",
-      claimedOfferId,
-      campaignId: "",
-    };
-  }
-
-  const claimedData = claimedOfferSnapshot.data() ?? {};
-  const status = asTrimmedString(claimedData.status);
-  const validUntil = asDate(claimedData.validUntil);
-  const usageLimit = toInt(claimedData.usageLimit, 0);
-  const usedCount = toInt(claimedData.usedCount, 0);
-  const minBookingAmount = asOptionalFiniteNumber(claimedData.minBookingAmount);
-  const campaignId = asTrimmedString(claimedData.offerId);
-  const now = new Date();
-
-  if (status !== "claimed") {
-    return {
-      ok: true,
-      isValid: false,
-      message: "This offer is no longer available to apply.",
-      claimedOfferId,
-      campaignId,
-    };
-  }
-  if (validUntil && validUntil.getTime() < now.getTime()) {
-    return {
-      ok: true,
-      isValid: false,
-      message: "This offer has expired.",
-      claimedOfferId,
-      campaignId,
-    };
-  }
-  if (usedCount >= usageLimit) {
-    return {
-      ok: true,
-      isValid: false,
-      message: "This offer has already been fully used.",
-      claimedOfferId,
-      campaignId,
-    };
-  }
-  if (minBookingAmount != null && bookingAmount < minBookingAmount) {
-    return {
-      ok: true,
-      isValid: false,
-      message: `Minimum booking amount is ${minBookingAmount}.`,
-      claimedOfferId,
-      campaignId,
-    };
-  }
-
-  const discountType = asTrimmedString(claimedData.discountType);
-  if (!isOfferDiscountType(discountType)) {
-    return {
-      ok: true,
-      isValid: false,
-      message: "This offer is misconfigured.",
-      claimedOfferId,
-      campaignId,
-    };
-  }
-
-  const discountValue = asOptionalFiniteNumber(claimedData.discountValue) ?? 0;
-  const maxDiscountAmount = asOptionalFiniteNumber(claimedData.maxDiscountAmount);
-  const {discountAmount, finalAmount} = computeOfferDiscount(
-    bookingAmount,
-    discountType,
-    discountValue,
-    maxDiscountAmount,
-  );
-
-  return {
-    ok: true,
-    isValid: true,
-    discountAmount,
-    finalAmount,
-    message: "Offer applied successfully.",
-    claimedOfferId,
-    campaignId,
-  };
+  return {ok: true, campaignId, isDeleted: true};
 });
 
 function readCountValue(data: DocumentData | undefined, key: string): number {

@@ -27,6 +27,10 @@ import {
 import {parseCanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "../schema/timestampNormalization";
 import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
+import {
+  type ValidatedOfferCampaignSelection,
+} from "../../offers/application/validateOfferCampaignForBooking";
+import {consumeOfferUsageInTransaction} from "../../offers/application/consumeOfferUsage";
 import type {AuthenticatedParentIdentity, CanonicalServiceSource} from "./createBookingRequestV3";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import {
@@ -148,8 +152,12 @@ export type FinalizePaymentSuccess = {
     bookingChat: Record<string, unknown>;
   };
   couponWrite: {
-    path: string;
-    update: Record<string, unknown>;
+    offerUsagePath: string;
+    offerCampaignId: string;
+    bookingId: string;
+    paymentAttemptId: string;
+    couponCode: string;
+    usageLimitPerUser: number | null;
   } | null;
   events: BookingEventWritePlan[];
   notifications: BookingNotificationPlan[];
@@ -214,6 +222,33 @@ type AuthenticatedProviderPrivateIdentity = {
 
 type ClaimedOfferDocument = Record<string, unknown> | null;
 
+export function buildLegacyCouponRecordFromCampaignSelection(
+  selection: ValidatedOfferCampaignSelection,
+): Record<string, unknown> {
+  return {
+    offerCampaignId: selection.offerCampaignId,
+    offerId: selection.offerCampaignId,
+    couponCode: selection.couponCode,
+    discountType: selection.discountType,
+    discountValue: selection.discountValue,
+    maxDiscountAmount: selection.maxDiscountAmount,
+    minBookingAmount: selection.minBookingAmount,
+    campaignType: selection.campaignType,
+    usageLimit: selection.usageLimitPerUser,
+    usedCount: selection.usedCount,
+    status: "claimed",
+    validUntil: selection.validUntil,
+    serviceIds: selection.serviceIds,
+    providerIds: selection.providerIds,
+    categoryRestrictions: selection.categoryRestrictions,
+    campaignSnapshot: {
+      title: selection.title,
+      description: selection.description,
+      campaignType: selection.campaignType,
+    },
+  };
+}
+
 type SlotOccupancyDocument = {
   slotId: string;
   confirmedUnits: number;
@@ -254,16 +289,7 @@ function logMalformedPaymentSnapshot(params: {
   paymentAttemptId: string;
   issues: ReadonlyArray<{code: string; path: string; message: string}>;
 }): void {
-  console.error("[CanonicalPaymentFinalization] malformed_snapshot", {
-    kind: params.kind,
-    bookingId: params.bookingId,
-    paymentAttemptId: params.paymentAttemptId,
-    issues: params.issues.map((issue) => ({
-      code: issue.code,
-      path: issue.path,
-      message: issue.message,
-    })),
-  });
+  void params;
 }
 
 function requireCanonicalBookingForPaymentFinalization(params: {
@@ -364,6 +390,7 @@ function validateCouponAgainstBooking(params: {
   booking: CanonicalBookingDocumentV3;
   claimedOffer: ClaimedOfferDocument;
   serviceSubtotalPaise: number;
+  authoritativeNow: Date;
 }): {
   ok: true;
   couponDiscountPaise: number;
@@ -391,7 +418,10 @@ function validateCouponAgainstBooking(params: {
   const discountType = asString(claimedOffer.discountType);
   const discountValue = asFiniteNumber(claimedOffer.discountValue, 0);
   const couponClaimId = asString(claimedOffer.claimedOfferId) || asString(claimedOffer.id);
-  const couponId = asString(claimedOffer.offerId) || couponClaimId;
+  const couponId =
+    asString(claimedOffer.offerCampaignId) ||
+    asString(claimedOffer.offerId) ||
+    couponClaimId;
   const campaignSnapshot = asRecord(claimedOffer.campaignSnapshot);
   const serviceRestrictions = Array.isArray(claimedOffer.serviceIds) ?
     claimedOffer.serviceIds.map((entry) => asString(entry)).filter(Boolean) :
@@ -406,7 +436,7 @@ function validateCouponAgainstBooking(params: {
   if (status && status !== "claimed") {
     return {ok: false, message: "Coupon is no longer active."};
   }
-  if (validUntil && validUntil.getTime() < Date.now()) {
+  if (validUntil && validUntil.getTime() < params.authoritativeNow.getTime()) {
     return {ok: false, message: "Coupon has expired."};
   }
   if (usageLimit > 0 && usedCount >= usageLimit) {
@@ -443,9 +473,11 @@ function validateCouponAgainstBooking(params: {
     ok: true,
     couponDiscountPaise,
     couponSnapshot: {
+      offerCampaignId: couponId,
       couponId,
       couponClaimId,
       couponCode: asString(claimedOffer.couponCode),
+      usageLimitPerUser: usageLimit || null,
       discountType,
       discountValue,
       maxDiscountAmountPaise: maxDiscountAmountPaise || null,
@@ -459,12 +491,14 @@ function validateCouponAgainstBooking(params: {
 export function resolveCanonicalPricingV3(params: {
   booking: CanonicalBookingDocumentV3;
   claimedOffer: ClaimedOfferDocument;
+  authoritativeNow?: Date;
 }): CanonicalPricingResolution {
   const serviceSubtotalPaise = calculateServiceSubtotalPaise(params.booking);
   const couponResult = validateCouponAgainstBooking({
     booking: params.booking,
     claimedOffer: params.claimedOffer,
     serviceSubtotalPaise,
+    authoritativeNow: params.authoritativeNow ?? new Date(),
   });
   if (!couponResult.ok) {
     throw new HttpsError("failed-precondition", couponResult.message);
@@ -587,6 +621,10 @@ function buildPaymentAttemptDocument(params: {
     razorpayPaymentId: "",
     amountPaise: params.pricing.customerPaidPaise,
     currency: params.pricing.financialSnapshot.currency,
+    offerCampaignId:
+      params.pricing.couponSnapshot?.offerCampaignId ??
+      params.pricing.couponSnapshot?.couponId ??
+      "",
     couponId: params.pricing.couponSnapshot?.couponId ?? "",
     couponClaimId: params.pricing.couponSnapshot?.couponClaimId ?? "",
     pricingHash: params.pricing.pricingHash,
@@ -1341,16 +1379,15 @@ export function finalizeCapturedBookingPaymentV3(params: {
       paidAt,
       verificationSource: params.verificationSource,
     });
-    const couponWrite = attempt.couponClaimId ?
+    const offerCampaignId = asString(attempt.offerCampaignId) || asString(attempt.couponId);
+    const couponWrite = offerCampaignId ?
       {
-        path: `users/${confirmedBooking.parentId}/claimedOffers/${attempt.couponClaimId}`,
-        update: {
-          usedCount: FieldValue.increment(1),
-          status: "used",
-          couponConsumedAt: FieldValue.serverTimestamp(),
-          couponConsumptionBookingId: params.bookingId,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
+        offerUsagePath: `users/${confirmedBooking.parentId}/offerUsage/${offerCampaignId}`,
+        offerCampaignId,
+        bookingId: params.bookingId,
+        paymentAttemptId: attempt.paymentAttemptId,
+        couponCode: attempt.couponSnapshot?.couponCode ?? "",
+        usageLimitPerUser: attempt.couponSnapshot?.usageLimitPerUser ?? null,
       } :
       null;
     const events = [
@@ -1484,6 +1521,7 @@ export async function createRazorpayPaymentOrderV3(params: {
   const pricing = resolveCanonicalPricingV3({
     booking: params.booking,
     claimedOffer: params.claimedOffer ?? null,
+    authoritativeNow,
   });
   const attempt = buildPaymentAttemptDocument({
     bookingId: params.bookingId,
@@ -1612,6 +1650,7 @@ export function previewCanonicalPaymentPricingV3(params: {
   const pricing = resolveCanonicalPricingV3({
     booking: params.booking,
     claimedOffer: params.claimedOffer ?? null,
+    authoritativeNow,
   });
   return {
     ok: true,
@@ -1666,7 +1705,16 @@ export async function persistFinalizePaymentResultV3(params: {
       transaction.set(params.firestore.collection("bookingChats").doc(params.bookingId), params.result.financialWrites.bookingChat, {merge: true});
       transaction.set(params.firestore.collection("chats").doc(params.bookingId), params.result.financialWrites.bookingChat, {merge: true});
       if (params.result.couponWrite) {
-        transaction.set(pathToDoc(params.firestore, params.result.couponWrite.path), params.result.couponWrite.update, {merge: true});
+        await consumeOfferUsageInTransaction({
+          firestore: params.firestore,
+          transaction,
+          uid: params.result.booking.parentId,
+          offerCampaignId: params.result.couponWrite.offerCampaignId,
+          bookingId: params.result.couponWrite.bookingId,
+          paymentAttemptId: params.result.couponWrite.paymentAttemptId,
+          couponCode: params.result.couponWrite.couponCode,
+          usageLimitPerUser: params.result.couponWrite.usageLimitPerUser,
+        });
       }
       for (const event of params.result.events) {
         transaction.set(

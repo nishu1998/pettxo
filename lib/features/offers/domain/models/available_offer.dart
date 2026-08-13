@@ -1,10 +1,9 @@
 import 'offer_types.dart';
 
-class MobileOfferCampaign {
+class AvailableOffer {
   final String id;
   final String title;
   final String description;
-  final String imageUrl;
   final String couponCode;
   final OfferDisplayType displayType;
   final OfferCampaignType campaignType;
@@ -12,17 +11,15 @@ class MobileOfferCampaign {
   final double discountValue;
   final double? maxDiscountAmount;
   final double? minBookingAmount;
-  final OfferClaimValidityType claimValidityType;
   final int usageLimitPerUser;
   final int priority;
   final DateTime? startAt;
   final DateTime? endAt;
 
-  const MobileOfferCampaign({
+  const AvailableOffer({
     required this.id,
     required this.title,
     required this.description,
-    required this.imageUrl,
     required this.couponCode,
     required this.displayType,
     required this.campaignType,
@@ -30,19 +27,17 @@ class MobileOfferCampaign {
     required this.discountValue,
     required this.maxDiscountAmount,
     required this.minBookingAmount,
-    required this.claimValidityType,
     required this.usageLimitPerUser,
     required this.priority,
     required this.startAt,
     required this.endAt,
   });
 
-  factory MobileOfferCampaign.fromMap(Map<String, dynamic> data) {
-    return MobileOfferCampaign(
+  factory AvailableOffer.fromMap(Map<String, dynamic> data) {
+    return AvailableOffer(
       id: (data['id'] as String? ?? '').trim(),
       title: (data['title'] as String? ?? '').trim(),
       description: (data['description'] as String? ?? '').trim(),
-      imageUrl: (data['imageUrl'] as String? ?? '').trim(),
       couponCode: (data['couponCode'] as String? ?? '').trim(),
       displayType: OfferDisplayTypeX.fromValue(
         data['displayType'] as String? ?? '',
@@ -56,9 +51,6 @@ class MobileOfferCampaign {
       discountValue: (data['discountValue'] as num?)?.toDouble() ?? 0,
       maxDiscountAmount: (data['maxDiscountAmount'] as num?)?.toDouble(),
       minBookingAmount: (data['minBookingAmount'] as num?)?.toDouble(),
-      claimValidityType: OfferClaimValidityTypeX.fromValue(
-        data['claimValidityType'] as String? ?? '',
-      ),
       usageLimitPerUser: (data['usageLimitPerUser'] as num?)?.toInt() ?? 1,
       priority: (data['priority'] as num?)?.toInt() ?? 0,
       startAt: _readDate(data['startAt']),
@@ -74,6 +66,8 @@ class MobileOfferCampaign {
     return null;
   }
 
+  String get displayTitle => title.isEmpty ? 'Offer' : title;
+
   String get discountSummary {
     final value = discountValue % 1 == 0
         ? discountValue.toInt().toString()
@@ -84,48 +78,70 @@ class MobileOfferCampaign {
     return '₹$value off';
   }
 
-  String get validitySummary {
-    return switch (claimValidityType) {
-      OfferClaimValidityType.lifelong => 'Claim once, keep it until used',
-      OfferClaimValidityType.fixedDate => 'Limited-time claim window',
-      OfferClaimValidityType.daysAfterClaim =>
-        'Valid for a limited time after claim',
-    };
+  String get usageSummary {
+    return usageLimitPerUser == 1
+        ? '1 use per account'
+        : '$usageLimitPerUser uses per account';
+  }
+
+  String get availabilitySummary {
+    if (endAt != null) {
+      return 'Available until ${_formatDate(endAt!)}';
+    }
+    return 'Available now';
+  }
+
+  static String _formatDate(DateTime date) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 }
 
-class EligibleOffersResult {
-  final MobileOfferCampaign? offerWall;
-  final MobileOfferCampaign? popup;
-  final List<MobileOfferCampaign> offers;
+class AvailableOffersResult {
+  final AvailableOffer? offerWall;
+  final AvailableOffer? popup;
+  final List<AvailableOffer> offers;
 
-  const EligibleOffersResult({
+  const AvailableOffersResult({
     required this.offerWall,
     required this.popup,
     required this.offers,
   });
 
-  static const empty = EligibleOffersResult(
+  static const empty = AvailableOffersResult(
     offerWall: null,
     popup: null,
     offers: [],
   );
 
-  factory EligibleOffersResult.fromMap(Map<String, dynamic> data) {
+  factory AvailableOffersResult.fromMap(Map<String, dynamic> data) {
     final offers = (data['offers'] as List<dynamic>? ?? const [])
         .whereType<Map>()
-        .map(
-          (raw) => MobileOfferCampaign.fromMap(Map<String, dynamic>.from(raw)),
-        )
+        .map((raw) => AvailableOffer.fromMap(Map<String, dynamic>.from(raw)))
+        .where((offer) => offer.id.isNotEmpty)
         .toList();
 
-    MobileOfferCampaign? readOffer(String key) {
+    AvailableOffer? readOffer(String key) {
       final value = data[key];
       if (value is! Map) return null;
-      return MobileOfferCampaign.fromMap(Map<String, dynamic>.from(value));
+      final offer = AvailableOffer.fromMap(Map<String, dynamic>.from(value));
+      return offer.id.isEmpty ? null : offer;
     }
 
-    return EligibleOffersResult(
+    return AvailableOffersResult(
       offerWall: readOffer('offerWall'),
       popup: readOffer('popup'),
       offers: offers,

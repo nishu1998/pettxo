@@ -305,14 +305,14 @@ class BookingRepository {
   Future<CanonicalPaymentOrderResult> createPaymentOrderV3({
     required String bookingId,
     String? paymentAttemptId,
-    String? claimedOfferId,
+    String? offerCampaignId,
   }) async {
     final callable = _functions.httpsCallable('createRazorpayPaymentOrderV3');
     try {
       final result = await callable.call<Map<String, dynamic>>({
         'bookingId': bookingId.trim(),
         'paymentAttemptId': paymentAttemptId?.trim(),
-        'claimedOfferId': claimedOfferId?.trim(),
+        'offerCampaignId': offerCampaignId?.trim(),
       });
       return CanonicalPaymentOrderResult.fromMap(
         Map<String, dynamic>.from(result.data),
@@ -324,19 +324,19 @@ class BookingRepository {
 
   Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
     required String bookingId,
-    String? claimedOfferId,
+    String? offerCampaignId,
   }) async {
     const callableName = 'previewBookingPaymentPricingV3';
     final safeBookingId = bookingId.trim();
-    final safeClaimedOfferId = claimedOfferId?.trim();
+    final safeOfferCampaignId = offerCampaignId?.trim();
     debugPrint(
-      '[CanonicalPaymentPreview] request callable=$callableName bookingId=$safeBookingId hasCoupon=${safeClaimedOfferId?.isNotEmpty == true}',
+      '[CanonicalPaymentPreview] request callable=$callableName bookingId=$safeBookingId hasCoupon=${safeOfferCampaignId?.isNotEmpty == true}',
     );
     final callable = _functions.httpsCallable(callableName);
     try {
       final result = await callable.call<Map<String, dynamic>>({
         'bookingId': safeBookingId,
-        'claimedOfferId': safeClaimedOfferId,
+        'offerCampaignId': safeOfferCampaignId,
       });
       final preview = CanonicalPaymentPricingPreviewResult.fromMap(
         Map<String, dynamic>.from(result.data),

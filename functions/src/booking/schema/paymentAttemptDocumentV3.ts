@@ -8,9 +8,11 @@ import {normalizeTimestampLike} from "./timestampNormalization";
 export const CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION = 1;
 
 export type CanonicalCouponSnapshotV3 = {
+  offerCampaignId: string;
   couponId: string;
   couponClaimId: string;
   couponCode: string;
+  usageLimitPerUser: number | null;
   discountType: string;
   discountValue: number;
   maxDiscountAmountPaise: number | null;
@@ -30,6 +32,7 @@ export type CanonicalPaymentAttemptDocumentV3 = {
   razorpayPaymentId: string;
   amountPaise: number;
   currency: string;
+  offerCampaignId: string;
   couponId: string;
   couponClaimId: string;
   pricingHash: string;
@@ -178,6 +181,7 @@ export function parseCanonicalPaymentAttemptDocumentV3(
       razorpayPaymentId: asString(raw.razorpayPaymentId),
       amountPaise: amountPaise ?? 0,
       currency: asString(raw.currency) || "INR",
+      offerCampaignId: asString(raw.offerCampaignId) || asString(raw.couponId),
       couponId: asString(raw.couponId),
       couponClaimId: asString(raw.couponClaimId),
       pricingHash: asString(raw.pricingHash),
@@ -207,9 +211,12 @@ export function parseCanonicalPaymentAttemptDocumentV3(
       updatedAt: updatedAt ?? new Date("invalid"),
       pricingSnapshot: asRecord(raw.pricingSnapshot),
       couponSnapshot: couponRaw == null ? null : {
+        offerCampaignId:
+          asString(couponRaw.offerCampaignId) || asString(couponRaw.couponId),
         couponId: asString(couponRaw.couponId),
         couponClaimId: asString(couponRaw.couponClaimId),
         couponCode: asString(couponRaw.couponCode),
+        usageLimitPerUser: asInteger(couponRaw.usageLimitPerUser),
         discountType: asString(couponRaw.discountType),
         discountValue: asNullableNumber(couponRaw.discountValue) ?? 0,
         maxDiscountAmountPaise: asInteger(couponRaw.maxDiscountAmountPaise),

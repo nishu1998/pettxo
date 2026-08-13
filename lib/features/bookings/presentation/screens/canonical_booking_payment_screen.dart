@@ -12,7 +12,7 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../offers/data/services/offer_service.dart';
-import '../../../offers/domain/models/claimed_offer.dart';
+import '../../../offers/domain/models/available_offer.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../data/services/razorpay_checkout_service.dart';
@@ -32,14 +32,13 @@ class CanonicalBookingPaymentScreen extends StatefulWidget {
   final BookingRepository? bookingRepository;
   final OfferService? offerService;
   final RazorpayCheckoutService? razorpayCheckoutService;
-  final Stream<List<ClaimedOffer>>? claimedOffersStream;
-  final Future<OfferPreviewResult> Function({
-    required String claimedOfferId,
+  final Future<AvailableOffersResult> Function({
     required double bookingAmount,
     String? serviceId,
+    String? providerId,
     String? category,
   })?
-  previewOfferForBooking;
+  loadAvailableOffers;
 
   const CanonicalBookingPaymentScreen({
     super.key,
@@ -50,8 +49,7 @@ class CanonicalBookingPaymentScreen extends StatefulWidget {
     this.bookingRepository,
     this.offerService,
     this.razorpayCheckoutService,
-    this.claimedOffersStream,
-    this.previewOfferForBooking,
+    this.loadAvailableOffers,
   });
 
   @override
@@ -73,12 +71,16 @@ class _CanonicalBookingPaymentScreenState
   bool _isObservingConfirmation = false;
   bool _hasNavigatedToConfirmation = false;
   bool _isRefreshingOfferPreview = false;
+  bool _isLoadingAvailableOffers = false;
   bool _isLoadingPricingPreview = false;
   bool _hasAcceptedCancellationPolicy = false;
-  String _selectedClaimedOfferId = '';
+  String _selectedOfferCampaignId = '';
   String _selectedOfferMessage = '';
   String _pricingPreviewError = '';
   String _lastPreviewKey = '';
+  String _lastAvailableOffersKey = '';
+  String _availableOffersError = '';
+  List<AvailableOffer> _availableOffers = const <AvailableOffer>[];
 
   BookingRepository get _bookingRepository =>
       widget.bookingRepository ?? BookingRepository();
@@ -117,239 +119,230 @@ class _CanonicalBookingPaymentScreenState
         stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
         builder: (context, snapshot) {
           final booking = _canonicalBookingFromReadModel(snapshot.data);
-          return StreamBuilder<List<ClaimedOffer>>(
-            stream:
-                widget.claimedOffersStream ??
-                _offerService.watchClaimedOffers(),
-            builder: (context, offerSnapshot) {
-              final claimedOffers =
-                  offerSnapshot.data ?? const <ClaimedOffer>[];
-              ClaimedOffer? selectedOffer;
-              for (final offer in claimedOffers) {
-                if (offer.id == _selectedClaimedOfferId) {
-                  selectedOffer = offer;
-                  break;
-                }
-              }
-              if (_selectedClaimedOfferId.isNotEmpty && selectedOffer == null) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!mounted) return;
-                  _clearSelectedOffer(showFeedback: false);
-                });
-              }
-              if (booking != null &&
-                  booking.payment.paymentAttemptId.trim().isNotEmpty &&
-                  booking.payment.paymentAttemptId.trim() !=
-                      _paymentAttemptId) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!mounted) return;
-                  _bindAttemptStream(booking.payment.paymentAttemptId.trim());
-                });
-              }
+          AvailableOffer? selectedOffer;
+          for (final offer in _availableOffers) {
+            if (offer.id == _selectedOfferCampaignId) {
+              selectedOffer = offer;
+              break;
+            }
+          }
+          if (_selectedOfferCampaignId.isNotEmpty && selectedOffer == null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              _clearSelectedOffer(showFeedback: false);
+            });
+          }
+          if (booking != null &&
+              booking.payment.paymentAttemptId.trim().isNotEmpty &&
+              booking.payment.paymentAttemptId.trim() != _paymentAttemptId) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              _bindAttemptStream(booking.payment.paymentAttemptId.trim());
+            });
+          }
 
-              if (booking != null) {
-                final previewKey =
-                    '${widget.bookingId}:${_selectedClaimedOfferId.trim()}';
-                if (_lastPreviewKey != previewKey &&
-                    !_isLoadingPricingPreview &&
-                    !_isRefreshingOfferPreview) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!mounted) return;
-                    _refreshPricingPreview(
-                      booking,
-                      claimedOfferId: _selectedClaimedOfferId,
-                    );
-                  });
-                }
-              }
+          if (booking != null) {
+            final availableOffersKey = _availableOffersKey(booking);
+            if (_lastAvailableOffersKey != availableOffersKey &&
+                !_isLoadingAvailableOffers) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                _refreshAvailableOffers(booking);
+              });
+            }
 
-              final pricingSummary = _resolvePricingSummary();
-              final payDeadline =
-                  _pricingPreview?.payDeadlineAt ??
-                  booking?.lifecycle.payDeadlineAt ??
-                  _latestAttempt?.orderExpiresAt;
-              final isExpired =
-                  payDeadline != null && !payDeadline.isAfter(DateTime.now());
-              final hasValidPricing =
-                  pricingSummary != null &&
-                  _pricingPreviewError.isEmpty &&
-                  !_isLoadingPricingPreview;
-              final canPay =
-                  booking != null &&
-                  booking.state ==
-                      CanonicalBookingStateV3.acceptedAwaitingPayment &&
-                  !isExpired &&
-                  hasValidPricing &&
-                  !_isPreparingOrder &&
-                  !_isCheckoutOpen &&
-                  !_isObservingConfirmation &&
-                  (_latestAttempt == null ||
-                      _latestAttempt!.canRetryWithSameAttempt ||
-                      _latestAttempt!.state ==
-                          CanonicalPaymentAttemptState.notStarted ||
-                      _latestAttempt!.state ==
-                          CanonicalPaymentAttemptState.unknown);
-              final payableBooking = canPay ? booking : null;
-              final canSubmitPayment =
-                  payableBooking != null && _hasAcceptedCancellationPolicy;
-              final paymentCtaLabel = payableBooking != null
-                  ? _primaryButtonLabel(_latestAttempt, pricingSummary)
-                  : _secondaryButtonLabel(booking, isExpired);
-              final amountLabel = pricingSummary == null
-                  ? 'Loading total'
-                  : _formatMoney(pricingSummary.customerPaidPaise);
+            final previewKey =
+                '${widget.bookingId}:${_selectedOfferCampaignId.trim()}';
+            if (_lastPreviewKey != previewKey &&
+                !_isLoadingPricingPreview &&
+                !_isRefreshingOfferPreview) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                _refreshPricingPreview(
+                  booking,
+                  offerCampaignId: _selectedOfferCampaignId,
+                );
+              });
+            }
+          }
 
-              return SafeArea(
-                child: Stack(
+          final pricingSummary = _resolvePricingSummary();
+          final payDeadline =
+              _pricingPreview?.payDeadlineAt ??
+              booking?.lifecycle.payDeadlineAt ??
+              _latestAttempt?.orderExpiresAt;
+          final isExpired =
+              payDeadline != null && !payDeadline.isAfter(DateTime.now());
+          final hasValidPricing =
+              pricingSummary != null &&
+              _pricingPreviewError.isEmpty &&
+              !_isLoadingPricingPreview;
+          final canPay =
+              booking != null &&
+              booking.state ==
+                  CanonicalBookingStateV3.acceptedAwaitingPayment &&
+              !isExpired &&
+              hasValidPricing &&
+              !_isPreparingOrder &&
+              !_isCheckoutOpen &&
+              !_isObservingConfirmation &&
+              (_latestAttempt == null ||
+                  _latestAttempt!.canRetryWithSameAttempt ||
+                  _latestAttempt!.state ==
+                      CanonicalPaymentAttemptState.notStarted ||
+                  _latestAttempt!.state ==
+                      CanonicalPaymentAttemptState.unknown);
+          final payableBooking = canPay ? booking : null;
+          final canSubmitPayment =
+              payableBooking != null && _hasAcceptedCancellationPolicy;
+          final paymentCtaLabel = payableBooking != null
+              ? _primaryButtonLabel(_latestAttempt, pricingSummary)
+              : _secondaryButtonLabel(booking, isExpired);
+          final amountLabel = pricingSummary == null
+              ? 'Loading total'
+              : _formatMoney(pricingSummary.customerPaidPaise);
+
+          return SafeArea(
+            child: Stack(
+              children: [
+                ListView(
+                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 196),
                   children: [
-                    ListView(
-                      padding: const EdgeInsets.fromLTRB(18, 8, 18, 196),
-                      children: [
-                        const _SectionLabel('Booking summary'),
-                        const SizedBox(height: 10),
-                        _PaymentHeroCard(
-                          serviceName: widget.serviceName,
-                          providerName: widget.providerName,
-                          dateLabel: booking == null
-                              ? 'Loading...'
-                              : _bookingDateLabel(booking),
-                          timeLabel: booking == null
-                              ? 'Loading...'
-                              : _bookingTimeLabel(booking),
-                          durationLabel: booking == null
-                              ? 'Loading...'
-                              : _bookingDurationLabel(booking),
-                        ),
-                        const SizedBox(height: 16),
-                        const _SectionLabel('Payment status'),
-                        const SizedBox(height: 10),
-                        _PaymentStatusCard(
-                          statusLabel: _paymentStatusHeadline(
-                            booking,
-                            _latestAttempt,
-                            isExpired,
-                          ),
-                          statusBody: _paymentStatusText(
-                            booking,
-                            _latestAttempt,
-                            isExpired,
-                          ),
-                          paymentDeadline:
-                              !isExpired &&
-                                  booking?.state ==
-                                      CanonicalBookingStateV3
-                                          .acceptedAwaitingPayment
-                              ? payDeadline
-                              : null,
-                        ),
-                        const _SectionLabel('Price details'),
-                        const SizedBox(height: 10),
-                        _PricingCard(
-                          pricingSummary: pricingSummary,
-                          isLoading: _isLoadingPricingPreview,
-                          errorMessage: _pricingPreviewError,
-                          selectedOffer: selectedOffer,
-                          selectionMessage: _selectedOfferMessage,
-                          isRefreshingOffer: _isRefreshingOfferPreview,
-                          offersAvailable: _hasEligibleOffers(
-                            booking,
-                            claimedOffers,
-                          ),
-                          onChooseOffer: booking == null
-                              ? null
-                              : () => _showCouponSheet(booking, claimedOffers),
-                          onRemoveOffer: _selectedClaimedOfferId.isEmpty
-                              ? null
-                              : booking == null
-                              ? null
-                              : () => _removeSelectedOffer(booking),
-                          onChangeOffer:
-                              booking == null || selectedOffer == null
-                              ? null
-                              : () => _showCouponSheet(booking, claimedOffers),
-                          onRetry: booking == null
-                              ? null
-                              : () => _refreshPricingPreview(
-                                  booking,
-                                  claimedOfferId: _selectedClaimedOfferId,
-                                  force: true,
-                                ),
-                          shouldShowCouponRow:
-                              _selectedClaimedOfferId.isNotEmpty,
-                        ),
-                        const SizedBox(height: 16),
-                        const _SectionLabel('Cancellation'),
-                        const SizedBox(height: 10),
-                        _CancellationPolicyCard(
-                          onOpenCancellationPolicy: () => _openPolicyDocument(
-                            LegalPoliciesCatalog.cancellationPolicy,
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        Container(
-                          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(22),
-                          ),
-                          child: LegalConsentCheckbox(
-                            value: _hasAcceptedCancellationPolicy,
-                            onChanged: (value) {
-                              setState(() {
-                                _hasAcceptedCancellationPolicy = value ?? false;
-                              });
-                            },
-                            segments: [
-                              const LegalConsentSegment(
-                                text: 'I understand the ',
-                              ),
-                              LegalConsentSegment(
-                                text: 'Cancellation Policy',
-                                onTap: () => _openPolicyDocument(
-                                  LegalPoliciesCatalog.cancellationPolicy,
-                                ),
-                              ),
-                              const LegalConsentSegment(
-                                text: ' and agree to the ',
-                              ),
-                              LegalConsentSegment(
-                                text: 'Refund Policy',
-                                onTap: () => _openPolicyDocument(
-                                  LegalPoliciesCatalog.refundPolicy,
-                                ),
-                              ),
-                              const LegalConsentSegment(text: '.'),
-                            ],
-                          ),
-                        ),
-                        if (_latestAttempt != null) ...[
-                          const SizedBox(height: 16),
-                          const _SectionLabel('Latest attempt'),
-                          const SizedBox(height: 10),
-                          _DetailCard(
-                            title: 'Latest payment attempt',
-                            body: _attemptStatusDescription(_latestAttempt!),
-                          ),
-                        ],
-                      ],
+                    const _SectionLabel('Booking summary'),
+                    const SizedBox(height: 10),
+                    _PaymentHeroCard(
+                      serviceName: widget.serviceName,
+                      providerName: widget.providerName,
+                      dateLabel: booking == null
+                          ? 'Loading...'
+                          : _bookingDateLabel(booking),
+                      timeLabel: booking == null
+                          ? 'Loading...'
+                          : _bookingTimeLabel(booking),
+                      durationLabel: booking == null
+                          ? 'Loading...'
+                          : _bookingDurationLabel(booking),
                     ),
-                    Positioned(
-                      left: 18,
-                      right: 18,
-                      bottom: 18,
-                      child: _FloatingPaymentBar(
-                        amountLabel: amountLabel,
-                        buttonLabel: paymentCtaLabel,
-                        isEnabled: canSubmitPayment,
-                        onPressed: payableBooking == null || !canSubmitPayment
-                            ? null
-                            : () => _startPaymentFlow(payableBooking),
+                    const SizedBox(height: 16),
+                    const _SectionLabel('Payment status'),
+                    const SizedBox(height: 10),
+                    _PaymentStatusCard(
+                      statusLabel: _paymentStatusHeadline(
+                        booking,
+                        _latestAttempt,
+                        isExpired,
+                      ),
+                      statusBody: _paymentStatusText(
+                        booking,
+                        _latestAttempt,
+                        isExpired,
+                      ),
+                      paymentDeadline:
+                          !isExpired &&
+                              booking?.state ==
+                                  CanonicalBookingStateV3
+                                      .acceptedAwaitingPayment
+                          ? payDeadline
+                          : null,
+                    ),
+                    const _SectionLabel('Price details'),
+                    const SizedBox(height: 10),
+                    _PricingCard(
+                      pricingSummary: pricingSummary,
+                      isLoading: _isLoadingPricingPreview,
+                      errorMessage: _pricingPreviewError,
+                      selectedOffer: selectedOffer,
+                      selectionMessage: _selectedOfferMessage,
+                      isRefreshingOffer: _isRefreshingOfferPreview,
+                      offersAvailable: _availableOffers.isNotEmpty,
+                      isLoadingOffers: _isLoadingAvailableOffers,
+                      offersErrorMessage: _availableOffersError,
+                      onChooseOffer: booking == null
+                          ? null
+                          : () => _showCouponSheet(booking, _availableOffers),
+                      onRemoveOffer: _selectedOfferCampaignId.isEmpty
+                          ? null
+                          : booking == null
+                          ? null
+                          : () => _removeSelectedOffer(booking),
+                      onChangeOffer: booking == null || selectedOffer == null
+                          ? null
+                          : () => _showCouponSheet(booking, _availableOffers),
+                      onRetry: booking == null
+                          ? null
+                          : () => _refreshPricingPreview(
+                              booking,
+                              offerCampaignId: _selectedOfferCampaignId,
+                              force: true,
+                            ),
+                    ),
+                    const SizedBox(height: 16),
+                    const _SectionLabel('Cancellation'),
+                    const SizedBox(height: 10),
+                    _CancellationPolicyCard(
+                      onOpenCancellationPolicy: () => _openPolicyDocument(
+                        LegalPoliciesCatalog.cancellationPolicy,
                       ),
                     ),
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      child: LegalConsentCheckbox(
+                        value: _hasAcceptedCancellationPolicy,
+                        onChanged: (value) {
+                          setState(() {
+                            _hasAcceptedCancellationPolicy = value ?? false;
+                          });
+                        },
+                        segments: [
+                          const LegalConsentSegment(text: 'I understand the '),
+                          LegalConsentSegment(
+                            text: 'Cancellation Policy',
+                            onTap: () => _openPolicyDocument(
+                              LegalPoliciesCatalog.cancellationPolicy,
+                            ),
+                          ),
+                          const LegalConsentSegment(text: ' and agree to the '),
+                          LegalConsentSegment(
+                            text: 'Refund Policy',
+                            onTap: () => _openPolicyDocument(
+                              LegalPoliciesCatalog.refundPolicy,
+                            ),
+                          ),
+                          const LegalConsentSegment(text: '.'),
+                        ],
+                      ),
+                    ),
+                    if (_latestAttempt != null) ...[
+                      const SizedBox(height: 16),
+                      const _SectionLabel('Latest attempt'),
+                      const SizedBox(height: 10),
+                      _DetailCard(
+                        title: 'Latest payment attempt',
+                        body: _attemptStatusDescription(_latestAttempt!),
+                      ),
+                    ],
                   ],
                 ),
-              );
-            },
+                Positioned(
+                  left: 18,
+                  right: 18,
+                  bottom: 18,
+                  child: _FloatingPaymentBar(
+                    amountLabel: amountLabel,
+                    buttonLabel: paymentCtaLabel,
+                    isEnabled: canSubmitPayment,
+                    onPressed: payableBooking == null || !canSubmitPayment
+                        ? null
+                        : () => _startPaymentFlow(payableBooking),
+                  ),
+                ),
+              ],
+            ),
           );
         },
       ),
@@ -395,15 +388,15 @@ class _CanonicalBookingPaymentScreenState
       final orderResult = await _bookingRepository.createPaymentOrderV3(
         bookingId: widget.bookingId,
         paymentAttemptId: _paymentAttemptId.isEmpty ? null : _paymentAttemptId,
-        claimedOfferId: _selectedClaimedOfferId.isEmpty
+        offerCampaignId: _selectedOfferCampaignId.isEmpty
             ? null
-            : _selectedClaimedOfferId,
+            : _selectedOfferCampaignId,
       );
       _pricingPreview = CanonicalPaymentPricingPreviewResult(
         bookingId: orderResult.bookingId,
         pricingSummary: orderResult.pricingSummary,
         payDeadlineAt: orderResult.expiresAt,
-        claimedOfferId: _selectedClaimedOfferId,
+        offerCampaignId: _selectedOfferCampaignId,
         idempotentReplay: orderResult.idempotentReplay,
       );
       _bindAttemptStream(orderResult.paymentAttemptId);
@@ -530,20 +523,85 @@ class _CanonicalBookingPaymentScreenState
     }
   }
 
-  Future<void> _refreshPricingPreview(
+  String _availableOffersKey(CanonicalBookingDocumentV3 booking) {
+    return [
+      widget.bookingId,
+      booking.serviceId,
+      booking.providerId,
+      booking.service.category,
+      _serviceSubtotalPaise(booking).toString(),
+    ].join(':');
+  }
+
+  Future<void> _refreshAvailableOffers(
     CanonicalBookingDocumentV3 booking, {
-    String? claimedOfferId,
     bool force = false,
   }) async {
-    final safeClaimedOfferId = claimedOfferId?.trim() ?? '';
-    final previewKey = '${widget.bookingId}:$safeClaimedOfferId';
+    final requestKey = _availableOffersKey(booking);
+    if (!force &&
+        (_isLoadingAvailableOffers || _lastAvailableOffersKey == requestKey)) {
+      return;
+    }
+
+    setState(() {
+      _isLoadingAvailableOffers = true;
+      _availableOffersError = '';
+      _lastAvailableOffersKey = requestKey;
+    });
+
+    try {
+      final loader =
+          widget.loadAvailableOffers ??
+          ({
+            required double bookingAmount,
+            String? serviceId,
+            String? providerId,
+            String? category,
+          }) => _offerService.getAvailableOffers(
+            screen: 'checkout',
+            bookingAmount: bookingAmount,
+            serviceId: serviceId,
+            providerId: providerId,
+            serviceCategory: category,
+          );
+      final result = await loader(
+        bookingAmount: _serviceSubtotalPaise(booking) / 100,
+        serviceId: booking.serviceId,
+        providerId: booking.providerId,
+        category: booking.service.category,
+      );
+      if (!mounted) return;
+      setState(() {
+        _availableOffers = result.offers;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _availableOffers = const <AvailableOffer>[];
+        _availableOffersError =
+            'We could not refresh available offers right now.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingAvailableOffers = false);
+      }
+    }
+  }
+
+  Future<void> _refreshPricingPreview(
+    CanonicalBookingDocumentV3 booking, {
+    String? offerCampaignId,
+    bool force = false,
+  }) async {
+    final safeOfferCampaignId = offerCampaignId?.trim() ?? '';
+    final previewKey = '${widget.bookingId}:$safeOfferCampaignId';
     if (!force && (_isLoadingPricingPreview || _lastPreviewKey == previewKey)) {
       return;
     }
     _logPricingPreview(
       'request',
       booking: booking,
-      claimedOfferId: safeClaimedOfferId,
+      offerCampaignId: safeOfferCampaignId,
       extra: 'force=$force',
     );
     setState(() {
@@ -555,7 +613,9 @@ class _CanonicalBookingPaymentScreenState
     try {
       final preview = await _bookingRepository.previewPaymentPricingV3(
         bookingId: widget.bookingId,
-        claimedOfferId: safeClaimedOfferId.isEmpty ? null : safeClaimedOfferId,
+        offerCampaignId: safeOfferCampaignId.isEmpty
+            ? null
+            : safeOfferCampaignId,
       );
       if (!mounted) return;
       setState(() {
@@ -566,7 +626,7 @@ class _CanonicalBookingPaymentScreenState
       _logPricingPreview(
         'success',
         booking: booking,
-        claimedOfferId: safeClaimedOfferId,
+        offerCampaignId: safeOfferCampaignId,
         extra:
             'payablePaise=${preview.pricingSummary.customerPaidPaise} discountPaise=${preview.pricingSummary.couponDiscountPaise}',
       );
@@ -579,7 +639,7 @@ class _CanonicalBookingPaymentScreenState
       _logPricingPreview(
         'business_error',
         booking: booking,
-        claimedOfferId: safeClaimedOfferId,
+        offerCampaignId: safeOfferCampaignId,
         extra: 'code=${error.code.name} message=${error.message}',
       );
     } catch (_) {
@@ -591,7 +651,7 @@ class _CanonicalBookingPaymentScreenState
       _logPricingPreview(
         'unknown_error',
         booking: booking,
-        claimedOfferId: safeClaimedOfferId,
+        offerCampaignId: safeOfferCampaignId,
       );
     } finally {
       if (mounted) {
@@ -607,9 +667,10 @@ class _CanonicalBookingPaymentScreenState
     final message = error.code == CanonicalPaymentFailureCode.couponInvalid
         ? 'That coupon is no longer valid. We refreshed your total.'
         : 'The latest payment total changed. We refreshed it for you.';
-    if (_selectedClaimedOfferId.isNotEmpty) {
+    if (_selectedOfferCampaignId.isNotEmpty) {
       _clearSelectedOffer(showFeedback: false);
     }
+    _refreshAvailableOffers(booking, force: true);
     _refreshPricingPreview(booking, force: true);
     AppFeedback.show(context, message: message, tone: AppFeedbackTone.warning);
   }
@@ -815,23 +876,8 @@ class _CanonicalBookingPaymentScreenState
 
   Future<void> _showCouponSheet(
     CanonicalBookingDocumentV3 booking,
-    List<ClaimedOffer> offers,
+    List<AvailableOffer> offers,
   ) async {
-    final serviceSubtotalPaise = _serviceSubtotalPaise(booking);
-    final couponEntries = offers
-        .map(
-          (offer) => (
-            offer: offer,
-            issue: _localOfferIssue(offer, booking, serviceSubtotalPaise),
-          ),
-        )
-        .toList(growable: false);
-    final eligibleEntries = couponEntries
-        .where((entry) => entry.issue == null)
-        .toList(growable: false);
-    final unavailableEntries = couponEntries
-        .where((entry) => entry.issue != null)
-        .toList(growable: false);
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -867,7 +913,12 @@ class _CanonicalBookingPaymentScreenState
                   ),
                 ),
                 const SizedBox(height: 16),
-                if (eligibleEntries.isEmpty)
+                if (_isLoadingAvailableOffers)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (offers.isEmpty)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 24),
                     child: Text(
@@ -883,31 +934,22 @@ class _CanonicalBookingPaymentScreenState
                   Flexible(
                     child: ListView.separated(
                       shrinkWrap: true,
-                      itemCount:
-                          eligibleEntries.length +
-                          (unavailableEntries.isEmpty ? 0 : 1),
+                      itemCount: offers.length,
                       separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (context, index) {
-                        if (index < eligibleEntries.length) {
-                          final entry = eligibleEntries[index];
-                          final isSelected =
-                              entry.offer.id == _selectedClaimedOfferId;
-                          return _CouponOptionTile(
-                            offer: entry.offer,
-                            issue: null,
-                            isSelected: isSelected,
-                            onTap: () async {
-                              Navigator.pop(context);
-                              await _previewClaimedOffer(
-                                booking,
-                                entry.offer,
-                                selectOffer: true,
-                              );
-                            },
-                          );
-                        }
-                        return _CouponPickerFooter(
-                          unavailableCouponCount: unavailableEntries.length,
+                        final offer = offers[index];
+                        final isSelected = offer.id == _selectedOfferCampaignId;
+                        return _CouponOptionTile(
+                          offer: offer,
+                          isSelected: isSelected,
+                          onTap: () async {
+                            Navigator.pop(context);
+                            await _previewAvailableOffer(
+                              booking,
+                              offer,
+                              selectOffer: true,
+                            );
+                          },
                         );
                       },
                     ),
@@ -920,55 +962,39 @@ class _CanonicalBookingPaymentScreenState
     );
   }
 
-  Future<void> _previewClaimedOffer(
+  Future<void> _previewAvailableOffer(
     CanonicalBookingDocumentV3 booking,
-    ClaimedOffer offer, {
+    AvailableOffer offer, {
     required bool selectOffer,
   }) async {
-    final issue = _localOfferIssue(
-      offer,
-      booking,
-      _serviceSubtotalPaise(booking),
-    );
-    if (issue != null) {
-      AppFeedback.show(context, message: issue, tone: AppFeedbackTone.warning);
-      return;
-    }
     setState(() => _isRefreshingOfferPreview = true);
     try {
-      final preview =
-          await (widget.previewOfferForBooking ??
-              _offerService.previewOfferForBooking)(
-            claimedOfferId: offer.id,
-            bookingAmount: _serviceSubtotalPaise(booking) / 100,
-            serviceId: booking.serviceId,
-            category: booking.service.category,
-          );
-      if (!mounted) return;
-      if (!preview.ok || !preview.isValid) {
-        AppFeedback.show(
-          context,
-          message: preview.message.isEmpty
-              ? 'This coupon can no longer be applied.'
-              : preview.message,
-          tone: AppFeedbackTone.warning,
-        );
-        return;
-      }
       setState(() {
         if (selectOffer) {
-          _selectedClaimedOfferId = offer.id;
-          _selectedOfferMessage = preview.message.isEmpty
-              ? '${offer.couponCode} applied.'
-              : preview.message;
+          _selectedOfferCampaignId = offer.id;
+          _selectedOfferMessage = offer.couponCode.isEmpty
+              ? 'Offer applied.'
+              : '${offer.couponCode} applied.';
           _paymentAttemptId = '';
           _latestAttempt = null;
         }
       });
       await _refreshPricingPreview(
         booking,
-        claimedOfferId: offer.id,
+        offerCampaignId: offer.id,
         force: true,
+      );
+    } on CanonicalPaymentException catch (error) {
+      if (!mounted) return;
+      if (error.code == CanonicalPaymentFailureCode.couponInvalid ||
+          error.code == CanonicalPaymentFailureCode.pricingChanged) {
+        _handlePricingInvalidation(booking, error);
+        return;
+      }
+      AppFeedback.show(
+        context,
+        message: error.message,
+        tone: AppFeedbackTone.error,
       );
     } catch (_) {
       if (!mounted) return;
@@ -986,7 +1012,7 @@ class _CanonicalBookingPaymentScreenState
 
   void _clearSelectedOffer({bool showFeedback = true}) {
     setState(() {
-      _selectedClaimedOfferId = '';
+      _selectedOfferCampaignId = '';
       _selectedOfferMessage = '';
       _paymentAttemptId = '';
       _latestAttempt = null;
@@ -1003,60 +1029,6 @@ class _CanonicalBookingPaymentScreenState
   Future<void> _removeSelectedOffer(CanonicalBookingDocumentV3 booking) async {
     _clearSelectedOffer();
     await _refreshPricingPreview(booking, force: true);
-  }
-
-  bool _hasEligibleOffers(
-    CanonicalBookingDocumentV3? booking,
-    List<ClaimedOffer> offers,
-  ) {
-    if (booking == null) return false;
-    final serviceSubtotalPaise = _serviceSubtotalPaise(booking);
-    return offers.any(
-      (offer) => _localOfferIssue(offer, booking, serviceSubtotalPaise) == null,
-    );
-  }
-
-  String? _localOfferIssue(
-    ClaimedOffer offer,
-    CanonicalBookingDocumentV3 booking,
-    int serviceSubtotalPaise,
-  ) {
-    if (offer.isExpired) {
-      return 'This coupon has expired.';
-    }
-    if (offer.isUsed) {
-      return 'This coupon has already been used.';
-    }
-    final minBookingAmountPaise = ((offer.minBookingAmount ?? 0) * 100).round();
-    if (minBookingAmountPaise > 0 &&
-        serviceSubtotalPaise < minBookingAmountPaise) {
-      return 'This coupon requires a higher booking amount.';
-    }
-    final campaign = offer.campaignSnapshot;
-    final serviceIds = (campaign['serviceIds'] as List<dynamic>? ?? const [])
-        .map((entry) => '$entry'.trim())
-        .where((entry) => entry.isNotEmpty)
-        .toSet();
-    if (serviceIds.isNotEmpty && !serviceIds.contains(booking.serviceId)) {
-      return 'This coupon does not apply to this service.';
-    }
-    final providerIds = (campaign['providerIds'] as List<dynamic>? ?? const [])
-        .map((entry) => '$entry'.trim())
-        .where((entry) => entry.isNotEmpty)
-        .toSet();
-    if (providerIds.isNotEmpty && !providerIds.contains(booking.providerId)) {
-      return 'This coupon does not apply to this provider.';
-    }
-    final categoryRestrictions =
-        (campaign['categoryRestrictions'] as List<dynamic>? ?? const [])
-            .map((entry) => '$entry'.trim())
-            .where((entry) => entry.isNotEmpty)
-            .toSet();
-    if (categoryRestrictions.isNotEmpty &&
-        !categoryRestrictions.contains(booking.service.category)) {
-      return 'This coupon does not apply to this category.';
-    }
-    return null;
   }
 
   bool _shouldObserveAfterVerificationError(CanonicalPaymentException error) {
@@ -1102,40 +1074,11 @@ class _CanonicalBookingPaymentScreenState
   void _logPricingPreview(
     String event, {
     required CanonicalBookingDocumentV3 booking,
-    required String claimedOfferId,
+    required String offerCampaignId,
     String extra = '',
   }) {
     debugPrint(
-      '[CanonicalPaymentScreen] preview_$event bookingId=${widget.bookingId} state=${booking.state.name} hasCoupon=${claimedOfferId.isNotEmpty} $extra',
-    );
-  }
-}
-
-class _CouponPickerFooter extends StatelessWidget {
-  const _CouponPickerFooter({required this.unavailableCouponCount});
-
-  final int unavailableCouponCount;
-
-  @override
-  Widget build(BuildContext context) {
-    final countLabel = unavailableCouponCount == 1
-        ? '1 saved coupon'
-        : '$unavailableCouponCount saved coupons';
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFF7F1),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Text(
-        '$countLabel do not apply to this booking right now.',
-        style: const TextStyle(
-          color: AppColors.textGrey,
-          height: 1.45,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
+      '[CanonicalPaymentScreen] preview_$event bookingId=${widget.bookingId} state=${booking.state.name} hasCoupon=${offerCampaignId.isNotEmpty} $extra',
     );
   }
 }
@@ -1143,30 +1086,23 @@ class _CouponPickerFooter extends StatelessWidget {
 class _CouponOptionTile extends StatelessWidget {
   const _CouponOptionTile({
     required this.offer,
-    required this.issue,
     required this.isSelected,
     required this.onTap,
   });
 
-  final ClaimedOffer offer;
-  final String? issue;
+  final AvailableOffer offer;
   final bool isSelected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final isUnavailable = issue != null;
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: isSelected
-              ? const Color(0xFFFFF4EC)
-              : isUnavailable
-              ? const Color(0xFFF7F7F7)
-              : Colors.white,
+          color: isSelected ? const Color(0xFFFFF4EC) : Colors.white,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: isSelected ? AppColors.primary : const Color(0xFFE8E3DC),
@@ -1232,23 +1168,20 @@ class _CouponOptionTile extends StatelessWidget {
                     label:
                         'Up to ${_formatMoney((offer.maxDiscountAmount! * 100).round())}',
                   ),
-                if (offer.validUntil != null)
+                if (offer.endAt != null)
                   _CouponMetaChip(
                     label:
-                        'Valid until ${offer.validUntil!.day}/${offer.validUntil!.month}/${offer.validUntil!.year}',
+                        'Valid until ${offer.endAt!.day}/${offer.endAt!.month}/${offer.endAt!.year}',
                   ),
               ],
             ),
             const SizedBox(height: 8),
             Text(
-              issue ??
-                  (isSelected
-                      ? 'Applied to this checkout.'
-                      : 'Tap to apply and refresh the backend total.'),
-              style: TextStyle(
-                color: isUnavailable
-                    ? const Color(0xFFB45309)
-                    : AppColors.textGrey,
+              isSelected
+                  ? 'Applied to this checkout.'
+                  : 'Tap to apply and refresh the backend total.',
+              style: const TextStyle(
+                color: AppColors.textGrey,
                 height: 1.4,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
@@ -1259,7 +1192,7 @@ class _CouponOptionTile extends StatelessWidget {
               alignment: Alignment.centerRight,
               child: SecondaryButton(
                 label: isSelected ? 'Applied' : 'Apply',
-                onPressed: issue != null || isSelected ? null : onTap,
+                onPressed: isSelected ? null : onTap,
                 size: AppButtonSize.compact,
                 expand: false,
               ),
@@ -1570,15 +1503,16 @@ class _PricingCard extends StatelessWidget {
   final CanonicalPaymentPricingSummary? pricingSummary;
   final bool isLoading;
   final String errorMessage;
-  final ClaimedOffer? selectedOffer;
+  final AvailableOffer? selectedOffer;
   final String selectionMessage;
   final bool isRefreshingOffer;
   final bool offersAvailable;
+  final bool isLoadingOffers;
+  final String offersErrorMessage;
   final VoidCallback? onChooseOffer;
   final VoidCallback? onRemoveOffer;
   final VoidCallback? onChangeOffer;
   final VoidCallback? onRetry;
-  final bool shouldShowCouponRow;
 
   const _PricingCard({
     required this.pricingSummary,
@@ -1588,11 +1522,12 @@ class _PricingCard extends StatelessWidget {
     required this.selectionMessage,
     required this.isRefreshingOffer,
     required this.offersAvailable,
+    required this.isLoadingOffers,
+    required this.offersErrorMessage,
     required this.onChooseOffer,
     required this.onRemoveOffer,
     required this.onChangeOffer,
     required this.onRetry,
-    required this.shouldShowCouponRow,
   });
 
   @override
@@ -1672,6 +1607,8 @@ class _PricingCard extends StatelessWidget {
                   selectionMessage: selectionMessage,
                   isRefreshing: isRefreshingOffer,
                   offersAvailable: offersAvailable,
+                  isLoadingOffers: isLoadingOffers,
+                  offersErrorMessage: offersErrorMessage,
                   onChoose: onChooseOffer,
                   onRemove: onRemoveOffer,
                   onChange: onChangeOffer,
@@ -1721,15 +1658,19 @@ class _OfferSummaryPanel extends StatelessWidget {
     required this.selectionMessage,
     required this.isRefreshing,
     required this.offersAvailable,
+    required this.isLoadingOffers,
+    required this.offersErrorMessage,
     required this.onChoose,
     required this.onRemove,
     required this.onChange,
   });
 
-  final ClaimedOffer? selectedOffer;
+  final AvailableOffer? selectedOffer;
   final String selectionMessage;
   final bool isRefreshing;
   final bool offersAvailable;
+  final bool isLoadingOffers;
+  final String offersErrorMessage;
   final VoidCallback? onChoose;
   final VoidCallback? onRemove;
   final VoidCallback? onChange;
@@ -1761,7 +1702,7 @@ class _OfferSummaryPanel extends StatelessWidget {
                 ),
               ),
               SecondaryButton(
-                label: isRefreshing ? 'Refreshing...' : 'My offers',
+                label: isRefreshing ? 'Refreshing...' : 'Available offers',
                 onPressed: isRefreshing ? null : action,
                 size: AppButtonSize.compact,
                 expand: false,
@@ -1771,7 +1712,11 @@ class _OfferSummaryPanel extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             selectedOffer == null
-                ? offersAvailable
+                ? isLoadingOffers
+                      ? 'Loading available offers for this booking...'
+                      : offersErrorMessage.trim().isNotEmpty
+                      ? offersErrorMessage
+                      : offersAvailable
                       ? 'Choose an offer to refresh your payable amount.'
                       : 'No offers are currently available for this booking.'
                 : '${selectedOffer!.title.isNotEmpty ? selectedOffer!.title : selectedOffer!.couponCode} · ${selectedOffer!.discountSummary}',

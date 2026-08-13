@@ -4,10 +4,6 @@ enum OfferCampaignType { firstBooking, festival, general, rebooking }
 
 enum OfferDiscountType { flat, percent }
 
-enum OfferClaimValidityType { lifelong, fixedDate, daysAfterClaim }
-
-enum ClaimedOfferStatus { claimed, used, expired }
-
 extension OfferDisplayTypeX on OfferDisplayType {
   String get value => switch (this) {
     OfferDisplayType.offerWall => 'offerWall',
@@ -50,38 +46,6 @@ extension OfferDiscountTypeX on OfferDiscountType {
     return switch (value.trim()) {
       'percent' => OfferDiscountType.percent,
       _ => OfferDiscountType.flat,
-    };
-  }
-}
-
-extension OfferClaimValidityTypeX on OfferClaimValidityType {
-  String get value => switch (this) {
-    OfferClaimValidityType.lifelong => 'lifelong',
-    OfferClaimValidityType.fixedDate => 'fixedDate',
-    OfferClaimValidityType.daysAfterClaim => 'daysAfterClaim',
-  };
-
-  static OfferClaimValidityType fromValue(String value) {
-    return switch (value.trim()) {
-      'fixedDate' => OfferClaimValidityType.fixedDate,
-      'daysAfterClaim' => OfferClaimValidityType.daysAfterClaim,
-      _ => OfferClaimValidityType.lifelong,
-    };
-  }
-}
-
-extension ClaimedOfferStatusX on ClaimedOfferStatus {
-  String get value => switch (this) {
-    ClaimedOfferStatus.claimed => 'claimed',
-    ClaimedOfferStatus.used => 'used',
-    ClaimedOfferStatus.expired => 'expired',
-  };
-
-  static ClaimedOfferStatus fromValue(String value) {
-    return switch (value.trim()) {
-      'used' => ClaimedOfferStatus.used,
-      'expired' => ClaimedOfferStatus.expired,
-      _ => ClaimedOfferStatus.claimed,
     };
   }
 }

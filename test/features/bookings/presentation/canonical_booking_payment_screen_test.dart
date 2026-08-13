@@ -10,39 +10,21 @@ import 'package:pettexo/features/bookings/domain/models/booking_payment_order.da
 import 'package:pettexo/features/bookings/domain/models/booking_read_model.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_v3_models.dart';
 import 'package:pettexo/features/bookings/presentation/screens/canonical_booking_payment_screen.dart';
-import 'package:pettexo/features/offers/data/services/offer_service.dart';
-import 'package:pettexo/features/offers/domain/models/claimed_offer.dart';
+import 'package:pettexo/features/offers/domain/models/available_offer.dart';
 import 'package:pettexo/features/offers/domain/models/offer_types.dart';
 
 void main() {
   late _FakeBookingRepository bookingRepository;
   late CanonicalBookingDocumentV3 booking;
-  late List<ClaimedOffer> offers;
+  late List<AvailableOffer> offers;
 
   setUp(() {
     TestWidgetsFlutterBinding.ensureInitialized();
     bookingRepository = _FakeBookingRepository();
     booking = _buildBookingFixture();
-    offers = const <ClaimedOffer>[];
+    offers = const <AvailableOffer>[];
     bookingRepository.emitBooking(booking);
   });
-
-  Future<OfferPreviewResult> previewOfferForBooking({
-    required String claimedOfferId,
-    required double bookingAmount,
-    String? serviceId,
-    String? category,
-  }) async {
-    return OfferPreviewResult(
-      ok: true,
-      isValid: true,
-      discountAmount: 50,
-      finalAmount: 200,
-      message: 'SAVE50 applied.',
-      claimedOfferId: claimedOfferId,
-      campaignId: 'campaign-1',
-    );
-  }
 
   Future<void> pumpScreen(WidgetTester tester) async {
     await tester.pumpWidget(
@@ -53,8 +35,17 @@ void main() {
           providerName: booking.participants.provider.displayName,
           serviceImageUrl: '',
           bookingRepository: bookingRepository,
-          claimedOffersStream: Stream.value(offers),
-          previewOfferForBooking: previewOfferForBooking,
+          loadAvailableOffers:
+              ({
+                required double bookingAmount,
+                String? serviceId,
+                String? providerId,
+                String? category,
+              }) async => AvailableOffersResult(
+                offerWall: offers.isEmpty ? null : offers.first,
+                popup: null,
+                offers: offers,
+              ),
         ),
       ),
     );
@@ -185,20 +176,15 @@ void main() {
         couponDiscountPaise: 0,
         customerPaidPaise: 25000,
       );
-      offers = [
-        _buildClaimedOffer(
-          id: 'offer-ineligible',
-          couponCode: 'SAVE50',
-          discountValue: 50,
-          minBookingAmount: 400,
-        ),
-      ];
+      offers = const <AvailableOffer>[];
 
       await pumpScreen(tester);
       await tester.pumpAndSettle();
 
-      await tester.scrollUntilVisible(_secondaryButtonFinder('My offers'), 300);
-      await tester.tap(_secondaryButtonFinder('My offers'));
+      final offersButton = _secondaryButtonFinder('Available offers');
+      await tester.scrollUntilVisible(offersButton, 300);
+      await tester.ensureVisible(offersButton);
+      await tester.tap(offersButton, warnIfMissed: false);
       await tester.pumpAndSettle();
 
       expect(
@@ -216,22 +202,22 @@ void main() {
         tester.view.resetPhysicalSize();
         tester.view.resetDevicePixelRatio();
       });
-      const claimedOfferId = 'offer-1';
+      const offerCampaignId = 'offer-1';
       bookingRepository.previewResultsByOfferId[''] = _previewResult(
         serviceSubtotalPaise: 25000,
         couponDiscountPaise: 0,
         customerPaidPaise: 25000,
       );
-      bookingRepository.previewResultsByOfferId[claimedOfferId] =
+      bookingRepository.previewResultsByOfferId[offerCampaignId] =
           _previewResult(
             serviceSubtotalPaise: 25000,
             couponDiscountPaise: 5000,
             customerPaidPaise: 20000,
-            claimedOfferId: claimedOfferId,
+            offerCampaignId: offerCampaignId,
           );
       offers = [
-        _buildClaimedOffer(
-          id: claimedOfferId,
+        _buildAvailableOffer(
+          id: offerCampaignId,
           couponCode: 'SAVE50',
           discountValue: 50,
         ),
@@ -240,8 +226,10 @@ void main() {
       await pumpScreen(tester);
       await tester.pumpAndSettle();
 
-      await tester.scrollUntilVisible(_secondaryButtonFinder('My offers'), 300);
-      await tester.tap(_secondaryButtonFinder('My offers'));
+      final offersButton = _secondaryButtonFinder('Available offers');
+      await tester.scrollUntilVisible(offersButton, 300);
+      await tester.ensureVisible(offersButton);
+      await tester.tap(offersButton, warnIfMissed: false);
       await tester.pumpAndSettle();
 
       expect(find.text('SAVE50'), findsOneWidget);
@@ -249,11 +237,11 @@ void main() {
       await tester.pump();
       await tester.pumpAndSettle();
 
-      expect(bookingRepository.previewRequests, ['', claimedOfferId]);
+      expect(bookingRepository.previewRequests, ['', offerCampaignId]);
       expect(find.text('Offer discount'), findsOneWidget);
       expect(find.text('-₹50.00'), findsOneWidget);
       expect(find.text('₹200.00'), findsWidgets);
-      expect(find.text('My offers'), findsWidgets);
+      expect(find.text('Available offers'), findsWidgets);
       expect(find.text('Remove offer'), findsOneWidget);
     },
   );
@@ -310,9 +298,9 @@ class _FakeBookingRepository extends BookingRepository {
   @override
   Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
     required String bookingId,
-    String? claimedOfferId,
+    String? offerCampaignId,
   }) async {
-    final key = claimedOfferId?.trim() ?? '';
+    final key = offerCampaignId?.trim() ?? '';
     previewRequests.add(key);
     final error = previewErrorByOfferId[key];
     if (error is CanonicalPaymentException) throw error;
@@ -364,6 +352,7 @@ CanonicalBookingDocumentV3 _buildBookingFixture() {
       category: 'Walking',
       bookingType: BookingV3Type.slot,
       timezone: 'Asia/Kolkata',
+      schedulingMode: 'fixedDuration',
       serviceUnitPricePaise: 25000,
       durationMinutes: 60,
       pricePerNightPaise: null,
@@ -524,7 +513,7 @@ CanonicalPaymentPricingPreviewResult _previewResult({
   required int serviceSubtotalPaise,
   required int couponDiscountPaise,
   required int customerPaidPaise,
-  String claimedOfferId = '',
+  String offerCampaignId = '',
   DateTime? payDeadlineAt,
 }) {
   return CanonicalPaymentPricingPreviewResult(
@@ -539,38 +528,32 @@ CanonicalPaymentPricingPreviewResult _previewResult({
     payDeadlineAt:
         payDeadlineAt ??
         DateTime.now().toUtc().add(const Duration(minutes: 30)),
-    claimedOfferId: claimedOfferId,
+    offerCampaignId: offerCampaignId,
     idempotentReplay: false,
   );
 }
 
-ClaimedOffer _buildClaimedOffer({
+AvailableOffer _buildAvailableOffer({
   required String id,
   required String couponCode,
   required double discountValue,
   double? minBookingAmount,
 }) {
-  return ClaimedOffer(
+  return AvailableOffer(
     id: id,
-    offerId: 'campaign-1',
+    title: 'Save on this walk',
+    description: 'A simple coupon for testing.',
     couponCode: couponCode,
+    displayType: OfferDisplayType.offerWall,
+    campaignType: OfferCampaignType.general,
     discountType: OfferDiscountType.flat,
     discountValue: discountValue,
     maxDiscountAmount: 50,
     minBookingAmount: minBookingAmount ?? 0,
-    claimedAt: DateTime.utc(2026, 7, 26, 11),
-    validUntil: DateTime.utc(2026, 8, 1),
-    usageLimit: 1,
-    usedCount: 0,
-    status: ClaimedOfferStatus.claimed,
-    sourceDisplayType: OfferDisplayType.offerWall,
-    campaignSnapshot: const <String, dynamic>{
-      'title': 'Save on this walk',
-      'description': 'A simple coupon for testing.',
-      'serviceIds': <String>['service-1'],
-      'providerIds': <String>['provider-1'],
-      'categoryRestrictions': <String>['Walking'],
-    },
+    usageLimitPerUser: 1,
+    priority: 10,
+    startAt: DateTime.utc(2026, 7, 26, 11),
+    endAt: DateTime.utc(2026, 8, 1),
   );
 }
 

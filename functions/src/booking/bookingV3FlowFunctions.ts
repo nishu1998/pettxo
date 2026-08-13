@@ -32,6 +32,7 @@ import {
 import {emptyParentStatsV3, emptyProviderStatsV3} from "./application/bookingStats";
 import {
   canonicalPaymentOrderMappingRef,
+  buildLegacyCouponRecordFromCampaignSelection,
   createRazorpayPaymentOrderV3 as createRazorpayPaymentOrderApplicationV3,
   persistFinalizePaymentResultV3,
   previewCanonicalPaymentPricingV3,
@@ -84,6 +85,7 @@ import type {
   SlotSegment,
 } from "./domain/slotBooking";
 import {validateSlotBookingSelection} from "./domain/slotBooking";
+import {validateOfferCampaignForBooking} from "../offers/application/validateOfferCampaignForBooking";
 
 type CanonicalBookingRequestResponse = {
   bookingId: string;
@@ -160,7 +162,7 @@ type CanonicalPaymentPricingPreviewResponse = {
   bookingId: string;
   pricingSummary: CanonicalPaymentPricingSummaryResponse;
   payDeadlineAt: string | null;
-  claimedOfferId: string;
+  offerCampaignId: string;
   idempotentReplay: boolean;
 };
 
@@ -879,14 +881,14 @@ function buildPaymentPricingPreviewResponse(params: {
   bookingId: string;
   booking: CanonicalBookingDocumentV3;
   pricingSummary: CanonicalPaymentPricingSummaryResponse;
-  claimedOfferId?: string;
+  offerCampaignId?: string;
   idempotentReplay: boolean;
 }): CanonicalPaymentPricingPreviewResponse {
   return {
     bookingId: params.bookingId,
     pricingSummary: params.pricingSummary,
     payDeadlineAt: params.booking.lifecycle.payDeadlineAt?.toISOString() ?? null,
-    claimedOfferId: params.claimedOfferId?.trim() ?? "",
+    offerCampaignId: params.offerCampaignId?.trim() ?? "",
     idempotentReplay: params.idempotentReplay,
   };
 }
@@ -1067,24 +1069,35 @@ function normalizeError(error: unknown): Error {
   }
 }
 
-async function loadClaimedOffer(
-  uid: string,
-  claimedOfferId: string,
-): Promise<Record<string, unknown> | null> {
-  const safeId = claimedOfferId.trim();
-  if (!safeId) return null;
-  const snapshot = await db
-    .collection("users")
-    .doc(uid)
-    .collection("claimedOffers")
-    .doc(safeId)
-    .get();
-  if (!snapshot.exists) {
-    throw new HttpsError("failed-precondition", "Coupon is no longer available.", {
-      code: "COUPON_INVALID",
+async function loadSelectedCouponForCheckout(params: {
+  uid: string;
+  offerCampaignId: string;
+  booking: CanonicalBookingDocumentV3;
+}): Promise<Record<string, unknown> | null> {
+  const offerCampaignId = params.offerCampaignId.trim();
+  if (!offerCampaignId) {
+    return null;
+  }
+  const serviceSubtotalPaise =
+    params.booking.bookingType === "SLOT" ?
+      (params.booking.schedule as {slots: Array<{unitPricePaise: number}>}).slots.reduce(
+        (sum, slot) => sum + slot.unitPricePaise,
+        0,
+      ) :
+      (params.booking.service.pricePerNightPaise ?? 0) *
+        ((params.booking.schedule as {nights: number}).nights ?? 0);
+  const validation = await validateOfferCampaignForBooking({
+    uid: params.uid,
+    offerCampaignId,
+    booking: params.booking,
+    serviceSubtotalAmount: serviceSubtotalPaise / 100,
+  });
+  if (!validation.ok) {
+    throw new HttpsError("failed-precondition", validation.message, {
+      code: validation.code,
     });
   }
-  return snapshot.data() as Record<string, unknown>;
+  return buildLegacyCouponRecordFromCampaignSelection(validation.selection);
 }
 
 function ensureCanonicalBooking(data: Record<string, unknown> | undefined): CanonicalBookingDocumentV3 {
@@ -1850,7 +1863,7 @@ export const createRazorpayPaymentOrderV3 = onCall({
   const uid = requireUid(request.auth);
   const bookingId = asString(request.data?.bookingId);
   const paymentAttemptId = asString(request.data?.paymentAttemptId);
-  const claimedOfferId = asString(request.data?.claimedOfferId);
+  const offerCampaignId = asString(request.data?.offerCampaignId);
   if (!bookingId) {
     throw new HttpsError("invalid-argument", "bookingId is required.");
   }
@@ -1867,7 +1880,11 @@ export const createRazorpayPaymentOrderV3 = onCall({
     id: bookingId ? authorized.booking.serviceId : "",
   });
   const parent = await buildParentIdentity(uid);
-  const claimedOffer = await loadClaimedOffer(uid, claimedOfferId);
+  const claimedOffer = await loadSelectedCouponForCheckout({
+    uid,
+    offerCampaignId,
+    booking: authorized.booking,
+  });
 
   if (authorized.paymentAttempt &&
     ["ORDER_CREATED", "CHECKOUT_OPENED", "CONFIRMED"].includes(
@@ -2023,7 +2040,7 @@ export const previewBookingPaymentPricingV3 = onCall({
   const authoritativeNow = new Date();
   const uid = requireUid(request.auth);
   const bookingId = asString(request.data?.bookingId);
-  const claimedOfferId = asString(request.data?.claimedOfferId);
+  const offerCampaignId = asString(request.data?.offerCampaignId);
   if (!bookingId) {
     throw new HttpsError("invalid-argument", "bookingId is required.");
   }
@@ -2034,7 +2051,11 @@ export const previewBookingPaymentPricingV3 = onCall({
     command: "create_order",
     now: authoritativeNow,
   });
-  const claimedOffer = await loadClaimedOffer(uid, claimedOfferId);
+  const claimedOffer = await loadSelectedCouponForCheckout({
+    uid,
+    offerCampaignId,
+    booking: authorized.booking,
+  });
   const preview = previewCanonicalPaymentPricingV3({
     bookingId,
     parentId: uid,
@@ -2059,7 +2080,7 @@ export const previewBookingPaymentPricingV3 = onCall({
       providerPayoutPaise: preview.pricing.financialSnapshot.providerPayoutPaise,
       currency: preview.pricing.financialSnapshot.currency,
     },
-    claimedOfferId,
+    offerCampaignId,
     idempotentReplay: false,
   });
 });

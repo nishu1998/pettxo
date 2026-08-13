@@ -216,14 +216,14 @@ class CanonicalPaymentPricingPreviewResult {
   final String bookingId;
   final CanonicalPaymentPricingSummary pricingSummary;
   final DateTime? payDeadlineAt;
-  final String claimedOfferId;
+  final String offerCampaignId;
   final bool idempotentReplay;
 
   const CanonicalPaymentPricingPreviewResult({
     required this.bookingId,
     required this.pricingSummary,
     required this.payDeadlineAt,
-    required this.claimedOfferId,
+    required this.offerCampaignId,
     required this.idempotentReplay,
   });
 
@@ -236,7 +236,9 @@ class CanonicalPaymentPricingPreviewResult {
         _CanonicalPaymentParsing.asMap(data['pricingSummary']),
       ),
       payDeadlineAt: _CanonicalPaymentParsing.readDate(data['payDeadlineAt']),
-      claimedOfferId: _CanonicalPaymentParsing.asString(data['claimedOfferId']),
+      offerCampaignId: _CanonicalPaymentParsing.asString(
+        data['offerCampaignId'],
+      ),
       idempotentReplay: data['idempotentReplay'] == true,
     );
   }

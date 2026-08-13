@@ -1,22 +1,15 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../domain/models/claimed_offer.dart';
+import '../../domain/models/available_offer.dart';
 
-class ClaimedOfferCard extends StatelessWidget {
-  final ClaimedOffer offer;
+class AvailableOfferCard extends StatelessWidget {
+  final AvailableOffer offer;
 
-  const ClaimedOfferCard({super.key, required this.offer});
+  const AvailableOfferCard({super.key, required this.offer});
 
   @override
   Widget build(BuildContext context) {
-    final status = offer.effectiveStatusLabel;
-    final statusColor = switch (status) {
-      'Used' => const Color(0xFF0F766E),
-      'Expired' => const Color(0xFF9A3412),
-      _ => AppColors.primary,
-    };
-
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -42,7 +35,7 @@ class ClaimedOfferCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      offer.title.isEmpty ? 'Offer' : offer.title,
+                      offer.displayTitle,
                       style: const TextStyle(
                         color: AppColors.textDark,
                         fontSize: 18,
@@ -67,13 +60,13 @@ class ClaimedOfferCard extends StatelessWidget {
                   vertical: 7,
                 ),
                 decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.12),
+                  color: AppColors.primary.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(999),
                 ),
-                child: Text(
-                  status,
+                child: const Text(
+                  'Available',
                   style: TextStyle(
-                    color: statusColor,
+                    color: AppColors.primary,
                     fontWeight: FontWeight.w700,
                     fontSize: 12,
                   ),
@@ -103,38 +96,17 @@ class ClaimedOfferCard extends StatelessWidget {
               ),
               _OfferMetaPill(
                 icon: Icons.repeat_rounded,
-                label:
-                    '${offer.remainingUses} use${offer.remainingUses == 1 ? '' : 's'} left',
+                label: offer.usageSummary,
               ),
               _OfferMetaPill(
                 icon: Icons.schedule_rounded,
-                label: offer.validUntil == null
-                    ? 'No expiry'
-                    : _formatDate(offer.validUntil!),
+                label: offer.availabilitySummary,
               ),
             ],
           ),
         ],
       ),
     );
-  }
-
-  String _formatDate(DateTime date) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 }
 

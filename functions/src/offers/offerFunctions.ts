@@ -1,8 +1,7 @@
 export {
   createOfferCampaign,
+  deleteOfferCampaign,
   updateOfferCampaign,
   setOfferCampaignStatus,
-  getEligibleOffers,
-  claimOffer,
-  previewOfferForBooking,
 } from "../legacyFunctions";
+export {getAvailableOffers} from "./callables/getAvailableOffers";
