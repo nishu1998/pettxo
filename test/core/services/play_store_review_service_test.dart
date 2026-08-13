@@ -603,6 +603,10 @@ class _MemoryPlayStoreReviewStateStore implements PlayStoreReviewStateStore {
   Future<PlayStoreReviewState> loadState(String uid) async => stateFor(uid);
 
   @override
+  Future<bool> stateDocumentExists(String uid) async =>
+      _states.containsKey(uid);
+
+  @override
   Future<void> saveState(
     String uid,
     PlayStoreReviewState state, {

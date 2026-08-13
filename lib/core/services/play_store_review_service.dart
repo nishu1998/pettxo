@@ -194,6 +194,8 @@ class FirestorePlayStoreReviewSocialPostCounter
 abstract class PlayStoreReviewStateStore {
   Future<PlayStoreReviewState> loadState(String uid);
 
+  Future<bool> stateDocumentExists(String uid);
+
   Future<void> saveState(
     String uid,
     PlayStoreReviewState state, {
@@ -233,6 +235,12 @@ class FirestorePlayStoreReviewStateStore implements PlayStoreReviewStateStore {
   Future<PlayStoreReviewState> loadState(String uid) async {
     final snapshot = await _stateRef(uid).get();
     return _readState(snapshot.data());
+  }
+
+  @override
+  Future<bool> stateDocumentExists(String uid) async {
+    final snapshot = await _stateRef(uid).get();
+    return snapshot.exists;
   }
 
   @override
@@ -425,6 +433,7 @@ class PlayStoreReviewService with WidgetsBindingObserver {
   String? _currentUid;
   PlayStoreReviewState? _cachedState;
   String? _cachedStateUid;
+  bool? _cachedStateExists;
   Future<PlayStoreReviewState>? _stateLoadFuture;
   Future<void> _stateMutationQueue = Future<void>.value();
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
@@ -894,9 +903,10 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     if (_cachedStateUid == uid && pending != null) {
       return pending;
     }
-    final future = _stateStore.loadState(uid).then((state) {
+    final future = _stateStore.loadState(uid).then((state) async {
       _cachedStateUid = uid;
       _cachedState = state;
+      _cachedStateExists = await _stateStore.stateDocumentExists(uid);
       _stateLoadFuture = null;
       return state;
     });
@@ -949,7 +959,10 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     PlayStoreReviewState state, {
     bool includeServerLastRequestedAt = false,
   }) async {
-    final includeCreatedAt = _cachedStateUid != uid || _cachedState == null;
+    final includeCreatedAt =
+        _cachedStateUid != uid ||
+        _cachedState == null ||
+        _cachedStateExists != true;
     await _stateStore.saveState(
       uid,
       state,
@@ -958,11 +971,13 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     );
     _cachedStateUid = uid;
     _cachedState = state;
+    _cachedStateExists = true;
   }
 
   void _clearCachedState() {
     _cachedState = null;
     _cachedStateUid = null;
+    _cachedStateExists = null;
     _stateLoadFuture = null;
   }
 
