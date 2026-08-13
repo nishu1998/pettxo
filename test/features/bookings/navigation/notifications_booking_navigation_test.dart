@@ -74,4 +74,31 @@ void main() {
       isTrue,
     );
   });
+
+  test('promotional notifications are identified as non-actionable', () {
+    expect(
+      NotificationsScreen.isPromotionalNotification({
+        'category': 'promotion',
+        'type': 'promotionalBroadcast',
+      }),
+      isTrue,
+    );
+    expect(
+      NotificationsScreen.isActionableNotification({
+        'category': 'promotion',
+        'type': 'promotionalBroadcast',
+      }),
+      isFalse,
+    );
+  });
+
+  test('existing booking notifications remain actionable', () {
+    expect(
+      NotificationsScreen.isActionableNotification({
+        'bookingId': 'booking-1',
+        'type': 'payment_required',
+      }),
+      isTrue,
+    );
+  });
 }

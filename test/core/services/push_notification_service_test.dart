@@ -4,6 +4,16 @@ import 'package:pettexo/features/bookings/domain/models/booking_flow_models.dart
 
 void main() {
   group('foreground push intents', () {
+    test('promotional payload resolves to no navigation intent', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'category': 'promotion',
+        'type': 'promotionalBroadcast',
+        'broadcastId': 'promo_broadcast_req_1',
+      }, mode: PushPayloadDeliveryMode.foreground);
+
+      expect(intent.target, PushNavigationTarget.none);
+    });
+
     test('confirmed booking payload resolves to booking intent', () {
       final intent = PushNotificationService.navigationIntentFromPayload({
         'bookingId': 'booking-1',
@@ -71,6 +81,18 @@ void main() {
   });
 
   group('background push tap intents', () {
+    test('promotional background payload remains non-actionable', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'data': {
+          'category': 'promotion',
+          'type': 'promotionalBroadcast',
+          'broadcastId': 'promo_broadcast_req_2',
+        },
+      }, mode: PushPayloadDeliveryMode.backgroundTap);
+
+      expect(intent.target, PushNavigationTarget.none);
+    });
+
     test('canonical request payload resolves to booking intent', () {
       final intent = PushNotificationService.navigationIntentFromPayload({
         'bookingId': 'booking-3',

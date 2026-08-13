@@ -84,3 +84,37 @@ export function buildStoredBookingNotificationDocument(params: {
     source: params.source,
   };
 }
+
+export function buildStoredPromotionalNotificationDocument(params: {
+  recipientUserId: string;
+  broadcastId: string;
+  title: string;
+  body: string;
+  createdAt: unknown;
+  updatedAt: unknown;
+  source: string;
+}): Record<string, unknown> {
+  const channels = normalizeNotificationChannels(["in_app", "push"]);
+  const data = {
+    category: "promotion",
+    type: "promotionalBroadcast",
+    broadcastId: params.broadcastId,
+  };
+
+  return {
+    userId: params.recipientUserId,
+    category: "promotion",
+    type: "promotionalBroadcast",
+    title: params.title,
+    body: params.body,
+    read: false,
+    isRead: false,
+    data,
+    channels,
+    visibleInApp: true,
+    broadcastId: params.broadcastId,
+    createdAt: params.createdAt,
+    updatedAt: params.updatedAt,
+    source: params.source,
+  };
+}

@@ -5,3 +5,6 @@ export {
   sendPushForNotification,
   createSocialNotification,
 } from "../legacyFunctions";
+export {
+  sendAdminPromotionalNotification,
+} from "./promotionalNotificationFunctions";

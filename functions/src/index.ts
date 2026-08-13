@@ -6,6 +6,7 @@ export * from "./profile/profileFunctions";
 export {
   createSocialNotification,
   removeNotificationToken,
+  sendAdminPromotionalNotification,
   sendPushForNotification,
   sendTestPushToSelf,
   syncNotificationToken,

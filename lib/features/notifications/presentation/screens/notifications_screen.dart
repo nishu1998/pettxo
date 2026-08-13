@@ -40,6 +40,21 @@ class NotificationsScreen extends StatelessWidget {
     return NotificationVisibility.isVisibleInApp(data);
   }
 
+  @visibleForTesting
+  static bool isPromotionalNotification(Map<String, dynamic> data) {
+    final nested = data['data'] is Map
+        ? Map<String, dynamic>.from(data['data'] as Map)
+        : const <String, dynamic>{};
+    final category = '${data['category'] ?? nested['category'] ?? ''}'.trim();
+    final type = '${data['type'] ?? nested['type'] ?? ''}'.trim();
+    return category == 'promotion' || type == 'promotionalBroadcast';
+  }
+
+  @visibleForTesting
+  static bool isActionableNotification(Map<String, dynamic> data) {
+    return !isPromotionalNotification(data);
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> _notificationsFor(String uid) {
     // Notifications are backend-created; the client only reads and marks them
     // read so lifecycle messages cannot be spoofed from the app.
@@ -152,8 +167,9 @@ class NotificationsScreen extends StatelessWidget {
                                 .map(
                                   (doc) => _NotificationTile(
                                     doc: doc,
-                                    onTap: () =>
-                                        _openNotification(context, doc),
+                                    onTap: isActionableNotification(doc.data())
+                                        ? () => _openNotification(context, doc)
+                                        : null,
                                   ),
                                 )
                                 .toList(growable: false),
@@ -207,6 +223,9 @@ class NotificationsScreen extends StatelessWidget {
     }
 
     if (!context.mounted) return;
+    if (isPromotionalNotification(data)) {
+      return;
+    }
     final bookingRequest = bookingOpenRequestFromNotificationData(data);
     final bookingId = bookingRequest.bookingId;
     final category = '${data['category'] ?? data['data']?['category'] ?? ''}';
@@ -374,7 +393,7 @@ class _NotificationsHeader extends StatelessWidget {
 
 class _NotificationTile extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   const _NotificationTile({required this.doc, required this.onTap});
 
@@ -393,6 +412,7 @@ class _NotificationTile extends StatelessWidget {
         '${data['senderDisplayName'] ?? data['data']?['senderDisplayName'] ?? ''}';
     final senderPhotoUrl =
         '${data['senderPhotoUrl'] ?? data['data']?['senderPhotoUrl'] ?? ''}';
+    final isActionable = onTap != null;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -413,6 +433,7 @@ class _NotificationTile extends StatelessWidget {
           child: InkWell(
             onTap: onTap,
             borderRadius: BorderRadius.circular(22),
+            canRequestFocus: isActionable,
             child: Container(
               padding: const EdgeInsets.fromLTRB(12, 14, 14, 14),
               decoration: BoxDecoration(
@@ -502,6 +523,9 @@ class _NotificationTile extends StatelessWidget {
     }
     if (category == 'support' || type == 'supportReply') {
       return Icons.support_agent_rounded;
+    }
+    if (category == 'promotion' || type == 'promotionalBroadcast') {
+      return Icons.campaign_rounded;
     }
     if (type.contains('Otp')) return Icons.password_rounded;
     if (type.contains('Accepted')) return Icons.verified_rounded;

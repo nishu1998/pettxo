@@ -47,6 +47,7 @@ class _AndroidChannelSpec {
 enum PushPayloadDeliveryMode { foreground, backgroundTap, initialLaunch }
 
 enum PushNavigationTarget {
+  none,
   booking,
   chat,
   senderProfile,
@@ -55,6 +56,12 @@ enum PushNavigationTarget {
 }
 
 class PushNavigationIntent {
+  const PushNavigationIntent.none()
+    : target = PushNavigationTarget.none,
+      bookingRequest = null,
+      chatId = null,
+      profileUserId = null;
+
   const PushNavigationIntent.booking(this.bookingRequest)
     : target = PushNavigationTarget.booking,
       chatId = null,
@@ -555,12 +562,15 @@ class PushNotificationService {
   }) {
     final nested = _payloadDataMap(data);
     final type = '${data['type'] ?? nested['type'] ?? ''}'.trim();
+    final category = '${data['category'] ?? nested['category'] ?? ''}'.trim();
+    if (category == 'promotion' || type == 'promotionalBroadcast') {
+      return const PushNavigationIntent.none();
+    }
     final bookingRequest = bookingOpenRequestFromPayload(data);
     final chatId = '${data['chatId'] ?? nested['chatId'] ?? ''}'.trim();
     final senderId = '${data['senderId'] ?? nested['senderId'] ?? ''}'.trim();
     final recipientId = '${data['recipientId'] ?? nested['recipientId'] ?? ''}'
         .trim();
-    final category = '${data['category'] ?? nested['category'] ?? ''}'.trim();
 
     if ((type == 'chat' || type == 'chatMessage' || category == 'chat') &&
         chatId.isNotEmpty) {
@@ -599,6 +609,8 @@ class PushNotificationService {
     );
 
     switch (intent.target) {
+      case PushNavigationTarget.none:
+        return;
       case PushNavigationTarget.chat:
         navigator.push(
           MaterialPageRoute(

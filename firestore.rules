@@ -2112,5 +2112,9 @@ service cloud.firestore {
         request.resource.data.updatedAt == request.time;
       allow create, delete: if isAdmin();
     }
+
+    match /notificationBroadcasts/{broadcastId} {
+      allow read, write: if false;
+    }
   }
 }
