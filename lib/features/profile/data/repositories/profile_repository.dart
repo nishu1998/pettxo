@@ -384,19 +384,25 @@ class ProfileRepository {
     return ref.getDownloadURL();
   }
 
-  Future<void> updateCurrentUserProfile({
+  Future<ProfileUpdateResult> updateCurrentUserProfile({
     required String name,
-    required String location,
     required String bio,
+    String? state,
+    String? city,
+    bool updateLocation = true,
     String? role,
     String? profileImageUrl,
   }) async {
-    final normalizedLocationPayload = _buildNormalizedLocationPayload(location);
+    final trimmedName = name.trim();
+    final trimmedBio = bio.trim();
+    final normalizedLocationPayload = updateLocation
+        ? _buildCanonicalLocationPayload(state: state ?? '', city: city ?? '')
+        : const <String, dynamic>{};
     final normalizedRole = role?.trim() ?? '';
     final publicPayload = <String, dynamic>{
-      'displayName': name.trim(),
-      'name': name.trim(),
-      'bio': bio.trim(),
+      'displayName': trimmedName,
+      'name': trimmedName,
+      'bio': trimmedBio,
       'updatedAt': FieldValue.serverTimestamp(),
       ...normalizedLocationPayload,
     };
@@ -410,26 +416,52 @@ class ProfileRepository {
       publicPayload['profileImage'] = profileImageUrl.trim();
     }
 
+    debugPrint('EditProfile save -> profile write starting uid=$_uid');
     await _publicUserDoc(_uid).set(publicPayload, SetOptions(merge: true));
+    debugPrint('EditProfile save -> profile write committed uid=$_uid');
+
+    Object? secondaryFailure;
+    StackTrace? secondaryFailureStackTrace;
     if (normalizedRole.isNotEmpty) {
       try {
+        debugPrint('EditProfile save -> post-sync starting uid=$_uid');
         await _syncCurrentUserRoleAcrossPosts(
           role: normalizedRole,
           profileImageUrl: profileImageUrl?.trim(),
-          displayName: name.trim(),
-          city: (normalizedLocationPayload['city'] as String? ?? '').trim(),
-          state: (normalizedLocationPayload['state'] as String? ?? '').trim(),
+          displayName: trimmedName,
+          city: (city ?? '').trim(),
+          state: (state ?? '').trim(),
         );
+        debugPrint('EditProfile save -> post-sync completed uid=$_uid');
       } on FirebaseException catch (error, stackTrace) {
-        if (error.code != 'permission-denied') {
-          rethrow;
+        if (error.code == 'permission-denied') {
+          debugPrint(
+            'ProfileRepository debug -> skipped social post author snapshot sync for uid=$_uid because Firestore rules denied the write: ${error.message}',
+          );
+          debugPrintStack(stackTrace: stackTrace);
+        } else {
+          secondaryFailure = error;
+          secondaryFailureStackTrace = stackTrace;
+          debugPrint(
+            'EditProfile save -> secondary failure stage=post-sync uid=$_uid plugin=${error.plugin} code=${error.code} message=${error.message ?? ''}',
+          );
+          debugPrintStack(stackTrace: stackTrace);
         }
+      } catch (error, stackTrace) {
+        secondaryFailure = error;
+        secondaryFailureStackTrace = stackTrace;
         debugPrint(
-          'ProfileRepository debug -> skipped social post author snapshot sync for uid=$_uid because Firestore rules denied the write: ${error.message}',
+          'EditProfile save -> secondary failure stage=post-sync uid=$_uid error=$error',
         );
         debugPrintStack(stackTrace: stackTrace);
       }
     }
+
+    return ProfileUpdateResult(
+      authoritativeWriteCommitted: true,
+      secondaryFailure: secondaryFailure,
+      secondaryFailureStackTrace: secondaryFailureStackTrace,
+    );
   }
 
   Future<void> _syncCurrentUserRoleAcrossPosts({
@@ -473,51 +505,40 @@ class ProfileRepository {
     }
   }
 
-  Map<String, dynamic> _buildNormalizedLocationPayload(String location) {
-    final trimmedLocation = location.trim();
-    final parts = trimmedLocation
-        .split(',')
-        .map((part) => part.trim())
-        .where((part) => part.isNotEmpty)
-        .toList(growable: false);
+  Map<String, dynamic> _buildCanonicalLocationPayload({
+    required String state,
+    required String city,
+  }) {
+    final trimmedState = state.trim();
+    final trimmedCity = city.trim();
+    final location = [
+      trimmedCity,
+      trimmedState,
+    ].where((part) => part.isNotEmpty).join(', ');
 
-    final payload = <String, dynamic>{
-      'location': trimmedLocation,
+    return <String, dynamic>{
+      'location': location,
       'address': FieldValue.delete(),
-      'city': FieldValue.delete(),
-      'state': FieldValue.delete(),
+      'city': trimmedCity,
+      'state': trimmedState,
       'country': FieldValue.delete(),
     };
-
-    if (parts.isEmpty) {
-      return payload;
-    }
-
-    if (parts.length == 1) {
-      payload['city'] = parts[0];
-      return payload;
-    }
-
-    if (parts.length == 2) {
-      payload['city'] = parts[0];
-      payload['state'] = parts[1];
-      return payload;
-    }
-
-    if (parts.length == 3) {
-      payload['city'] = parts[0];
-      payload['state'] = parts[1];
-      payload['country'] = parts[2];
-      return payload;
-    }
-
-    payload['address'] = parts.sublist(0, parts.length - 3).join(', ');
-    payload['city'] = parts[parts.length - 3];
-    payload['state'] = parts[parts.length - 2];
-    payload['country'] = parts.last;
-    return payload;
   }
 
   String normalizeUsername(String username) =>
       username_utils.normalizeUsername(username);
+}
+
+class ProfileUpdateResult {
+  const ProfileUpdateResult({
+    required this.authoritativeWriteCommitted,
+    this.secondaryFailure,
+    this.secondaryFailureStackTrace,
+  });
+
+  final bool authoritativeWriteCommitted;
+  final Object? secondaryFailure;
+  final StackTrace? secondaryFailureStackTrace;
+
+  bool get hasSecondaryFailure => secondaryFailure != null;
 }

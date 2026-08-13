@@ -50,4 +50,56 @@ class LocationService {
 
   List<String> getCities(String state) =>
       List.unmodifiable(_stateCityMap[state] ?? const []);
+
+  bool isValidStateCity({required String state, required String city}) {
+    final trimmedState = state.trim();
+    final trimmedCity = city.trim();
+    if (trimmedState.isEmpty || trimmedCity.isEmpty) return false;
+    final cities = _stateCityMap[trimmedState] ?? const <String>[];
+    return cities.contains(trimmedCity);
+  }
+
+  LocationSelection? resolveStoredProfileLocation({
+    required String state,
+    required String city,
+    required String legacyLocation,
+  }) {
+    final trimmedState = state.trim();
+    final trimmedCity = city.trim();
+    if (isValidStateCity(state: trimmedState, city: trimmedCity)) {
+      return LocationSelection(state: trimmedState, city: trimmedCity);
+    }
+
+    final parts = legacyLocation
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+    if (parts.length < 2) return null;
+
+    for (var index = 0; index < parts.length - 1; index++) {
+      final candidateCity = parts[index];
+      final candidateState = parts[index + 1];
+      if (isValidStateCity(state: candidateState, city: candidateCity)) {
+        return LocationSelection(state: candidateState, city: candidateCity);
+      }
+    }
+
+    return null;
+  }
+
+  String formatStateCity({required String state, required String city}) {
+    final trimmedState = state.trim();
+    final trimmedCity = city.trim();
+    if (trimmedState.isEmpty) return trimmedCity;
+    if (trimmedCity.isEmpty) return trimmedState;
+    return '$trimmedCity, $trimmedState';
+  }
+}
+
+class LocationSelection {
+  const LocationSelection({required this.state, required this.city});
+
+  final String state;
+  final String city;
 }

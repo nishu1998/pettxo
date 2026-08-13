@@ -5,11 +5,13 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/image_crop_service.dart';
+import '../../../../core/services/location_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../auth/domain/models/profile_type.dart';
 import '../../../auth/presentation/widgets/profile_type_selector_dialog.dart';
+import '../../../auth/presentation/widgets/searchable_selection_field.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 
@@ -28,17 +30,23 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final ImageCropService _imageCropService = ImageCropService();
 
   final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _locationController = TextEditingController();
   final TextEditingController _bioController = TextEditingController();
 
   bool _isLoading = true;
+  bool _isLocationLoading = true;
   bool _isSaving = false;
   String? _loadError;
   String? _nameError;
-  String? _locationError;
+  String? _stateError;
+  String? _cityError;
   ProfileType _selectedProfileType = ProfileType.petParent;
   File? _selectedImage;
   UserProfile? _initialProfile;
+  List<String> _states = const [];
+  List<String> _cities = const [];
+  String? _selectedState;
+  String? _selectedCity;
+  bool _hasUnmappedLegacyLocation = false;
 
   @override
   void initState() {
@@ -48,20 +56,45 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _loadProfile() async {
     try {
+      await LocationService.instance.load();
       final profile = await _profileRepository.getCurrentUserProfile();
       if (!mounted) return;
 
       _initialProfile = profile;
       _nameController.text = profile.name;
-      _locationController.text = profile.location;
       _bioController.text = profile.bio;
       _selectedProfileType = profileTypeFromStoredValue(profile.role);
+      _states = LocationService.instance.getStates();
 
-      setState(() => _isLoading = false);
-    } catch (_) {
+      final resolvedLocation = LocationService.instance
+          .resolveStoredProfileLocation(
+            state: profile.state,
+            city: profile.city,
+            legacyLocation: profile.legacyLocation,
+          );
+      if (resolvedLocation != null) {
+        _selectedState = resolvedLocation.state;
+        _cities = LocationService.instance.getCities(resolvedLocation.state);
+        _selectedCity = resolvedLocation.city;
+        _hasUnmappedLegacyLocation = false;
+      } else {
+        _selectedState = null;
+        _selectedCity = null;
+        _cities = const [];
+        _hasUnmappedLegacyLocation = profile.location.trim().isNotEmpty;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _isLocationLoading = false;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('EditProfile load -> failed stage=load-profile error=$error');
+      debugPrintStack(stackTrace: stackTrace);
       if (!mounted) return;
       setState(() {
         _isLoading = false;
+        _isLocationLoading = false;
         _loadError = 'We could not load your profile right now.';
       });
       AppFeedback.show(
@@ -108,15 +141,47 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     if (profile == null || _isSaving) return;
 
     final name = _nameController.text.trim();
-    final location = _locationController.text.trim();
     final bio = _bioController.text.trim();
+    final selectedState = (_selectedState ?? '').trim();
+    final selectedCity = (_selectedCity ?? '').trim();
+    final resolvedInitialLocation = LocationService.instance
+        .resolveStoredProfileLocation(
+          state: profile.state,
+          city: profile.city,
+          legacyLocation: profile.legacyLocation,
+        );
+    final hadInitialCanonicalLocation = resolvedInitialLocation != null;
+    final hasSelectedCanonicalLocation =
+        selectedState.isNotEmpty && selectedCity.isNotEmpty;
+    final attemptedCanonicalLocationSelection =
+        selectedState.isNotEmpty || selectedCity.isNotEmpty;
+    final locationChanged = hadInitialCanonicalLocation
+        ? resolvedInitialLocation.state != selectedState ||
+              resolvedInitialLocation.city != selectedCity
+        : attemptedCanonicalLocationSelection;
+    final shouldUpdateLocation =
+        hasSelectedCanonicalLocation &&
+        (!hadInitialCanonicalLocation || locationChanged);
 
     setState(() {
       _nameError = name.isEmpty ? 'Name is required' : null;
-      _locationError = location.isEmpty ? 'Location is required' : null;
+      _stateError = !_hasUnmappedLegacyLocation && selectedState.isEmpty
+          ? 'State is required'
+          : null;
+      _cityError = !_hasUnmappedLegacyLocation && selectedCity.isEmpty
+          ? 'City is required'
+          : null;
     });
 
-    if (_nameError != null || _locationError != null) {
+    if (_nameError != null || _stateError != null || _cityError != null) {
+      return;
+    }
+
+    if (locationChanged && !hasSelectedCanonicalLocation) {
+      setState(() {
+        _stateError = selectedState.isEmpty ? 'State is required' : null;
+        _cityError = selectedCity.isEmpty ? 'City is required' : null;
+      });
       return;
     }
 
@@ -132,20 +197,34 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     setState(() => _isSaving = true);
 
     try {
+      debugPrint('EditProfile save -> validation passed');
       String? uploadedImageUrl;
       if (_selectedImage != null) {
+        debugPrint('EditProfile save -> profile image upload starting');
         uploadedImageUrl = await _profileRepository.uploadProfileImage(
           _selectedImage!,
         );
+        debugPrint('EditProfile save -> profile image upload completed');
       }
 
-      await _profileRepository.updateCurrentUserProfile(
+      final updateResult = await _profileRepository.updateCurrentUserProfile(
         name: name,
-        location: location,
         bio: bio,
+        state: shouldUpdateLocation ? selectedState : profile.state,
+        city: shouldUpdateLocation ? selectedCity : profile.city,
+        updateLocation: shouldUpdateLocation,
         role: _selectedProfileType.storedValue,
         profileImageUrl: uploadedImageUrl,
       );
+      debugPrint('EditProfile save -> profile write committed');
+      if (updateResult.hasSecondaryFailure) {
+        debugPrint(
+          'EditProfile save -> secondary failure preserved after commit error=${updateResult.secondaryFailure}',
+        );
+        if (updateResult.secondaryFailureStackTrace != null) {
+          debugPrintStack(stackTrace: updateResult.secondaryFailureStackTrace!);
+        }
+      }
 
       if (!mounted) return;
       AppFeedback.show(
@@ -154,7 +233,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         tone: AppFeedbackTone.success,
       );
       Navigator.pop(context, true);
-    } catch (error) {
+    } catch (error, stackTrace) {
+      debugPrint(
+        'EditProfile save -> failed stage=authoritative-write error=$error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
       if (!mounted) return;
       setState(() => _isSaving = false);
       AppFeedback.show(
@@ -183,7 +266,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   void dispose() {
     _nameController.dispose();
-    _locationController.dispose();
     _bioController.dispose();
     super.dispose();
   }
@@ -346,15 +428,72 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           },
                         ),
                         const SizedBox(height: 14),
-                        _ProfileTextField(
-                          controller: _locationController,
-                          label: 'Location',
-                          errorText: _locationError,
-                          onChanged: (_) {
-                            if (_locationError == null) return;
-                            setState(() => _locationError = null);
+                        if (_isLocationLoading)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 14),
+                            child: LinearProgressIndicator(minHeight: 2),
+                          ),
+                        SearchableSelectionField(
+                          labelText: 'State',
+                          hintText: 'Select your state',
+                          value: _selectedState,
+                          errorText: _stateError,
+                          options: _states,
+                          enabled: !_isSaving && !_isLocationLoading,
+                          onSelected: (value) {
+                            setState(() {
+                              _selectedState = value;
+                              _cities = LocationService.instance.getCities(
+                                value,
+                              );
+                              if (!_cities.contains(_selectedCity)) {
+                                _selectedCity = null;
+                              }
+                              _stateError = null;
+                              _cityError = null;
+                              _hasUnmappedLegacyLocation = false;
+                            });
                           },
+                          compactLabel: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 16,
+                          ),
                         ),
+                        const SizedBox(height: 14),
+                        SearchableSelectionField(
+                          labelText: 'City',
+                          hintText: _selectedState == null
+                              ? 'Select state first'
+                              : 'Select your city',
+                          value: _selectedCity,
+                          errorText: _cityError,
+                          options: _cities,
+                          enabled:
+                              !_isSaving &&
+                              !_isLocationLoading &&
+                              _selectedState != null,
+                          onSelected: (value) {
+                            setState(() {
+                              _selectedCity = value;
+                              _cityError = null;
+                              _hasUnmappedLegacyLocation = false;
+                            });
+                          },
+                          compactLabel: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 16,
+                          ),
+                        ),
+                        if (_hasUnmappedLegacyLocation) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Your existing location could not be matched to Pettxo’s state/city list. You can keep it as-is, or select a valid state and city to replace it.',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: AppColors.textGrey),
+                          ),
+                        ],
                         const SizedBox(height: 14),
                         _ProfileSelectionField(
                           label: 'Account Type',
