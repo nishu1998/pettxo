@@ -369,6 +369,89 @@ void main() {
       expect(result.booking?.financials?.customerPaidPaise, 340000);
     });
 
+    test(
+      'falls back to normalized service scheduling mode for legacy segments',
+      () {
+        final map = buildCanonicalSlot();
+        final start = DateTime.utc(2026, 7, 29, 3, 30);
+        final end = DateTime.utc(2026, 7, 29, 5);
+        map['service'] = {
+          ...Map<String, dynamic>.from(map['service'] as Map),
+          'durationMinutes': 90,
+          'selectedSlotCount': 1,
+          'totalDurationMinutes': 90,
+          'schedulingMode': '',
+        };
+        map['schedule'] = {
+          'bookingType': 'SLOT',
+          'slots': [
+            {
+              'slotId': '2026-07-29_0540',
+              'dateKey': '2026-07-29',
+              'serviceDateKey': '2026-07-29',
+              'startAt': start,
+              'endAt': end,
+              'durationMinutes': 90,
+              'unitPricePaise': 25000,
+              'serviceId': 'service-1',
+              'providerId': 'provider-1',
+              'timezone': 'Asia/Kolkata',
+              'schedulingMode': '',
+            },
+          ],
+          'segments': [
+            {
+              'serviceDateKey': '2026-07-29',
+              'slotIds': ['2026-07-29_0540'],
+              'startAt': start,
+              'endAt': end,
+              'durationMinutes': 90,
+              'schedulingMode': '',
+            },
+          ],
+          'slotCount': 1,
+          'scheduledStartAt': start,
+          'scheduledEndAt': end,
+          'totalDurationMinutes': 90,
+          'timezone': 'Asia/Kolkata',
+          'serviceAnchorAt': start,
+        };
+        map['statistics']['selectedSlotCount'] = 1;
+        map['statistics']['totalDurationMinutes'] = 90;
+        map['serviceAnchorAt'] = start;
+        map['scheduledStartAt'] = start;
+
+        final result = parseCanonicalBookingDocumentV3(map);
+
+        expect(result.isValid, isTrue);
+        final schedule =
+            result.booking?.schedule as CanonicalSlotBookingScheduleV3;
+        expect(schedule.segments, isNotNull);
+        expect(schedule.segments!.single.schedulingMode, 'fixedDuration');
+      },
+    );
+
+    test('returns validation failure instead of throwing for malformed slot', () {
+      final map = buildCanonicalSlot();
+      final slot =
+          ((map['schedule'] as Map<String, dynamic>)['slots'] as List).first
+              as Map<String, dynamic>;
+      slot['slotId'] = '';
+
+      final result = parseCanonicalBookingDocumentV3(map);
+
+      expect(result.isValid, isFalse);
+      expect(result.booking, isNull);
+      expect(
+        result.issues.any(
+          (issue) =>
+              issue.code == 'MALFORMED_REQUIRED_FIELD' &&
+              issue.path == 'schedule.slots.slotId',
+        ),
+        isTrue,
+      );
+    });
+
     test('rejects invalid schema version', () {
       final result = parseCanonicalBookingDocumentV3(
         buildCanonicalSlot(schemaVersion: 2),
