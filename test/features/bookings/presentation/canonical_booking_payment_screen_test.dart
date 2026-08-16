@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/core/widgets/app_buttons.dart';
-import 'package:pettexo/core/widgets/legal_consent_checkbox.dart';
 import 'package:pettexo/features/bookings/data/repositories/booking_repository.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_document_v3.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_payment_order.dart';
@@ -52,13 +51,18 @@ void main() {
   }
 
   void useTallViewport(WidgetTester tester) {
-    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1;
   }
 
   testWidgets(
     'loads authoritative pricing on open and hides internal allocation rows',
     (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
       bookingRepository.previewResultsByOfferId[''] = _previewResult(
         serviceSubtotalPaise: 25000,
         couponDiscountPaise: 0,
@@ -76,8 +80,10 @@ void main() {
       expect(_textFinder('₹250.00'), findsWidgets);
       expect(_textFinder('Offer discount'), findsOneWidget);
       expect(_textFinder('Time remaining'), findsOneWidget);
+      expect(_textFinder('CHOOSE PAYMENT METHOD'), findsOneWidget);
+      expect(_textFinder('Pay with Razorpay'), findsWidgets);
+      expect(_textFinder('Pay using QR'), findsWidgets);
       expect(find.textContaining('Provider payout'), findsNothing);
-      expect(find.textContaining('Pettxo'), findsNothing);
       expect(find.text('Calculating your total...'), findsNothing);
     },
   );
@@ -113,20 +119,17 @@ void main() {
       await pumpScreen(tester);
       await tester.pumpAndSettle();
 
-      await tester.ensureVisible(
-        find.byType(LegalConsentCheckbox, skipOffstage: false),
-      );
+      final checkbox = find.byType(Checkbox);
+
+      expect(checkbox, findsOneWidget);
+      expect(_gradientButtonFinder('Pay with Razorpay'), findsNothing);
+      expect(_secondaryButtonFinder('Payment unavailable'), findsNWidgets(2));
+
+      await tester.tap(checkbox, warnIfMissed: false);
       await tester.pumpAndSettle();
 
-      expect(find.byType(Checkbox, skipOffstage: false), findsOneWidget);
-      expect(_gradientButtonFinder('Pay ₹250.00'), findsNothing);
-      expect(_secondaryButtonFinder('Pay ₹250.00'), findsOneWidget);
-
-      await tester.tap(find.byType(Checkbox, skipOffstage: false));
-      await tester.pumpAndSettle();
-
-      expect(_gradientButtonFinder('Pay ₹250.00'), findsOneWidget);
-      expect(_secondaryButtonFinder('Pay ₹250.00'), findsNothing);
+      expect(_gradientButtonFinder('Pay with Razorpay'), findsOneWidget);
+      expect(_secondaryButtonFinder('Pay using QR'), findsOneWidget);
     },
   );
 
@@ -150,18 +153,119 @@ void main() {
       await pumpScreen(tester);
       await tester.pumpAndSettle();
 
-      await tester.ensureVisible(
-        find.byType(LegalConsentCheckbox, skipOffstage: false),
+      final checkbox = find.byType(Checkbox);
+      await tester.tap(checkbox, warnIfMissed: false);
+      await tester.pumpAndSettle();
+
+      expect(_gradientButtonFinder('Pay with Razorpay'), findsNothing);
+      expect(
+        _secondaryButtonFinder('Payment window expired'),
+        findsNWidgets(2),
       );
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byType(Checkbox, skipOffstage: false));
-      await tester.pumpAndSettle();
-
-      expect(_gradientButtonFinder('Pay ₹250.00'), findsNothing);
-      expect(_secondaryButtonFinder('Payment window expired'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'payment remains disabled while an earlier captured attempt is awaiting reconciliation',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      final attempt = _attemptResult(
+        state: CanonicalPaymentAttemptState.capturedRequiresReconciliation,
+      );
+      booking = _buildBookingFixture(paymentAttemptId: attempt.paymentAttemptId);
+      bookingRepository.emitBooking(booking);
+      bookingRepository.emitAttempt(attempt);
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      final checkbox = find.byType(Checkbox);
+      await tester.tap(checkbox, warnIfMissed: false);
+      await tester.pumpAndSettle();
+
+      expect(_gradientButtonFinder('Pay with Razorpay'), findsNothing);
+      expect(_secondaryButtonFinder('Payment unavailable'), findsNWidgets(2));
+      expect(
+        find.text('Payment was captured and is awaiting backend reconciliation.'),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
+    'creating QR disables the QR action while the callable is in flight',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+      bookingRepository.pendingQrResult = Completer<CanonicalQrPaymentResult>();
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      final checkbox = find.byType(Checkbox);
+      await tester.tap(checkbox, warnIfMissed: false);
+      await tester.pumpAndSettle();
+
+      final qrButton = _secondaryButtonFinder('Pay using QR');
+      expect(qrButton, findsOneWidget);
+      await tester.tap(qrButton, warnIfMissed: false);
+      await tester.pump();
+
+      expect(bookingRepository.qrRequests, ['']);
+      expect(_secondaryButtonFinder('Pay using QR'), findsNothing);
+      expect(_gradientButtonFinder('Creating QR...'), findsOneWidget);
+      expect(bookingRepository.qrRequests, ['']);
+
+      bookingRepository.pendingQrResult!.complete(_qrResult());
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets('successful QR creation opens the QR payment waiting screen', (
+    tester,
+  ) async {
+    useTallViewport(tester);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    bookingRepository.previewResultsByOfferId[''] = _previewResult(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 25000,
+    );
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(Checkbox), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      _secondaryButtonFinder('Pay using QR'),
+      warnIfMissed: false,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Use another payment method'), findsOneWidget);
+    expect(find.text('Waiting for payment…'), findsWidgets);
+  });
 
   testWidgets(
     'coupon picker shows empty state when no eligible coupons are available',
@@ -250,12 +354,14 @@ void main() {
 Finder _secondaryButtonFinder(String label) {
   return find.byWidgetPredicate(
     (widget) => widget is SecondaryButton && widget.label == label,
+    skipOffstage: false,
   );
 }
 
 Finder _gradientButtonFinder(String label) {
   return find.byWidgetPredicate(
     (widget) => widget is GradientButton && widget.label == label,
+    skipOffstage: false,
   );
 }
 
@@ -268,16 +374,28 @@ Finder _textFinder(String text) {
 
 class _FakeBookingRepository extends BookingRepository {
   BookingReadModel? _booking;
+  CanonicalPaymentAttemptReadModel? _attempt;
+  final StreamController<BookingReadModel?> confirmationController =
+      StreamController<BookingReadModel?>.broadcast();
+  final StreamController<CanonicalPaymentAttemptReadModel?> attemptController =
+      StreamController<CanonicalPaymentAttemptReadModel?>.broadcast();
   final Map<String, CanonicalPaymentPricingPreviewResult>
   previewResultsByOfferId = <String, CanonicalPaymentPricingPreviewResult>{};
   final Map<String, Object> previewErrorByOfferId = <String, Object>{};
   final List<String> previewRequests = <String>[];
+  final List<String> qrRequests = <String>[];
+  Completer<CanonicalQrPaymentResult>? pendingQrResult;
 
   void emitBooking(CanonicalBookingDocumentV3 booking) {
     _booking = CanonicalBookingReadModel(
       documentId: booking.bookingIdForTest,
       booking: booking,
     );
+  }
+
+  void emitAttempt(CanonicalPaymentAttemptReadModel attempt) {
+    _attempt = attempt;
+    attemptController.add(attempt);
   }
 
   @override
@@ -287,13 +405,16 @@ class _FakeBookingRepository extends BookingRepository {
   @override
   Stream<BookingReadModel?> watchCanonicalBookingConfirmation(
     String bookingId,
-  ) => const Stream<BookingReadModel?>.empty();
+  ) => confirmationController.stream;
 
   @override
   Stream<CanonicalPaymentAttemptReadModel?> watchPaymentAttempt({
     required String bookingId,
     required String paymentAttemptId,
-  }) => const Stream<CanonicalPaymentAttemptReadModel?>.empty();
+  }) async* {
+    yield _attempt;
+    yield* attemptController.stream;
+  }
 
   @override
   Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
@@ -311,9 +432,57 @@ class _FakeBookingRepository extends BookingRepository {
     }
     return result;
   }
+
+  @override
+  Future<CanonicalQrPaymentResult> createQrPaymentV3({
+    required String bookingId,
+    String? offerCampaignId,
+  }) {
+    qrRequests.add(offerCampaignId?.trim() ?? '');
+    final completer = pendingQrResult;
+    if (completer != null) {
+      return completer.future;
+    }
+    return Future<CanonicalQrPaymentResult>.value(_qrResult());
+  }
 }
 
-CanonicalBookingDocumentV3 _buildBookingFixture() {
+CanonicalPaymentAttemptReadModel _attemptResult({
+  required CanonicalPaymentAttemptState state,
+}) {
+  return CanonicalPaymentAttemptReadModel(
+    bookingId: 'booking-1',
+    paymentAttemptId: 'attempt-1',
+    state: state,
+    amountPaise: 25000,
+    currency: 'INR',
+    razorpayOrderId: 'order-1',
+    razorpayPaymentId: 'pay-1',
+    failureCode: '',
+    failureMessage: '',
+    retryCount: 0,
+    orderExpiresAt: DateTime.now().toUtc().add(const Duration(minutes: 20)),
+    orderCreatedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 2)),
+    checkoutOpenedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
+    captureReportedAt: DateTime.now().toUtc().subtract(const Duration(seconds: 30)),
+    confirmedAt: null,
+    failedAt: null,
+    refundRequiredAt: null,
+    refundedAt: null,
+    lastReconciledAt: DateTime.now().toUtc().subtract(const Duration(seconds: 10)),
+    pricingSummary: const CanonicalPaymentPricingSummary(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 25000,
+      providerPayoutPaise: 20000,
+      currency: 'INR',
+    ),
+  );
+}
+
+CanonicalBookingDocumentV3 _buildBookingFixture({
+  String paymentAttemptId = '',
+}) {
   final base = DateTime.now().toUtc().add(const Duration(hours: 2));
   final scheduledStartAt = base.add(const Duration(days: 1));
   final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
@@ -410,12 +579,12 @@ CanonicalBookingDocumentV3 _buildBookingFixture() {
       finalizedAt: null,
       cancelledAt: null,
     ),
-    payment: const CanonicalBookingPaymentV3(
+    payment: CanonicalBookingPaymentV3(
       status: 'awaiting_customer_payment',
       razorpayOrderId: '',
       razorpayPaymentId: '',
       razorpayRefundId: '',
-      paymentAttemptId: '',
+      paymentAttemptId: paymentAttemptId,
       orderCreatedAt: null,
       paymentStartedAt: null,
       capturedAt: null,
@@ -531,6 +700,30 @@ CanonicalPaymentPricingPreviewResult _previewResult({
     offerCampaignId: offerCampaignId,
     idempotentReplay: false,
   );
+}
+
+CanonicalQrPaymentResult _qrResult({String mode = 'qr'}) {
+  return CanonicalQrPaymentResult.fromMap({
+    'bookingId': 'booking-1',
+    'paymentAttemptId': 'attempt-1',
+    'mode': mode,
+    'qrCodeId': 'qr-1',
+    'imageUrl': 'https://example.com/qr.png',
+    'amountPaise': 25000,
+    'currency': 'INR',
+    'expiresAt': DateTime.now()
+        .toUtc()
+        .add(const Duration(minutes: 10))
+        .toIso8601String(),
+    'pricingSummary': {
+      'serviceSubtotalPaise': 25000,
+      'couponDiscountPaise': 0,
+      'customerPaidPaise': 25000,
+      'providerPayoutPaise': 20000,
+      'currency': 'INR',
+    },
+    'idempotentReplay': false,
+  });
 }
 
 AvailableOffer _buildAvailableOffer({

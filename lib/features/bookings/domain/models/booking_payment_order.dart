@@ -212,6 +212,72 @@ class CanonicalPaymentOrderResult {
   }
 }
 
+enum CanonicalQrPaymentMode { qr, zeroPayable }
+
+class CanonicalQrPaymentResult {
+  final String bookingId;
+  final String paymentAttemptId;
+  final CanonicalQrPaymentMode mode;
+  final String qrCodeId;
+  final String imageUrl;
+  final int amountPaise;
+  final String currency;
+  final CanonicalPaymentPricingSummary pricingSummary;
+  final DateTime? expiresAt;
+  final String state;
+  final DateTime? confirmedAt;
+  final bool idempotentReplay;
+
+  const CanonicalQrPaymentResult({
+    required this.bookingId,
+    required this.paymentAttemptId,
+    required this.mode,
+    required this.qrCodeId,
+    required this.imageUrl,
+    required this.amountPaise,
+    required this.currency,
+    required this.pricingSummary,
+    required this.expiresAt,
+    required this.state,
+    required this.confirmedAt,
+    required this.idempotentReplay,
+  });
+
+  bool get isQrMode => mode == CanonicalQrPaymentMode.qr;
+
+  bool get isZeroPayable => mode == CanonicalQrPaymentMode.zeroPayable;
+
+  factory CanonicalQrPaymentResult.fromMap(Map<String, dynamic> data) {
+    final pricingSummary = CanonicalPaymentPricingSummary.fromMap(
+      _CanonicalPaymentParsing.asMap(data['pricingSummary']),
+    );
+    final modeValue = _CanonicalPaymentParsing.asString(data['mode']);
+    final mode = modeValue == 'zero_payable'
+        ? CanonicalQrPaymentMode.zeroPayable
+        : CanonicalQrPaymentMode.qr;
+    return CanonicalQrPaymentResult(
+      bookingId: _CanonicalPaymentParsing.asString(data['bookingId']),
+      paymentAttemptId: _CanonicalPaymentParsing.asString(
+        data['paymentAttemptId'],
+      ),
+      mode: mode,
+      qrCodeId: _CanonicalPaymentParsing.asString(data['qrCodeId']),
+      imageUrl: _CanonicalPaymentParsing.asString(data['imageUrl']),
+      amountPaise: _CanonicalPaymentParsing.asInt(data['amountPaise']) > 0
+          ? _CanonicalPaymentParsing.asInt(data['amountPaise'])
+          : pricingSummary.customerPaidPaise,
+      currency: _CanonicalPaymentParsing.asString(data['currency']).isEmpty
+          ? pricingSummary.currency
+          : _CanonicalPaymentParsing.asString(data['currency']),
+      pricingSummary: pricingSummary,
+      expiresAt: _CanonicalPaymentParsing.readDate(data['expiresAt']),
+      state: _CanonicalPaymentParsing.asString(data['state']),
+      confirmedAt: _CanonicalPaymentParsing.readDate(data['confirmedAt']),
+      idempotentReplay: data['idempotentReplay'] == true,
+    );
+  }
+}
+
 class CanonicalPaymentPricingPreviewResult {
   final String bookingId;
   final CanonicalPaymentPricingSummary pricingSummary;

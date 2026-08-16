@@ -3,13 +3,14 @@ import 'dart:ui';
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
-import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/domain/models/available_offer.dart';
@@ -22,6 +23,7 @@ import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../utils/canonical_booking_schedule_presentation.dart';
 import 'booking_confirmation_screen.dart';
+import 'canonical_booking_qr_payment_screen.dart';
 import '../widgets/booking_deadline_countdown.dart';
 
 class CanonicalBookingPaymentScreen extends StatefulWidget {
@@ -67,6 +69,7 @@ class _CanonicalBookingPaymentScreenState
   CanonicalPaymentAttemptReadModel? _latestAttempt;
   CanonicalPaymentPricingPreviewResult? _pricingPreview;
   bool _isPreparingOrder = false;
+  bool _isPreparingQr = false;
   bool _isCheckoutOpen = false;
   bool _isObservingConfirmation = false;
   bool _hasNavigatedToConfirmation = false;
@@ -89,6 +92,14 @@ class _CanonicalBookingPaymentScreenState
       widget.razorpayCheckoutService ?? RazorpayCheckoutService();
 
   OfferService get _offerService => widget.offerService ?? OfferService();
+
+  bool _canResumeExistingCheckoutAttempt(
+    CanonicalPaymentAttemptReadModel? attempt,
+  ) {
+    if (attempt == null) return false;
+    return attempt.state == CanonicalPaymentAttemptState.orderCreated ||
+        attempt.state == CanonicalPaymentAttemptState.checkoutOpened;
+  }
 
   @override
   void initState() {
@@ -184,24 +195,16 @@ class _CanonicalBookingPaymentScreenState
               !isExpired &&
               hasValidPricing &&
               !_isPreparingOrder &&
+              !_isPreparingQr &&
               !_isCheckoutOpen &&
               !_isObservingConfirmation &&
               (_latestAttempt == null ||
-                  _latestAttempt!.canRetryWithSameAttempt ||
+                  _canResumeExistingCheckoutAttempt(_latestAttempt) ||
                   _latestAttempt!.state ==
-                      CanonicalPaymentAttemptState.notStarted ||
-                  _latestAttempt!.state ==
-                      CanonicalPaymentAttemptState.unknown);
+                      CanonicalPaymentAttemptState.notStarted);
           final payableBooking = canPay ? booking : null;
           final canSubmitPayment =
               payableBooking != null && _hasAcceptedCancellationPolicy;
-          final paymentCtaLabel = payableBooking != null
-              ? _primaryButtonLabel(_latestAttempt, pricingSummary)
-              : _secondaryButtonLabel(booking, isExpired);
-          final amountLabel = pricingSummary == null
-              ? 'Loading total'
-              : _formatMoney(pricingSummary.customerPaidPaise);
-
           return SafeArea(
             child: Stack(
               children: [
@@ -277,6 +280,56 @@ class _CanonicalBookingPaymentScreenState
                             ),
                     ),
                     const SizedBox(height: 16),
+                    const _SectionLabel('Choose payment method'),
+                    const SizedBox(height: 10),
+                    _PaymentMethodCard(
+                      title: 'Pay with Razorpay',
+                      subtitle: 'UPI Apps • Cards • Netbanking • Wallets',
+                      action: _isPreparingOrder
+                          ? const SizedBox(
+                              width: double.infinity,
+                              child: GradientButton(
+                                label: 'Preparing secure payment...',
+                                onPressed: null,
+                                isLoading: true,
+                              ),
+                            )
+                          : canSubmitPayment
+                          ? GradientButton(
+                              label: _checkoutButtonLabel(pricingSummary),
+                              onPressed: () =>
+                                  _startCheckoutPaymentFlow(payableBooking),
+                            )
+                          : SecondaryButton(
+                              label: _secondaryButtonLabel(booking, isExpired),
+                              onPressed: null,
+                            ),
+                    ),
+                    const SizedBox(height: 12),
+                    _PaymentMethodCard(
+                      title: 'Pay using QR',
+                      subtitle: 'Scan using another phone or any UPI app',
+                      action: _isPreparingQr
+                          ? const SizedBox(
+                              width: double.infinity,
+                              child: GradientButton(
+                                label: 'Creating QR...',
+                                onPressed: null,
+                                isLoading: true,
+                              ),
+                            )
+                          : canSubmitPayment
+                          ? SecondaryButton(
+                              label: _qrButtonLabel(pricingSummary),
+                              onPressed: () =>
+                                  _startQrPaymentFlow(payableBooking),
+                            )
+                          : SecondaryButton(
+                              label: _secondaryButtonLabel(booking, isExpired),
+                              onPressed: null,
+                            ),
+                    ),
+                    const SizedBox(height: 16),
                     const _SectionLabel('Cancellation'),
                     const SizedBox(height: 10),
                     _CancellationPolicyCard(
@@ -328,19 +381,6 @@ class _CanonicalBookingPaymentScreenState
                     ],
                   ],
                 ),
-                Positioned(
-                  left: 18,
-                  right: 18,
-                  bottom: 18,
-                  child: _FloatingPaymentBar(
-                    amountLabel: amountLabel,
-                    buttonLabel: paymentCtaLabel,
-                    isEnabled: canSubmitPayment,
-                    onPressed: payableBooking == null || !canSubmitPayment
-                        ? null
-                        : () => _startPaymentFlow(payableBooking),
-                  ),
-                ),
               ],
             ),
           );
@@ -366,8 +406,13 @@ class _CanonicalBookingPaymentScreenState
     return null;
   }
 
-  Future<void> _startPaymentFlow(CanonicalBookingDocumentV3 booking) async {
-    if (_isPreparingOrder || _isCheckoutOpen || _isObservingConfirmation) {
+  Future<void> _startCheckoutPaymentFlow(
+    CanonicalBookingDocumentV3 booking,
+  ) async {
+    if (_isPreparingOrder ||
+        _isPreparingQr ||
+        _isCheckoutOpen ||
+        _isObservingConfirmation) {
       return;
     }
     if (booking.lifecycle.payDeadlineAt != null &&
@@ -519,6 +564,130 @@ class _CanonicalBookingPaymentScreenState
           _isPreparingOrder = false;
           _isCheckoutOpen = false;
         });
+      }
+    }
+  }
+
+  Future<void> _startQrPaymentFlow(CanonicalBookingDocumentV3 booking) async {
+    if (_isPreparingOrder ||
+        _isPreparingQr ||
+        _isCheckoutOpen ||
+        _isObservingConfirmation) {
+      return;
+    }
+    final authUser = Firebase.apps.isNotEmpty
+        ? FirebaseAuth.instance.currentUser
+        : null;
+    if (kDebugMode) {
+      debugPrint(
+        '[BookingQrPayment] tap bookingId=${widget.bookingId} firebaseInitialized=${Firebase.apps.isNotEmpty} currentUserPresent=${authUser != null} currentUserId=${authUser?.uid ?? ''} paymentState=${booking.state.name} payablePaise=${_pricingPreview?.pricingSummary.customerPaidPaise ?? 0}',
+      );
+      debugPrint(
+        '[BookingQrPayment] auth_check bookingId=${widget.bookingId} firebaseAuthCurrentUserPresent=${authUser != null} uidMatchBookingCustomer=${authUser?.uid.trim() == booking.customerId.trim()}',
+      );
+    }
+    if (booking.lifecycle.payDeadlineAt != null &&
+        !booking.lifecycle.payDeadlineAt!.isAfter(DateTime.now())) {
+      AppFeedback.show(
+        context,
+        message: 'The payment window has expired.',
+        tone: AppFeedbackTone.warning,
+      );
+      return;
+    }
+
+    setState(() => _isPreparingQr = true);
+    AppLoader.showWithMessage('Creating secure QR...');
+
+    try {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingQrPayment] callable_start callable=createBookingQrPaymentV3 bookingId=${widget.bookingId}',
+        );
+      }
+      final qrResult = await _bookingRepository.createQrPaymentV3(
+        bookingId: widget.bookingId,
+        offerCampaignId: _selectedOfferCampaignId.isEmpty
+            ? null
+            : _selectedOfferCampaignId,
+      );
+      _pricingPreview = CanonicalPaymentPricingPreviewResult(
+        bookingId: qrResult.bookingId,
+        pricingSummary: qrResult.pricingSummary,
+        payDeadlineAt: qrResult.expiresAt ?? booking.lifecycle.payDeadlineAt,
+        offerCampaignId: _selectedOfferCampaignId,
+        idempotentReplay: qrResult.idempotentReplay,
+      );
+      _bindAttemptStream(qrResult.paymentAttemptId);
+      AppLoader.hide();
+      if (!mounted) return;
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingQrPayment] callable_success bookingId=${widget.bookingId} qrIdPresent=${qrResult.qrCodeId.trim().isNotEmpty} status=${qrResult.state}',
+        );
+      }
+
+      if (qrResult.isZeroPayable) {
+        setState(() => _isObservingConfirmation = true);
+        AppFeedback.show(
+          context,
+          message: 'No payment is required. Confirming your booking now...',
+          tone: AppFeedbackTone.info,
+        );
+        return;
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CanonicalBookingQrPaymentScreen(
+            bookingId: widget.bookingId,
+            qrPayment: qrResult,
+            bookingRepository: _bookingRepository,
+          ),
+        ),
+      );
+    } on CanonicalPaymentException catch (error) {
+      AppLoader.hide();
+      if (!mounted) return;
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingQrPayment] callable_failed bookingId=${widget.bookingId} failureCode=${error.code.name} safeMessage=${error.message}',
+        );
+      }
+      if (error.code == CanonicalPaymentFailureCode.couponInvalid ||
+          error.code == CanonicalPaymentFailureCode.pricingChanged) {
+        _handlePricingInvalidation(booking, error);
+        return;
+      }
+      final message = switch (error.code) {
+        CanonicalPaymentFailureCode.paymentReconciliationRequired =>
+          'We\'re verifying your payment. Please don\'t make another payment for this booking.',
+        _ => error.message,
+      };
+      AppFeedback.show(
+        context,
+        message: message,
+        tone: error.code == CanonicalPaymentFailureCode.paymentWindowExpired
+            ? AppFeedbackTone.warning
+            : AppFeedbackTone.error,
+      );
+    } catch (_) {
+      AppLoader.hide();
+      if (!mounted) return;
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingQrPayment] unknown_failure bookingId=${widget.bookingId}',
+        );
+      }
+      AppFeedback.show(
+        context,
+        message: 'We could not create a QR payment right now.',
+        tone: AppFeedbackTone.error,
+      );
+    } finally {
+      AppLoader.hide();
+      if (mounted) {
+        setState(() => _isPreparingQr = false);
       }
     }
   }
@@ -830,20 +999,18 @@ class _CanonicalBookingPaymentScreenState
     }
   }
 
-  String _primaryButtonLabel(
-    CanonicalPaymentAttemptReadModel? attempt,
-    CanonicalPaymentPricingSummary? pricingSummary,
-  ) {
-    if (_isPreparingOrder) return 'Preparing secure payment...';
+  String _checkoutButtonLabel(CanonicalPaymentPricingSummary? pricingSummary) {
     if (_isCheckoutOpen) return 'Opening checkout...';
     if (_isObservingConfirmation) return 'Awaiting confirmation...';
-    if (attempt != null && attempt.canRetryWithSameAttempt) {
-      return 'Resume payment';
+    if (_canResumeExistingCheckoutAttempt(_latestAttempt)) {
+      return 'Resume Razorpay checkout';
     }
-    if (pricingSummary != null) {
-      return 'Pay ${_formatMoney(pricingSummary.customerPaidPaise)}';
-    }
-    return 'Pay now';
+    return 'Pay with Razorpay';
+  }
+
+  String _qrButtonLabel(CanonicalPaymentPricingSummary? pricingSummary) {
+    if (_isObservingConfirmation) return 'Awaiting confirmation...';
+    return 'Pay using QR';
   }
 
   String _secondaryButtonLabel(
@@ -1050,11 +1217,6 @@ class _CanonicalBookingPaymentScreenState
     }
   }
 
-  String _formatMoney(int paise) {
-    final rupees = paise / 100;
-    return '₹${rupees.toStringAsFixed(2)}';
-  }
-
   String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {
     return buildCanonicalBookingSchedulePresentation(booking).dateLabel;
   }
@@ -1077,9 +1239,11 @@ class _CanonicalBookingPaymentScreenState
     required String offerCampaignId,
     String extra = '',
   }) {
-    debugPrint(
-      '[CanonicalPaymentScreen] preview_$event bookingId=${widget.bookingId} state=${booking.state.name} hasCoupon=${offerCampaignId.isNotEmpty} $extra',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        '[CanonicalPaymentScreen] preview_$event bookingId=${widget.bookingId} state=${booking.state.name} hasCoupon=${offerCampaignId.isNotEmpty} $extra',
+      );
+    }
   }
 }
 
@@ -1816,6 +1980,53 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
+class _PaymentMethodCard extends StatelessWidget {
+  const _PaymentMethodCard({
+    required this.title,
+    required this.subtitle,
+    required this.action,
+  });
+
+  final String title;
+  final String subtitle;
+  final Widget action;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.textDark,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              height: 1.45,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 16),
+          action,
+        ],
+      ),
+    );
+  }
+}
+
 class _CancellationPolicyCard extends StatelessWidget {
   const _CancellationPolicyCard({required this.onOpenCancellationPolicy});
 
@@ -1886,69 +2097,6 @@ class _CancellationPolicyCard extends StatelessWidget {
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _FloatingPaymentBar extends StatelessWidget {
-  const _FloatingPaymentBar({
-    required this.amountLabel,
-    required this.buttonLabel,
-    required this.isEnabled,
-    required this.onPressed,
-  });
-
-  final String amountLabel;
-  final String buttonLabel;
-  final bool isEnabled;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return GlassSurface(
-      borderRadius: BorderRadius.circular(24),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      backgroundColor: Colors.white.withValues(alpha: 0.92),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Amount payable',
-                  style: TextStyle(
-                    color: AppColors.textGrey,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              Text(
-                amountLabel,
-                style: const TextStyle(
-                  color: AppColors.textDark,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (isEnabled)
-            GradientButton(
-              label: buttonLabel,
-              onPressed: onPressed,
-              size: AppButtonSize.compact,
-            )
-          else
-            SecondaryButton(
-              label: buttonLabel,
-              onPressed: null,
-              size: AppButtonSize.compact,
-            ),
         ],
       ),
     );

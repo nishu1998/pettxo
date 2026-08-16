@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
@@ -36,6 +38,193 @@ class CanonicalPrivateDataLoadException implements Exception {
   final String collection;
   final String bookingId;
   final Object? cause;
+}
+
+@visibleForTesting
+Future<T> runCanonicalPaymentCallableWithAuthRecovery<T>({
+  required String operationName,
+  required Future<T> Function() invoke,
+  User? Function()? currentUserProvider,
+  Future<void> Function(User user)? refreshToken,
+  void Function(String message)? debugLogger,
+}) async {
+  final logger =
+      debugLogger ??
+      (String message) {
+        if (kDebugMode) {
+          debugPrint(message);
+        }
+      };
+  final loadCurrentUser =
+      currentUserProvider ??
+      () => Firebase.apps.isNotEmpty ? FirebaseAuth.instance.currentUser : null;
+  final refreshCurrentToken =
+      refreshToken ?? (User user) => user.getIdToken(true).then((_) {});
+
+  try {
+    return await invoke();
+  } on FirebaseFunctionsException catch (error) {
+    final currentUser = loadCurrentUser();
+    final hasCurrentUser = currentUser != null;
+    logger(
+      '[CanonicalPaymentCallable] failure operation=$operationName code=${error.code} hasCurrentUser=$hasCurrentUser uid=${currentUser?.uid ?? ''}',
+    );
+    if (error.code != 'unauthenticated' || currentUser == null) {
+      rethrow;
+    }
+
+    logger(
+      '[CanonicalPaymentCallable] retry_after_unauthenticated operation=$operationName uid=${currentUser.uid}',
+    );
+    try {
+      await refreshCurrentToken(currentUser);
+      logger(
+        '[CanonicalPaymentCallable] token_refresh_succeeded operation=$operationName uid=${currentUser.uid}',
+      );
+    } catch (refreshError) {
+      logger(
+        '[CanonicalPaymentCallable] token_refresh_failed operation=$operationName uid=${currentUser.uid} errorType=${refreshError.runtimeType}',
+      );
+    }
+
+    try {
+      return await invoke();
+    } on FirebaseFunctionsException catch (retryError) {
+      logger(
+        '[CanonicalPaymentCallable] retry_failed operation=$operationName code=${retryError.code} uid=${currentUser.uid}',
+      );
+      rethrow;
+    }
+  }
+}
+
+@visibleForTesting
+CanonicalBookingRequestException mapCanonicalBookingRequestFunctionsException(
+  FirebaseFunctionsException error,
+) {
+  final details = error.details;
+  Map<String, dynamic> detailMap = const <String, dynamic>{};
+  if (details is Map) {
+    detailMap = Map<String, dynamic>.from(details.cast<dynamic, dynamic>());
+  }
+  final detailCode = (detailMap['code'] as String? ?? '').trim().toUpperCase();
+  final issuesRaw = detailMap['issues'];
+  final issues = issuesRaw is List
+      ? issuesRaw.map((entry) => '$entry').toList(growable: false)
+      : const <String>[];
+
+  CanonicalBookingRequestFailureCode code;
+  switch (detailCode) {
+    case 'CANONICAL_BOOKING_DISABLED':
+      code = CanonicalBookingRequestFailureCode.canonicalBookingDisabled;
+      break;
+    case 'SERVICE_NOT_FOUND':
+      code = CanonicalBookingRequestFailureCode.serviceNotFound;
+      break;
+    case 'SERVICE_INACTIVE':
+      code = CanonicalBookingRequestFailureCode.serviceInactive;
+      break;
+    case 'SERVICE_PAUSED':
+      code = CanonicalBookingRequestFailureCode.servicePaused;
+      break;
+    case 'PROVIDER_PAUSED':
+    case 'PROVIDER_UNAVAILABLE':
+      code = CanonicalBookingRequestFailureCode.providerUnavailable;
+      break;
+    case 'INVALID_BOOKING_TYPE':
+      code = CanonicalBookingRequestFailureCode.invalidBookingType;
+      break;
+    case 'INVALID_SCHEDULE':
+    case 'INVALID_SLOT_SELECTION':
+    case 'INVALID_RANGE':
+    case 'INVALID_NIGHTS':
+    case 'INVALID_SLOT_RANGE':
+    case 'INVALID_SLOT_COUNT':
+    case 'INVALID_TOTAL_DURATION':
+    case 'DUPLICATE_SLOT_SELECTION':
+    case 'NON_CONTIGUOUS_DAILY_SLOTS':
+    case 'NON_CONSECUTIVE_SERVICE_DATES':
+    case 'TOO_MANY_SERVICE_DAYS':
+    case 'OVERLAPPING_BOOKING_SEGMENTS':
+    case 'MIXED_SERVICE_SLOT_SELECTION':
+    case 'MIXED_SCHEDULING_MODE':
+    case 'NON_CONTIGUOUS':
+    case 'OVERLAPPING':
+      code = CanonicalBookingRequestFailureCode.invalidSchedule;
+      break;
+    case 'RUNWAY_NOT_SATISFIED':
+      code = CanonicalBookingRequestFailureCode.runwayNotSatisfied;
+      break;
+    case 'INVALID_TIMEZONE':
+    case 'INVALID_WORKING_HOURS':
+      code = CanonicalBookingRequestFailureCode.invalidTimezone;
+      break;
+    case 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD':
+      code = CanonicalBookingRequestFailureCode.idempotencyConflict;
+      break;
+    default:
+      switch (error.code) {
+        case 'unauthenticated':
+          code = CanonicalBookingRequestFailureCode.unauthenticated;
+          break;
+        case 'permission-denied':
+          code = CanonicalBookingRequestFailureCode.permissionDenied;
+          break;
+        case 'not-found':
+          code = CanonicalBookingRequestFailureCode.serviceNotFound;
+          break;
+        default:
+          code = CanonicalBookingRequestFailureCode.unknown;
+          break;
+      }
+      break;
+  }
+
+  return CanonicalBookingRequestException(
+    code: code,
+    message: canonicalBookingRequestMessage(code, error.message),
+    issues: issues,
+  );
+}
+
+@visibleForTesting
+String canonicalBookingRequestMessage(
+  CanonicalBookingRequestFailureCode code,
+  String? fallback,
+) {
+  switch (code) {
+    case CanonicalBookingRequestFailureCode.canonicalBookingDisabled:
+      return 'This request flow is not available right now.';
+    case CanonicalBookingRequestFailureCode.unauthenticated:
+      return 'Please sign in again before sending your request.';
+    case CanonicalBookingRequestFailureCode.serviceNotFound:
+      return 'This service is no longer available.';
+    case CanonicalBookingRequestFailureCode.serviceInactive:
+      return 'This service is not active right now.';
+    case CanonicalBookingRequestFailureCode.servicePaused:
+      return 'This service is temporarily paused.';
+    case CanonicalBookingRequestFailureCode.providerUnavailable:
+      return 'This provider is temporarily unavailable.';
+    case CanonicalBookingRequestFailureCode.invalidBookingType:
+      return 'This booking type is not available right now.';
+    case CanonicalBookingRequestFailureCode.invalidSchedule:
+      return 'Please review your selected schedule and try again.';
+    case CanonicalBookingRequestFailureCode.runwayNotSatisfied:
+      return 'This schedule is too soon for the required booking window.';
+    case CanonicalBookingRequestFailureCode.invalidTimezone:
+      return 'We could not verify the provider schedule right now.';
+    case CanonicalBookingRequestFailureCode.idempotencyConflict:
+      return 'Your request changed while we were submitting it. Please review and try again.';
+    case CanonicalBookingRequestFailureCode.permissionDenied:
+      return 'You do not have permission to send this request.';
+    case CanonicalBookingRequestFailureCode.unknown:
+      final normalizedFallback = fallback?.trim() ?? '';
+      if (normalizedFallback.isEmpty ||
+          normalizedFallback.toLowerCase() == 'internal') {
+        return 'We could not send your request right now.';
+      }
+      return normalizedFallback;
+  }
 }
 
 class BookingRepository {
@@ -204,23 +393,56 @@ class BookingRepository {
   Future<CanonicalBookingRequestResult> createBookingRequestV3({
     required CanonicalBookingRequestInput input,
   }) async {
+    const callableName = 'createBookingRequestV3';
+    final safeServiceId = input.serviceId.trim();
+    final safeProviderId = input.slotRequest?.selection.slots.isNotEmpty == true
+        ? input.slotRequest!.selection.slots.first.providerId
+        : '';
+    if (kDebugMode) {
+      debugPrint(
+        '[BookingCreateV3] start callable=$callableName serviceId=$safeServiceId providerId=$safeProviderId bookingType=${input.bookingType.name}',
+      );
+    }
     final callable = _functions.httpsCallable('createBookingRequestV3');
     try {
       final result = await callable.call<Map<String, dynamic>>(
         input.toCallableMap(),
       );
-      return CanonicalBookingRequestResult.fromMap(
+      final bookingResult = CanonicalBookingRequestResult.fromMap(
         Map<String, dynamic>.from(result.data),
       );
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] success callable=$callableName serviceId=$safeServiceId providerId=$safeProviderId bookingId=${bookingResult.bookingId} state=${bookingResult.state.name}',
+        );
+      }
+      return bookingResult;
     } on FirebaseFunctionsException catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] failed callable=$callableName serviceId=$safeServiceId providerId=$safeProviderId functionsCode=${error.code} message=${(error.message ?? '').trim()} detailsType=${error.details.runtimeType}',
+        );
+      }
       throw _mapCanonicalRequestError(error);
     } on FormatException catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] parse_error callable=$callableName serviceId=$safeServiceId providerId=$safeProviderId error=${error.message}',
+        );
+      }
       throw CanonicalBookingRequestException(
         code: CanonicalBookingRequestFailureCode.unknown,
         message:
             'We could not understand the booking response. Please try again.',
         issues: [error.message],
       );
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] unexpected_error callable=$callableName serviceId=$safeServiceId providerId=$safeProviderId error=$error',
+        );
+      }
+      rethrow;
     }
   }
 
@@ -307,17 +529,70 @@ class BookingRepository {
     String? paymentAttemptId,
     String? offerCampaignId,
   }) async {
-    final callable = _functions.httpsCallable('createRazorpayPaymentOrderV3');
+    const callableName = 'createRazorpayPaymentOrderV3';
+    final callable = _functions.httpsCallable(callableName);
     try {
-      final result = await callable.call<Map<String, dynamic>>({
-        'bookingId': bookingId.trim(),
-        'paymentAttemptId': paymentAttemptId?.trim(),
-        'offerCampaignId': offerCampaignId?.trim(),
-      });
+      final result =
+          await runCanonicalPaymentCallableWithAuthRecovery<
+            HttpsCallableResult<Map<String, dynamic>>
+          >(
+            operationName: callableName,
+            invoke: () => callable.call<Map<String, dynamic>>({
+              'bookingId': bookingId.trim(),
+              'paymentAttemptId': paymentAttemptId?.trim(),
+              'offerCampaignId': offerCampaignId?.trim(),
+            }),
+          );
       return CanonicalPaymentOrderResult.fromMap(
         Map<String, dynamic>.from(result.data),
       );
     } on FirebaseFunctionsException catch (error) {
+      throw _mapCanonicalPaymentError(error);
+    }
+  }
+
+  Future<CanonicalQrPaymentResult> createQrPaymentV3({
+    required String bookingId,
+    String? offerCampaignId,
+  }) async {
+    const callableName = 'createBookingQrPaymentV3';
+    final callable = _functions.httpsCallable(callableName);
+    try {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingQrPayment] callable_start callable=$callableName bookingId=${bookingId.trim()} hasOffer=${offerCampaignId?.trim().isNotEmpty == true}',
+        );
+      }
+      final result =
+          await runCanonicalPaymentCallableWithAuthRecovery<
+            HttpsCallableResult<Map<String, dynamic>>
+          >(
+            operationName: callableName,
+            invoke: () => callable.call<Map<String, dynamic>>({
+              'bookingId': bookingId.trim(),
+              'offerCampaignId': offerCampaignId?.trim(),
+            }),
+            debugLogger: (message) {
+              if (kDebugMode) {
+                debugPrint(message);
+              }
+            },
+          );
+      if (kDebugMode) {
+        final data = Map<String, dynamic>.from(result.data);
+        debugPrint(
+          '[BookingQrPayment] callable_success callable=$callableName bookingId=${bookingId.trim()} qrIdPresent=${(data['qrCodeId']?.toString().trim().isNotEmpty ?? false)} status=${data['state'] ?? ''}',
+        );
+      }
+      return CanonicalQrPaymentResult.fromMap(
+        Map<String, dynamic>.from(result.data),
+      );
+    } on FirebaseFunctionsException catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingQrPayment] callable_failed callable=$callableName bookingId=${bookingId.trim()} functionsCode=${error.code} safeMessage=${error.message ?? ''} detailsType=${error.details.runtimeType}',
+        );
+      }
       throw _mapCanonicalPaymentError(error);
     }
   }
@@ -329,36 +604,52 @@ class BookingRepository {
     const callableName = 'previewBookingPaymentPricingV3';
     final safeBookingId = bookingId.trim();
     final safeOfferCampaignId = offerCampaignId?.trim();
-    debugPrint(
-      '[CanonicalPaymentPreview] request callable=$callableName bookingId=$safeBookingId hasCoupon=${safeOfferCampaignId?.isNotEmpty == true}',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        '[CanonicalPaymentPreview] request callable=$callableName bookingId=$safeBookingId hasCoupon=${safeOfferCampaignId?.isNotEmpty == true}',
+      );
+    }
     final callable = _functions.httpsCallable(callableName);
     try {
-      final result = await callable.call<Map<String, dynamic>>({
-        'bookingId': safeBookingId,
-        'offerCampaignId': safeOfferCampaignId,
-      });
+      final result =
+          await runCanonicalPaymentCallableWithAuthRecovery<
+            HttpsCallableResult<Map<String, dynamic>>
+          >(
+            operationName: callableName,
+            invoke: () => callable.call<Map<String, dynamic>>({
+              'bookingId': safeBookingId,
+              'offerCampaignId': safeOfferCampaignId,
+            }),
+          );
       final preview = CanonicalPaymentPricingPreviewResult.fromMap(
         Map<String, dynamic>.from(result.data),
       );
-      debugPrint(
-        '[CanonicalPaymentPreview] success callable=$callableName bookingId=${preview.bookingId} payablePaise=${preview.pricingSummary.customerPaidPaise} discountPaise=${preview.pricingSummary.couponDiscountPaise}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          '[CanonicalPaymentPreview] success callable=$callableName bookingId=${preview.bookingId} payablePaise=${preview.pricingSummary.customerPaidPaise} discountPaise=${preview.pricingSummary.couponDiscountPaise}',
+        );
+      }
       return preview;
     } on FirebaseFunctionsException catch (error) {
-      debugPrint(
-        '[CanonicalPaymentPreview] firebase_error callable=$callableName bookingId=$safeBookingId code=${error.code} message=${error.message ?? ''} details=${error.details}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          '[CanonicalPaymentPreview] firebase_error callable=$callableName bookingId=$safeBookingId code=${error.code} message=${error.message ?? ''} details=${error.details}',
+        );
+      }
       throw _mapCanonicalPaymentError(error);
     } on FormatException catch (error) {
-      debugPrint(
-        '[CanonicalPaymentPreview] parse_error callable=$callableName bookingId=$safeBookingId error=${error.message}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          '[CanonicalPaymentPreview] parse_error callable=$callableName bookingId=$safeBookingId error=${error.message}',
+        );
+      }
       rethrow;
     } catch (error) {
-      debugPrint(
-        '[CanonicalPaymentPreview] unknown_error callable=$callableName bookingId=$safeBookingId error=$error',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          '[CanonicalPaymentPreview] unknown_error callable=$callableName bookingId=$safeBookingId error=$error',
+        );
+      }
       rethrow;
     }
   }
@@ -370,15 +661,22 @@ class BookingRepository {
     required String razorpayPaymentId,
     required String razorpaySignature,
   }) async {
-    final callable = _functions.httpsCallable('verifyBookingPaymentV3');
+    const callableName = 'verifyBookingPaymentV3';
+    final callable = _functions.httpsCallable(callableName);
     try {
-      final result = await callable.call<Map<String, dynamic>>({
-        'bookingId': bookingId.trim(),
-        'paymentAttemptId': paymentAttemptId.trim(),
-        'razorpay_order_id': razorpayOrderId.trim(),
-        'razorpay_payment_id': razorpayPaymentId.trim(),
-        'razorpay_signature': razorpaySignature.trim(),
-      });
+      final result =
+          await runCanonicalPaymentCallableWithAuthRecovery<
+            HttpsCallableResult<Map<String, dynamic>>
+          >(
+            operationName: callableName,
+            invoke: () => callable.call<Map<String, dynamic>>({
+              'bookingId': bookingId.trim(),
+              'paymentAttemptId': paymentAttemptId.trim(),
+              'razorpay_order_id': razorpayOrderId.trim(),
+              'razorpay_payment_id': razorpayPaymentId.trim(),
+              'razorpay_signature': razorpaySignature.trim(),
+            }),
+          );
       return CanonicalPaymentVerificationResult.fromMap(
         Map<String, dynamic>.from(result.data),
       );
@@ -613,93 +911,7 @@ class BookingRepository {
 
   CanonicalBookingRequestException _mapCanonicalRequestError(
     FirebaseFunctionsException error,
-  ) {
-    final details = error.details;
-    Map<String, dynamic> detailMap = const <String, dynamic>{};
-    if (details is Map) {
-      detailMap = Map<String, dynamic>.from(details.cast<dynamic, dynamic>());
-    }
-    final detailCode = (detailMap['code'] as String? ?? '')
-        .trim()
-        .toUpperCase();
-    final issuesRaw = detailMap['issues'];
-    final issues = issuesRaw is List
-        ? issuesRaw.map((entry) => '$entry').toList(growable: false)
-        : const <String>[];
-
-    CanonicalBookingRequestFailureCode code;
-    switch (detailCode) {
-      case 'CANONICAL_BOOKING_DISABLED':
-        code = CanonicalBookingRequestFailureCode.canonicalBookingDisabled;
-        break;
-      case 'SERVICE_NOT_FOUND':
-        code = CanonicalBookingRequestFailureCode.serviceNotFound;
-        break;
-      case 'SERVICE_INACTIVE':
-        code = CanonicalBookingRequestFailureCode.serviceInactive;
-        break;
-      case 'SERVICE_PAUSED':
-        code = CanonicalBookingRequestFailureCode.servicePaused;
-        break;
-      case 'PROVIDER_PAUSED':
-      case 'PROVIDER_UNAVAILABLE':
-        code = CanonicalBookingRequestFailureCode.providerUnavailable;
-        break;
-      case 'INVALID_BOOKING_TYPE':
-        code = CanonicalBookingRequestFailureCode.invalidBookingType;
-        break;
-      case 'INVALID_SCHEDULE':
-      case 'INVALID_SLOT_SELECTION':
-      case 'INVALID_RANGE':
-      case 'INVALID_NIGHTS':
-      case 'INVALID_SLOT_RANGE':
-      case 'INVALID_SLOT_COUNT':
-      case 'INVALID_TOTAL_DURATION':
-      case 'DUPLICATE_SLOT_SELECTION':
-      case 'NON_CONTIGUOUS_DAILY_SLOTS':
-      case 'NON_CONSECUTIVE_SERVICE_DATES':
-      case 'TOO_MANY_SERVICE_DAYS':
-      case 'OVERLAPPING_BOOKING_SEGMENTS':
-      case 'MIXED_SERVICE_SLOT_SELECTION':
-      case 'MIXED_SCHEDULING_MODE':
-      case 'NON_CONTIGUOUS':
-      case 'OVERLAPPING':
-        code = CanonicalBookingRequestFailureCode.invalidSchedule;
-        break;
-      case 'RUNWAY_NOT_SATISFIED':
-        code = CanonicalBookingRequestFailureCode.runwayNotSatisfied;
-        break;
-      case 'INVALID_TIMEZONE':
-      case 'INVALID_WORKING_HOURS':
-        code = CanonicalBookingRequestFailureCode.invalidTimezone;
-        break;
-      case 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD':
-        code = CanonicalBookingRequestFailureCode.idempotencyConflict;
-        break;
-      default:
-        switch (error.code) {
-          case 'unauthenticated':
-            code = CanonicalBookingRequestFailureCode.unauthenticated;
-            break;
-          case 'permission-denied':
-            code = CanonicalBookingRequestFailureCode.permissionDenied;
-            break;
-          case 'not-found':
-            code = CanonicalBookingRequestFailureCode.serviceNotFound;
-            break;
-          default:
-            code = CanonicalBookingRequestFailureCode.unknown;
-            break;
-        }
-        break;
-    }
-
-    return CanonicalBookingRequestException(
-      code: code,
-      message: _canonicalRequestMessage(code, error.message),
-      issues: issues,
-    );
-  }
+  ) => mapCanonicalBookingRequestFunctionsException(error);
 
   Future<CanonicalBookingCancellationResult> _cancelConfirmedBookingV3({
     required String callableName,
@@ -810,42 +1022,6 @@ class BookingRepository {
       code: code,
       message: _canonicalPaymentMessage(code, error.message),
     );
-  }
-
-  String _canonicalRequestMessage(
-    CanonicalBookingRequestFailureCode code,
-    String? fallback,
-  ) {
-    switch (code) {
-      case CanonicalBookingRequestFailureCode.canonicalBookingDisabled:
-        return 'This request flow is not available right now.';
-      case CanonicalBookingRequestFailureCode.unauthenticated:
-        return 'Please sign in again before sending your request.';
-      case CanonicalBookingRequestFailureCode.serviceNotFound:
-        return 'This service is no longer available.';
-      case CanonicalBookingRequestFailureCode.serviceInactive:
-        return 'This service is not active right now.';
-      case CanonicalBookingRequestFailureCode.servicePaused:
-        return 'This service is temporarily paused.';
-      case CanonicalBookingRequestFailureCode.providerUnavailable:
-        return 'This provider is temporarily unavailable.';
-      case CanonicalBookingRequestFailureCode.invalidBookingType:
-        return 'This booking type is not available right now.';
-      case CanonicalBookingRequestFailureCode.invalidSchedule:
-        return 'Please review your selected schedule and try again.';
-      case CanonicalBookingRequestFailureCode.runwayNotSatisfied:
-        return 'This schedule is too soon for the required booking window.';
-      case CanonicalBookingRequestFailureCode.invalidTimezone:
-        return 'We could not verify the provider schedule right now.';
-      case CanonicalBookingRequestFailureCode.idempotencyConflict:
-        return 'Your request changed while we were submitting it. Please review and try again.';
-      case CanonicalBookingRequestFailureCode.permissionDenied:
-        return 'You do not have permission to send this request.';
-      case CanonicalBookingRequestFailureCode.unknown:
-        return fallback?.trim().isNotEmpty == true
-            ? fallback!.trim()
-            : 'We could not send your request right now.';
-    }
   }
 
   String _canonicalPaymentMessage(
