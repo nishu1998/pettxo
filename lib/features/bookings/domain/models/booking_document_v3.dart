@@ -617,8 +617,7 @@ class _CanonicalBookingDocumentParser {
     final schedule = _parseSchedule(
       bookingType,
       _readMap(raw['schedule']),
-      service?.serviceId ?? '',
-      service?.providerId ?? '',
+      service,
     );
     var lifecycle = _parseLifecycle(_readMap(raw['lifecycle']));
     final payment = _parsePayment(_readMap(raw['payment']));
@@ -839,10 +838,10 @@ class _CanonicalBookingDocumentParser {
     final parentId = _readString(map['parentId']);
     final displayFirstName = _readString(map['displayFirstName']);
     final lastInitial = _readString(map['lastInitial']);
-    if (parentId.isEmpty || displayFirstName.isEmpty || lastInitial.isEmpty) {
+    if (parentId.isEmpty || displayFirstName.isEmpty) {
       _addIssue(
         'MISSING_REQUIRED_FIELD',
-        'participants.parent requires parentId, displayFirstName, and lastInitial.',
+        'participants.parent requires parentId and displayFirstName.',
         'participants.parent',
       );
       return null;
@@ -933,8 +932,7 @@ class _CanonicalBookingDocumentParser {
   CanonicalBookingScheduleV3? _parseSchedule(
     BookingV3Type? bookingType,
     Map<String, dynamic> map,
-    String serviceId,
-    String providerId,
+    BookingServiceSnapshotV3? service,
   ) {
     final scheduleType = _parseBookingType(
       map['bookingType'],
@@ -960,6 +958,12 @@ class _CanonicalBookingDocumentParser {
     if (serviceAnchorAt == null) return null;
 
     if (scheduleType == BookingV3Type.slot) {
+      final fallbackSchedulingMode = service == null
+          ? null
+          : normalizeServiceSchedulingMode(
+              service.schedulingMode,
+              sessionDurationMinutes: service.durationMinutes,
+            );
       final slotMaps = _readListOfMaps(map['slots']);
       final slots = slotMaps
           .map(
@@ -1001,8 +1005,12 @@ class _CanonicalBookingDocumentParser {
                 'schedule.slots.timezone',
               ),
               schedulingMode: _readString(slot['schedulingMode']).trim().isEmpty
-                  ? null
-                  : _readString(slot['schedulingMode']),
+                  ? fallbackSchedulingMode
+                  : normalizeServiceSchedulingMode(
+                      _readString(slot['schedulingMode']),
+                      sessionDurationMinutes:
+                          _readInt(slot['durationMinutes']) ?? 0,
+                    ),
             ),
           )
           .toList(growable: false);
@@ -1030,9 +1038,10 @@ class _CanonicalBookingDocumentParser {
                   ) ??
                   DateTime.fromMillisecondsSinceEpoch(0),
               durationMinutes: _readInt(segment['durationMinutes']) ?? 0,
-              schedulingMode: _requiredString(
-                segment['schedulingMode'],
-                'schedule.segments.schedulingMode',
+              schedulingMode: _resolveSegmentSchedulingMode(
+                segment,
+                slots,
+                service,
               ),
             ),
           )
@@ -1100,14 +1109,18 @@ class _CanonicalBookingDocumentParser {
           'schedule.serviceAnchorAt',
         );
       }
-      if (slots.any((slot) => slot.serviceId != serviceId)) {
+      final expectedServiceId = service?.serviceId ?? '';
+      if (expectedServiceId.isNotEmpty &&
+          slots.any((slot) => slot.serviceId != expectedServiceId)) {
         _addIssue(
           'SERVICE_SNAPSHOT_MISMATCH',
           'All slot serviceIds must match service.serviceId.',
           'schedule.slots',
         );
       }
-      if (slots.any((slot) => slot.providerId != providerId)) {
+      final expectedProviderId = service?.providerId ?? '';
+      if (expectedProviderId.isNotEmpty &&
+          slots.any((slot) => slot.providerId != expectedProviderId)) {
         _addIssue(
           'PROVIDER_SNAPSHOT_MISMATCH',
           'All slot providerIds must match service.providerId.',
@@ -1779,6 +1792,44 @@ class _CanonicalBookingDocumentParser {
     return text;
   }
 
+  String _resolveSegmentSchedulingMode(
+    Map<String, dynamic> segment,
+    List<CanonicalBookingSlotSegmentV3> slots,
+    BookingServiceSnapshotV3? service,
+  ) {
+    final rawMode = _readString(segment['schedulingMode']);
+    if (rawMode.isNotEmpty) {
+      return normalizeServiceSchedulingMode(rawMode);
+    }
+
+    final serviceDateKey = _readString(segment['serviceDateKey']);
+    final slotIds = _readStringList(segment['slotIds']).toSet();
+    for (final slot in slots) {
+      final matchesSlot = slotIds.isNotEmpty && slotIds.contains(slot.slotId);
+      final matchesDate =
+          serviceDateKey.isNotEmpty &&
+          (slot.serviceDateKey == serviceDateKey || slot.dateKey == serviceDateKey);
+      if (!matchesSlot && !matchesDate) {
+        continue;
+      }
+      return normalizeServiceSchedulingMode(
+        slot.schedulingMode,
+        sessionDurationMinutes: slot.durationMinutes,
+      );
+    }
+
+    if (service != null) {
+      return normalizeServiceSchedulingMode(
+        service.schedulingMode,
+        sessionDurationMinutes: service.durationMinutes,
+      );
+    }
+
+    throw FormatException(
+      'Missing required string at schedule.segments.schedulingMode',
+    );
+  }
+
   Map<String, dynamic> _readMap(Object? value) {
     if (value is Map<String, dynamic>) return value;
     if (value is Map) return Map<String, dynamic>.from(value);
@@ -1843,5 +1894,20 @@ bool isCanonicalBookingDocumentCandidate(Map<String, dynamic> raw) {
 CanonicalBookingDocumentParseResult parseCanonicalBookingDocumentV3(
   Map<String, dynamic> raw,
 ) {
-  return _CanonicalBookingDocumentParser(raw).parse();
+  try {
+    return _CanonicalBookingDocumentParser(raw).parse();
+  } on FormatException catch (error) {
+    final message = error.message;
+    const prefix = 'Missing required string at ';
+    final path = message.startsWith(prefix)
+        ? message.substring(prefix.length).trim()
+        : '';
+    return CanonicalBookingDocumentParseResult.failure([
+      CanonicalBookingValidationIssue(
+        code: 'MALFORMED_REQUIRED_FIELD',
+        message: message,
+        path: path,
+      ),
+    ]);
+  }
 }
