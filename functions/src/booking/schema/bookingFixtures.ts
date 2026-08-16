@@ -129,6 +129,7 @@ function buildCommonFields(state: CanonicalBookingDocumentV3["state"], bookingTy
     parentId: "parent-1",
     providerId: "provider-1",
     serviceId: "service-1",
+    bookingIdSearchKey: "booking-1",
     stateQueryValue: state,
     bookingTypeQueryValue: bookingType,
     serviceAnchorAt,

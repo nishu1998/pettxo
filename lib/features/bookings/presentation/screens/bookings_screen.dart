@@ -1201,8 +1201,7 @@ class _CanonicalBookingListCard extends StatelessWidget {
                         Text(
                           contextMode == BookingContextMode.receiving
                               ? booking.participants.provider.displayName
-                              : '${booking.participants.parent.displayFirstName} ${booking.participants.parent.lastInitial}'
-                                    .trim(),
+                              : providerVisibleCustomerDisplayName(booking),
                           style: const TextStyle(
                             fontSize: 14,
                             color: Color(0xFF8E8479),

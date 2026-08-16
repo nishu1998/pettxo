@@ -8,6 +8,7 @@ import 'package:pettexo/features/bookings/domain/models/canonical_booking_cancel
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_request_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_provider_booking_request_view.dart';
 import 'package:pettexo/features/bookings/presentation/screens/canonical_provider_booking_request_detail_screen.dart';
+import 'package:pettexo/features/bookings/presentation/utils/canonical_booking_schedule_presentation.dart';
 import 'package:pettexo/features/bookings/presentation/widgets/canonical_provider_request_card.dart';
 
 void main() {
@@ -15,6 +16,7 @@ void main() {
     required CanonicalBookingStateV3 state,
     int? estimatedProviderPayoutPaise = 20000,
     DateTime? payDeadlineAt,
+    String maskedParentDisplayName = 'Anita G.',
   }) {
     final now = DateTime.now().toUtc();
     final timerStartsAt = now.add(const Duration(minutes: 15));
@@ -28,7 +30,7 @@ void main() {
       serviceTitle: 'Dog Walking',
       animalType: 'Dog',
       serviceCategory: 'Walking',
-      maskedParentDisplayName: 'Anita G.',
+      maskedParentDisplayName: maskedParentDisplayName,
       parentRating: 4.8,
       completedBookingCount: 4,
       scheduledStartAt: scheduledStartAt,
@@ -39,7 +41,30 @@ void main() {
       acceptDeadlineAt: acceptDeadlineAt,
       payDeadlineAt: payDeadlineAt ?? now.add(const Duration(minutes: 45)),
       timezone: 'Asia/Kolkata',
+      schedulingMode: 'fixedDuration',
       estimatedProviderPayoutPaise: estimatedProviderPayoutPaise,
+      schedulePresentation: CanonicalBookingSchedulePresentation(
+        bookingType: BookingV3Type.slot,
+        effectiveSegments: const <CanonicalBookingScheduleSegmentV3>[],
+        isMultiDayPackage: false,
+        hasContinuousServiceWindow: true,
+        serviceDayCount: 1,
+        segmentCount: 1,
+        slotCount: 1,
+        firstStartAt: scheduledStartAt,
+        firstSegmentEndAt: scheduledEndAt,
+        finalEndAt: scheduledEndAt,
+        totalDurationMinutes: 90,
+        schedulingMode: 'fixedDuration',
+        compactDateRangeLabel: 'Tomorrow',
+        compactScheduleSummary: 'Tomorrow · 90 min',
+        dateLabel: 'Tomorrow',
+        timeLabel: 'Flexible',
+        durationLabel: '90 min',
+        packageLabel: '',
+        perSegmentDisplayRows: const <CanonicalBookingScheduleDisplayRow>[],
+        cancellationConfirmationMessage: '',
+      ),
     );
   }
 
@@ -105,6 +130,23 @@ void main() {
       expect(find.text('Customer payment window'), findsOneWidget);
       expect(find.text('Accept'), findsNothing);
       expect(find.text('Decline'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'accepted request keeps customer identity redacted during the payment window',
+    (tester) async {
+      await pumpScreen(
+        tester,
+        request: buildRequest(
+          state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+          maskedParentDisplayName: 'Customer',
+        ),
+      );
+
+      await _scrollUntilTextVisible(tester, 'BOOKING SUMMARY');
+      expect(find.text('Customer'), findsWidgets);
+      expect(find.text('Anita G.'), findsNothing);
     },
   );
 
@@ -391,6 +433,7 @@ CanonicalBookingDocumentV3 _buildCanonicalBooking({
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(

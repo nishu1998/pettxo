@@ -17,6 +17,7 @@ import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
+import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
 import '../utils/canonical_booking_presentation_state.dart';
@@ -133,13 +134,9 @@ class _CanonicalBookingDetailScreenState
           final effectiveState = effectiveCanonicalBookingPresentationState(
             booking,
           );
-          final isPaidConfirmedOrLater =
-              booking.lifecycle.paidAt != null &&
-              (booking.state == CanonicalBookingStateV3.confirmed ||
-                  booking.state == CanonicalBookingStateV3.inProgress ||
-                  booking.state ==
-                      CanonicalBookingStateV3.completedPendingReview ||
-                  booking.state == CanonicalBookingStateV3.completedFinal);
+          final isPaidConfirmedOrLater = hasCanonicalConfirmedPaymentLifecycle(
+            booking,
+          );
           final canReadPrivate = isPaidConfirmedOrLater && isParent;
           final canReadParticipantPrivate = isPaidConfirmedOrLater;
           _privateController.bind(
@@ -1008,8 +1005,7 @@ class _CanonicalBookingDetailScreenState
   List<StatusSummaryRowModel> _buildProviderSummaryRows(
     CanonicalBookingDocumentV3 booking,
   ) {
-    final customerName =
-        '${booking.participants.parent.displayFirstName} ${booking.participants.parent.lastInitial}.';
+    final customerName = providerVisibleCustomerDisplayName(booking);
     final rows = <StatusSummaryRowModel>[
       StatusSummaryRowModel(
         label: 'Service',
@@ -1067,6 +1063,16 @@ class _CanonicalBookingDetailScreenState
       ),
     );
     return rows;
+  }
+
+  String _providerVisibleCustomerName(
+    CanonicalBookingDocumentV3 booking,
+    CanonicalBookingPrivateParticipantsData? participantPrivateData,
+  ) {
+    return providerVisibleCustomerDisplayName(
+      booking,
+      revealedFullName: participantPrivateData?.fullName,
+    );
   }
 
   List<StatusSummaryRowModel> _buildProviderCompletedScheduleRows(

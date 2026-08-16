@@ -220,6 +220,7 @@ export type CanonicalBookingDocumentV3 = {
   parentId: string;
   providerId: string;
   serviceId: string;
+  bookingIdSearchKey?: string;
   stateQueryValue: CanonicalBookingState;
   bookingTypeQueryValue: BookingType;
   serviceAnchorAt: Date;
@@ -321,7 +322,7 @@ function parseParentParticipant(
   const completedBookingCount = asInteger(raw.completedBookingCount) ?? 0;
   return {
     parentId: asString(raw.parentId),
-    displayFirstName: asString(raw.displayFirstName),
+    displayFirstName: asString(raw.displayFirstName) || "Customer",
     lastInitial: asString(raw.lastInitial),
     photoUrl: asString(raw.photoUrl),
     completedBookingCount,
@@ -783,6 +784,7 @@ export function parseCanonicalBookingDocumentV3(rawValue: unknown): CanonicalBoo
     parentId: asString(raw.parentId),
     providerId: asString(raw.providerId),
     serviceId: asString(raw.serviceId),
+    bookingIdSearchKey: asString(raw.bookingIdSearchKey),
     stateQueryValue: isCanonicalBookingState(asString(raw.stateQueryValue)) ? asString(raw.stateQueryValue) as CanonicalBookingState : stateValue,
     bookingTypeQueryValue: isBookingType(asString(raw.bookingTypeQueryValue)) ? asString(raw.bookingTypeQueryValue) as BookingType : bookingTypeValue,
     serviceAnchorAt: asNullableDate(raw.serviceAnchorAt) ?? schedule.serviceAnchorAt,

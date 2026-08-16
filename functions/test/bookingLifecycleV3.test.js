@@ -58,6 +58,7 @@ function baseService(overrides = {}) {
     category: "Walking",
     serviceType: "provider_location",
     currency: "INR",
+    schedulingMode: "fixedDuration",
     sessionDurationMinutes: 60,
     capacity: 1,
     availableDays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
@@ -241,6 +242,58 @@ test("working-hours adapter preserves the real service schema", () => {
   assert.equal(normalized.workingHours.sourceSupportsSingleIntervalPerDay, true);
 });
 
+test("working-hours adapter normalizes overnight services without rejecting next-day end times", () => {
+  const normalized = normalizeServiceWorkingHours(baseService({
+    schedulingMode: "overnight",
+    sessionDurationMinutes: 900,
+    availableDays: ["monday"],
+    startMinutes: 19 * 60,
+    endMinutes: 10 * 60,
+  }));
+  assert.equal(normalized.ok, true);
+  assert.deepEqual(normalized.workingHours.days.monday, [{startMinutes: 1140, endMinutes: 1440}]);
+  assert.deepEqual(normalized.workingHours.days.tuesday, [{startMinutes: 0, endMinutes: 600}]);
+});
+
+test("working-hours adapter normalizes explicit twenty-four-hour services", () => {
+  const normalized = normalizeServiceWorkingHours(baseService({
+    schedulingMode: "twentyFourHours",
+    sessionDurationMinutes: 1440,
+    availableDays: ["monday"],
+    startMinutes: 10 * 60,
+    endMinutes: 10 * 60,
+  }));
+  assert.equal(normalized.ok, true);
+  assert.deepEqual(normalized.workingHours.days.monday, [{startMinutes: 600, endMinutes: 1440}]);
+  assert.deepEqual(normalized.workingHours.days.tuesday, [{startMinutes: 0, endMinutes: 600}]);
+});
+
+test("working-hours adapter accepts supported legacy weekday maps", () => {
+  const normalized = normalizeServiceWorkingHours(baseService({
+    availableDays: {
+      monday: {
+        enabled: true,
+        startMinutes: 8 * 60,
+        endMinutes: 11 * 60,
+      },
+      wednesday: true,
+      friday: false,
+    },
+  }));
+  assert.equal(normalized.ok, true);
+  assert.deepEqual(normalized.workingHours.days.monday, [{startMinutes: 480, endMinutes: 660}]);
+  assert.deepEqual(normalized.workingHours.days.wednesday, [{startMinutes: 540, endMinutes: 1020}]);
+  assert.deepEqual(normalized.workingHours.days.friday, []);
+});
+
+test("working-hours adapter rejects malformed timezones without throwing", () => {
+  const normalized = normalizeServiceWorkingHours(baseService({
+    timezone: "Mars/Phobos",
+  }));
+  assert.equal(normalized.ok, false);
+  assert.equal(normalized.issues.some((entry) => entry.code === "INVALID_TIMEZONE"), true);
+});
+
 test("working-hours timer starts immediately during working hours", () => {
   const normalized = normalizeServiceWorkingHours(baseService()).workingHours;
   const requestedAt = new Date("2026-07-22T04:00:00.000Z"); // 09:30 IST
@@ -320,6 +373,24 @@ test("24/7 providers start immediately", () => {
     workingHours: normalized,
   });
   assert.equal(result.timerStartsAt.getTime(), requestedAt.getTime());
+});
+
+test("twenty-four-hour providers start immediately during carry-over coverage", () => {
+  const normalized = normalizeServiceWorkingHours(baseService({
+    schedulingMode: "twentyFourHours",
+    sessionDurationMinutes: 1440,
+    availableDays: ["monday"],
+    startMinutes: 10 * 60,
+    endMinutes: 10 * 60,
+  })).workingHours;
+  const requestedAt = new Date("2026-07-20T20:30:00.000Z"); // Tuesday 02:00 IST
+  const result = computeTimerStartsAt({
+    requestedAt,
+    timezone: "Asia/Kolkata",
+    workingHours: normalized,
+  });
+  assert.equal(result.timerStartsAt.getTime(), requestedAt.getTime());
+  assert.equal(result.wasQueuedOutsideWorkingHours, false);
 });
 
 test("DST-observing timezone computes next opening correctly", () => {
@@ -497,10 +568,34 @@ test("createBookingRequestV3 creates canonical multi-slot request", () => {
   assert.equal(result.booking.schedule.slotCount, 3);
 });
 
+test("createBookingRequestV3 normalizes legacy services without stored schedulingMode", () => {
+  const result = createBookingRequestV3({
+    parent: parent(),
+    service: baseService({
+      schedulingMode: undefined,
+      sessionDurationMinutes: 60,
+      startMinutes: 9 * 60,
+      endMinutes: 17 * 60,
+    }),
+    input: {
+      requestAttemptId: "attempt-legacy-service",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule(),
+    },
+    authoritativeNow: new Date("2026-07-22T04:00:00.000Z"),
+    generatedBookingId: "booking-legacy-service",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.booking.service.schedulingMode, "fixedDuration");
+  assert.equal(result.booking.schedule.slots[0].schedulingMode, "fixedDuration");
+  assert.equal(result.booking.schedule.segments[0].schedulingMode, "fixedDuration");
+});
+
 test("createBookingRequestV3 stores additive multi-day slot segments and snapshot summaries", () => {
   const result = createBookingRequestV3({
     parent: parent(),
-    service: baseService(),
+    service: baseService({schedulingMode: undefined}),
     input: {
       requestAttemptId: "attempt-2b",
       serviceId: "service-1",
@@ -520,6 +615,11 @@ test("createBookingRequestV3 stores additive multi-day slot segments and snapsho
   assert.equal(result.booking.schedule.finalEndAt.toISOString(), "2026-08-09T06:30:00.000Z");
   assert.equal(result.booking.schedule.segments.length, 3);
   assert.equal(result.booking.schedule.slots.length, 3);
+  assert.equal(result.booking.service.schedulingMode, "fixedDuration");
+  assert.deepEqual(
+    result.booking.schedule.segments.map((segment) => segment.schedulingMode),
+    ["fixedDuration", "fixedDuration", "fixedDuration"],
+  );
 });
 
 test("createBookingRequestV3 creates canonical RANGE request", () => {
@@ -571,6 +671,45 @@ test("createBookingRequestV3 rejects inactive or paused services", () => {
     generatedBookingId: "booking-y",
   });
   assert.equal(paused.ok, false);
+});
+
+test("createBookingRequestV3 returns controlled INVALID_TIMEZONE for malformed provider timezone", () => {
+  const result = createBookingRequestV3({
+    parent: parent(),
+    service: baseService({timezone: "Mars/Phobos"}),
+    input: {
+      requestAttemptId: "attempt-invalid-timezone",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule(),
+    },
+    authoritativeNow: new Date("2026-07-22T03:30:00.000Z"),
+    generatedBookingId: "booking-invalid-timezone",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "INVALID_TIMEZONE");
+});
+
+test("createBookingRequestV3 returns controlled INVALID_WORKING_HOURS for corrupt overnight windows", () => {
+  const result = createBookingRequestV3({
+    parent: parent(),
+    service: baseService({
+      schedulingMode: "overnight",
+      sessionDurationMinutes: 720,
+      startMinutes: 19 * 60,
+      endMinutes: 22 * 60,
+    }),
+    input: {
+      requestAttemptId: "attempt-invalid-overnight",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule(),
+    },
+    authoritativeNow: new Date("2026-07-22T03:30:00.000Z"),
+    generatedBookingId: "booking-invalid-overnight",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "INVALID_WORKING_HOURS");
 });
 
 test("createBookingRequestV3 rejects mixed provider IDs and ignores parent private fields", () => {
@@ -756,6 +895,43 @@ test("provider accept and decline commands are deadline-checked and consume no c
   assert.equal(declined.booking.state, "DECLINED");
 });
 
+test("provider acceptance re-redacts legacy customer identity until payment is confirmed", () => {
+  const created = createBookingRequestV3({
+    parent: parent(),
+    service: baseService(),
+    input: {
+      requestAttemptId: "attempt-privacy",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule(),
+    },
+    authoritativeNow: new Date("2026-07-22T04:00:00.000Z"),
+    generatedBookingId: "booking-privacy",
+  });
+
+  const legacyNamedBooking = structuredClone(created.booking);
+  legacyNamedBooking.participants.parent.displayFirstName = "Anita";
+  legacyNamedBooking.participants.parent.lastInitial = "G";
+  legacyNamedBooking.participants.parent.photoUrl = "https://example.com/anita.png";
+  legacyNamedBooking.participants.parent.completedBookingCount = 9;
+  legacyNamedBooking.participants.parent.rating = 4.9;
+
+  const accepted = acceptBookingRequestV3({
+    booking: legacyNamedBooking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date("2026-07-22T04:10:00.000Z"),
+    existingProviderStats: created.providerStats,
+  });
+
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.booking.state, "ACCEPTED_AWAITING_PAYMENT");
+  assert.equal(accepted.booking.participants.parent.displayFirstName, "Customer");
+  assert.equal(accepted.booking.participants.parent.lastInitial, "");
+  assert.equal(accepted.booking.participants.parent.photoUrl, "");
+  assert.equal(accepted.booking.participants.parent.completedBookingCount, 0);
+  assert.equal(accepted.booking.participants.parent.rating, 0);
+});
+
 test("queued outside-working-hours requests remain actionable before the official timer starts", () => {
   const created = createBookingRequestV3({
     parent: parent(),
@@ -830,6 +1006,114 @@ test("queued outside-working-hours requests remain actionable before the officia
   assert.equal(declined.booking.state, "DECLINED");
   assert.equal(declined.notifications.length, 1);
   assert.equal(declined.notifications[0].type, "request_declined");
+});
+
+test("queued outside-working-hours requests honor response-window boundaries exactly", () => {
+  const created = createBookingRequestV3({
+    parent: parent(),
+    service: baseService(),
+    input: {
+      requestAttemptId: "attempt-queued-boundaries",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule({startAt: new Date("2026-07-27T06:30:00.000Z")}),
+    },
+    authoritativeNow: new Date("2026-07-26T12:30:00.000Z"),
+    generatedBookingId: "booking-queued-boundaries",
+  });
+
+  assert.equal(created.ok, true);
+
+  const atWindowStart = acceptBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date(created.booking.lifecycle.timerStartsAt.getTime()),
+    existingProviderStats: created.providerStats,
+  });
+  assert.equal(atWindowStart.ok, true);
+  assert.equal(atWindowStart.booking.state, "ACCEPTED_AWAITING_PAYMENT");
+
+  const atDeadline = declineBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date(created.booking.acceptDeadlineAt.getTime()),
+    existingProviderStats: created.providerStats,
+  });
+  assert.equal(atDeadline.ok, true);
+  assert.equal(atDeadline.booking.state, "DECLINED");
+
+  const afterDeadline = acceptBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date(created.booking.acceptDeadlineAt.getTime() + 1),
+    existingProviderStats: created.providerStats,
+  });
+  assert.equal(afterDeadline.ok, false);
+  assert.equal(afterDeadline.code, "DEADLINE_PASSED");
+});
+
+test("queued outside-working-hours requests reject provider actions after the deferred response deadline", () => {
+  const created = createBookingRequestV3({
+    parent: parent(),
+    service: baseService(),
+    input: {
+      requestAttemptId: "attempt-queued-expired",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule({startAt: new Date("2026-07-27T06:30:00.000Z")}),
+    },
+    authoritativeNow: new Date("2026-07-26T12:30:00.000Z"),
+    generatedBookingId: "booking-queued-expired",
+  });
+
+  const acceptedTooLate = acceptBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date(created.booking.acceptDeadlineAt.getTime() + 5 * 60 * 1000),
+    existingProviderStats: created.providerStats,
+  });
+  assert.equal(acceptedTooLate.ok, false);
+  assert.equal(acceptedTooLate.code, "DEADLINE_PASSED");
+
+  const declinedTooLate = declineBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date(created.booking.acceptDeadlineAt.getTime() + 5 * 60 * 1000),
+    existingProviderStats: created.providerStats,
+  });
+  assert.equal(declinedTooLate.ok, false);
+  assert.equal(declinedTooLate.code, "DEADLINE_PASSED");
+});
+
+test("genuine non-requested bookings still reject provider actions as already moved", () => {
+  const created = createBookingRequestV3({
+    parent: parent(),
+    service: baseService(),
+    input: {
+      requestAttemptId: "attempt-moved-state",
+      serviceId: "service-1",
+      bookingType: "SLOT",
+      schedule: slotSchedule(),
+    },
+    authoritativeNow: new Date("2026-07-22T04:00:00.000Z"),
+    generatedBookingId: "booking-moved-state",
+  });
+  const declined = declineBookingRequestV3({
+    booking: created.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date("2026-07-22T04:05:00.000Z"),
+    existingProviderStats: created.providerStats,
+  });
+  assert.equal(declined.ok, true);
+
+  const acceptAfterDecline = acceptBookingRequestV3({
+    booking: declined.booking,
+    providerUid: "provider-1",
+    authoritativeNow: new Date("2026-07-22T04:06:00.000Z"),
+    existingProviderStats: declined.providerStats,
+  });
+  assert.equal(acceptAfterDecline.ok, false);
+  assert.equal(acceptAfterDecline.code, "TERMINAL_STATE");
 });
 
 test("pre-payment parent cancellation is only allowed from REQUESTED and PENDING_PROVIDER", () => {

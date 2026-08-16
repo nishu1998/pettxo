@@ -167,6 +167,15 @@ bool hasActiveCanonicalPaymentWindow(DateTime? payDeadlineAt) {
   return payDeadlineAt == null || payDeadlineAt.isAfter(DateTime.now());
 }
 
+bool hasCanonicalConfirmedPaymentLifecycle(CanonicalBookingDocumentV3 booking) {
+  return booking.lifecycle.paidAt != null &&
+      booking.privacy.contactUnlockedAt != null;
+}
+
+bool canProviderViewCustomerIdentity(CanonicalBookingDocumentV3 booking) {
+  return hasCanonicalConfirmedPaymentLifecycle(booking);
+}
+
 bool _hasConfirmedPaymentStatus(String? paymentStatus) {
   final normalized = paymentStatus?.trim().toLowerCase() ?? '';
   return normalized == 'paid' || normalized == 'confirmed';

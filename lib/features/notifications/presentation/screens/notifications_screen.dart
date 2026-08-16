@@ -61,6 +61,7 @@ class NotificationsScreen extends StatelessWidget {
     return FirebaseFirestore.instance
         .collection('notifications')
         .where('userId', isEqualTo: uid)
+        .orderBy('createdAt', descending: true)
         .limit(50)
         .snapshots();
   }

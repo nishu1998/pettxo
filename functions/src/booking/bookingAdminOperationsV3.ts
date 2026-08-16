@@ -15,7 +15,11 @@ import {
 import {
   BOOKING_NO_SHOWS_COLLECTION,
 } from "./application/serviceStartOrchestrationV3";
-import type {CanonicalBookingDocumentV3} from "./schema/bookingDocumentV3";
+import type {
+  CanonicalBookingDocumentV3,
+  CanonicalRangeScheduleV3,
+  CanonicalSlotScheduleV3,
+} from "./schema/bookingDocumentV3";
 import {parseCanonicalBookingDocumentV3} from "./schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "./schema/timestampNormalization";
 
@@ -192,6 +196,10 @@ function ensureDateInput(value: unknown, field: string): Date | null {
 }
 
 function normalizeSearch(value: unknown): string {
+  return asString(value);
+}
+
+function normalizeBookingIdSearchKey(value: unknown): string {
   return asString(value).toLowerCase();
 }
 
@@ -411,6 +419,234 @@ async function loadCanonicalBooking(
         path: issue.path,
       })),
     };
+}
+
+function hasConfirmedPaymentStatus(paymentStatus: string): boolean {
+  const normalized = paymentStatus.trim().toLowerCase();
+  return normalized === "paid" || normalized === "confirmed";
+}
+
+function canonicalBookingNoShowDeadlineFromRaw(
+  booking: CanonicalBookingDocumentV3,
+): Date | null {
+  if (booking.bookingType === "RANGE") {
+    const schedule = booking.schedule as CanonicalRangeScheduleV3 & {serviceAnchorAt: Date};
+    return schedule.checkOutDateTime;
+  }
+  const schedule = booking.schedule as CanonicalSlotScheduleV3 & {serviceAnchorAt: Date};
+  if (schedule.firstSegmentEndAt instanceof Date) {
+    return schedule.firstSegmentEndAt;
+  }
+  const segments = Array.isArray(schedule.segments) ?
+    schedule.segments.filter((segment) => segment.endAt.getTime() > segment.startAt.getTime()) :
+    [];
+  if (segments.length > 0) {
+    return segments[0].endAt;
+  }
+  return schedule.scheduledEndAt;
+}
+
+function effectiveCanonicalBookingStateForAdmin(
+  booking: CanonicalBookingDocumentV3,
+  now = new Date(),
+): string {
+  if (booking.state === "ACCEPTED_AWAITING_PAYMENT" &&
+    booking.lifecycle.payDeadlineAt != null &&
+    booking.lifecycle.payDeadlineAt.getTime() <= now.getTime()) {
+    return "PAYMENT_EXPIRED";
+  }
+  const paymentConfirmed =
+    booking.lifecycle.paidAt != null ||
+    hasConfirmedPaymentStatus(booking.payment.status);
+  const noShowDeadlineAt = canonicalBookingNoShowDeadlineFromRaw(booking);
+  if (booking.state === "CONFIRMED" &&
+    paymentConfirmed &&
+    booking.lifecycle.otpEnteredAt == null &&
+    noShowDeadlineAt != null &&
+    noShowDeadlineAt.getTime() <= now.getTime()) {
+    return "NO_SHOW";
+  }
+  return booking.state;
+}
+
+async function findCanonicalBookingByCaseInsensitiveId(
+  firestore: Firestore,
+  rawSearch: string,
+): Promise<{
+  bookingId: string | null;
+  booking: CanonicalBookingDocumentV3 | null;
+  issues: Array<{code: string; path: string}>;
+}> {
+  const exactSearch = asString(rawSearch);
+  if (!exactSearch) {
+    return {bookingId: null, booking: null, issues: []};
+  }
+
+  const exact = await loadCanonicalBooking(firestore, exactSearch);
+  if (exact.booking != null) {
+    return {
+      bookingId: exactSearch,
+      booking: exact.booking,
+      issues: exact.issues,
+    };
+  }
+
+  const searchKey = normalizeBookingIdSearchKey(exactSearch);
+  const indexedSnapshot = await firestore
+    .collection("bookings")
+    .where("bookingIdSearchKey", "==", searchKey)
+    .limit(2)
+    .get();
+  if (indexedSnapshot.docs.length === 1) {
+    const doc = indexedSnapshot.docs[0];
+    const parsed = parseCanonicalBookingDocumentV3(asRecord(doc.data()));
+    return parsed.ok ?
+      {bookingId: doc.id, booking: parsed.booking, issues: []} :
+      {
+        bookingId: doc.id,
+        booking: null,
+        issues: parsed.issues.map((issue) => ({code: issue.code, path: issue.path})),
+      };
+  }
+
+  const legacySnapshot = await firestore
+    .collection("bookings")
+    .orderBy("updatedAt", "desc")
+    .limit(MAX_LIMIT * MAX_SCAN_BATCHES)
+    .get();
+  for (const doc of legacySnapshot.docs) {
+    if (doc.id.toLowerCase() !== searchKey) {
+      continue;
+    }
+    const parsed = parseCanonicalBookingDocumentV3(asRecord(doc.data()));
+    return parsed.ok ?
+      {bookingId: doc.id, booking: parsed.booking, issues: []} :
+      {
+        bookingId: doc.id,
+        booking: null,
+        issues: parsed.issues.map((issue) => ({code: issue.code, path: issue.path})),
+      };
+  }
+
+  return {bookingId: null, booking: null, issues: []};
+}
+
+function bookingIdPrefixUpperBound(prefix: string): string {
+  return `${prefix}\uf8ff`;
+}
+
+async function listCanonicalBookingsByPrefixForAdmin(params: {
+  firestore: Firestore;
+  actor: CanonicalActor;
+  search: string;
+  stateFilter: string;
+  paymentStatusFilter: string;
+  bookingTypeFilter: string;
+}): Promise<Array<Record<string, unknown>>> {
+  const normalizedPrefix = normalizeBookingIdSearchKey(params.search);
+  if (!normalizedPrefix) {
+    return [];
+  }
+
+  let query = params.firestore
+    .collection("bookings")
+    .where("bookingIdSearchKey", ">=", normalizedPrefix)
+    .where("bookingIdSearchKey", "<", bookingIdPrefixUpperBound(normalizedPrefix))
+    .orderBy("bookingIdSearchKey", "asc");
+
+  const snapshot = await query.get();
+  const summaries = await Promise.all(snapshot.docs.map(async (doc) => {
+    const parsed = parseCanonicalBookingDocumentV3(asRecord(doc.data()));
+    if (!parsed.ok) return null;
+    const effectiveState = effectiveCanonicalBookingStateForAdmin(parsed.booking);
+    if (params.stateFilter && effectiveState.toUpperCase() !== params.stateFilter) {
+      return null;
+    }
+    if (params.paymentStatusFilter &&
+      parsed.booking.payment.status.toLowerCase() !== params.paymentStatusFilter) {
+      return null;
+    }
+    if (params.bookingTypeFilter &&
+      parsed.booking.bookingType.toUpperCase() !== params.bookingTypeFilter) {
+      return null;
+    }
+    return await buildBookingSummaryForAdmin({
+      firestore: params.firestore,
+      actor: params.actor,
+      bookingId: doc.id,
+      booking: parsed.booking,
+    });
+  }));
+
+  const items = summaries.filter(Boolean) as Array<Record<string, unknown>>;
+  if (items.length === 0) {
+    return [];
+  }
+
+  const exactMatches = items.filter(
+    (item) => normalizeBookingIdSearchKey(item.bookingId) === normalizedPrefix,
+  );
+  if (exactMatches.length === 1) {
+    return exactMatches;
+  }
+  return items;
+}
+
+async function listRefundDetailsByBookingPrefix(params: {
+  firestore: Firestore;
+  actor: CanonicalActor;
+  search: string;
+  statusFilter: string;
+  limit: number;
+}): Promise<Array<Record<string, unknown>>> {
+  const normalizedPrefix = normalizeBookingIdSearchKey(params.search);
+  if (!normalizedPrefix) {
+    return [];
+  }
+
+  const bookingSnapshot = await params.firestore
+    .collection("bookings")
+    .where("bookingIdSearchKey", ">=", normalizedPrefix)
+    .where("bookingIdSearchKey", "<", bookingIdPrefixUpperBound(normalizedPrefix))
+    .orderBy("bookingIdSearchKey", "asc")
+    .limit(params.limit)
+    .get();
+
+  const refundDetails = await Promise.all(
+    bookingSnapshot.docs.map(async (bookingDoc) => {
+      const refundSnapshot = await params.firestore
+        .collection("refunds")
+        .doc(bookingDoc.id)
+        .get();
+      if (!refundSnapshot.exists) return null;
+      const refund = asRecord(refundSnapshot.data());
+      if (asInt(refund.schemaVersion, 0) !== 3) return null;
+      if (
+        params.statusFilter &&
+        asString(refund.state).toLowerCase() !== params.statusFilter
+      ) {
+        return null;
+      }
+      return await getCanonicalRefundAdminDetailDataV3({
+        firestore: params.firestore,
+        actor: params.actor,
+        bookingId: bookingDoc.id,
+      });
+    }),
+  );
+
+  const details = refundDetails.filter(Boolean) as Array<Record<string, unknown>>;
+  if (details.length === 0) {
+    return [];
+  }
+
+  const exactMatches = details.filter(
+    (detail) => normalizeBookingIdSearchKey(detail.bookingId) === normalizedPrefix,
+  );
+  if (exactMatches.length === 1) {
+    return exactMatches;
+  }
+  return details;
 }
 
 async function loadBookingRelatedState(
@@ -914,9 +1150,11 @@ async function buildBookingSummaryForAdmin(params: {
     loadUserDoc(params.firestore, params.booking.parentId),
     loadBankDoc(params.firestore, params.booking.providerId),
   ]);
+  const effectiveState = effectiveCanonicalBookingStateForAdmin(params.booking);
   return {
     bookingId: params.bookingId,
-    state: params.booking.state,
+    state: effectiveState,
+    storedState: params.booking.state,
     paymentStatus:
       params.actor.canViewFinancials ? params.booking.payment.status : null,
     bookingType: params.booking.bookingType,
@@ -955,18 +1193,50 @@ export async function listCanonicalBookingsForAdminDataV3(params: {
   const search = normalizeSearch(params.input.search);
 
   if (search) {
-    const exact = await loadCanonicalBooking(params.firestore, search);
-    if (exact.booking != null) {
+    const prefixed = await listCanonicalBookingsByPrefixForAdmin({
+      firestore: params.firestore,
+      actor: params.actor,
+      search,
+      stateFilter,
+      paymentStatusFilter,
+      bookingTypeFilter,
+    });
+    if (prefixed.length > 0) {
       return {
-        items: [await buildBookingSummaryForAdmin({
-          firestore: params.firestore,
-          actor: params.actor,
-          bookingId: search,
-          booking: exact.booking,
-        })],
+        items: prefixed,
         nextCursor: null,
       };
     }
+
+    const exact = await findCanonicalBookingByCaseInsensitiveId(
+      params.firestore,
+      search,
+    );
+    if (exact.booking != null && exact.bookingId != null) {
+      const summary = await buildBookingSummaryForAdmin({
+        firestore: params.firestore,
+        actor: params.actor,
+        bookingId: exact.bookingId,
+        booking: exact.booking,
+      });
+      const effectiveState = asString(summary.state).toUpperCase();
+      const paymentStatus = asString(summary.paymentStatus).toLowerCase();
+      const bookingType = asString(summary.bookingType).toUpperCase();
+      if (stateFilter && effectiveState !== stateFilter) {
+        return {items: [], nextCursor: null};
+      }
+      if (paymentStatusFilter && paymentStatus !== paymentStatusFilter) {
+        return {items: [], nextCursor: null};
+      }
+      if (bookingTypeFilter && bookingType !== bookingTypeFilter) {
+        return {items: [], nextCursor: null};
+      }
+      return {
+        items: [summary],
+        nextCursor: null,
+      };
+    }
+    return {items: [], nextCursor: null};
   }
 
   const baseQuery = params.firestore.collection("bookings");
@@ -979,7 +1249,8 @@ export async function listCanonicalBookingsForAdminDataV3(params: {
       const parsed = parseCanonicalBookingDocumentV3(asRecord(doc.data()));
       if (!parsed.ok) return false;
       const booking = parsed.booking;
-      if (stateFilter && booking.state.toUpperCase() !== stateFilter) return false;
+      const effectiveState = effectiveCanonicalBookingStateForAdmin(booking);
+      if (stateFilter && effectiveState.toUpperCase() !== stateFilter) return false;
       if (paymentStatusFilter &&
         booking.payment.status.toLowerCase() !== paymentStatusFilter) return false;
       if (disputeStatusFilter &&
@@ -1008,22 +1279,30 @@ export async function getCanonicalBookingAdminDetailDataV3(params: {
   actor: CanonicalActor;
   bookingId: string;
 }) {
-  const bookingState = await loadCanonicalBooking(params.firestore, params.bookingId);
-  if (bookingState.booking == null) {
+  const bookingState = await findCanonicalBookingByCaseInsensitiveId(
+    params.firestore,
+    params.bookingId,
+  );
+  if (bookingState.booking == null || bookingState.bookingId == null) {
     throw new HttpsError("not-found", "Canonical booking not found.", {
       issues: bookingState.issues,
     });
   }
   const [related, customerUser, providerBank, ledger, statusHistory] = await Promise.all([
-    loadBookingRelatedState(params.firestore, params.bookingId),
+    loadBookingRelatedState(params.firestore, bookingState.bookingId),
     loadUserDoc(params.firestore, bookingState.booking.parentId),
     loadBankDoc(params.firestore, bookingState.booking.providerId),
-    loadLedgerSummary(params.firestore, params.bookingId),
-    loadBookingEvents(params.firestore, params.bookingId),
+    loadLedgerSummary(params.firestore, bookingState.bookingId),
+    loadBookingEvents(params.firestore, bookingState.bookingId),
   ]);
+  const effectiveState = effectiveCanonicalBookingStateForAdmin(
+    bookingState.booking,
+  );
   return {
-    bookingId: params.bookingId,
+    bookingId: bookingState.bookingId,
     canonicalState: bookingState.booking.state,
+    storedState: bookingState.booking.state,
+    effectiveState,
     paymentState: bookingState.booking.payment.status,
     bookingType: bookingState.booking.bookingType,
     customer: customerSummaryFromBooking(bookingState.booking, customerUser),
@@ -1469,16 +1748,48 @@ export async function listCanonicalRefundsForAdminDataV3(params: {
   const search = normalizeSearch(params.input.search);
 
   if (search) {
-    const snapshot = await params.firestore.collection("refunds").doc(search).get();
-    if (!snapshot.exists) return {items: [], nextCursor: null};
-    const refund = asRecord(snapshot.data());
-    if (asInt(refund.schemaVersion, 0) !== 3) return {items: [], nextCursor: null};
-    const detail = await getCanonicalRefundAdminDetailDataV3({
+    const prefixed = await listRefundDetailsByBookingPrefix({
       firestore: params.firestore,
       actor: params.actor,
-      bookingId: search,
+      search,
+      statusFilter,
+      limit,
     });
-    return {items: [detail.summary], nextCursor: null};
+    if (prefixed.length > 0) {
+      return {
+        items: prefixed.map((detail) => asRecord(detail.summary)),
+        nextCursor: null,
+      };
+    }
+
+    const exact = await findCanonicalBookingByCaseInsensitiveId(
+      params.firestore,
+      search,
+    );
+    if (exact.bookingId != null) {
+      const snapshot = await params.firestore
+        .collection("refunds")
+        .doc(exact.bookingId)
+        .get();
+      if (!snapshot.exists) {
+        return {items: [], nextCursor: null};
+      }
+      const refund = asRecord(snapshot.data());
+      if (asInt(refund.schemaVersion, 0) !== 3) {
+        return {items: [], nextCursor: null};
+      }
+      if (statusFilter && asString(refund.state).toLowerCase() !== statusFilter) {
+        return {items: [], nextCursor: null};
+      }
+      const detail = await getCanonicalRefundAdminDetailDataV3({
+        firestore: params.firestore,
+        actor: params.actor,
+        bookingId: exact.bookingId,
+      });
+      return {items: [detail.summary], nextCursor: null};
+    }
+
+    return {items: [], nextCursor: null};
   }
 
   return await collectFilteredPage({

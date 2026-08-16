@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -39,13 +40,31 @@ class _CanonicalBookingRequestReviewScreenState
 
   CanonicalSlotRequestInput get _slotRequest => widget.input.slotRequest!;
 
+  String get _providerId {
+    final slots = _slotRequest.selection.slots;
+    return slots.isNotEmpty ? slots.first.providerId : '';
+  }
+
   Future<void> _submit() async {
     if (_isSubmitting) return;
+    if (kDebugMode) {
+      debugPrint(
+        '[BookingScheduleVerify] start providerId=$_providerId serviceId=${widget.input.serviceId} selectedStart=${_slotRequest.selection.scheduledStartAt.toIso8601String()} selectedEnd=${_slotRequest.selection.scheduledEndAt.toIso8601String()} timezone=${widget.timezone}',
+      );
+      debugPrint(
+        '[BookingCreateV3] start providerId=$_providerId serviceId=${widget.input.serviceId} selectedDays=${_slotRequest.selectedDays?.length ?? 0} slotCount=${_slotRequest.selection.slots.length}',
+      );
+    }
     setState(() => _isSubmitting = true);
     try {
       final result = await _bookingRepository.createBookingRequestV3(
         input: widget.input,
       );
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] success providerId=$_providerId serviceId=${widget.input.serviceId} bookingId=${result.bookingId}',
+        );
+      }
       if (!mounted) return;
       AppSnackbar.showSuccess(
         context,
@@ -65,6 +84,11 @@ class _CanonicalBookingRequestReviewScreenState
         ),
       );
     } on CanonicalBookingRequestException catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] failed providerId=$_providerId serviceId=${widget.input.serviceId} code=${error.code.name} safeMessage=${error.message} issues=${error.issues.join("|")}',
+        );
+      }
       if (!mounted) return;
       final isTimeout =
           error.message.toLowerCase().contains('deadline-exceeded') ||
@@ -75,7 +99,12 @@ class _CanonicalBookingRequestReviewScreenState
             ? 'We could not confirm the request in time. Tap Send request again to safely retry.'
             : error.message,
       );
-    } catch (_) {
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[BookingCreateV3] failed providerId=$_providerId serviceId=${widget.input.serviceId} safeMessage=unexpected_error error=$error',
+        );
+      }
       if (!mounted) return;
       AppSnackbar.showError(
         context,

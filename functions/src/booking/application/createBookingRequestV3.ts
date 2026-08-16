@@ -37,8 +37,10 @@ import {
   computeTimerStartsAt,
   normalizeServiceWorkingHours,
   type CanonicalServiceWorkingHoursSource,
+  type TimerStartResult,
 } from "./workingHours";
 import {validateCanonicalBookingRunway} from "./bookingRunway";
+import {normalizeServiceSchedulingMode} from "../../serviceScheduling";
 
 export type CanonicalServiceSource = CanonicalServiceWorkingHoursSource & {
   id: string;
@@ -133,6 +135,20 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function resolveCanonicalSchedulingMode(
+  service: Pick<
+    CanonicalServiceSource,
+    "schedulingMode" | "sessionDurationMinutes" | "startMinutes" | "endMinutes"
+  >,
+): string {
+  return normalizeServiceSchedulingMode({
+    schedulingMode: service.schedulingMode,
+    sessionDurationMinutes: service.sessionDurationMinutes ?? 0,
+    startMinutes: service.startMinutes,
+    endMinutes: service.endMinutes,
+  });
+}
+
 function cloneBooking(booking: CanonicalBookingDocumentV3): CanonicalBookingDocumentV3 {
   return structuredClone(booking);
 }
@@ -145,10 +161,56 @@ function firstName(fullName: string): string {
 
 function lastInitial(fullName: string): string {
   const trimmed = fullName.trim();
-  if (!trimmed) return "P";
+  if (!trimmed) return "";
   const parts = trimmed.split(/\s+/);
   const last = parts[parts.length - 1] ?? "";
-  return last ? last[0].toUpperCase() : "P";
+  return last ? last[0].toUpperCase() : "";
+}
+
+function buildRestrictedParentParticipantSnapshot(
+  parentId: string,
+): CanonicalBookingDocumentV3["participants"]["parent"] {
+  return {
+    parentId,
+    displayFirstName: "Customer",
+    lastInitial: "",
+    photoUrl: "",
+    completedBookingCount: 0,
+    rating: 0,
+  };
+}
+
+export function buildRevealedParentParticipantSnapshot(
+  parent: Pick<
+    AuthenticatedParentIdentity,
+    "uid" | "fullName" | "displayName" | "photoUrl" | "completedBookingCount" | "rating"
+  >,
+): CanonicalBookingDocumentV3["participants"]["parent"] {
+  const resolvedName = asString(parent.fullName) || asString(parent.displayName);
+  return {
+    parentId: parent.uid,
+    displayFirstName: firstName(resolvedName) || "Customer",
+    lastInitial: lastInitial(resolvedName),
+    photoUrl: asString(parent.photoUrl),
+    completedBookingCount: Math.max(parent.completedBookingCount ?? 0, 0),
+    rating: parent.rating ?? 0,
+  };
+}
+
+function bookingKeepsParentIdentityRestricted(
+  booking: Pick<CanonicalBookingDocumentV3, "lifecycle" | "privacy">,
+): boolean {
+  return booking.lifecycle.paidAt == null || booking.privacy.contactUnlockedAt == null;
+}
+
+export function applyRestrictedParentPrivacyForUnpaidBooking(
+  booking: CanonicalBookingDocumentV3,
+): CanonicalBookingDocumentV3 {
+  if (!bookingKeepsParentIdentityRestricted(booking)) {
+    return booking;
+  }
+  booking.participants.parent = buildRestrictedParentParticipantSnapshot(booking.parentId);
+  return booking;
 }
 
 function requestHash(input: CreateBookingRequestV3Input): string {
@@ -165,6 +227,7 @@ function buildServiceSnapshot(
   service: CanonicalServiceSource,
   input: CreateBookingRequestV3Input,
 ): CanonicalBookingDocumentV3["service"] {
+  const schedulingMode = resolveCanonicalSchedulingMode(service);
   const base = {
     serviceId: service.id,
     providerId: service.ownerUserId,
@@ -173,11 +236,11 @@ function buildServiceSnapshot(
     category: asString(service.category),
     bookingType: input.bookingType,
     timezone: asString(service.timezone) || "Asia/Kolkata",
-    schedulingMode: asString(service.schedulingMode) || undefined,
     capacitySnapshot: Math.max(asInt(service.capacity) ?? 1, 1),
     serviceLocationType: asString(service.serviceType) || "provider_location",
     currency: asString(service.currency) || "INR",
     snapshotVersion: 1 as const,
+    ...(schedulingMode ? {schedulingMode} : {}),
   };
   if (input.bookingType === "SLOT") {
     const schedule = input.schedule as SlotBookingSelection;
@@ -206,6 +269,7 @@ function buildServiceSnapshot(
 function buildSchedule(
   input: CreateBookingRequestV3Input,
   serviceTimezone: string,
+  serviceSchedulingMode: string,
 ): CanonicalBookingDocumentV3["schedule"] {
   if (input.bookingType === "SLOT") {
     const schedule = input.schedule as SlotBookingSelection;
@@ -222,7 +286,7 @@ function buildSchedule(
         serviceId: slot.serviceId,
         providerId: slot.providerId,
         timezone: slot.timezone,
-        schedulingMode: slot.schedulingMode,
+        schedulingMode: asString(slot.schedulingMode) || serviceSchedulingMode,
       })),
       segments: schedule.segments?.map((segment) => ({
         serviceDateKey: segment.serviceDateKey,
@@ -230,7 +294,7 @@ function buildSchedule(
         startAt: new Date(segment.startAt.getTime()),
         endAt: new Date(segment.endAt.getTime()),
         durationMinutes: segment.durationMinutes,
-        schedulingMode: segment.schedulingMode,
+        schedulingMode: asString(segment.schedulingMode) || serviceSchedulingMode,
       })),
       slotCount: schedule.slotCount,
       scheduledStartAt: new Date(schedule.scheduledStartAt.getTime()),
@@ -277,6 +341,7 @@ function buildRequestSafeBooking(params: {
   const state: CanonicalBookingState = immediateTimer ? "PENDING_PROVIDER" : "REQUESTED";
   const acceptDeadlineAt = computeAcceptDeadlineAt(params.timerStartsAt);
   const serviceTimezone = asString(params.service.timezone) || "Asia/Kolkata";
+  const serviceSchedulingMode = resolveCanonicalSchedulingMode(params.service);
   return {
     schemaVersion: CANONICAL_BOOKING_SCHEMA_VERSION,
     bookingModelVersion: CANONICAL_BOOKING_MODEL_VERSION,
@@ -284,14 +349,7 @@ function buildRequestSafeBooking(params: {
     bookingType: params.input.bookingType,
     state,
     participants: {
-      parent: {
-        parentId: params.parent.uid,
-        displayFirstName: firstName(asString(params.parent.fullName) || asString(params.parent.displayName)),
-        lastInitial: lastInitial(asString(params.parent.fullName) || asString(params.parent.displayName)),
-        photoUrl: asString(params.parent.photoUrl),
-        completedBookingCount: Math.max(params.parent.completedBookingCount ?? 0, 0),
-        rating: params.parent.rating ?? 0,
-      },
+      parent: buildRestrictedParentParticipantSnapshot(params.parent.uid),
       provider: {
         providerId: params.service.ownerUserId,
         displayName: asString(params.service.ownerName) || "Provider",
@@ -307,7 +365,11 @@ function buildRequestSafeBooking(params: {
       },
     },
     service: buildServiceSnapshot(params.service, params.input),
-    schedule: buildSchedule(params.input, serviceTimezone),
+    schedule: buildSchedule(
+      params.input,
+      serviceTimezone,
+      serviceSchedulingMode,
+    ),
     lifecycle: {
       requestedAt: new Date(params.requestedAt.getTime()),
       timerStartsAt: new Date(params.timerStartsAt.getTime()),
@@ -422,6 +484,7 @@ function buildRequestSafeBooking(params: {
     parentId: params.parent.uid,
     providerId: params.service.ownerUserId,
     serviceId: params.service.id,
+    bookingIdSearchKey: params.bookingId.toLowerCase(),
     stateQueryValue: state,
     bookingTypeQueryValue: params.input.bookingType,
     serviceAnchorAt: new Date(params.serviceAnchorAt.getTime()),
@@ -485,19 +548,33 @@ export function createBookingRequestV3(params: {
 
   const normalizedHours = normalizeServiceWorkingHours(params.service);
   if (!normalizedHours.ok) {
+    const primaryIssue = normalizedHours.issues[0];
     return {
       ok: false,
-      code: "INVALID_WORKING_HOURS",
-      message: "Service working-hours configuration is invalid.",
-      issues: normalizedHours.issues,
+      code: primaryIssue?.code ?? "INVALID_WORKING_HOURS",
+      message:
+        primaryIssue?.code === "INVALID_TIMEZONE" ?
+          "Provider timezone configuration is invalid." :
+          "Service working-hours configuration is invalid.",
+      issues: normalizedHours.issues.map((entry) => `${entry.code}:${entry.message}`),
     };
   }
 
-  const timerStart = computeTimerStartsAt({
-    requestedAt: params.authoritativeNow,
-    timezone: normalizedHours.workingHours.timezone,
-    workingHours: normalizedHours.workingHours,
-  });
+  let timerStart: TimerStartResult;
+  try {
+    timerStart = computeTimerStartsAt({
+      requestedAt: params.authoritativeNow,
+      timezone: normalizedHours.workingHours.timezone,
+      workingHours: normalizedHours.workingHours,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      code: "INVALID_TIMEZONE",
+      message: "Provider timezone configuration is invalid.",
+      issues: [error instanceof Error ? error.message : String(error)],
+    };
+  }
   const runway = validateCanonicalBookingRunway({
     bookingType: params.input.bookingType,
     schedule: params.input.schedule,
@@ -647,8 +724,15 @@ function responseSecondsFromTimer(booking: CanonicalBookingDocumentV3, at: Date)
   return Math.max(Math.round((at.getTime() - timerStartsAt.getTime()) / 1000), 0);
 }
 
+export const ACTIONABLE_PROVIDER_REQUEST_STATES = [
+  "REQUESTED",
+  "PENDING_PROVIDER",
+] as const;
+
 function actionableProviderRequestState(state: CanonicalBookingDocumentV3["state"]): boolean {
-  return state === "REQUESTED" || state === "PENDING_PROVIDER";
+  return ACTIONABLE_PROVIDER_REQUEST_STATES.includes(
+    state as typeof ACTIONABLE_PROVIDER_REQUEST_STATES[number],
+  );
 }
 
 function actionableCustomerPaymentState(state: CanonicalBookingDocumentV3["state"]): boolean {
@@ -910,6 +994,7 @@ function applyProviderResponse(params: {
   next.updatedAt = new Date(params.authoritativeNow.getTime());
   next.audit.lastUpdatedBy = "provider";
   next.audit.source = "booking_v3_internal";
+  applyRestrictedParentPrivacyForUnpaidBooking(next);
 
   const providerStats = applyProviderStatsMutation(
     params.existingProviderStats ?? emptyProviderStatsV3(),
@@ -1046,6 +1131,7 @@ export function cancelBookingRequestByParentV3(params: {
   next.cancellation.cancellationType = "parent_requested";
   next.updatedAt = new Date(params.authoritativeNow.getTime());
   next.audit.lastUpdatedBy = "parent";
+  applyRestrictedParentPrivacyForUnpaidBooking(next);
   return {
     ok: true,
     code: "UPDATED",
@@ -1105,6 +1191,7 @@ export function expirePendingProviderBookingV3(params: {
   next.lifecycle.responseSeconds = responseSecondsFromTimer(params.booking, deadline);
   next.updatedAt = new Date(params.authoritativeNow.getTime());
   next.audit.lastUpdatedBy = "system";
+  applyRestrictedParentPrivacyForUnpaidBooking(next);
   const providerStats = applyProviderStatsMutation(
     params.existingProviderStats ?? emptyProviderStatsV3(),
     {
@@ -1173,6 +1260,7 @@ export function expireAwaitingPaymentBookingV3(params: {
   const next = updateBookingState(params.booking, "PAYMENT_EXPIRED");
   next.updatedAt = new Date(params.authoritativeNow.getTime());
   next.audit.lastUpdatedBy = "system";
+  applyRestrictedParentPrivacyForUnpaidBooking(next);
   const providerStats = applyProviderStatsMutation(
     params.existingProviderStats ?? emptyProviderStatsV3(),
     {

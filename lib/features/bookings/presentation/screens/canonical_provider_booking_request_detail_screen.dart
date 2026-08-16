@@ -1238,13 +1238,7 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
   }
 
   static String _customerLabel(CanonicalBookingDocumentV3 booking) {
-    final first = booking.participants.parent.displayFirstName.trim();
-    final lastInitial = booking.participants.parent.lastInitial.trim();
-    final parts = <String>[
-      if (first.isNotEmpty) first,
-      if (lastInitial.isNotEmpty) '$lastInitial.',
-    ];
-    return parts.isEmpty ? 'Customer' : parts.join(' ');
+    return providerVisibleCustomerDisplayName(booking);
   }
 
   static String _bookingDateLabel(CanonicalBookingDocumentV3 booking) {

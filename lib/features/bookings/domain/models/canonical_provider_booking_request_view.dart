@@ -3,6 +3,24 @@ import 'booking_v3_models.dart';
 import '../../presentation/utils/canonical_booking_schedule_presentation.dart';
 import '../../presentation/utils/canonical_booking_presentation_state.dart';
 
+String providerVisibleCustomerDisplayName(
+  CanonicalBookingDocumentV3 booking, {
+  String? revealedFullName,
+}) {
+  if (!canProviderViewCustomerIdentity(booking)) {
+    return 'Customer';
+  }
+  final privateName = revealedFullName?.trim() ?? '';
+  if (privateName.isNotEmpty) return privateName;
+  final first = booking.participants.parent.displayFirstName.trim();
+  final lastInitial = booking.participants.parent.lastInitial.trim();
+  final parts = <String>[
+    if (first.isNotEmpty) first,
+    if (lastInitial.isNotEmpty) '$lastInitial.',
+  ];
+  return parts.isEmpty ? 'Customer' : parts.join(' ');
+}
+
 class CanonicalProviderBookingRequestView {
   final String bookingId;
   final BookingV3Type bookingType;
@@ -56,11 +74,6 @@ class CanonicalProviderBookingRequestView {
     final slotSchedule = schedule is CanonicalSlotBookingScheduleV3
         ? schedule
         : null;
-    final maskedName = [
-      booking.participants.parent.displayFirstName.trim(),
-      if (booking.participants.parent.lastInitial.trim().isNotEmpty)
-        '${booking.participants.parent.lastInitial.trim()}.',
-    ].join(' ');
     final schedulePresentation = buildCanonicalBookingSchedulePresentation(
       booking,
     );
@@ -72,9 +85,7 @@ class CanonicalProviderBookingRequestView {
       serviceTitle: booking.service.serviceTitle,
       animalType: booking.service.animalType,
       serviceCategory: booking.service.category,
-      maskedParentDisplayName: maskedName.trim().isEmpty
-          ? 'Pet parent'
-          : maskedName.trim(),
+      maskedParentDisplayName: providerVisibleCustomerDisplayName(booking),
       parentRating: booking.participants.parent.rating,
       completedBookingCount: booking.participants.parent.completedBookingCount,
       scheduledStartAt: slotSchedule?.scheduledStartAt,

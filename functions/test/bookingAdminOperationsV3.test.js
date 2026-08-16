@@ -7,6 +7,7 @@ const {
   listCanonicalDisputesForAdminDataV3,
   getCanonicalDisputeAdminDetailDataV3,
   listCanonicalBookingsForAdminDataV3,
+  getCanonicalBookingAdminDetailDataV3,
   listCanonicalProviderPayoutsForAdminDataV3,
   getCanonicalFinancialSummaryDataV3,
   listCanonicalNoShowCasesDataV3,
@@ -14,6 +15,7 @@ const {
   getCanonicalRefundAdminDetailDataV3,
 } = require("../lib/booking/bookingAdminOperationsV3.js");
 const {
+  buildAcceptedAwaitingPaymentSlotBookingFixture,
   buildCompletedFinalBookingFixture,
 } = require("../lib/booking/schema/bookingFixtures.js");
 
@@ -139,9 +141,17 @@ class FakeQuery {
 
     let docs = candidates.filter((doc) => this.filters.every((filter) => {
       const actual = doc.get(filter.field);
+      const actualComparable = comparableValue(actual);
+      const filterComparable = comparableValue(filter.value);
       switch (filter.op) {
       case "==":
-        return actual === filter.value;
+        return actualComparable === filterComparable;
+      case ">=":
+        return actualComparable >= filterComparable;
+      case "<":
+        return actualComparable < filterComparable;
+      case "<=":
+        return actualComparable <= filterComparable;
       default:
         throw new Error(`Unsupported filter op: ${filter.op}`);
       }
@@ -236,6 +246,7 @@ function buildAdminSeed() {
   const bookingTwo = structuredClone(booking);
   bookingTwo.updatedAt = new Date("2026-07-23T16:00:00.000Z");
   bookingTwo.createdAt = new Date("2026-07-23T10:00:00.000Z");
+  bookingTwo.bookingIdSearchKey = "booking-2";
   bookingTwo.dispute.description = "Older dispute.";
   bookingTwo.service.serviceTitle = "Pet Walking";
   bookingTwo.service.category = "Walking";
@@ -465,6 +476,150 @@ test("listCanonicalBookingsForAdminDataV3 rejects malformed cursor", async () =>
   );
 });
 
+test("listCanonicalBookingsForAdminDataV3 resolves booking IDs case-insensitively", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const booking = buildCompletedFinalBookingFixture();
+  booking.updatedAt = new Date("2026-08-15T18:30:00.000Z");
+  booking.createdAt = new Date("2026-08-15T17:30:00.000Z");
+  booking.bookingIdSearchKey = "guxodz2dcbuw1atcmkok";
+  firestore.store.set("bookings/guXODz2DCBuw1ATCMKOK", booking);
+
+  const result = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "  GUXODZ2DCBUW1ATCMKOK  "},
+  });
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].bookingId, "guXODz2DCBuw1ATCMKOK");
+});
+
+test("listCanonicalBookingsForAdminDataV3 returns all indexed prefix matches", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const first = buildCompletedFinalBookingFixture();
+  first.updatedAt = new Date("2026-08-15T18:30:00.000Z");
+  first.createdAt = new Date("2026-08-15T17:30:00.000Z");
+  first.bookingIdSearchKey = "guxodz2dcbuw1atcmkok";
+  firestore.store.set("bookings/guXODz2DCBuw1ATCMKOK", first);
+
+  const second = buildCompletedFinalBookingFixture();
+  second.updatedAt = new Date("2026-08-15T18:31:00.000Z");
+  second.createdAt = new Date("2026-08-15T17:31:00.000Z");
+  second.bookingIdSearchKey = "guxodz2dcbuw1atcmzzz";
+  firestore.store.set("bookings/guXODz2DCBuw1ATCMZZZ", second);
+
+  const result = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "guxodz2dcbuw1atcm"},
+  });
+
+  assert.equal(result.items.length, 2);
+  assert.deepEqual(
+    result.items.map((item) => item.bookingId).sort(),
+    ["guXODz2DCBuw1ATCMKOK", "guXODz2DCBuw1ATCMZZZ"],
+  );
+});
+
+test("listCanonicalBookingsForAdminDataV3 combines prefix search with filters", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const first = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  first.updatedAt = new Date("2026-08-15T18:30:00.000Z");
+  first.createdAt = new Date("2026-08-15T17:30:00.000Z");
+  first.bookingIdSearchKey = "guxprefix001";
+  first.payment.status = "ORDER_CREATED";
+  first.bookingType = "SLOT";
+  first.bookingTypeQueryValue = "SLOT";
+  firestore.store.set("bookings/guXPrefix001", first);
+
+  const second = buildCompletedFinalBookingFixture();
+  second.updatedAt = new Date("2026-08-15T18:31:00.000Z");
+  second.createdAt = new Date("2026-08-15T17:31:00.000Z");
+  second.bookingIdSearchKey = "guxprefix002";
+  second.payment.status = "CONFIRMED";
+  second.bookingType = "RANGE";
+  second.bookingTypeQueryValue = "RANGE";
+  firestore.store.set("bookings/guXPrefix002", second);
+
+  const result = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {
+      search: "guxprefix",
+      paymentStatus: "order_created",
+      bookingType: "slot",
+    },
+  });
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].bookingId, "guXPrefix001");
+});
+
+test("listCanonicalBookingsForAdminDataV3 falls back for legacy mixed-case IDs without normalized field", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const booking = buildCompletedFinalBookingFixture();
+  booking.updatedAt = new Date("2026-08-15T18:30:00.000Z");
+  booking.createdAt = new Date("2026-08-15T17:30:00.000Z");
+  delete booking.bookingIdSearchKey;
+  firestore.store.set("bookings/guXODz2DCBuw1ATCMKOK", booking);
+
+  const result = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "guxodz2dcbuw1atcmkok"},
+  });
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].bookingId, "guXODz2DCBuw1ATCMKOK");
+});
+
+test("listCanonicalBookingsForAdminDataV3 returns empty when searched booking is missing", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const result = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "missing-booking-id"},
+  });
+  assert.equal(result.items.length, 0);
+});
+
+test("booking admin list and detail expose effective payment-expired state", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  booking.updatedAt = new Date("2026-08-15T18:30:00.000Z");
+  booking.createdAt = new Date("2026-08-15T17:30:00.000Z");
+  booking.lifecycle.payDeadlineAt = new Date("2026-08-15T18:00:00.000Z");
+  booking.payDeadlineAt = booking.lifecycle.payDeadlineAt;
+  booking.payment.status = "ORDER_CREATED";
+  booking.bookingIdSearchKey = "guxodz2dcbuw1atcmkok";
+  firestore.store.set("bookings/guXODz2DCBuw1ATCMKOK", booking);
+
+  const list = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "GUXODZ2DCBUW1ATCMKOK", status: "PAYMENT_EXPIRED"},
+  });
+  assert.equal(list.items.length, 1);
+  assert.equal(list.items[0].state, "PAYMENT_EXPIRED");
+  assert.equal(list.items[0].storedState, "ACCEPTED_AWAITING_PAYMENT");
+
+  const detail = await getCanonicalBookingAdminDetailDataV3({
+    firestore,
+    actor,
+    bookingId: "GUXODZ2DCBUW1ATCMKOK",
+  });
+  assert.equal(detail.bookingId, "guXODz2DCBuw1ATCMKOK");
+  assert.equal(detail.effectiveState, "PAYMENT_EXPIRED");
+  assert.equal(detail.storedState, "ACCEPTED_AWAITING_PAYMENT");
+  assert.equal(detail.paymentState, "ORDER_CREATED");
+});
+
 test("listCanonicalProviderPayoutsForAdminDataV3 returns payout blockers and disabled-live flag", async () => {
   const {firestore} = buildAdminSeed();
   const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
@@ -497,6 +652,49 @@ test("listCanonicalRefundsForAdminDataV3 and refund detail expose canonical refu
   });
   assert.equal(detail.summary.customerRefundPaise, 12000);
   assert.equal(detail.summary.razorpayRefundReference, "rfnd_1");
+});
+
+test("listCanonicalRefundsForAdminDataV3 supports case-insensitive indexed booking prefix search", async () => {
+  const {firestore} = buildAdminSeed();
+  firestore.store.set("refunds/booking-2", {
+    schemaVersion: 3,
+    bookingModelVersion: "3.2",
+    state: "pending",
+    refundAmountPaise: 8000,
+    razorpayRefundId: "",
+    lastErrorCode: "",
+    createdAt: Timestamp.fromDate(new Date("2026-07-23T16:10:00.000Z")),
+    updatedAt: Timestamp.fromDate(new Date("2026-07-23T16:12:00.000Z")),
+  });
+
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+
+  const exactResult = await listCanonicalRefundsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "BOOKING-1", limit: 10},
+  });
+  assert.equal(exactResult.items.length, 1);
+  assert.equal(exactResult.items[0].bookingId, "booking-1");
+
+  const prefixResult = await listCanonicalRefundsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "BOOKING-", limit: 10},
+  });
+  assert.equal(prefixResult.items.length, 2);
+  assert.deepEqual(
+    prefixResult.items.map((item) => item.bookingId).sort(),
+    ["booking-1", "booking-2"],
+  );
+
+  const filteredResult = await listCanonicalRefundsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "BOOKING-", status: "processed", limit: 10},
+  });
+  assert.equal(filteredResult.items.length, 1);
+  assert.equal(filteredResult.items[0].bookingId, "booking-1");
 });
 
 test("listCanonicalNoShowCasesDataV3 returns no-show financial breakdown", async () => {

@@ -285,6 +285,8 @@ void main() {
     DateTime? paidAtOverride,
     DateTime? otpEnteredAtOverride,
     bool reviewSubmitted = false,
+    String parentDisplayFirstName = 'Nisha',
+    String parentLastInitial = 'G',
   }) {
     final map = buildCanonicalSlotFixture();
     final requestedAt = fixtureRequestedAtUtc();
@@ -294,6 +296,12 @@ void main() {
     final rawState = canonicalStateValue(state);
     map['state'] = rawState;
     map['stateQueryValue'] = rawState;
+    (((map['participants'] as Map<String, dynamic>)['parent'])
+            as Map<String, dynamic>)['displayFirstName'] =
+        parentDisplayFirstName;
+    (((map['participants'] as Map<String, dynamic>)['parent'])
+            as Map<String, dynamic>)['lastInitial'] =
+        parentLastInitial;
     map['serviceAnchorAt'] = slotStart;
     map['scheduledStartAt'] = slotStart;
     final slot =
@@ -398,6 +406,8 @@ void main() {
     DateTime? scheduledEndAtOverride,
     DateTime? paidAtOverride,
     DateTime? otpEnteredAtOverride,
+    String parentDisplayFirstName = 'Nisha',
+    String parentLastInitial = 'G',
   }) {
     return CanonicalBookingReadModel(
       documentId: 'booking-1',
@@ -409,6 +419,8 @@ void main() {
         scheduledEndAtOverride: scheduledEndAtOverride,
         paidAtOverride: paidAtOverride,
         otpEnteredAtOverride: otpEnteredAtOverride,
+        parentDisplayFirstName: parentDisplayFirstName,
+        parentLastInitial: parentLastInitial,
       ),
     );
   }
@@ -1222,6 +1234,46 @@ void main() {
       expect(find.text('Dog Walking'), findsOneWidget);
       expect(find.text('Time remaining'), findsOneWidget);
       expect(find.text('Expired'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'provider accepted-awaiting-payment list card hides legacy customer identity',
+    (tester) async {
+      final acceptedAwaitingPayment = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.acceptedAwaitingPayment,
+        paymentAttemptId: 'attempt-1',
+        payDeadlineAtOverride: DateTime.now().toUtc().add(
+          const Duration(minutes: 30),
+        ),
+        parentDisplayFirstName: 'Anita',
+        parentLastInitial: 'G',
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(
+          latestBookings: {'booking-1': acceptedAwaitingPayment},
+        ),
+        currentUserIdOverride: 'provider-1',
+        bookingStreamBuilder: (_, contextMode) => Stream.value(
+          contextMode == BookingContextMode.delivering
+              ? [acceptedAwaitingPayment]
+              : const [],
+        ),
+        providerRequestStreamBuilder: (_) => Stream.value([
+          CanonicalProviderBookingRequestView.fromBooking(
+            'booking-1',
+            acceptedAwaitingPayment.booking,
+          ),
+        ]),
+      );
+
+      await tester.tap(find.text('I Provide'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Anita G'), findsNothing);
+      expect(find.textContaining('Customer ·'), findsWidgets);
     },
   );
 

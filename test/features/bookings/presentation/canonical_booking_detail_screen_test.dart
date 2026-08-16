@@ -1469,6 +1469,7 @@ CanonicalBookingDocumentV3 _buildConfirmedBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
@@ -1538,6 +1539,7 @@ CanonicalBookingDocumentV3 _buildMultiSlotConfirmedBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
@@ -1609,6 +1611,7 @@ CanonicalBookingDocumentV3 _buildRangeConfirmedBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalRangeBookingScheduleV3(
@@ -1660,6 +1663,7 @@ CanonicalBookingDocumentV3 _buildMalformedSlotConfirmedBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
@@ -1709,6 +1713,7 @@ CanonicalBookingDocumentV3 _buildOverdueConfirmedBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
@@ -1758,9 +1763,21 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
   DateTime? noShowAt,
   DateTime? disputeDeadlineAt,
   bool otpVisibleToParent = true,
+  DateTime? paidAtOverride,
+  DateTime? contactUnlockedAtOverride,
+  DateTime? chatUnlockedAtOverride,
+  bool? isPaidContactUnlockedOverride,
+  String parentDisplayFirstName = 'Nisha',
+  String parentLastInitial = 'G',
+  bool includePaidLifecycle = true,
 }) {
   final requestedAt = serviceAnchorAt.subtract(const Duration(days: 2));
-  final paidAt = serviceAnchorAt.subtract(const Duration(days: 1, hours: 1));
+  final paidAt =
+      paidAtOverride ??
+      serviceAnchorAt.subtract(const Duration(days: 1, hours: 1));
+  final contactUnlockedAt = contactUnlockedAtOverride ?? paidAt;
+  final chatUnlockedAt = chatUnlockedAtOverride ?? paidAt;
+  final isPaidContactUnlocked = isPaidContactUnlockedOverride ?? true;
 
   return CanonicalBookingDocumentV3(
     schemaVersion: canonicalBookingSchemaVersion,
@@ -1768,11 +1785,11 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
     documentFormat: canonicalBookingDocumentFormat,
     bookingType: bookingType,
     state: state,
-    participants: const CanonicalBookingParticipantsV3(
+    participants: CanonicalBookingParticipantsV3(
       parent: CanonicalPublicParentParticipantV3(
         parentId: 'parent-1',
-        displayFirstName: 'Nisha',
-        lastInitial: 'G',
+        displayFirstName: parentDisplayFirstName,
+        lastInitial: parentLastInitial,
         photoUrl: '',
         completedBookingCount: 4,
         rating: 4.8,
@@ -1799,10 +1816,12 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
       providerResponseType: ProviderResponseTypeV3.accept,
       responseSeconds: 1800,
       payDeadlineAt: requestedAt.add(const Duration(days: 1, hours: 1)),
-      paymentStartedAt: paidAt.subtract(const Duration(minutes: 5)),
-      paidAt: paidAt,
+      paymentStartedAt: includePaidLifecycle
+          ? paidAt.subtract(const Duration(minutes: 5))
+          : null,
+      paidAt: includePaidLifecycle ? paidAt : paidAtOverride,
       paymentSeconds: 120,
-      otpGeneratedAt: paidAt,
+      otpGeneratedAt: includePaidLifecycle ? paidAt : null,
       otpEnteredAt: null,
       noShowAt: noShowAt,
       serviceEndedAt: null,
@@ -1843,9 +1862,13 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
       pricingVersion: 1,
     ),
     privacy: CanonicalBookingPrivacyV3(
-      isPaidContactUnlocked: true,
-      contactUnlockedAt: paidAt,
-      chatUnlockedAt: paidAt,
+      isPaidContactUnlocked: isPaidContactUnlocked,
+      contactUnlockedAt: includePaidLifecycle
+          ? contactUnlockedAt
+          : contactUnlockedAtOverride,
+      chatUnlockedAt: includePaidLifecycle
+          ? chatUnlockedAt
+          : chatUnlockedAtOverride,
       otpVisibleToParent: otpVisibleToParent,
       exactAddressUnlocked: true,
       privacyVersion: 1,
@@ -1952,6 +1975,7 @@ CanonicalBookingDocumentV3 _buildRawNoShowBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
@@ -2038,6 +2062,7 @@ CanonicalBookingDocumentV3 _buildInProgressBooking({DateTime? otpEnteredAt}) {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
