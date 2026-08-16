@@ -1,4 +1,5 @@
 import {FieldValue, Timestamp, type Firestore} from "firebase-admin/firestore";
+import * as logger from "firebase-functions/logger";
 
 import {
   buildPaymentCapturedProcessingNotification,
@@ -9,6 +10,7 @@ import {buildStoredBookingNotificationDocument} from "../../notifications/notifi
 import {BOOKING_CANCELLATION_COLLECTION} from "./cancellationOrchestrationV3";
 import {
   canonicalPaymentOrderMappingRef,
+  canonicalQrPaymentMappingRef,
   finalizeCapturedCanonicalPaymentV3,
 } from "./paymentOrchestrationV3";
 import {fetchRazorpayPaymentV3} from "./razorpayGateway";
@@ -41,6 +43,12 @@ function asString(value: unknown): string {
 
 function asInt(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value != null ?
+    value as Record<string, unknown> :
+    {};
 }
 
 function buildCancellationRefundNotification(params: {
@@ -140,17 +148,68 @@ async function loadCanonicalAttemptByPaymentId(params: {
   firestore: Firestore;
   razorpayPaymentId: string;
 }): Promise<{bookingId: string; paymentAttemptId: string} | null> {
-  const query = await params.firestore.collectionGroup("paymentAttempts")
-    .where("razorpayPaymentId", "==", params.razorpayPaymentId)
-    .limit(1)
-    .get();
-  if (query.empty) return null;
-  const attempt = query.docs[0].data() as CanonicalPaymentAttemptDocumentV3;
-  if (!attempt.bookingId || !attempt.paymentAttemptId) return null;
-  return {
-    bookingId: attempt.bookingId,
-    paymentAttemptId: attempt.paymentAttemptId,
-  };
+  try {
+    const query = await params.firestore.collectionGroup("paymentAttempts")
+      .where("razorpayPaymentId", "==", params.razorpayPaymentId)
+      .limit(1)
+      .get();
+    if (query.empty) return null;
+    const attempt = query.docs[0].data() as CanonicalPaymentAttemptDocumentV3;
+    if (!attempt.bookingId || !attempt.paymentAttemptId) return null;
+    return {
+      bookingId: attempt.bookingId,
+      paymentAttemptId: attempt.paymentAttemptId,
+    };
+  } catch (error) {
+    logger.warn("captured-payment-lookup-skipped", {
+      field: "razorpayPaymentId",
+      paymentId: params.razorpayPaymentId,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function loadCanonicalAttemptByOrderId(params: {
+  firestore: Firestore;
+  razorpayOrderId: string;
+}): Promise<{bookingId: string; paymentAttemptId: string} | null> {
+  try {
+    const query = await params.firestore.collectionGroup("paymentAttempts")
+      .where("razorpayOrderId", "==", params.razorpayOrderId)
+      .limit(1)
+      .get();
+    if (query.empty) return null;
+    const attempt = query.docs[0].data() as CanonicalPaymentAttemptDocumentV3;
+    if (!attempt.bookingId || !attempt.paymentAttemptId) return null;
+    return {
+      bookingId: attempt.bookingId,
+      paymentAttemptId: attempt.paymentAttemptId,
+    };
+  } catch (error) {
+    logger.warn("captured-order-lookup-skipped", {
+      field: "razorpayOrderId",
+      orderId: params.razorpayOrderId,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function loadCanonicalQrMapping(params: {
+  firestore: Firestore;
+  razorpayQrCodeId: string;
+}): Promise<{bookingId: string; paymentAttemptId: string} | null> {
+  const snapshot = await canonicalQrPaymentMappingRef(
+    params.firestore,
+    params.razorpayQrCodeId,
+  ).get();
+  if (!snapshot.exists) return null;
+  const data = snapshot.data() ?? {};
+  const bookingId = asString(data.bookingId);
+  const paymentAttemptId = asString(data.paymentAttemptId);
+  if (!bookingId || !paymentAttemptId) return null;
+  return {bookingId, paymentAttemptId};
 }
 
 async function loadBookingAndAttempt(params: {
@@ -177,12 +236,72 @@ async function loadBookingAndAttempt(params: {
   };
 }
 
+async function findAlreadyConfirmedReplay(params: {
+  firestore: Firestore;
+  razorpayPaymentId: string;
+}): Promise<{bookingId: string; paymentAttemptId: string} | null> {
+  const existingAttemptByPaymentId = await loadCanonicalAttemptByPaymentId({
+    firestore: params.firestore,
+    razorpayPaymentId: params.razorpayPaymentId,
+  });
+  if (!existingAttemptByPaymentId) return null;
+  const loaded = await loadBookingAndAttempt({
+    firestore: params.firestore,
+    bookingId: existingAttemptByPaymentId.bookingId,
+    paymentAttemptId: existingAttemptByPaymentId.paymentAttemptId,
+  });
+  if (
+    loaded.booking &&
+    asString(loaded.booking.payment?.razorpayPaymentId) === params.razorpayPaymentId
+  ) {
+    return existingAttemptByPaymentId;
+  }
+  return null;
+}
+
+function buildAlreadyConfirmedResult(mapping: {
+  bookingId: string;
+  paymentAttemptId: string;
+}): CanonicalWebhookResult {
+  return {
+    outcome: "ALREADY_CONFIRMED",
+    bookingId: mapping.bookingId,
+    paymentAttemptId: mapping.paymentAttemptId,
+    retryable: false,
+    failureCode: "",
+    notifications: [],
+  };
+}
+
+async function persistUnmappedCaptureReconciliation(params: {
+  firestore: Firestore;
+  eventId: string;
+  paymentId: string;
+  orderId: string;
+  amountPaise: number;
+  currency: string;
+  now: Date;
+}): Promise<void> {
+  await params.firestore.collection("paymentWebhookEvents").doc(params.eventId).set({
+    razorpayPaymentId: params.paymentId,
+    razorpayOrderId: params.orderId,
+    amountPaise: params.amountPaise,
+    currency: params.currency,
+    status: "RECONCILIATION_REQUIRED",
+    reconciliationStatus: "RECONCILIATION_REQUIRED",
+    reconciliationReason: "UNMAPPED_CAPTURE",
+    reconciliationRequiredAt: Timestamp.fromDate(params.now),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, {merge: true});
+}
+
 export async function routeCanonicalWebhookEventV3(params: {
   firestore: Firestore;
   eventId: string;
   eventName: string;
   paymentEntity: Record<string, unknown>;
   refundEntity: Record<string, unknown>;
+  qrCodeEntity?: Record<string, unknown>;
   keyId: string;
   keySecret: string;
   authoritativeNow?: Date;
@@ -202,32 +321,184 @@ export async function routeCanonicalWebhookEventV3(params: {
   const paymentId = asString(params.paymentEntity.id) ||
     asString(params.refundEntity.payment_id);
   const refundId = asString(params.refundEntity.id);
+  const qrCodeId = asString(params.qrCodeEntity?.id);
 
   if (params.eventName === "payment.captured") {
-    if (!orderId) {
+    if (!paymentId) {
       return {
         outcome: "INVALID_CANONICAL_MAPPING",
         bookingId: "",
         paymentAttemptId: "",
         retryable: false,
-        failureCode: "MISSING_ORDER_ID",
+        failureCode: "MISSING_PAYMENT_ID",
         notifications: [],
       };
     }
-    const mapping = await loadCanonicalMapping({
-      firestore: params.firestore,
-      razorpayOrderId: orderId,
-    });
+    let resolvedOrderId = orderId;
+    let mapping = resolvedOrderId ?
+      await loadCanonicalMapping({
+        firestore: params.firestore,
+        razorpayOrderId: resolvedOrderId,
+      }) :
+      null;
+    let mappingRecoverySource = "";
+    let paymentRecord = null;
+
+    if (!mapping && paymentId) {
+      logger.info("captured-payment-mapping-recovery-start", {
+        eventId: params.eventId,
+        paymentId,
+        orderId: resolvedOrderId,
+      });
+
+      const replay = await findAlreadyConfirmedReplay({
+        firestore: params.firestore,
+        razorpayPaymentId: paymentId,
+      });
+      if (replay) {
+        logger.info("captured-payment-replay", {
+          eventId: params.eventId,
+          paymentId,
+          bookingId: replay.bookingId,
+          paymentAttemptId: replay.paymentAttemptId,
+        });
+        return buildAlreadyConfirmedResult(replay);
+      }
+
+      if (resolvedOrderId) {
+        mapping = await loadCanonicalAttemptByOrderId({
+          firestore: params.firestore,
+          razorpayOrderId: resolvedOrderId,
+        });
+        if (mapping) mappingRecoverySource = "payment_attempt";
+      }
+
+      if (!mapping) {
+        try {
+          paymentRecord = await fetchRazorpayPayment({
+            keyId: params.keyId,
+            keySecret: params.keySecret,
+            paymentId,
+          });
+        } catch (_) {
+          logger.warn("captured-payment-mapping-recovery-failed", {
+            eventId: params.eventId,
+            paymentId,
+            orderId: resolvedOrderId,
+            reason: "PAYMENT_FETCH_FAILED",
+          });
+          await persistUnmappedCaptureReconciliation({
+            firestore: params.firestore,
+            eventId: params.eventId,
+            paymentId,
+            orderId: resolvedOrderId,
+            amountPaise: asInt(params.paymentEntity.amount, 0),
+            currency: asString(params.paymentEntity.currency) || "INR",
+            now: authoritativeNow,
+          });
+          return {
+            outcome: "RECONCILIATION_REQUIRED",
+            bookingId: "",
+            paymentAttemptId: "",
+            retryable: true,
+            failureCode: "PAYMENT_FETCH_FAILED",
+            notifications: [],
+          };
+        }
+
+        resolvedOrderId = resolvedOrderId || paymentRecord.orderId;
+        if (resolvedOrderId) {
+          mapping = await loadCanonicalMapping({
+            firestore: params.firestore,
+            razorpayOrderId: resolvedOrderId,
+          });
+          if (mapping) mappingRecoverySource = "payment_fetch";
+        }
+        if (!mapping && paymentRecord.orderId) {
+          mapping = await loadCanonicalAttemptByOrderId({
+            firestore: params.firestore,
+            razorpayOrderId: paymentRecord.orderId,
+          });
+          if (mapping) mappingRecoverySource = "payment_attempt";
+        }
+        if (!mapping) {
+          const notes = asRecord(paymentRecord.notes);
+          const notesBookingId = asString(notes.bookingId);
+          const notesPaymentAttemptId = asString(notes.paymentAttemptId);
+          if (notesBookingId && notesPaymentAttemptId) {
+            const loadedFromNotes = await loadBookingAndAttempt({
+              firestore: params.firestore,
+              bookingId: notesBookingId,
+              paymentAttemptId: notesPaymentAttemptId,
+            });
+            if (
+              loadedFromNotes.booking &&
+              loadedFromNotes.attempt &&
+              asString(loadedFromNotes.attempt.bookingId) === notesBookingId &&
+              asString(loadedFromNotes.attempt.paymentAttemptId) === notesPaymentAttemptId &&
+              (
+                !resolvedOrderId ||
+                !asString(loadedFromNotes.attempt.razorpayOrderId) ||
+                asString(loadedFromNotes.attempt.razorpayOrderId) === resolvedOrderId
+              )
+            ) {
+              mapping = {
+                bookingId: notesBookingId,
+                paymentAttemptId: notesPaymentAttemptId,
+              };
+              mappingRecoverySource = "payment_notes";
+            }
+          }
+        }
+      }
+    }
+
     if (!mapping) {
+      logger.warn("captured-payment-reconciliation-required", {
+        eventId: params.eventId,
+        paymentId,
+        orderId: resolvedOrderId,
+      });
+      await persistUnmappedCaptureReconciliation({
+        firestore: params.firestore,
+        eventId: params.eventId,
+        paymentId,
+        orderId: resolvedOrderId,
+        amountPaise: paymentRecord?.amountPaise ?? asInt(params.paymentEntity.amount, 0),
+        currency: paymentRecord?.currency ?? (asString(params.paymentEntity.currency) || "INR"),
+        now: authoritativeNow,
+      });
       return {
-        outcome: "IGNORED_UNMAPPED",
+        outcome: paymentId ? "RECONCILIATION_REQUIRED" : "INVALID_CANONICAL_MAPPING",
         bookingId: "",
         paymentAttemptId: "",
-        retryable: false,
-        failureCode: "",
+        retryable: Boolean(paymentId),
+        failureCode: paymentId ? "UNMAPPED_CAPTURE" : "MISSING_ORDER_ID",
         notifications: [],
       };
     }
+
+    if (mappingRecoverySource) {
+      logger.info("captured-payment-mapping-recovery-success", {
+        eventId: params.eventId,
+        paymentId,
+        orderId: resolvedOrderId,
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        source: mappingRecoverySource,
+      });
+    }
+
+    if (resolvedOrderId) {
+      await canonicalPaymentOrderMappingRef(params.firestore, resolvedOrderId).set({
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        schemaVersion: 1,
+        updatedAt: FieldValue.serverTimestamp(),
+        recoveredAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+
     const loaded = await loadBookingAndAttempt({
       firestore: params.firestore,
       bookingId: mapping.bookingId,
@@ -250,7 +521,7 @@ export async function routeCanonicalWebhookEventV3(params: {
       .collection("paymentAttempts")
       .doc(mapping.paymentAttemptId)
       .set({
-        razorpayOrderId: orderId,
+        razorpayOrderId: resolvedOrderId,
         razorpayPaymentId: paymentId,
         captureReportedAt: Timestamp.fromDate(authoritativeNow),
         verificationSource: "webhook",
@@ -258,42 +529,43 @@ export async function routeCanonicalWebhookEventV3(params: {
         updatedAt: FieldValue.serverTimestamp(),
       }, {merge: true});
 
-    let paymentRecord;
-    try {
-      paymentRecord = await fetchRazorpayPayment({
-        keyId: params.keyId,
-        keySecret: params.keySecret,
-        paymentId,
-      });
-    } catch (_) {
-      await params.firestore
-        .collection("bookings")
-        .doc(mapping.bookingId)
-        .collection("paymentAttempts")
-        .doc(mapping.paymentAttemptId)
-        .set({
-          state: "CAPTURED_REQUIRES_RECONCILIATION",
-          nextReconciliationAt: Timestamp.fromDate(authoritativeNow),
-          reconciliationAttemptCount: FieldValue.increment(1),
-          lastReconciliationCode: "WEBHOOK_FETCH_FAILED",
-          updatedAt: FieldValue.serverTimestamp(),
-        }, {merge: true});
-      return {
-        outcome: "RECONCILIATION_REQUIRED",
-        bookingId: mapping.bookingId,
-        paymentAttemptId: mapping.paymentAttemptId,
-        retryable: true,
-        failureCode: "PAYMENT_FETCH_FAILED",
-        notifications: buildPaymentCapturedProcessingNotification({
+    if (!paymentRecord) {
+      try {
+        paymentRecord = await fetchRazorpayPayment({
+          keyId: params.keyId,
+          keySecret: params.keySecret,
+          paymentId,
+        });
+      } catch (_) {
+        await params.firestore
+          .collection("bookings")
+          .doc(mapping.bookingId)
+          .collection("paymentAttempts")
+          .doc(mapping.paymentAttemptId)
+          .set({
+            state: "CAPTURED_REQUIRES_RECONCILIATION",
+            nextReconciliationAt: Timestamp.fromDate(authoritativeNow),
+            reconciliationAttemptCount: FieldValue.increment(1),
+            lastReconciliationCode: "WEBHOOK_FETCH_FAILED",
+            updatedAt: FieldValue.serverTimestamp(),
+          }, {merge: true});
+        return {
+          outcome: "RECONCILIATION_REQUIRED",
           bookingId: mapping.bookingId,
-          parentId: loaded.booking.parentId,
-          bookingType: loaded.booking.bookingType,
-          state: loaded.booking.state,
-        }),
-      };
+          paymentAttemptId: mapping.paymentAttemptId,
+          retryable: true,
+          failureCode: "PAYMENT_FETCH_FAILED",
+          notifications: buildPaymentCapturedProcessingNotification({
+            bookingId: mapping.bookingId,
+            parentId: loaded.booking.parentId,
+            bookingType: loaded.booking.bookingType,
+            state: loaded.booking.state,
+          }),
+        };
+      }
     }
 
-    if (paymentRecord.orderId !== orderId ||
+    if (paymentRecord.orderId !== resolvedOrderId ||
       paymentRecord.amountPaise !== loaded.attempt.amountPaise ||
       paymentRecord.currency !== loaded.attempt.currency) {
       return {
@@ -352,6 +624,15 @@ export async function routeCanonicalWebhookEventV3(params: {
       keySecret: params.keySecret,
       authoritativeNow,
     });
+    if (!result.ok && result.code !== "PRIVATE_REPAIR_REQUIRED") {
+      logger.warn("captured-payment-duplicate-refund-required", {
+        eventId: params.eventId,
+        paymentId: paymentRecord.id,
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        code: result.code,
+      });
+    }
     await persistNotificationsFn({
       firestore: params.firestore,
       notifications: result.ok ?
@@ -376,6 +657,215 @@ export async function routeCanonicalWebhookEventV3(params: {
       retryable: false,
       failureCode: result.ok ? "" : result.code,
       notifications: result.notifications,
+    };
+  }
+
+  if (params.eventName === "qr_code.credited") {
+    if (!qrCodeId) {
+      return {
+        outcome: "INVALID_CANONICAL_MAPPING",
+        bookingId: "",
+        paymentAttemptId: "",
+        retryable: false,
+        failureCode: "MISSING_QR_CODE_ID",
+        notifications: [],
+      };
+    }
+    const mapping = await loadCanonicalQrMapping({
+      firestore: params.firestore,
+      razorpayQrCodeId: qrCodeId,
+    });
+    if (!mapping) {
+      return {
+        outcome: "IGNORED_UNMAPPED",
+        bookingId: "",
+        paymentAttemptId: "",
+        retryable: false,
+        failureCode: "",
+        notifications: [],
+      };
+    }
+    const loaded = await loadBookingAndAttempt({
+      firestore: params.firestore,
+      bookingId: mapping.bookingId,
+      paymentAttemptId: mapping.paymentAttemptId,
+    });
+    if (!loaded.booking || !loaded.attempt) {
+      return {
+        outcome: "INVALID_CANONICAL_MAPPING",
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        retryable: false,
+        failureCode: "MISSING_BOOKING_OR_ATTEMPT",
+        notifications: [],
+      };
+    }
+    if (loaded.attempt.paymentMethod !== "qr" ||
+      loaded.attempt.razorpayQrCodeId !== qrCodeId) {
+      return {
+        outcome: "INVALID_CANONICAL_MAPPING",
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        retryable: false,
+        failureCode: "QR_MAPPING_MISMATCH",
+        notifications: [],
+      };
+    }
+
+    await params.firestore
+      .collection("bookings")
+      .doc(mapping.bookingId)
+      .collection("paymentAttempts")
+      .doc(mapping.paymentAttemptId)
+      .set({
+        razorpayPaymentId: paymentId,
+        captureReportedAt: Timestamp.fromDate(authoritativeNow),
+        verificationSource: "webhook",
+        qrState: "PAYMENT_CAPTURED",
+        lastReconciledAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    await canonicalQrPaymentMappingRef(params.firestore, qrCodeId).set({
+      bookingId: mapping.bookingId,
+      paymentAttemptId: mapping.paymentAttemptId,
+      status: "PAYMENT_CAPTURED",
+      updatedAt: FieldValue.serverTimestamp(),
+      razorpayPaymentId: paymentId,
+    }, {merge: true});
+
+    if (asInt(params.paymentEntity.amount, 0) !== loaded.attempt.amountPaise) {
+      return {
+        outcome: "INVALID_CANONICAL_MAPPING",
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        retryable: false,
+        failureCode: "PAYMENT_MISMATCH",
+        notifications: [],
+      };
+    }
+    if ((asString(params.paymentEntity.currency) || "INR") !== loaded.attempt.currency) {
+      return {
+        outcome: "INVALID_CANONICAL_MAPPING",
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        retryable: false,
+        failureCode: "PAYMENT_CURRENCY_MISMATCH",
+        notifications: [],
+      };
+    }
+    if (asString(params.paymentEntity.status).toLowerCase() !== "captured") {
+      return {
+        outcome: "RECONCILIATION_REQUIRED",
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        retryable: true,
+        failureCode: "PAYMENT_NOT_CAPTURED",
+        notifications: buildPaymentCapturedProcessingNotification({
+          bookingId: mapping.bookingId,
+          parentId: loaded.booking.parentId,
+          bookingType: loaded.booking.bookingType,
+          state: loaded.booking.state,
+        }),
+      };
+    }
+
+    const result = await finalizeCapturedPayment({
+      firestore: params.firestore,
+      facts: {
+        bookingId: mapping.bookingId,
+        paymentAttemptId: mapping.paymentAttemptId,
+        razorpayOrderId: "",
+        razorpayPaymentId: paymentId,
+        capturedAmountPaise: asInt(params.paymentEntity.amount, 0),
+        currency: asString(params.paymentEntity.currency) || "INR",
+        capturedAt: authoritativeNow,
+        verificationSource: "webhook",
+        sourceEventId: params.eventId,
+      },
+      keyId: params.keyId,
+      keySecret: params.keySecret,
+      authoritativeNow,
+    });
+    await canonicalQrPaymentMappingRef(params.firestore, qrCodeId).set({
+      status: result.ok ? "CONFIRMED" : "REFUND_REQUIRED",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await persistNotificationsFn({
+      firestore: params.firestore,
+      notifications: result.ok ?
+        result.notifications :
+        result.code === "PRIVATE_REPAIR_REQUIRED" ?
+          [] :
+          buildPaymentRefundRequiredNotification({
+            bookingId: mapping.bookingId,
+            parentId: loaded.booking.parentId,
+            providerId: loaded.booking.providerId,
+            bookingType: loaded.booking.bookingType,
+            state: result.booking.state,
+          }),
+      actorId: "payment_gateway",
+    });
+    return {
+      outcome: result.ok ?
+        (result.code === "IDEMPOTENT_REPLAY" ? "ALREADY_CONFIRMED" : "CONFIRMED") :
+        (result.code === "PRIVATE_REPAIR_REQUIRED" ? "PRIVATE_REPAIR_REQUIRED" : "REFUND_REQUIRED"),
+      bookingId: mapping.bookingId,
+      paymentAttemptId: mapping.paymentAttemptId,
+      retryable: false,
+      failureCode: result.ok ? "" : result.code,
+      notifications: result.notifications,
+    };
+  }
+
+  if (params.eventName === "qr_code.closed") {
+    if (!qrCodeId) {
+      return {
+        outcome: "NON_CAPTURE_EVENT",
+        bookingId: "",
+        paymentAttemptId: "",
+        retryable: false,
+        failureCode: "MISSING_QR_CODE_ID",
+        notifications: [],
+      };
+    }
+    const mapping = await loadCanonicalQrMapping({
+      firestore: params.firestore,
+      razorpayQrCodeId: qrCodeId,
+    });
+    if (!mapping) {
+      return {
+        outcome: "IGNORED_UNMAPPED",
+        bookingId: "",
+        paymentAttemptId: "",
+        retryable: false,
+        failureCode: "",
+        notifications: [],
+      };
+    }
+    await params.firestore
+      .collection("bookings")
+      .doc(mapping.bookingId)
+      .collection("paymentAttempts")
+      .doc(mapping.paymentAttemptId)
+      .set({
+        qrState: "CLOSED",
+        qrClosedAt: Timestamp.fromDate(authoritativeNow),
+        qrCloseReason: asString(params.qrCodeEntity?.close_reason) || "closed",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    await canonicalQrPaymentMappingRef(params.firestore, qrCodeId).set({
+      status: "CLOSED",
+      updatedAt: FieldValue.serverTimestamp(),
+      closedAt: FieldValue.serverTimestamp(),
+      closeReason: asString(params.qrCodeEntity?.close_reason) || "closed",
+    }, {merge: true});
+    return {
+      outcome: "NON_CAPTURE_EVENT",
+      bookingId: mapping.bookingId,
+      paymentAttemptId: mapping.paymentAttemptId,
+      retryable: false,
+      failureCode: "",
+      notifications: [],
     };
   }
 

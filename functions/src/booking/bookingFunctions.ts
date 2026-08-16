@@ -8,6 +8,7 @@ export {
   previewBookingCancellationV3,
   cancelConfirmedBookingByCustomerV3,
   cancelConfirmedBookingByProviderV3,
+  createBookingQrPaymentV3,
   createRazorpayPaymentOrderV3,
   previewBookingPaymentPricingV3,
   verifyBookingStartOtpV3,

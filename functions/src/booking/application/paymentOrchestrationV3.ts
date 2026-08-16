@@ -24,6 +24,7 @@ import {
   CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION,
   parseCanonicalPaymentAttemptDocumentV3,
 } from "../schema/paymentAttemptDocumentV3";
+import type {CanonicalPaymentMethod} from "../domain/paymentContracts";
 import {parseCanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "../schema/timestampNormalization";
 import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
@@ -31,7 +32,11 @@ import {
   type ValidatedOfferCampaignSelection,
 } from "../../offers/application/validateOfferCampaignForBooking";
 import {consumeOfferUsageInTransaction} from "../../offers/application/consumeOfferUsage";
-import type {AuthenticatedParentIdentity, CanonicalServiceSource} from "./createBookingRequestV3";
+import {
+  buildRevealedParentParticipantSnapshot,
+  type AuthenticatedParentIdentity,
+  type CanonicalServiceSource,
+} from "./createBookingRequestV3";
 import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEventsWriter";
 import {
   buildBookingConfirmedNotification,
@@ -66,6 +71,8 @@ export const CANONICAL_RECONCILIATION_ATTEMPT_STATES = [
 
 export const CANONICAL_PAYMENT_ORDER_MAPPINGS_COLLECTION =
   "canonicalPaymentOrderMappings";
+export const CANONICAL_QR_PAYMENT_MAPPINGS_COLLECTION =
+  "canonicalQrPaymentMappings";
 
 export type CanonicalPricingResolution = {
   financialSnapshot: NonNullable<CanonicalBookingDocumentV3["financials"]>;
@@ -170,7 +177,13 @@ export type FinalizePaymentSuccess = {
 
 export type FinalizePaymentFailure = {
   ok: false;
-  code: "REFUND_REQUIRED" | "PAYMENT_EXPIRED" | "CAPACITY_EXHAUSTED" | "MALFORMED_BOOKING" | "PRIVATE_REPAIR_REQUIRED";
+  code:
+    | "REFUND_REQUIRED"
+    | "PAYMENT_EXPIRED"
+    | "CAPACITY_EXHAUSTED"
+    | "MALFORMED_BOOKING"
+    | "PRIVATE_REPAIR_REQUIRED"
+    | "CAPTURE_AFTER_BOOKING_CONFIRMED";
   booking: CanonicalBookingDocumentV3;
   paymentAttempt: CanonicalPaymentAttemptDocumentV3;
   refundInstruction: Record<string, unknown> | null;
@@ -581,24 +594,27 @@ export function validatePreCheckoutAvailabilityV3(params: {
   };
 }
 
-function createDeterministicPaymentAttemptId(params: {
+export function createDeterministicPaymentAttemptId(params: {
   bookingId: string;
   parentId: string;
   pricingHash: string;
+  paymentMethod?: CanonicalPaymentMethod;
 }): string {
+  const paymentMethod = params.paymentMethod ?? "checkout";
   return `attempt_${createHash("sha256")
-    .update(`${params.bookingId}:${params.parentId}:${params.pricingHash}`)
+    .update(`${params.bookingId}:${params.parentId}:${params.pricingHash}:${paymentMethod}`)
     .digest("hex")
     .slice(0, 20)}`;
 }
 
-function buildPaymentAttemptDocument(params: {
+export function buildPaymentAttemptDocument(params: {
   bookingId: string;
   booking: CanonicalBookingDocumentV3;
   pricing: CanonicalPricingResolution;
   paymentAttemptId?: string;
   availabilityHash: string;
   authoritativeNow: Date;
+  paymentMethod?: CanonicalPaymentMethod;
 }): CanonicalPaymentAttemptDocumentV3 {
   const payDeadlineAt = params.booking.lifecycle.payDeadlineAt;
   if (!payDeadlineAt) {
@@ -609,7 +625,9 @@ function buildPaymentAttemptDocument(params: {
       bookingId: params.bookingId,
       parentId: params.booking.parentId,
       pricingHash: params.pricing.pricingHash,
+      paymentMethod: params.paymentMethod,
     });
+  const paymentMethod = params.paymentMethod ?? "checkout";
   return {
     schemaVersion: CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION,
     paymentAttemptId,
@@ -621,6 +639,7 @@ function buildPaymentAttemptDocument(params: {
     razorpayPaymentId: "",
     amountPaise: params.pricing.customerPaidPaise,
     currency: params.pricing.financialSnapshot.currency,
+    paymentMethod,
     offerCampaignId:
       params.pricing.couponSnapshot?.offerCampaignId ??
       params.pricing.couponSnapshot?.couponId ??
@@ -658,6 +677,13 @@ function buildPaymentAttemptDocument(params: {
       couponDiscountPaise: params.pricing.couponDiscountPaise,
     },
     couponSnapshot: params.pricing.couponSnapshot,
+    razorpayQrCodeId: "",
+    razorpayQrImageUrl: "",
+    qrState: "",
+    qrCreatedAt: null,
+    qrExpiresAt: null,
+    qrClosedAt: null,
+    qrCloseReason: "",
   };
 }
 
@@ -668,6 +694,15 @@ export function canonicalPaymentOrderMappingRef(
   return firestore
     .collection(CANONICAL_PAYMENT_ORDER_MAPPINGS_COLLECTION)
     .doc(razorpayOrderId);
+}
+
+export function canonicalQrPaymentMappingRef(
+  firestore: Firestore,
+  razorpayQrCodeId: string,
+): FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData> {
+  return firestore
+    .collection(CANONICAL_QR_PAYMENT_MAPPINGS_COLLECTION)
+    .doc(razorpayQrCodeId);
 }
 
 export function nextReconciliationAtForAttempt(params: {
@@ -1014,6 +1049,7 @@ function buildConfirmedBooking(params: {
   bookingId: string;
   booking: CanonicalBookingDocumentV3;
   paymentAttempt: CanonicalPaymentAttemptDocumentV3;
+  parent: AuthenticatedParentIdentity;
   paidAt: Date;
   otpGeneratedAt: Date;
   verificationSource: "callable" | "webhook" | "reconciliation" | "zero_payable";
@@ -1036,6 +1072,7 @@ function buildConfirmedBooking(params: {
   next.payment.capturedAt = new Date(params.paidAt.getTime());
   next.payment.verifiedAt = new Date(params.paidAt.getTime());
   next.payment.verificationSource = params.verificationSource;
+  next.participants.parent = buildRevealedParentParticipantSnapshot(params.parent);
   next.privacy.isPaidContactUnlocked = true;
   next.privacy.contactUnlockedAt = new Date(params.paidAt.getTime());
   next.privacy.chatUnlockedAt = new Date(params.paidAt.getTime());
@@ -1113,7 +1150,17 @@ export function finalizeCapturedBookingPaymentV3(params: {
   verificationSource: CanonicalPaymentFinalizeSource;
 }): FinalizePaymentResult {
   const providerPrivate = params.providerPrivate ?? null;
-  if (params.booking.state === "CONFIRMED" && params.paymentAttempt.state === "CONFIRMED") {
+  const incomingPaymentId = params.razorpayPayment?.id ?? "";
+  const canonicalConfirmedPaymentId =
+    params.booking.payment.razorpayPaymentId ||
+    params.paymentAttempt.razorpayPaymentId;
+
+  if (
+    params.booking.state === "CONFIRMED" &&
+    (!incomingPaymentId ||
+      !canonicalConfirmedPaymentId ||
+      incomingPaymentId === canonicalConfirmedPaymentId)
+  ) {
     const paidAt = params.booking.lifecycle.paidAt ?? params.authoritativeNow;
     if (!hasReusableBookingPrivateForConfirmedReplay(params.existingBookingPrivate)) {
       return {
@@ -1168,6 +1215,68 @@ export function finalizeCapturedBookingPaymentV3(params: {
           providerPrivate,
         ),
       },
+    };
+  }
+
+  if (
+    params.booking.state === "CONFIRMED" &&
+    params.razorpayPayment != null &&
+    canonicalConfirmedPaymentId &&
+    incomingPaymentId !== canonicalConfirmedPaymentId
+  ) {
+    const attempt = cloneAttempt(params.paymentAttempt);
+    attempt.state = "REFUND_REQUIRED";
+    attempt.razorpayPaymentId = params.razorpayPayment.id;
+    if (attempt.paymentMethod !== "qr") {
+      attempt.razorpayOrderId = params.razorpayPayment.orderId;
+    }
+    attempt.captureReportedAt = new Date(params.authoritativeNow.getTime());
+    attempt.captureCreatedAt =
+      params.razorpayPayment.capturedAt ??
+      params.razorpayPayment.createdAt ??
+      params.authoritativeNow;
+    attempt.refundRequiredAt = new Date(params.authoritativeNow.getTime());
+    attempt.updatedAt = new Date(params.authoritativeNow.getTime());
+    attempt.verificationSource = params.verificationSource;
+    attempt.failureCode = "DUPLICATE_CAPTURE_AFTER_CONFIRMATION";
+    attempt.failureMessage =
+      "A second payment was captured after this booking had already been confirmed.";
+    if (attempt.paymentMethod === "qr") {
+      attempt.qrState = "REFUND_REQUIRED";
+    }
+    return {
+      ok: false,
+      code: "CAPTURE_AFTER_BOOKING_CONFIRMED",
+      booking: cloneBooking(params.booking),
+      paymentAttempt: attempt,
+      refundInstruction: buildCanonicalRefundInstruction({
+        bookingId: params.bookingId,
+        booking: params.booking,
+        paymentAttempt: attempt,
+        refundAmountPaise: attempt.amountPaise,
+        reasonCode: "DUPLICATE_CAPTURE_AFTER_CONFIRMATION",
+        now: params.authoritativeNow,
+      }),
+      notifications: buildPaymentRefundRequiredNotification({
+        bookingId: params.bookingId,
+        parentId: params.booking.parentId,
+        providerId: params.booking.providerId,
+        bookingType: params.booking.bookingType,
+        state: params.booking.state,
+      }),
+      events: [
+        buildBookingEventPlan({
+          bookingId: params.bookingId,
+          event: "payment_abandoned",
+          actor: "payment_gateway",
+          at: params.authoritativeNow,
+          meta: {
+            code: "DUPLICATE_CAPTURE_AFTER_CONFIRMATION",
+            paymentAttemptId: attempt.paymentAttemptId,
+          },
+        }),
+      ],
+      message: attempt.failureMessage,
     };
   }
 
@@ -1320,7 +1429,10 @@ export function finalizeCapturedBookingPaymentV3(params: {
   attempt.captureCreatedAt = captureAt;
   attempt.verificationSource = params.verificationSource;
   if (params.razorpayPayment) {
-    if (params.razorpayPayment.orderId !== attempt.razorpayOrderId) {
+    if (
+      attempt.paymentMethod !== "qr" &&
+      params.razorpayPayment.orderId !== attempt.razorpayOrderId
+    ) {
       throw new HttpsError("failed-precondition", "Razorpay order does not match the payment attempt.");
     }
     if (params.razorpayPayment.amountPaise !== attempt.amountPaise) {
@@ -1330,6 +1442,9 @@ export function finalizeCapturedBookingPaymentV3(params: {
       throw new HttpsError("failed-precondition", "Razorpay currency does not match the payment attempt.");
     }
     attempt.razorpayPaymentId = params.razorpayPayment.id;
+    if (attempt.paymentMethod === "qr") {
+      attempt.qrState = "PAYMENT_CAPTURED";
+    }
   }
 
   try {
@@ -1350,10 +1465,14 @@ export function finalizeCapturedBookingPaymentV3(params: {
     attempt.state = "CONFIRMED";
     attempt.confirmedAt = new Date(paidAt.getTime());
     attempt.updatedAt = new Date(paidAt.getTime());
+    if (attempt.paymentMethod === "qr") {
+      attempt.qrState = "CONFIRMED";
+    }
     const confirmedBooking = buildConfirmedBooking({
       bookingId: params.bookingId,
       booking: params.booking,
       paymentAttempt: attempt,
+      parent: params.parent,
       paidAt,
       otpGeneratedAt,
       verificationSource: params.verificationSource,
@@ -2126,6 +2245,8 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
       currency: params.facts.currency,
       createdAt: params.facts.capturedAt,
       capturedAt: params.facts.capturedAt,
+      receipt: "",
+      notes: {},
     },
     authoritativeNow,
     verificationSource: params.facts.verificationSource,

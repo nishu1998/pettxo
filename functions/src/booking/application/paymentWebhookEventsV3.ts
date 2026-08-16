@@ -66,11 +66,13 @@ export function buildPaymentWebhookEventKeyV3(params: {
   eventName: string;
   paymentEntity: Record<string, unknown>;
   refundEntity: Record<string, unknown>;
+  qrCodeEntity?: Record<string, unknown>;
 }): string {
   const refundId = asString(params.refundEntity.id);
   const paymentId = asString(params.paymentEntity.id);
   const orderId = asString(params.paymentEntity.order_id);
-  const stableId = refundId || paymentId || orderId || "missing_entity";
+  const qrCodeId = asString(params.qrCodeEntity?.id);
+  const stableId = refundId || paymentId || orderId || qrCodeId || "missing_entity";
   return `${params.eventName.trim() || "unknown"}:${stableId}`;
 }
 
@@ -189,6 +191,7 @@ export async function processRazorpayWebhookEnvelopeV3(params: {
     eventName: string;
     paymentEntity: Record<string, unknown>;
     refundEntity: Record<string, unknown>;
+    qrCodeEntity: Record<string, unknown>;
     keyId: string;
     keySecret: string;
     authoritativeNow: Date;
@@ -224,6 +227,7 @@ export async function processRazorpayWebhookEnvelopeV3(params: {
   const eventName = asString(params.payload.event);
   const paymentEntity = asRecord(asRecord(asRecord(params.payload.payload).payment).entity);
   const refundEntity = asRecord(asRecord(asRecord(params.payload.payload).refund).entity);
+  const qrCodeEntity = asRecord(asRecord(asRecord(params.payload.payload).qr_code).entity);
   const paymentId = asString(paymentEntity.id);
   const orderId = asString(paymentEntity.order_id);
   const refundId = asString(refundEntity.id);
@@ -231,6 +235,7 @@ export async function processRazorpayWebhookEnvelopeV3(params: {
     eventName,
     paymentEntity,
     refundEntity,
+    qrCodeEntity,
   });
 
   const claim = await claimPaymentWebhookEventV3({
@@ -254,6 +259,8 @@ export async function processRazorpayWebhookEnvelopeV3(params: {
   try {
     if (
       eventName === "payment.captured" ||
+      eventName === "qr_code.credited" ||
+      eventName === "qr_code.closed" ||
       eventName === "refund.created" ||
       eventName === "refund.processed" ||
       eventName === "refund.failed"
@@ -264,6 +271,7 @@ export async function processRazorpayWebhookEnvelopeV3(params: {
         eventName,
         paymentEntity,
         refundEntity,
+        qrCodeEntity,
         keyId: params.keyId,
         keySecret: params.keySecret,
         authoritativeNow,

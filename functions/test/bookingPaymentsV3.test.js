@@ -6,6 +6,8 @@ const {
   buildRequestedRangeBookingFixture,
 } = require("../lib/booking/schema/bookingFixtures.js");
 const {
+  buildPaymentAttemptDocument,
+  createDeterministicPaymentAttemptId,
   resolveCanonicalPricingV3,
   validatePreCheckoutAvailabilityV3,
   previewCanonicalPaymentPricingV3,
@@ -145,6 +147,35 @@ test("previewCanonicalPaymentPricingV3 applies valid coupons and supports zero-p
   assert.equal(preview.pricing.customerPaidPaise, 0);
 });
 
+test("buildPaymentAttemptDocument supports additive QR payment metadata", () => {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+  const pricing = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  const attempt = buildPaymentAttemptDocument({
+    bookingId: "booking-qr-attempt-1",
+    booking,
+    pricing,
+    availabilityHash: "availability-qr-1",
+    authoritativeNow: new Date("2026-07-31T10:30:00.000Z"),
+    paymentMethod: "qr",
+  });
+
+  assert.equal(attempt.paymentMethod, "qr");
+  assert.equal(attempt.razorpayQrCodeId, "");
+  assert.equal(attempt.razorpayQrImageUrl, "");
+  assert.equal(attempt.qrState, "");
+  assert.equal(attempt.qrCreatedAt, null);
+  assert.equal(attempt.qrExpiresAt, null);
+  assert.notEqual(
+    attempt.paymentAttemptId,
+    createDeterministicPaymentAttemptId({
+      bookingId: "booking-qr-attempt-1",
+      parentId: booking.parentId,
+      pricingHash: pricing.pricingHash,
+      paymentMethod: "checkout",
+    }),
+  );
+});
+
 function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
   return {
     schemaVersion: 1,
@@ -157,6 +188,7 @@ function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
     razorpayPaymentId: "",
     amountPaise: pricing.financialSnapshot.customerPaidPaise,
     currency: "INR",
+    paymentMethod: "checkout",
     offerCampaignId: pricing.couponSnapshot?.offerCampaignId ?? "",
     couponId: pricing.couponSnapshot?.couponId ?? "",
     couponClaimId: pricing.couponSnapshot?.couponClaimId ?? "",
@@ -187,8 +219,122 @@ function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
     updatedAt: new Date("2026-07-22T10:21:30.000Z"),
     pricingSnapshot: {financials: pricing.financialSnapshot},
     couponSnapshot: pricing.couponSnapshot,
+    razorpayQrCodeId: "",
+    razorpayQrImageUrl: "",
+    qrState: "",
+    qrCreatedAt: null,
+    qrExpiresAt: null,
+    qrClosedAt: null,
+    qrCloseReason: "",
   };
 }
+
+test("finalizeCapturedBookingPaymentV3 routes duplicate QR capture after confirmation into refund flow", () => {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+  const pricing = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  booking.financials = pricing.financialSnapshot;
+  booking.state = "CONFIRMED";
+  booking.lifecycle.paidAt = new Date("2026-08-01T10:00:00.000Z");
+  booking.payment.paymentAttemptId = "attempt-primary";
+  booking.payment.razorpayPaymentId = "pay_primary";
+  booking.payment.status = "CONFIRMED";
+
+  const attempt = {
+    ...buildAttempt({
+      booking,
+      pricing,
+      paymentAttemptId: "attempt-qr-secondary",
+      razorpayOrderId: "",
+    }),
+    paymentMethod: "qr",
+    state: "ORDER_CREATED",
+    razorpayQrCodeId: "qr_secondary",
+    razorpayQrImageUrl: "https://example.com/qr.png",
+    qrState: "ACTIVE",
+    qrCreatedAt: new Date("2026-08-01T09:50:00.000Z"),
+    qrExpiresAt: booking.lifecycle.payDeadlineAt,
+    qrClosedAt: null,
+    qrCloseReason: "",
+  };
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId: "booking-confirmed-duplicate",
+    booking,
+    paymentAttempt: attempt,
+    parent: parentIdentity(),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_duplicate_qr",
+      orderId: "",
+      status: "captured",
+      amountPaise: attempt.amountPaise,
+      currency: attempt.currency,
+      createdAt: new Date("2026-08-01T10:05:00.000Z"),
+      capturedAt: new Date("2026-08-01T10:05:00.000Z"),
+    },
+    authoritativeNow: new Date("2026-08-01T10:05:00.000Z"),
+    verificationSource: "webhook",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "CAPTURE_AFTER_BOOKING_CONFIRMED");
+  assert.equal(result.booking.state, "CONFIRMED");
+  assert.equal(result.paymentAttempt.state, "REFUND_REQUIRED");
+  assert.equal(result.paymentAttempt.razorpayPaymentId, "pay_duplicate_qr");
+  assert.equal(result.paymentAttempt.qrState, "REFUND_REQUIRED");
+  assert.equal(result.refundInstruction.reasonCode, "DUPLICATE_CAPTURE_AFTER_CONFIRMATION");
+});
+
+test("finalizeCapturedBookingPaymentV3 routes duplicate Checkout capture after QR confirmation into refund flow", () => {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+  const pricing = resolveCanonicalPricingV3({booking, claimedOffer: null});
+  booking.financials = pricing.financialSnapshot;
+  booking.state = "CONFIRMED";
+  booking.lifecycle.paidAt = new Date("2026-08-01T10:00:00.000Z");
+  booking.payment.paymentAttemptId = "attempt-qr-primary";
+  booking.payment.razorpayPaymentId = "pay_qr_primary";
+  booking.payment.status = "CONFIRMED";
+
+  const attempt = {
+    ...buildAttempt({
+      booking,
+      pricing,
+      paymentAttemptId: "attempt-checkout-secondary",
+      razorpayOrderId: "order_checkout_secondary",
+    }),
+    paymentMethod: "checkout",
+    state: "ORDER_CREATED",
+  };
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId: "booking-confirmed-checkout-duplicate",
+    booking,
+    paymentAttempt: attempt,
+    parent: parentIdentity(),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_checkout_secondary",
+      orderId: "order_checkout_secondary",
+      status: "captured",
+      amountPaise: attempt.amountPaise,
+      currency: attempt.currency,
+      createdAt: new Date("2026-08-01T10:05:00.000Z"),
+      capturedAt: new Date("2026-08-01T10:05:00.000Z"),
+    },
+    authoritativeNow: new Date("2026-08-01T10:05:00.000Z"),
+    verificationSource: "webhook",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "CAPTURE_AFTER_BOOKING_CONFIRMED");
+  assert.equal(result.paymentAttempt.state, "REFUND_REQUIRED");
+  assert.equal(result.paymentAttempt.razorpayPaymentId, "pay_checkout_secondary");
+  assert.equal(result.refundInstruction.reasonCode, "DUPLICATE_CAPTURE_AFTER_CONFIRMATION");
+});
 
 function assertConfirmedSideEffectsExactlyOnce(result, {bookingId, paymentAttemptId}) {
   assert.equal(result.ok, true);
@@ -1608,6 +1754,81 @@ test("persistFinalizePaymentResultV3 consumes coupon usage exactly once for the 
   assert.deepEqual(usage.consumedBookingIds, [bookingId]);
 });
 
+test("qr-confirmed coupon payments keep the discounted customer payable and consume usage exactly once", async () => {
+  const bookingId = "booking-qr-coupon-1";
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const pricing = resolveCanonicalPricingV3({
+    booking,
+    claimedOffer: {
+      status: "claimed",
+      offerCampaignId: "campaign-qr-coupon-1",
+      offerId: "campaign-qr-coupon-1",
+      discountType: "flat",
+      discountValue: 100,
+      usageLimit: 1,
+      usedCount: 0,
+      couponCode: "QR100",
+    },
+  });
+  booking.financials = pricing.financialSnapshot;
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId,
+    booking,
+    paymentAttempt: {
+      ...buildAttempt({
+        booking,
+        pricing,
+        paymentAttemptId: "attempt-qr-coupon-1",
+        razorpayOrderId: "",
+      }),
+      bookingId,
+      paymentMethod: "qr",
+      razorpayQrCodeId: "qr_coupon_1",
+      razorpayQrImageUrl: "https://example.com/qr.png",
+      qrState: "ACTIVE",
+      qrCreatedAt: new Date("2026-07-22T10:20:00.000Z"),
+      qrExpiresAt: booking.lifecycle.payDeadlineAt,
+    },
+    parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_qr_coupon_1",
+      orderId: "",
+      status: "captured",
+      amountPaise: pricing.financialSnapshot.customerPaidPaise,
+      currency: "INR",
+      createdAt: new Date("2026-07-22T10:25:00.000Z"),
+      capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+      receipt: bookingId,
+      notes: {
+        bookingId,
+        paymentAttemptId: "attempt-qr-coupon-1",
+      },
+    },
+    authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+    verificationSource: "webhook",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.paymentAttempt.amountPaise, pricing.financialSnapshot.customerPaidPaise);
+  assert.notEqual(result.paymentAttempt.amountPaise, pricing.serviceSubtotalPaise);
+  assert.equal(
+    result.booking.financials.providerPayoutPaise,
+    pricing.financialSnapshot.providerPayoutPaise,
+  );
+
+  const firestore = new FakeFirestore();
+  await persistFinalizePaymentResultV3({firestore, result, bookingId});
+  await persistFinalizePaymentResultV3({firestore, result, bookingId});
+  const usage = firestore.store.get("users/parent-1/offerUsage/campaign-qr-coupon-1");
+  assert.equal(usage.usedCount, 1);
+  assert.deepEqual(usage.consumedBookingIds, [bookingId]);
+});
+
 test("persistFinalizePaymentResultV3 prevents concurrent cross-booking over-consumption for a single remaining use", async () => {
   const makeResult = ({
     bookingId,
@@ -2004,6 +2225,59 @@ test("submitRefundInstructionV3 updates the existing refund document without cre
       "REFUND_PENDING",
     );
     assert.equal(firestore.store.get(`refunds/${bookingId}`).razorpayRefundId, "rfnd_1");
+  } finally {
+    razorpayGateway.processRazorpayRefundV3 = originalRefundProcessor;
+  }
+});
+
+test("submitRefundInstructionV3 uses the QR-originated Razorpay payment id without a separate QR refund path", async () => {
+  const bookingId = "booking-qr-refund-1";
+  const originalRefundProcessor = razorpayGateway.processRazorpayRefundV3;
+  let receivedPaymentId = "";
+  razorpayGateway.processRazorpayRefundV3 = async (params) => {
+    receivedPaymentId = params.razorpayPaymentId;
+    return {
+      razorpayRefundId: "rfnd_qr_1",
+      status: "submitted",
+    };
+  };
+
+  try {
+    const firestore = new FakeFirestore({
+      [`bookings/${bookingId}/paymentAttempts/attempt-qr-1`]: {
+        bookingId,
+        paymentAttemptId: "attempt-qr-1",
+        paymentMethod: "qr",
+        qrState: "CONFIRMED",
+        state: "REFUND_REQUIRED",
+        amountPaise: 25000,
+        razorpayPaymentId: "pay_qr_refund_1",
+        reconciliationAttemptCount: 0,
+      },
+      [`refunds/${bookingId}`]: {
+        bookingId,
+        paymentAttemptId: "attempt-qr-1",
+        refundAmountPaise: 25000,
+        reasonCode: "CUSTOMER_CANCELLATION",
+        state: "required",
+      },
+    });
+
+    const outcome = await submitRefundInstructionV3({
+      firestore,
+      bookingId,
+      paymentAttemptId: "attempt-qr-1",
+      keyId: "key",
+      keySecret: "secret",
+      authoritativeNow: new Date("2026-07-22T10:40:00.000Z"),
+    });
+
+    assert.equal(outcome, "REFUND_PENDING");
+    assert.equal(receivedPaymentId, "pay_qr_refund_1");
+    assert.equal(
+      firestore.store.get(`refunds/${bookingId}`).razorpayRefundId,
+      "rfnd_qr_1",
+    );
   } finally {
     razorpayGateway.processRazorpayRefundV3 = originalRefundProcessor;
   }

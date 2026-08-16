@@ -13,9 +13,11 @@ import {
   RAZORPAY_KEY_SECRET,
   RAZORPAY_WEBHOOK_SECRET,
 } from "../config/secrets";
+import {normalizeServiceSchedulingMode} from "../serviceScheduling";
 import {auth, db} from "../shared/firebase";
 import {ACCEPT_WINDOW_MS} from "./domain/bookingConstants";
 import {
+  ACTIONABLE_PROVIDER_REQUEST_STATES,
   acceptBookingRequestV3 as acceptBookingRequestApplicationV3,
   buildCustomerPaymentReminderIfDueV3,
   buildProviderRequestReminderIfDueV3,
@@ -32,11 +34,16 @@ import {
 import {emptyParentStatsV3, emptyProviderStatsV3} from "./application/bookingStats";
 import {
   canonicalPaymentOrderMappingRef,
+  canonicalQrPaymentMappingRef,
   buildLegacyCouponRecordFromCampaignSelection,
+  buildPaymentAttemptDocument,
+  createDeterministicPaymentAttemptId,
   createRazorpayPaymentOrderV3 as createRazorpayPaymentOrderApplicationV3,
   persistFinalizePaymentResultV3,
   previewCanonicalPaymentPricingV3,
   reconcilePaymentAttemptsV3,
+  resolveCanonicalPricingV3,
+  validatePreCheckoutAvailabilityV3,
   verifyCapturedBookingPaymentV3,
 } from "./application/paymentOrchestrationV3";
 import {
@@ -70,7 +77,11 @@ import {
   resolveBookingDisputeV3 as resolveBookingDisputeApplicationV3,
 } from "./application/financialSettlementV3";
 import {processRazorpayWebhookEnvelopeV3} from "./application/paymentWebhookEventsV3";
-import {verifyRazorpayPaymentSignature} from "./application/razorpayGateway";
+import {
+  closeRazorpayQrCodeV3,
+  createRazorpayQrCodeV3,
+  verifyRazorpayPaymentSignature,
+} from "./application/razorpayGateway";
 import {
   assertValidCanonicalBookingDocumentV3,
   type CanonicalBookingDocumentV3,
@@ -142,6 +153,29 @@ type CanonicalPaymentOrderResponse =
       idempotentReplay: boolean;
     };
 
+type CanonicalQrPaymentResponse =
+  | {
+      bookingId: string;
+      paymentAttemptId: string;
+      mode: "qr";
+      qrCodeId: string;
+      imageUrl: string;
+      amountPaise: number;
+      currency: string;
+      expiresAt: string | null;
+      pricingSummary: CanonicalPaymentPricingSummaryResponse;
+      idempotentReplay: boolean;
+    }
+  | {
+      bookingId: string;
+      paymentAttemptId: string;
+      mode: "zero_payable";
+      state: CanonicalBookingDocumentV3["state"];
+      confirmedAt: string | null;
+      pricingSummary: CanonicalPaymentPricingSummaryResponse;
+      idempotentReplay: boolean;
+    };
+
 type CanonicalPaymentVerificationResponse = {
   bookingId: string;
   paymentAttemptId: string;
@@ -164,6 +198,19 @@ type CanonicalPaymentPricingPreviewResponse = {
   payDeadlineAt: string | null;
   offerCampaignId: string;
   idempotentReplay: boolean;
+};
+
+const canonicalPrivateCallableOptions = {
+  region: "asia-south1" as const,
+  invoker: "private" as const,
+  // Keep canonical payment callable policy explicit and aligned while
+  // Flutter's App Check rollout is still incomplete in production/debug.
+  enforceAppCheck: false,
+};
+
+const canonicalPrivateRazorpayCallableOptions = {
+  ...canonicalPrivateCallableOptions,
+  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
 };
 
 type CanonicalBookingCancellationPreviewResponse = {
@@ -537,6 +584,12 @@ function buildCanonicalServiceSource(
       rawGraceEndsAt instanceof Date ?
         rawGraceEndsAt :
         null;
+  const normalizedSchedulingMode = normalizeServiceSchedulingMode({
+    schedulingMode: service.schedulingMode,
+    sessionDurationMinutes: asInt(service.sessionDurationMinutes, 0),
+    startMinutes: service.startMinutes,
+    endMinutes: service.endMinutes,
+  });
   return {
     id: asString(service.id) || asString(service.serviceId),
     ownerUserId: asString(service.ownerUserId),
@@ -554,7 +607,7 @@ function buildCanonicalServiceSource(
     category: asString(service.category),
     serviceType: asString(service.serviceType),
     currency: asString(service.currency) || "INR",
-    schedulingMode: asString(service.schedulingMode) || undefined,
+    schedulingMode: normalizedSchedulingMode || undefined,
     sessionDurationMinutes: asInt(service.sessionDurationMinutes, 0),
     capacity: asInt(service.capacity, 1),
     stats:
@@ -853,6 +906,65 @@ function buildPaymentOrderResponse(params: {
   };
 }
 
+function buildQrPaymentResponse(params: {
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  paymentAttemptId: string;
+  paymentAttempt: Record<string, unknown> | null;
+  mode: "qr" | "zero_payable";
+  qrCodeId?: string;
+  imageUrl?: string;
+  amountPaise?: number;
+  currency?: string;
+  expiresAt?: Date | null;
+  idempotentReplay: boolean;
+}): CanonicalQrPaymentResponse {
+  const pricingSummary = buildPricingSummaryResponse(
+    params.booking,
+    params.paymentAttempt,
+  );
+  if (params.mode === "zero_payable") {
+    return {
+      bookingId: params.bookingId,
+      paymentAttemptId: params.paymentAttemptId,
+      mode: "zero_payable",
+      state: params.booking.state,
+      confirmedAt: params.booking.lifecycle.paidAt?.toISOString() ?? null,
+      pricingSummary,
+      idempotentReplay: params.idempotentReplay,
+    };
+  }
+  return {
+    bookingId: params.bookingId,
+    paymentAttemptId: params.paymentAttemptId,
+    mode: "qr",
+    qrCodeId: params.qrCodeId ?? asString(params.paymentAttempt?.razorpayQrCodeId),
+    imageUrl: params.imageUrl ?? asString(params.paymentAttempt?.razorpayQrImageUrl),
+    amountPaise: params.amountPaise ?? pricingSummary.customerPaidPaise,
+    currency: params.currency || pricingSummary.currency,
+    expiresAt: (params.expiresAt ?? asNullableDate(params.paymentAttempt?.qrExpiresAt))?.toISOString() ?? null,
+    pricingSummary,
+    idempotentReplay: params.idempotentReplay,
+  };
+}
+
+function isReusableQrAttempt(paymentAttempt: Record<string, unknown> | null, now: Date): boolean {
+  if (paymentAttempt == null) return false;
+  if (asString(paymentAttempt.paymentMethod) !== "qr") return false;
+  const qrCodeId = asString(paymentAttempt.razorpayQrCodeId);
+  const qrImageUrl = asString(paymentAttempt.razorpayQrImageUrl);
+  const qrState = asString(paymentAttempt.qrState).toUpperCase();
+  const qrExpiresAt = asNullableDate(paymentAttempt.qrExpiresAt);
+  if (!qrCodeId || !qrImageUrl) return false;
+  if (qrState !== "ACTIVE") return false;
+  if (qrExpiresAt && qrExpiresAt.getTime() <= now.getTime()) return false;
+  return true;
+}
+
+function isActiveQrState(value: string): boolean {
+  return ["CREATED", "ACTIVE", "PAYMENT_CAPTURED"].includes(value.toUpperCase());
+}
+
 function buildPaymentVerificationResponse(params: {
   bookingId: string;
   paymentAttemptId: string;
@@ -1051,6 +1163,32 @@ function logRequestEvent(
   payload: Record<string, unknown>,
 ): void {
   console.info(`bookingV3.${event}`, payload);
+}
+
+function providerActionLogContext(params: {
+  bookingId: string;
+  action: "accept" | "decline";
+  booking: CanonicalBookingDocumentV3;
+  authoritativeNow: Date;
+  providerUid: string;
+  rejectionCode?: string;
+  rejectionMessage?: string;
+}): Record<string, unknown> {
+  const acceptDeadlineAt = params.booking.acceptDeadlineAt ?? params.booking.lifecycle.acceptDeadlineAt;
+  return {
+    bookingId: params.bookingId,
+    action: params.action,
+    rawState: params.booking.state,
+    effectiveState: params.booking.state,
+    now: params.authoritativeNow.toISOString(),
+    createdAt: params.booking.createdAt.toISOString(),
+    responseWindowStartsAt: params.booking.lifecycle.timerStartsAt?.toISOString() ?? null,
+    responseDeadlineAt: acceptDeadlineAt?.toISOString() ?? null,
+    receivedOutsideWorkingHours: params.booking.lifecycle.wasQueuedOutsideWorkingHours,
+    providerUidMatches: params.booking.providerId === params.providerUid,
+    rejectionCode: params.rejectionCode ?? "",
+    rejectionMessage: params.rejectionMessage ?? "",
+  };
 }
 
 function normalizeError(error: unknown): Error {
@@ -1325,6 +1463,113 @@ function buildBookingForOrderReady(params: {
   return next;
 }
 
+export async function closeQrAttemptIfActive(params: {
+  bookingId: string;
+  paymentAttemptRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  paymentAttempt: Record<string, unknown>;
+  keyId: string;
+  keySecret: string;
+  authoritativeNow: Date;
+  reason: "SUPERSEDED" | "CLOSED" | "EXPIRED";
+  localCloseReason?: string;
+  closeQr?: typeof closeRazorpayQrCodeV3;
+}): Promise<void> {
+  const qrCodeId = asString(params.paymentAttempt.razorpayQrCodeId);
+  const existingQrState = asString(params.paymentAttempt.qrState);
+  const firestore = params.paymentAttemptRef.firestore;
+  if (!qrCodeId || !isActiveQrState(existingQrState)) {
+    return;
+  }
+  logger.info("booking-qr-close-start", {
+    bookingId: params.bookingId,
+    paymentAttemptId: asString(params.paymentAttempt.paymentAttemptId),
+    qrCodeId,
+    reason: params.reason,
+  });
+  try {
+    const closeQr = params.closeQr ?? closeRazorpayQrCodeV3;
+    const closedQr = await closeQr({
+      keyId: params.keyId,
+      keySecret: params.keySecret,
+      qrCodeId,
+    });
+    await params.paymentAttemptRef.set({
+      qrState: params.reason,
+      qrClosedAt: closedQr.closedAt ?? Timestamp.fromDate(params.authoritativeNow),
+      qrCloseReason: params.localCloseReason || closedQr.closeReason || params.reason,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await canonicalQrPaymentMappingRef(firestore, qrCodeId).set({
+      bookingId: params.bookingId,
+      paymentAttemptId: asString(params.paymentAttempt.paymentAttemptId),
+      status: params.reason,
+      updatedAt: FieldValue.serverTimestamp(),
+      closedAt: closedQr.closedAt != null ? Timestamp.fromDate(closedQr.closedAt) : FieldValue.serverTimestamp(),
+      closeReason: params.localCloseReason || closedQr.closeReason || params.reason,
+    }, {merge: true});
+    logger.info("booking-qr-close-success", {
+      bookingId: params.bookingId,
+      paymentAttemptId: asString(params.paymentAttempt.paymentAttemptId),
+      qrCodeId,
+      reason: params.reason,
+    });
+  } catch (error) {
+    await params.paymentAttemptRef.set({
+      qrState: params.reason,
+      qrClosedAt: Timestamp.fromDate(params.authoritativeNow),
+      qrCloseReason: params.localCloseReason || params.reason,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await canonicalQrPaymentMappingRef(firestore, qrCodeId).set({
+      bookingId: params.bookingId,
+      paymentAttemptId: asString(params.paymentAttempt.paymentAttemptId),
+      status: params.reason,
+      updatedAt: FieldValue.serverTimestamp(),
+      closedAt: FieldValue.serverTimestamp(),
+      closeReason: params.localCloseReason || params.reason,
+    }, {merge: true});
+    logger.warn("booking-qr-close-failed", {
+      bookingId: params.bookingId,
+      paymentAttemptId: asString(params.paymentAttempt.paymentAttemptId),
+      qrCodeId,
+      reason: params.reason,
+      message: normalizeError(error).message,
+    });
+  }
+}
+
+export async function closeBookingQrAttemptsBestEffort(params: {
+  bookingId: string;
+  bookingRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  keyId: string;
+  keySecret: string;
+  authoritativeNow: Date;
+  reason: "SUPERSEDED" | "CLOSED" | "EXPIRED";
+  localCloseReason?: string;
+  closeQr?: typeof closeRazorpayQrCodeV3;
+}): Promise<void> {
+  const qrAttemptsSnapshot = await params.bookingRef
+    .collection("paymentAttempts")
+    .where("paymentMethod", "==", "qr")
+    .limit(20)
+    .get();
+  for (const attemptDoc of qrAttemptsSnapshot.docs) {
+    const attempt = attemptDoc.data() as Record<string, unknown>;
+    if (!isActiveQrState(asString(attempt.qrState))) continue;
+    await closeQrAttemptIfActive({
+      bookingId: params.bookingId,
+      paymentAttemptRef: attemptDoc.ref,
+      paymentAttempt: attempt,
+      keyId: params.keyId,
+      keySecret: params.keySecret,
+      authoritativeNow: params.authoritativeNow,
+      reason: params.reason,
+      localCloseReason: params.localCloseReason,
+      closeQr: params.closeQr,
+    });
+  }
+}
+
 async function authorizeCanonicalBookingCommand(params: {
   bookingId: string;
   authenticatedUserId: string;
@@ -1342,6 +1587,21 @@ async function authorizeCanonicalBookingCommand(params: {
   }
   const booking = ensureCanonicalBooking(bookingSnapshot.data());
   if (!params.allowedStates.includes(booking.state)) {
+    if (params.operation === "provider_actions") {
+      logger.warn("booking-provider-action-authorization-rejected", {
+        bookingId: params.bookingId,
+        rawState: booking.state,
+        effectiveState: booking.state,
+        now: params.now.toISOString(),
+        createdAt: booking.createdAt.toISOString(),
+        responseWindowStartsAt: booking.lifecycle.timerStartsAt?.toISOString() ?? null,
+        responseDeadlineAt: (booking.acceptDeadlineAt ?? booking.lifecycle.acceptDeadlineAt)?.toISOString() ?? null,
+        receivedOutsideWorkingHours: booking.lifecycle.wasQueuedOutsideWorkingHours,
+        providerUidMatches: booking.providerId === params.authenticatedUserId,
+        rejectionCode: "INVALID_BOOKING_STATE",
+        allowedStates: params.allowedStates,
+      });
+    }
     throw new HttpsError("failed-precondition", "Booking is not in a valid state for this action.", {
       code: "INVALID_BOOKING_STATE",
       state: booking.state,
@@ -1420,11 +1680,6 @@ async function authorizeCanonicalPaymentCommand(params: {
       "REFUNDED",
       "CONFIRMED",
     ].includes(paymentAttemptState);
-  const operation =
-    params.command === "create_order" || !requiresContinuationOnly
-      ? "payment"
-      : "continuation";
-  void operation;
   const authorization = CANONICAL_BOOKING_AUTHORIZATION;
 
   if (params.command === "create_order") {
@@ -1438,6 +1693,13 @@ async function authorizeCanonicalPaymentCommand(params: {
       throw new HttpsError("failed-precondition", "The payment window has expired.", {
         code: "PAYMENT_WINDOW_EXPIRED",
       });
+    }
+    if (requiresContinuationOnly) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This payment is already being finalized or refunded. Please wait for Pettxo to finish processing it.",
+        {code: "PAYMENT_RECONCILIATION_REQUIRED"},
+      );
     }
   }
 
@@ -1469,6 +1731,9 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
   const authoritativeNow = new Date();
   const uid = requireUid(request.auth);
   const parsed = parseCanonicalRequestInput(request.data);
+  let phase = "request_received";
+  let providerId = "";
+  let schedulingMode = "";
   logRequestEvent("request_callable_invoked", {
     userId: uid,
     serviceId: parsed.serviceId,
@@ -1476,143 +1741,192 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
     bookingType: parsed.bookingType,
   });
 
-  const [service, parent] = await Promise.all([
-    loadServiceSnapshot(parsed.serviceId),
-    buildParentIdentity(uid),
-  ]);
-  if (!service) {
-    throw new HttpsError("not-found", "Service not found.", {
-      code: "SERVICE_NOT_FOUND",
-    });
-  }
-
-  const authoritativeBookingType = inferBookingType(service);
-  if (authoritativeBookingType !== parsed.bookingType) {
-    throw new HttpsError("invalid-argument", "bookingType does not match the authoritative service.", {
-      code: "INVALID_BOOKING_TYPE",
-    });
-  }
-
-  const authorization = requireCanonicalGate({
-    uid,
-    serviceId: parsed.serviceId,
-    bookingType: parsed.bookingType,
-    service,
-    now: authoritativeNow,
-  });
-
-  const canonicalService = buildCanonicalServiceSource({
-    ...service,
-    id: parsed.serviceId,
-  });
-  const schedule =
-    parsed.bookingType === "SLOT" ?
-      await buildAuthoritativeSlotSelection({
-        serviceId: parsed.serviceId,
-        providerId: canonicalService.ownerUserId,
-        slotIds: parsed.slotRequest?.slotIds ?? [],
-        unitPricePaise: Math.max(asInt(service.pricePerSession, 0) * 100, 0),
-        serviceTimezone: asString(canonicalService.timezone) || "Asia/Kolkata",
-        schedulingMode: canonicalService.schedulingMode ?? "",
-      }) :
-      buildAuthoritativeRangeSelection({
-        service,
-        rangeRequest: parsed.rangeRequest!,
+  try {
+    phase = "load_service_and_parent";
+    const [service, parent] = await Promise.all([
+      loadServiceSnapshot(parsed.serviceId),
+      buildParentIdentity(uid),
+    ]);
+    if (!service) {
+      throw new HttpsError("not-found", "Service not found.", {
+        code: "SERVICE_NOT_FOUND",
       });
-
-  const bookingRef = db.collection("bookings").doc();
-  const attemptRef = db
-    .collection("userPrivate")
-    .doc(uid)
-    .collection("bookingRequestAttempts")
-    .doc(parsed.requestAttemptId);
-
-  const result = await db.runTransaction(async (transaction) => {
-    const existingAttemptSnapshot = await transaction.get(attemptRef);
-    const existingAttempt = parseExistingAttempt(existingAttemptSnapshot.data());
-    const createResult = createBookingRequestApplicationV3({
-      parent,
-      service: canonicalService,
-      input: {
-        requestAttemptId: parsed.requestAttemptId,
-        serviceId: parsed.serviceId,
-        bookingType: parsed.bookingType,
-        schedule,
-      },
-      authoritativeNow,
-      generatedBookingId: existingAttempt?.bookingId || bookingRef.id,
-      existingAttempt,
-    });
-
-    if (!createResult.ok) {
-      logRequestEvent("request_validation_failed", {
-        userId: uid,
-        serviceId: parsed.serviceId,
-        requestAttemptId: parsed.requestAttemptId,
-        bookingType: parsed.bookingType,
-        code: createResult.code,
-      });
-      throw new HttpsError(
-        createResult.code === "SERVICE_NOT_FOUND" ? "not-found" : "failed-precondition",
-        createResult.message,
-        {code: createResult.code, issues: createResult.issues ?? []},
-      );
     }
 
-    if (createResult.code === "CREATED") {
-      const canonicalBookingRef = db.collection("bookings").doc(createResult.bookingId);
-      transaction.set(canonicalBookingRef, createResult.booking, {merge: false});
-      transaction.set(attemptRef, serializeAttemptRecord(createResult.attemptRecord), {merge: true});
-      for (const event of createResult.events) {
-        transaction.set(
-          canonicalBookingRef.collection("events").doc(event.eventId),
-          {
-            bookingId: event.record.bookingId,
-            event: event.record.event,
-            actor: event.record.actor,
-            at: event.record.at,
-            meta: event.record.meta,
-            schemaVersion: event.record.schemaVersion,
-          },
-          {merge: false},
+    phase = "infer_booking_type";
+    const authoritativeBookingType = inferBookingType(service);
+    if (authoritativeBookingType !== parsed.bookingType) {
+      throw new HttpsError("invalid-argument", "bookingType does not match the authoritative service.", {
+        code: "INVALID_BOOKING_TYPE",
+      });
+    }
+
+    phase = "authorization_gate";
+    const authorization = requireCanonicalGate({
+      uid,
+      serviceId: parsed.serviceId,
+      bookingType: parsed.bookingType,
+      service,
+      now: authoritativeNow,
+    });
+
+    phase = "service_schedule_parse";
+    const canonicalService = buildCanonicalServiceSource({
+      ...service,
+      id: parsed.serviceId,
+    });
+    providerId = canonicalService.ownerUserId;
+    schedulingMode = canonicalService.schedulingMode ?? "";
+
+    phase =
+      parsed.bookingType === "SLOT" ?
+        "authoritative_slot_selection" :
+        "authoritative_range_selection";
+    const schedule =
+      parsed.bookingType === "SLOT" ?
+        await buildAuthoritativeSlotSelection({
+          serviceId: parsed.serviceId,
+          providerId: canonicalService.ownerUserId,
+          slotIds: parsed.slotRequest?.slotIds ?? [],
+          unitPricePaise: Math.max(asInt(service.pricePerSession, 0) * 100, 0),
+          serviceTimezone: asString(canonicalService.timezone) || "Asia/Kolkata",
+          schedulingMode: canonicalService.schedulingMode ?? "",
+        }) :
+        buildAuthoritativeRangeSelection({
+          service,
+          rangeRequest: parsed.rangeRequest!,
+        });
+
+    const bookingRef = db.collection("bookings").doc();
+    const attemptRef = db
+      .collection("userPrivate")
+      .doc(uid)
+      .collection("bookingRequestAttempts")
+      .doc(parsed.requestAttemptId);
+
+    phase = "create_request_transaction";
+    const result = await db.runTransaction(async (transaction) => {
+      const existingAttemptSnapshot = await transaction.get(attemptRef);
+      const existingAttempt = parseExistingAttempt(existingAttemptSnapshot.data());
+      const createResult = createBookingRequestApplicationV3({
+        parent,
+        service: canonicalService,
+        input: {
+          requestAttemptId: parsed.requestAttemptId,
+          serviceId: parsed.serviceId,
+          bookingType: parsed.bookingType,
+          schedule,
+        },
+        authoritativeNow,
+        generatedBookingId: existingAttempt?.bookingId || bookingRef.id,
+        existingAttempt,
+      });
+
+      if (!createResult.ok) {
+        logRequestEvent("request_validation_failed", {
+          userId: uid,
+          providerId,
+          serviceId: parsed.serviceId,
+          requestAttemptId: parsed.requestAttemptId,
+          bookingType: parsed.bookingType,
+          code: createResult.code,
+          phase,
+          scheduleSchemaVersion: schedulingMode || "unspecified",
+        });
+        throw new HttpsError(
+          createResult.code === "SERVICE_NOT_FOUND" ? "not-found" : "failed-precondition",
+          createResult.message,
+          {code: createResult.code, issues: createResult.issues ?? []},
         );
       }
+
+      if (createResult.code === "CREATED") {
+        const canonicalBookingRef = db.collection("bookings").doc(createResult.bookingId);
+        transaction.set(canonicalBookingRef, createResult.booking, {merge: false});
+        transaction.set(attemptRef, serializeAttemptRecord(createResult.attemptRecord), {merge: true});
+        for (const event of createResult.events) {
+          transaction.set(
+            canonicalBookingRef.collection("events").doc(event.eventId),
+            {
+              bookingId: event.record.bookingId,
+              event: event.record.event,
+              actor: event.record.actor,
+              at: event.record.at,
+              meta: event.record.meta,
+              schemaVersion: event.record.schemaVersion,
+            },
+            {merge: false},
+          );
+        }
+      }
+
+      return createResult;
+    });
+
+    if (result.code === "IDEMPOTENT_REPLAY") {
+      logRequestEvent("idempotent_request_replay", {
+        userId: uid,
+        providerId,
+        serviceId: parsed.serviceId,
+        requestAttemptId: parsed.requestAttemptId,
+        bookingId: result.bookingId,
+        matchedRule: authorization.metadata.matchedRule,
+      });
+    } else {
+      logRequestEvent("request_created", {
+        userId: uid,
+        providerId,
+        serviceId: parsed.serviceId,
+        requestAttemptId: parsed.requestAttemptId,
+        bookingId: result.bookingId,
+        state: result.booking.state,
+        wasQueuedOutsideWorkingHours:
+          result.booking.lifecycle.wasQueuedOutsideWorkingHours,
+        matchedRule: authorization.metadata.matchedRule,
+      });
     }
 
-    return createResult;
-  });
+    phase = "persist_notifications";
+    await persistNotifications({
+      notifications: result.notifications,
+      actorId: uid,
+    });
 
-  if (result.code === "IDEMPOTENT_REPLAY") {
-    logRequestEvent("idempotent_request_replay", {
-      userId: uid,
+    return buildRequestResponse(
+      result.bookingId,
+      result.booking,
+      result.code === "IDEMPOTENT_REPLAY",
+    );
+  } catch (error) {
+    const normalizedError = normalizeError(error);
+    const detailCode =
+      error instanceof HttpsError &&
+          typeof error.details === "object" &&
+          error.details != null &&
+          "code" in (error.details as Record<string, unknown>) ?
+        asString((error.details as Record<string, unknown>).code) :
+        "";
+    const logPayload = {
+      customerId: uid,
+      providerId,
       serviceId: parsed.serviceId,
       requestAttemptId: parsed.requestAttemptId,
-      bookingId: result.bookingId,
-      matchedRule: authorization.metadata.matchedRule,
-    });
-  } else {
-    logRequestEvent("request_created", {
-      userId: uid,
-      serviceId: parsed.serviceId,
-      requestAttemptId: parsed.requestAttemptId,
-      bookingId: result.bookingId,
-      state: result.booking.state,
-      wasQueuedOutsideWorkingHours:
-        result.booking.lifecycle.wasQueuedOutsideWorkingHours,
-      matchedRule: authorization.metadata.matchedRule,
-    });
+      bookingType: parsed.bookingType,
+      phase,
+      errorType: normalizedError.name || "Error",
+      errorCode: error instanceof HttpsError ? error.code : "internal",
+      safeCode: detailCode || (error instanceof HttpsError ? error.code : "internal"),
+      scheduleSchemaVersion: schedulingMode || "unspecified",
+      errorMessage: normalizedError.message,
+      errorStack: normalizedError.stack || "",
+    };
+    if (error instanceof HttpsError) {
+      logger.warn("booking-create-v3-failed", logPayload);
+      throw error;
+    }
+    logger.error("booking-create-v3-failed", logPayload);
+    throw new HttpsError("internal", "We could not create the booking request right now.");
   }
-
-  await persistNotifications({
-    notifications: result.notifications,
-    actorId: uid,
-  });
-
-  return buildRequestResponse(
-    result.bookingId,
-    result.booking,
-    result.code === "IDEMPOTENT_REPLAY",
-  );
 });
 
 export const markBookingViewedByProviderV3 = onCall({invoker: "private"}, async (request) => {
@@ -1676,7 +1990,7 @@ export const acceptBookingRequestV3 = onCall({invoker: "private"}, async (reques
     bookingId,
     authenticatedUserId: uid,
     expectedActor: "provider",
-    allowedStates: ["PENDING_PROVIDER"],
+    allowedStates: [...ACTIONABLE_PROVIDER_REQUEST_STATES],
     operation: "provider_actions",
     now: authoritativeNow,
   });
@@ -1697,6 +2011,15 @@ export const acceptBookingRequestV3 = onCall({invoker: "private"}, async (reques
       existingProviderStats: emptyProviderStatsV3(),
     });
     if (!lifecycleResult.ok) {
+      logger.warn("booking-provider-action-rejected", providerActionLogContext({
+        bookingId,
+        action: "accept",
+        booking,
+        authoritativeNow,
+        providerUid: uid,
+        rejectionCode: lifecycleResult.code,
+        rejectionMessage: lifecycleResult.message,
+      }));
       throw new HttpsError("failed-precondition", lifecycleResult.message, {
         code: lifecycleResult.code,
       });
@@ -1733,7 +2056,7 @@ export const declineBookingRequestV3 = onCall({invoker: "private"}, async (reque
     bookingId,
     authenticatedUserId: uid,
     expectedActor: "provider",
-    allowedStates: ["PENDING_PROVIDER"],
+    allowedStates: [...ACTIONABLE_PROVIDER_REQUEST_STATES],
     operation: "provider_actions",
     now: authoritativeNow,
   });
@@ -1749,6 +2072,15 @@ export const declineBookingRequestV3 = onCall({invoker: "private"}, async (reque
       existingProviderStats: emptyProviderStatsV3(),
     });
     if (!lifecycleResult.ok) {
+      logger.warn("booking-provider-action-rejected", providerActionLogContext({
+        bookingId,
+        action: "decline",
+        booking,
+        authoritativeNow,
+        providerUid: uid,
+        rejectionCode: lifecycleResult.code,
+        rejectionMessage: lifecycleResult.message,
+      }));
       throw new HttpsError("failed-precondition", lifecycleResult.message, {
         code: lifecycleResult.code,
       });
@@ -1785,7 +2117,7 @@ export const cancelBookingRequestByParentV3 = onCall({invoker: "private"}, async
     bookingId,
     authenticatedUserId: uid,
     expectedActor: "parent",
-    allowedStates: ["REQUESTED", "PENDING_PROVIDER"],
+    allowedStates: [...ACTIONABLE_PROVIDER_REQUEST_STATES],
     operation: "continuation",
     now: authoritativeNow,
   });
@@ -1855,10 +2187,9 @@ export const razorpayWebhook = onRequest({
   }
 });
 
-export const createRazorpayPaymentOrderV3 = onCall({
-  invoker: "private",
-  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
-}, async (request) => {
+export const createRazorpayPaymentOrderV3 = onCall(
+  canonicalPrivateRazorpayCallableOptions,
+  async (request) => {
   const authoritativeNow = new Date();
   const uid = requireUid(request.auth);
   const bookingId = asString(request.data?.bookingId);
@@ -1885,8 +2216,10 @@ export const createRazorpayPaymentOrderV3 = onCall({
     offerCampaignId,
     booking: authorized.booking,
   });
+  const paymentMethod = asString(authorized.paymentAttempt?.paymentMethod) || "checkout";
 
   if (authorized.paymentAttempt &&
+    paymentMethod !== "qr" &&
     ["ORDER_CREATED", "CHECKOUT_OPENED", "CONFIRMED"].includes(
       authorized.paymentAttemptState,
     )) {
@@ -1922,6 +2255,27 @@ export const createRazorpayPaymentOrderV3 = onCall({
 
   const keyId = asString(RAZORPAY_KEY_ID.value());
   const keySecret = asString(RAZORPAY_KEY_SECRET.value());
+  if (authorized.paymentAttemptRef && authorized.paymentAttempt && paymentMethod === "qr") {
+    await closeQrAttemptIfActive({
+      bookingId,
+      paymentAttemptRef: authorized.paymentAttemptRef,
+      paymentAttempt: authorized.paymentAttempt,
+      keyId,
+      keySecret,
+      authoritativeNow,
+      reason: "SUPERSEDED",
+    });
+  } else {
+    await closeBookingQrAttemptsBestEffort({
+      bookingId,
+      bookingRef: authorized.bookingRef,
+      keyId,
+      keySecret,
+      authoritativeNow,
+      reason: "SUPERSEDED",
+      localCloseReason: "CHECKOUT_SUPERSEDED_QR",
+    });
+  }
   const createResult = await createRazorpayPaymentOrderApplicationV3({
     firestore: db,
     bookingId,
@@ -1933,7 +2287,7 @@ export const createRazorpayPaymentOrderV3 = onCall({
     authoritativeNow,
     keyId,
     keySecret,
-    paymentAttemptId: paymentAttemptId || undefined,
+    paymentAttemptId: paymentMethod === "qr" ? undefined : (paymentAttemptId || undefined),
   });
 
   if (!createResult.ok) {
@@ -2034,9 +2388,250 @@ export const createRazorpayPaymentOrderV3 = onCall({
   });
 });
 
-export const previewBookingPaymentPricingV3 = onCall({
-  invoker: "private",
-}, async (request) => {
+export const createBookingQrPaymentV3 = onCall(
+  canonicalPrivateRazorpayCallableOptions,
+  async (request) => {
+  const authoritativeNow = new Date();
+  const uid = requireUid(request.auth);
+  const bookingId = asString(request.data?.bookingId);
+  const offerCampaignId = asString(request.data?.offerCampaignId);
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+
+  logger.info("booking-qr-handler-enter", {
+    bookingId,
+    authPresent: Boolean(request.auth),
+    appCheckPresent: Boolean(request.app),
+    userId: uid,
+  });
+  logger.info("booking-qr-create-start", {bookingId, userId: uid});
+  const authorized = await authorizeCanonicalPaymentCommand({
+    bookingId,
+    authenticatedUserId: uid,
+    command: "create_order",
+    now: authoritativeNow,
+  });
+  const claimedOffer = await loadSelectedCouponForCheckout({
+    uid,
+    offerCampaignId,
+    booking: authorized.booking,
+  });
+  const canonicalService = buildCanonicalServiceSource({
+    ...(authorized.service ?? {}),
+    id: bookingId ? authorized.booking.serviceId : "",
+  });
+  const availability = validatePreCheckoutAvailabilityV3({
+    booking: authorized.booking,
+    service: authorized.service,
+    authoritativeNow,
+  });
+  if (!availability.ok) {
+    logger.warn("booking-qr-create-failed", {bookingId, code: availability.code});
+    throw new HttpsError("failed-precondition", availability.message, {code: availability.code});
+  }
+  const pricing = resolveCanonicalPricingV3({
+    booking: authorized.booking,
+    claimedOffer: claimedOffer ?? null,
+    authoritativeNow,
+  });
+  const qrAttemptId = createDeterministicPaymentAttemptId({
+    bookingId,
+    parentId: authorized.booking.parentId,
+    pricingHash: pricing.pricingHash,
+    paymentMethod: "qr",
+  });
+  const qrAttemptRef = authorized.bookingRef.collection("paymentAttempts").doc(qrAttemptId);
+  const qrAttemptSnapshot = await qrAttemptRef.get();
+  const existingQrAttempt = qrAttemptSnapshot.exists ?
+    qrAttemptSnapshot.data() as Record<string, unknown> :
+    null;
+
+  if (pricing.financialSnapshot.customerPaidPaise === 0) {
+    const parent = await buildParentIdentity(uid);
+    const keyId = asString(RAZORPAY_KEY_ID.value());
+    const keySecret = asString(RAZORPAY_KEY_SECRET.value());
+    const zeroPayableResult = await createRazorpayPaymentOrderApplicationV3({
+      firestore: db,
+      bookingId,
+      parentId: uid,
+      parent,
+      service: canonicalService,
+      booking: authorized.booking,
+      claimedOffer: claimedOffer ?? undefined,
+      authoritativeNow,
+      keyId,
+      keySecret,
+      paymentAttemptId: qrAttemptId,
+    });
+    if (!zeroPayableResult.ok) {
+      throw new HttpsError("failed-precondition", zeroPayableResult.message, {
+        code: zeroPayableResult.code,
+      });
+    }
+    if (zeroPayableResult.code !== "ZERO_PAYABLE_CONFIRMED") {
+      throw new HttpsError("failed-precondition", "Zero-payable QR payment did not finalize canonically.", {
+        code: zeroPayableResult.code,
+      });
+    }
+    await persistFinalizePaymentResultV3({
+      firestore: db,
+      result: zeroPayableResult.finalizeResult,
+      bookingId,
+    });
+    await persistNotifications({
+      notifications: zeroPayableResult.finalizeResult.notifications,
+      actorId: uid,
+    });
+    return buildQrPaymentResponse({
+      bookingId,
+      booking: zeroPayableResult.finalizeResult.booking,
+      paymentAttemptId: zeroPayableResult.paymentAttempt.paymentAttemptId,
+      paymentAttempt: zeroPayableResult.paymentAttempt as unknown as Record<string, unknown>,
+      mode: "zero_payable",
+      idempotentReplay: zeroPayableResult.finalizeResult.code === "IDEMPOTENT_REPLAY",
+    });
+  }
+
+  if (isReusableQrAttempt(existingQrAttempt, authoritativeNow)) {
+    logger.info("booking-qr-create-reuse", {
+      bookingId,
+      paymentAttemptId: qrAttemptId,
+      qrCodeId: asString(existingQrAttempt?.razorpayQrCodeId),
+    });
+    return buildQrPaymentResponse({
+      bookingId,
+      booking: authorized.booking,
+      paymentAttemptId: qrAttemptId,
+      paymentAttempt: existingQrAttempt,
+      mode: "qr",
+      idempotentReplay: true,
+    });
+  }
+
+  const keyId = asString(RAZORPAY_KEY_ID.value());
+  const keySecret = asString(RAZORPAY_KEY_SECRET.value());
+  if (existingQrAttempt != null) {
+    await closeQrAttemptIfActive({
+      bookingId,
+      paymentAttemptRef: qrAttemptRef,
+      paymentAttempt: existingQrAttempt,
+      keyId,
+      keySecret,
+      authoritativeNow,
+      reason: "SUPERSEDED",
+    });
+  }
+  const qrExpiryLimit = authorized.booking.lifecycle.payDeadlineAt;
+  if (!qrExpiryLimit) {
+    throw new HttpsError("failed-precondition", "The payment window has expired.", {
+      code: "PAYMENT_WINDOW_EXPIRED",
+    });
+  }
+  const maxRazorpayCloseBy = new Date(authoritativeNow.getTime() + (2 * 60 * 60 * 1000));
+  // Razorpay QR Codes require close_by to be sufficiently ahead of current time.
+  const minimumRazorpayCloseBy = new Date(authoritativeNow.getTime() + (15 * 60 * 1000));
+  const effectiveQrExpiry = new Date(
+    Math.min(qrExpiryLimit.getTime(), maxRazorpayCloseBy.getTime()),
+  );
+  if (effectiveQrExpiry.getTime() <= minimumRazorpayCloseBy.getTime()) {
+    throw new HttpsError("failed-precondition", "The payment window is too close to create a QR payment.", {
+      code: "PAYMENT_WINDOW_EXPIRED",
+    });
+  }
+
+  const paymentAttempt = buildPaymentAttemptDocument({
+    bookingId,
+    booking: authorized.booking,
+    pricing,
+    paymentAttemptId: qrAttemptId,
+    availabilityHash: availability.availabilityHash,
+    authoritativeNow,
+    paymentMethod: "qr",
+  });
+  logger.info("booking-qr-create-phase", {
+    bookingId,
+    paymentAttemptId: paymentAttempt.paymentAttemptId,
+    amountPaise: paymentAttempt.amountPaise,
+    currency: paymentAttempt.currency,
+    closeByEpochSeconds: Math.floor(effectiveQrExpiry.getTime() / 1000),
+    paymentWindowEndsAt: qrExpiryLimit.toISOString(),
+  });
+  const qrCode = await createRazorpayQrCodeV3({
+    keyId,
+    keySecret,
+    bookingId,
+    paymentAttemptId: paymentAttempt.paymentAttemptId,
+    customerUid: uid,
+    amountPaise: paymentAttempt.amountPaise,
+    currency: paymentAttempt.currency,
+    closeBy: effectiveQrExpiry,
+    notes: {
+      bookingId,
+      paymentAttemptId: paymentAttempt.paymentAttemptId,
+      customerUid: uid,
+      purpose: "booking",
+    },
+  });
+
+  const qrAttempt = {
+    ...paymentAttempt,
+    state: "ORDER_CREATED" as const,
+    orderCreatedAt: authoritativeNow,
+    checkoutOpenedAt: authoritativeNow,
+    updatedAt: authoritativeNow,
+    razorpayQrCodeId: qrCode.id,
+    razorpayQrImageUrl: qrCode.imageUrl,
+    qrState: "ACTIVE" as const,
+    qrCreatedAt: authoritativeNow,
+    qrExpiresAt: qrCode.closeBy ?? effectiveQrExpiry,
+    qrClosedAt: qrCode.closedAt,
+    qrCloseReason: qrCode.closeReason,
+  };
+  const updatedBooking = buildBookingForOrderReady({
+    booking: authorized.booking,
+    paymentAttempt: qrAttempt as unknown as Record<string, unknown>,
+    financials: qrAttempt.pricingSnapshot.financials as Record<string, unknown>,
+    authoritativeNow,
+  });
+  await db.runTransaction(async (transaction) => {
+    transaction.set(authorized.bookingRef, updatedBooking, {merge: false});
+    transaction.set(qrAttemptRef, qrAttempt, {merge: false});
+    transaction.set(canonicalQrPaymentMappingRef(db, qrCode.id), {
+      schemaVersion: 1,
+      bookingId,
+      paymentAttemptId: qrAttempt.paymentAttemptId,
+      customerUid: uid,
+      razorpayQrCodeId: qrCode.id,
+      status: "ACTIVE",
+      createdAt: Timestamp.fromDate(authoritativeNow),
+      updatedAt: Timestamp.fromDate(authoritativeNow),
+    }, {merge: false});
+  });
+  logger.info("booking-qr-create-success", {
+    bookingId,
+    paymentAttemptId: qrAttempt.paymentAttemptId,
+    qrCodeId: qrCode.id,
+    amountPaise: qrAttempt.amountPaise,
+  });
+  return buildQrPaymentResponse({
+    bookingId,
+    booking: updatedBooking,
+    paymentAttemptId: qrAttempt.paymentAttemptId,
+    paymentAttempt: qrAttempt as unknown as Record<string, unknown>,
+    mode: "qr",
+    qrCodeId: qrCode.id,
+    imageUrl: qrCode.imageUrl,
+    amountPaise: qrAttempt.amountPaise,
+    currency: qrAttempt.currency,
+    expiresAt: qrCode.closeBy ?? effectiveQrExpiry,
+    idempotentReplay: false,
+  });
+});
+
+export const previewBookingPaymentPricingV3 = onCall(
+  canonicalPrivateCallableOptions,
+  async (request) => {
   const authoritativeNow = new Date();
   const uid = requireUid(request.auth);
   const bookingId = asString(request.data?.bookingId);
@@ -2085,10 +2680,9 @@ export const previewBookingPaymentPricingV3 = onCall({
   });
 });
 
-export const verifyBookingPaymentV3 = onCall({
-  invoker: "private",
-  secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
-}, async (request) => {
+export const verifyBookingPaymentV3 = onCall(
+  canonicalPrivateRazorpayCallableOptions,
+  async (request) => {
   const authoritativeNow = new Date();
   const uid = requireUid(request.auth);
   const bookingId = asString(request.data?.bookingId);
@@ -2107,8 +2701,15 @@ export const verifyBookingPaymentV3 = onCall({
     command: "verify",
     now: authoritativeNow,
   });
+  const canonicalConfirmedPaymentId =
+    asString(authorized.booking.payment.razorpayPaymentId) ||
+    asString(authorized.paymentAttempt?.razorpayPaymentId);
 
-  if (authorized.booking.state === "CONFIRMED" || authorized.paymentAttemptState === "CONFIRMED") {
+  if (
+    (authorized.booking.state === "CONFIRMED" || authorized.paymentAttemptState === "CONFIRMED") &&
+    canonicalConfirmedPaymentId &&
+    canonicalConfirmedPaymentId === razorpayPaymentId
+  ) {
     return buildPaymentVerificationResponse({
       bookingId,
       paymentAttemptId,
@@ -2422,6 +3023,15 @@ async function cancelConfirmedBookingInternal(params: {
     refundAmountPaise: result.cancellationRecord.refundAmountPaise,
     idempotentReplay: result.idempotentReplay,
   });
+  await closeBookingQrAttemptsBestEffort({
+    bookingId,
+    bookingRef: authorized.bookingRef,
+    keyId: asString(RAZORPAY_KEY_ID.value()),
+    keySecret: asString(RAZORPAY_KEY_SECRET.value()),
+    authoritativeNow,
+    reason: "CLOSED",
+    localCloseReason: "BOOKING_CANCELLED",
+  });
   return buildCancellationResponse({
     bookingId,
     booking: result.booking,
@@ -2431,12 +3041,18 @@ async function cancelConfirmedBookingInternal(params: {
 }
 
 export const cancelConfirmedBookingByCustomerV3 = onCall(
-  {invoker: "private"},
+  {
+    invoker: "private",
+    secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+  },
   async (request) => cancelConfirmedBookingInternal({request, expectedActor: "parent"}),
 );
 
 export const cancelConfirmedBookingByProviderV3 = onCall(
-  {invoker: "private"},
+  {
+    invoker: "private",
+    secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
+  },
   async (request) => cancelConfirmedBookingInternal({request, expectedActor: "provider"}),
 );
 
@@ -3116,33 +3732,36 @@ export const expirePendingProviderBookingsV3 = onSchedule(
   {schedule: "every 5 minutes", timeZone: "Asia/Kolkata"},
   async () => {
     const authoritativeNow = new Date();
-    const dueSnapshot = await db
-      .collection("bookings")
-      .where("stateQueryValue", "==", "PENDING_PROVIDER")
-      .where("acceptDeadlineAt", "<=", Timestamp.fromDate(authoritativeNow))
-      .limit(100)
-      .get();
-
     let processed = 0;
-    for (const doc of dueSnapshot.docs) {
-      const parsed = ensureCanonicalBooking(doc.data());
-      const lifecycleResult = expirePendingProviderBookingApplicationV3({
-        bookingId: doc.id,
-        booking: parsed,
-        authoritativeNow,
-        existingProviderStats: emptyProviderStatsV3(),
-      });
-      if (!lifecycleResult.ok) continue;
-      const changed = await applySchedulerLifecycleMutation({
-        bookingRef: doc.ref,
-        lifecycleResult,
-      });
-      if (changed) processed += 1;
+    let scanned = 0;
+    for (const state of ACTIONABLE_PROVIDER_REQUEST_STATES) {
+      const dueSnapshot = await db
+        .collection("bookings")
+        .where("stateQueryValue", "==", state)
+        .where("acceptDeadlineAt", "<=", Timestamp.fromDate(authoritativeNow))
+        .limit(100)
+        .get();
+      scanned += dueSnapshot.size;
+      for (const doc of dueSnapshot.docs) {
+        const parsed = ensureCanonicalBooking(doc.data());
+        const lifecycleResult = expirePendingProviderBookingApplicationV3({
+          bookingId: doc.id,
+          booking: parsed,
+          authoritativeNow,
+          existingProviderStats: emptyProviderStatsV3(),
+        });
+        if (!lifecycleResult.ok) continue;
+        const changed = await applySchedulerLifecycleMutation({
+          bookingRef: doc.ref,
+          lifecycleResult,
+        });
+        if (changed) processed += 1;
+      }
     }
 
     console.info("bookingV3.scheduler.providerExpiry", {
       processed,
-      scanned: dueSnapshot.size,
+      scanned,
       authoritativeAt: authoritativeNow.toISOString(),
     });
   },
@@ -3154,12 +3773,11 @@ export const sendProviderRequestRemindersV3 = onSchedule(
     const authoritativeNow = new Date();
     const providerReminderDeadline = new Date(authoritativeNow.getTime() + (ACCEPT_WINDOW_MS / 2));
     const customerReminderDeadline = new Date(authoritativeNow.getTime() + (ACCEPT_WINDOW_MS / 2));
-    const actionableStates = ["REQUESTED", "PENDING_PROVIDER"] as const;
     let scanned = 0;
     let created = 0;
     let duplicates = 0;
 
-    for (const state of actionableStates) {
+    for (const state of ACTIONABLE_PROVIDER_REQUEST_STATES) {
       const snapshot = await db
         .collection("bookings")
         .where("stateQueryValue", "==", state)
@@ -3274,18 +3892,33 @@ export const expireAwaitingPaymentsV3 = onSchedule(
       if (activeAttempts.length > 0) {
         const batch = db.batch();
         for (const attempt of activeAttempts) {
-          batch.set(attempt.ref, {
+          const expiredAttemptWrite: Record<string, unknown> = {
             state: "EXPIRED",
             nextReconciliationAt: null,
             terminalFailureAt: FieldValue.serverTimestamp(),
             lastReconciledAt: FieldValue.serverTimestamp(),
             lastReconciliationCode: "PAYMENT_WINDOW_EXPIRED",
             updatedAt: FieldValue.serverTimestamp(),
-          }, {merge: true});
+          };
+          if (asString(attempt.data.paymentMethod) === "qr") {
+            expiredAttemptWrite.qrState = "EXPIRED";
+            expiredAttemptWrite.qrClosedAt = FieldValue.serverTimestamp();
+            expiredAttemptWrite.qrCloseReason = "PAYMENT_WINDOW_EXPIRED";
+          }
+          batch.set(attempt.ref, expiredAttemptWrite, {merge: true});
           expiredAttempts += 1;
         }
         await batch.commit();
       }
+      await closeBookingQrAttemptsBestEffort({
+        bookingId: doc.id,
+        bookingRef: doc.ref,
+        keyId,
+        keySecret,
+        authoritativeNow,
+        reason: "EXPIRED",
+        localCloseReason: "PAYMENT_WINDOW_EXPIRED",
+      });
       processed += 1;
     }
 

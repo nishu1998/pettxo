@@ -15,6 +15,9 @@ const {
   routeCanonicalWebhookEventV3,
 } = require("../lib/booking/application/canonicalPaymentWebhookV3.js");
 const {
+  closeQrAttemptIfActive,
+} = require("../lib/booking/bookingV3FlowFunctions.js");
+const {
   buildCanonicalPaymentRaceFixture,
   assertNoPrivateLeakage,
 } = require("./helpers/canonicalPaymentRaceFixture.js");
@@ -256,6 +259,60 @@ function seedCanonicalBookingStore() {
   });
 }
 
+function seedCanonicalBookingStoreWithoutOrderMapping() {
+  return new FakeFirestore({
+    "bookings/booking_1": {
+      bookingId: "booking_1",
+      bookingModelVersion: "3.2",
+      state: "ACCEPTED_AWAITING_PAYMENT",
+      bookingType: "SLOT",
+      parentId: "parent_1",
+      providerId: "provider_1",
+    },
+    "bookings/booking_1/paymentAttempts/attempt_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_1",
+      amountPaise: 25000,
+      currency: "INR",
+      razorpayOrderId: "order_1",
+      razorpayPaymentId: "",
+      state: "ORDER_CREATED",
+    },
+  });
+}
+
+function seedCanonicalQrBookingStore() {
+  return new FakeFirestore({
+    "canonicalQrPaymentMappings/qr_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_qr_1",
+      schemaVersion: 1,
+      status: "ACTIVE",
+    },
+    "bookings/booking_1": {
+      bookingId: "booking_1",
+      bookingModelVersion: "3.2",
+      state: "ACCEPTED_AWAITING_PAYMENT",
+      bookingType: "SLOT",
+      parentId: "parent_1",
+      providerId: "provider_1",
+    },
+    "bookings/booking_1/paymentAttempts/attempt_qr_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_qr_1",
+      amountPaise: 25000,
+      currency: "INR",
+      paymentMethod: "qr",
+      razorpayOrderId: "",
+      razorpayPaymentId: "",
+      razorpayQrCodeId: "qr_1",
+      razorpayQrImageUrl: "https://example.com/qr.png",
+      qrState: "ACTIVE",
+      state: "ORDER_CREATED",
+    },
+  });
+}
+
 test("verifyRazorpayWebhookSignatureV3 uses the raw webhook body", () => {
   const secret = "webhook_secret";
   const rawBody = Buffer.from('{"event":"payment.captured","id":1}');
@@ -448,11 +505,11 @@ test("processRazorpayWebhookEnvelopeV3 records unmapped canonical payment events
     keyId: "key",
     keySecret: "secret",
     routeCanonicalWebhook: async () => ({
-      outcome: "IGNORED_UNMAPPED",
+      outcome: "RECONCILIATION_REQUIRED",
       bookingId: "",
       paymentAttemptId: "",
-      retryable: false,
-      failureCode: "",
+      retryable: true,
+      failureCode: "UNMAPPED_CAPTURE",
       notifications: [],
     }),
   });
@@ -460,7 +517,7 @@ test("processRazorpayWebhookEnvelopeV3 records unmapped canonical payment events
   assert.equal(result.routeType, "canonical");
   assert.equal(
     firestore.store.get("paymentWebhookEvents/payment.captured:pay_1").outcome,
-    "IGNORED_UNMAPPED",
+    "RECONCILIATION_REQUIRED",
   );
 });
 
@@ -565,7 +622,76 @@ test("routeCanonicalWebhookEventV3 invokes the shared finalizer with trusted nor
   });
 });
 
-test("routeCanonicalWebhookEventV3 safely rejects payment mismatches and missing canonical mappings", async () => {
+test("routeCanonicalWebhookEventV3 resolves qr_code.credited through QR mapping and shared finalizer", async () => {
+  const firestore = seedCanonicalQrBookingStore();
+  let finalizeCalls = 0;
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "qr_code.credited:pay_qr_1",
+    eventName: "qr_code.credited",
+    paymentEntity: {
+      id: "pay_qr_1",
+      amount: 25000,
+      currency: "INR",
+      status: "captured",
+    },
+    refundEntity: {},
+    qrCodeEntity: {
+      id: "qr_1",
+      close_reason: "",
+    },
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-07-22T10:30:00.000Z"),
+    deps: {
+      finalizeCapturedPayment: async () => {
+        finalizeCalls += 1;
+        return {
+          ok: true,
+          code: "CONFIRMED",
+          booking: {
+            parentId: "parent_1",
+            providerId: "provider_1",
+            bookingType: "SLOT",
+            state: "CONFIRMED",
+          },
+          paymentAttempt: {
+            paymentAttemptId: "attempt_qr_1",
+            state: "CONFIRMED",
+            qrState: "CONFIRMED",
+          },
+          bookingPrivate: {bookingId: "booking_1"},
+          otpCode: "123456",
+          occupancyWrites: {},
+          financialWrites: {
+            bookingFinancial: {},
+            payment: {},
+            invoice: {},
+            providerEarning: {},
+            payoutReadiness: {},
+            bookingChat: {},
+          },
+          couponWrite: null,
+          events: [],
+          notifications: [],
+          parentStats: {},
+        };
+      },
+      persistNotifications: async () => {},
+    },
+  });
+
+  assert.equal(result.outcome, "CONFIRMED");
+  assert.equal(result.bookingId, "booking_1");
+  assert.equal(result.paymentAttemptId, "attempt_qr_1");
+  assert.equal(finalizeCalls, 1);
+  assert.equal(
+    firestore.store.get("canonicalQrPaymentMappings/qr_1").status,
+    "CONFIRMED",
+  );
+});
+
+test("routeCanonicalWebhookEventV3 safely rejects payment mismatches and quarantines unrecoverable captured payments", async () => {
   const missingMapping = await routeCanonicalWebhookEventV3({
     firestore: new FakeFirestore(),
     eventId: "payment.captured:pay_1",
@@ -575,16 +701,25 @@ test("routeCanonicalWebhookEventV3 safely rejects payment mismatches and missing
     keyId: "key",
     keySecret: "secret",
     deps: {
-      fetchRazorpayPayment: async () => {
-        throw new Error("should not fetch");
-      },
+      fetchRazorpayPayment: async () => ({
+        id: "pay_1",
+        orderId: "order_1",
+        status: "captured",
+        amountPaise: 25000,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:00.000Z"),
+        receipt: "booking_1",
+        notes: {},
+      }),
       finalizeCapturedPayment: async () => {
         throw new Error("should not finalize");
       },
       persistNotifications: async () => {},
     },
   });
-  assert.equal(missingMapping.outcome, "IGNORED_UNMAPPED");
+  assert.equal(missingMapping.outcome, "RECONCILIATION_REQUIRED");
+  assert.equal(missingMapping.failureCode, "UNMAPPED_CAPTURE");
 
   const mismatchStore = seedCanonicalBookingStore();
   const mismatch = await routeCanonicalWebhookEventV3({
@@ -604,6 +739,8 @@ test("routeCanonicalWebhookEventV3 safely rejects payment mismatches and missing
         currency: "INR",
         createdAt: new Date("2026-07-22T10:25:00.000Z"),
         capturedAt: new Date("2026-07-22T10:25:00.000Z"),
+        receipt: "booking_1",
+        notes: {},
       }),
       finalizeCapturedPayment: async () => {
         throw new Error("should not finalize");
@@ -613,6 +750,471 @@ test("routeCanonicalWebhookEventV3 safely rejects payment mismatches and missing
   });
   assert.equal(mismatch.outcome, "INVALID_CANONICAL_MAPPING");
   assert.equal(mismatch.failureCode, "PAYMENT_MISMATCH");
+});
+
+test("routeCanonicalWebhookEventV3 recovers missing order mappings from the persisted payment attempt order id", async () => {
+  const firestore = seedCanonicalBookingStoreWithoutOrderMapping();
+  let finalized = 0;
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "payment.captured:pay_recovered_1",
+    eventName: "payment.captured",
+    paymentEntity: {
+      id: "pay_recovered_1",
+      order_id: "order_1",
+      amount: 25000,
+      currency: "INR",
+    },
+    refundEntity: {},
+    keyId: "key",
+    keySecret: "secret",
+    deps: {
+      fetchRazorpayPayment: async () => ({
+        id: "pay_recovered_1",
+        orderId: "order_1",
+        status: "captured",
+        amountPaise: 25000,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:01.000Z"),
+        receipt: "booking_1",
+        notes: {},
+      }),
+      finalizeCapturedPayment: async ({facts}) => {
+        finalized += 1;
+        assert.equal(facts.bookingId, "booking_1");
+        assert.equal(facts.paymentAttemptId, "attempt_1");
+        assert.equal(facts.razorpayPaymentId, "pay_recovered_1");
+        return {
+          ok: true,
+          code: "CONFIRMED",
+          booking: {
+            parentId: "parent_1",
+            providerId: "provider_1",
+            bookingType: "SLOT",
+            state: "CONFIRMED",
+          },
+          paymentAttempt: {paymentAttemptId: "attempt_1"},
+          bookingPrivate: {bookingId: "booking_1"},
+          otpCode: "123456",
+          occupancyWrites: {},
+          financialWrites: {
+            bookingFinancial: {},
+            payment: {},
+            invoice: {},
+            providerEarning: {},
+            payoutReadiness: {},
+            bookingChat: {},
+          },
+          couponWrite: null,
+          events: [],
+          notifications: [],
+          parentStats: {},
+        };
+      },
+      persistNotifications: async () => {},
+    },
+  });
+
+  assert.equal(result.outcome, "CONFIRMED");
+  assert.equal(finalized, 1);
+  assert.equal(
+    firestore.store.get("canonicalPaymentOrderMappings/order_1").paymentAttemptId,
+    "attempt_1",
+  );
+});
+
+test("routeCanonicalWebhookEventV3 recovers missing order ids from fetched Razorpay payment metadata", async () => {
+  const firestore = seedCanonicalBookingStoreWithoutOrderMapping();
+  let finalized = 0;
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "payment.captured:pay_recovered_fetch_1",
+    eventName: "payment.captured",
+    paymentEntity: {
+      id: "pay_recovered_fetch_1",
+      order_id: "",
+      amount: 25000,
+      currency: "INR",
+    },
+    refundEntity: {},
+    keyId: "key",
+    keySecret: "secret",
+    deps: {
+      fetchRazorpayPayment: async () => ({
+        id: "pay_recovered_fetch_1",
+        orderId: "order_1",
+        status: "captured",
+        amountPaise: 25000,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:01.000Z"),
+        receipt: "booking_1",
+        notes: {
+          bookingId: "booking_1",
+          paymentAttemptId: "attempt_1",
+          purpose: "booking",
+        },
+      }),
+      finalizeCapturedPayment: async () => {
+        finalized += 1;
+        return {
+          ok: true,
+          code: "CONFIRMED",
+          booking: {
+            parentId: "parent_1",
+            providerId: "provider_1",
+            bookingType: "SLOT",
+            state: "CONFIRMED",
+          },
+          paymentAttempt: {paymentAttemptId: "attempt_1"},
+          bookingPrivate: {bookingId: "booking_1"},
+          otpCode: "123456",
+          occupancyWrites: {},
+          financialWrites: {
+            bookingFinancial: {},
+            payment: {},
+            invoice: {},
+            providerEarning: {},
+            payoutReadiness: {},
+            bookingChat: {},
+          },
+          couponWrite: null,
+          events: [],
+          notifications: [],
+          parentStats: {},
+        };
+      },
+      persistNotifications: async () => {},
+    },
+  });
+
+  assert.equal(result.outcome, "CONFIRMED");
+  assert.equal(finalized, 1);
+  assert.equal(
+    firestore.store.get("canonicalPaymentOrderMappings/order_1").bookingId,
+    "booking_1",
+  );
+});
+
+test("routeCanonicalWebhookEventV3 keeps recovering captures when collection-group lookup indexes are unavailable", async () => {
+  const firestore = seedCanonicalBookingStoreWithoutOrderMapping();
+  const baseCollectionGroup = firestore.collectionGroup.bind(firestore);
+  firestore.collectionGroup = (name) => {
+    const query = baseCollectionGroup(name);
+    if (name !== "paymentAttempts") return query;
+
+    const originalWhere = query.where.bind(query);
+    query.where = (field, op, value) => {
+      const chained = originalWhere(field, op, value);
+      if (field === "razorpayPaymentId" || field === "razorpayOrderId") {
+        chained.get = async () => {
+          throw new Error(`missing index for ${field}:${value}`);
+        };
+      }
+      return chained;
+    };
+    return query;
+  };
+
+  let finalized = 0;
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "payment.captured:pay_missing_index_1",
+    eventName: "payment.captured",
+    paymentEntity: {
+      id: "pay_missing_index_1",
+      order_id: "order_1",
+      amount: 25000,
+      currency: "INR",
+    },
+    refundEntity: {},
+    keyId: "key",
+    keySecret: "secret",
+    deps: {
+      fetchRazorpayPayment: async () => ({
+        id: "pay_missing_index_1",
+        orderId: "order_1",
+        status: "captured",
+        amountPaise: 25000,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:01.000Z"),
+        receipt: "booking_1",
+        notes: {
+          bookingId: "booking_1",
+          paymentAttemptId: "attempt_1",
+          purpose: "booking",
+        },
+      }),
+      finalizeCapturedPayment: async () => {
+        finalized += 1;
+        return {
+          ok: true,
+          code: "CONFIRMED",
+          booking: {
+            parentId: "parent_1",
+            providerId: "provider_1",
+            bookingType: "SLOT",
+            state: "CONFIRMED",
+          },
+          paymentAttempt: {paymentAttemptId: "attempt_1"},
+          bookingPrivate: {bookingId: "booking_1"},
+          otpCode: "123456",
+          occupancyWrites: {},
+          financialWrites: {
+            bookingFinancial: {},
+            payment: {},
+            invoice: {},
+            providerEarning: {},
+            payoutReadiness: {},
+            bookingChat: {},
+          },
+          couponWrite: null,
+          events: [],
+          notifications: [],
+          parentStats: {},
+        };
+      },
+      persistNotifications: async () => {},
+    },
+  });
+
+  assert.equal(result.outcome, "CONFIRMED");
+  assert.equal(finalized, 1);
+});
+
+test("routeCanonicalWebhookEventV3 treats missing-mapping same-payment captures as idempotent replays", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_1": {
+      bookingId: "booking_1",
+      bookingModelVersion: "3.2",
+      state: "CONFIRMED",
+      bookingType: "SLOT",
+      parentId: "parent_1",
+      providerId: "provider_1",
+      payment: {
+        razorpayPaymentId: "pay_same_1",
+      },
+    },
+    "bookings/booking_1/paymentAttempts/attempt_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_1",
+      amountPaise: 25000,
+      currency: "INR",
+      razorpayOrderId: "order_1",
+      razorpayPaymentId: "pay_same_1",
+      state: "CONFIRMED",
+    },
+  });
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "payment.captured:pay_same_1",
+    eventName: "payment.captured",
+    paymentEntity: {id: "pay_same_1", order_id: "order_1"},
+    refundEntity: {},
+    keyId: "key",
+    keySecret: "secret",
+    deps: {
+      fetchRazorpayPayment: async () => {
+        throw new Error("should not fetch");
+      },
+      finalizeCapturedPayment: async () => {
+        throw new Error("should not finalize");
+      },
+      persistNotifications: async () => {},
+    },
+  });
+  assert.equal(result.outcome, "ALREADY_CONFIRMED");
+});
+
+test("routeCanonicalWebhookEventV3 routes recoverable second captures into the shared refund-required path", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_1": {
+      bookingId: "booking_1",
+      bookingModelVersion: "3.2",
+      state: "CONFIRMED",
+      bookingType: "SLOT",
+      parentId: "parent_1",
+      providerId: "provider_1",
+      payment: {
+        razorpayPaymentId: "pay_primary_1",
+      },
+    },
+    "bookings/booking_1/paymentAttempts/attempt_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_1",
+      amountPaise: 25000,
+      currency: "INR",
+      razorpayOrderId: "order_1",
+      razorpayPaymentId: "pay_primary_1",
+      state: "CONFIRMED",
+    },
+  });
+  let receivedPaymentId = "";
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "payment.captured:pay_secondary_1",
+    eventName: "payment.captured",
+    paymentEntity: {id: "pay_secondary_1", order_id: "order_1", amount: 25000, currency: "INR"},
+    refundEntity: {},
+    keyId: "key",
+    keySecret: "secret",
+    deps: {
+      fetchRazorpayPayment: async () => ({
+        id: "pay_secondary_1",
+        orderId: "order_1",
+        status: "captured",
+        amountPaise: 25000,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T10:25:00.000Z"),
+        capturedAt: new Date("2026-07-22T10:25:01.000Z"),
+        receipt: "booking_1",
+        notes: {
+          bookingId: "booking_1",
+          paymentAttemptId: "attempt_1",
+        },
+      }),
+      finalizeCapturedPayment: async ({facts}) => {
+        receivedPaymentId = facts.razorpayPaymentId;
+        return {
+          ok: false,
+          code: "CAPTURE_AFTER_BOOKING_CONFIRMED",
+          booking: {
+            parentId: "parent_1",
+            providerId: "provider_1",
+            bookingType: "SLOT",
+            state: "CONFIRMED",
+          },
+          paymentAttempt: {paymentAttemptId: "attempt_1", state: "REFUND_REQUIRED"},
+          bookingPrivate: {bookingId: "booking_1"},
+          otpCode: "",
+          occupancyWrites: {},
+          financialWrites: {
+            bookingFinancial: {},
+            payment: {},
+            invoice: {},
+            providerEarning: {},
+            payoutReadiness: {},
+            bookingChat: {},
+          },
+          couponWrite: null,
+          events: [],
+          notifications: [],
+          parentStats: {},
+          refundInstruction: {
+            bookingId: "booking_1",
+            paymentAttemptId: "attempt_1",
+            razorpayPaymentId: "pay_secondary_1",
+          },
+        };
+      },
+      persistNotifications: async () => {},
+    },
+  });
+
+  assert.equal(result.outcome, "REFUND_REQUIRED");
+  assert.equal(receivedPaymentId, "pay_secondary_1");
+});
+
+test("routeCanonicalWebhookEventV3 treats payment.captured for an already-confirmed QR payment id as replay", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_1": {
+      bookingId: "booking_1",
+      bookingModelVersion: "3.2",
+      state: "CONFIRMED",
+      bookingType: "SLOT",
+      parentId: "parent_1",
+      providerId: "provider_1",
+      payment: {
+        razorpayPaymentId: "pay_qr_1",
+      },
+    },
+    "bookings/booking_1/paymentAttempts/attempt_qr_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_qr_1",
+      razorpayPaymentId: "pay_qr_1",
+      paymentMethod: "qr",
+      state: "CONFIRMED",
+    },
+  });
+
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "payment.captured:pay_qr_1",
+    eventName: "payment.captured",
+    paymentEntity: {
+      id: "pay_qr_1",
+      order_id: "",
+      amount: 25000,
+      currency: "INR",
+    },
+    refundEntity: {},
+    keyId: "key",
+    keySecret: "secret",
+    deps: {
+      fetchRazorpayPayment: async () => {
+        throw new Error("should not fetch");
+      },
+      finalizeCapturedPayment: async () => {
+        throw new Error("should not finalize");
+      },
+      persistNotifications: async () => {},
+    },
+  });
+
+  assert.equal(result.outcome, "ALREADY_CONFIRMED");
+  assert.equal(result.bookingId, "booking_1");
+  assert.equal(result.paymentAttemptId, "attempt_qr_1");
+});
+
+test("closeQrAttemptIfActive marks QR expired locally even when remote close fails", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_1/paymentAttempts/attempt_qr_1": {
+      paymentAttemptId: "attempt_qr_1",
+      paymentMethod: "qr",
+      qrState: "ACTIVE",
+      razorpayQrCodeId: "qr_1",
+    },
+    "canonicalQrPaymentMappings/qr_1": {
+      bookingId: "booking_1",
+      paymentAttemptId: "attempt_qr_1",
+      status: "ACTIVE",
+    },
+  });
+
+  const attemptRef = firestore
+    .collection("bookings")
+    .doc("booking_1")
+    .collection("paymentAttempts")
+    .doc("attempt_qr_1");
+
+  await closeQrAttemptIfActive({
+    bookingId: "booking_1",
+    paymentAttemptRef: attemptRef,
+    paymentAttempt: firestore.store.get("bookings/booking_1/paymentAttempts/attempt_qr_1"),
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-08-14T10:00:00.000Z"),
+    reason: "EXPIRED",
+    localCloseReason: "PAYMENT_WINDOW_EXPIRED",
+    closeQr: async () => {
+      throw new Error("network");
+    },
+  });
+
+  assert.equal(
+    firestore.store.get("bookings/booking_1/paymentAttempts/attempt_qr_1").qrState,
+    "EXPIRED",
+  );
+  assert.equal(
+    firestore.store.get("bookings/booking_1/paymentAttempts/attempt_qr_1").qrCloseReason,
+    "PAYMENT_WINDOW_EXPIRED",
+  );
+  assert.equal(
+    firestore.store.get("canonicalQrPaymentMappings/qr_1").status,
+    "EXPIRED",
+  );
 });
 
 test("processRazorpayWebhookEnvelopeV3 marks retryable failure, then a reclaimed replay succeeds once", async () => {

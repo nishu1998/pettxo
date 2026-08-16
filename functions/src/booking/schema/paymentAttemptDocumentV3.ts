@@ -1,6 +1,13 @@
-import type {CanonicalPaymentState, PaymentVerificationSource} from "../domain/paymentContracts";
+import type {
+  CanonicalPaymentMethod,
+  CanonicalPaymentState,
+  CanonicalQrState,
+  PaymentVerificationSource,
+} from "../domain/paymentContracts";
 import {
+  isCanonicalPaymentMethod,
   isCanonicalPaymentState,
+  isCanonicalQrState,
   isPaymentVerificationSource,
 } from "../domain/paymentContracts";
 import {normalizeTimestampLike} from "./timestampNormalization";
@@ -32,6 +39,7 @@ export type CanonicalPaymentAttemptDocumentV3 = {
   razorpayPaymentId: string;
   amountPaise: number;
   currency: string;
+  paymentMethod: CanonicalPaymentMethod;
   offerCampaignId: string;
   couponId: string;
   couponClaimId: string;
@@ -62,6 +70,13 @@ export type CanonicalPaymentAttemptDocumentV3 = {
   updatedAt: Date;
   pricingSnapshot: Record<string, unknown>;
   couponSnapshot: CanonicalCouponSnapshotV3 | null;
+  razorpayQrCodeId: string;
+  razorpayQrImageUrl: string;
+  qrState: CanonicalQrState | "";
+  qrCreatedAt: Date | null;
+  qrExpiresAt: Date | null;
+  qrClosedAt: Date | null;
+  qrCloseReason: string;
 };
 
 export type CanonicalBookingPrivateDocumentV3 = {
@@ -125,6 +140,8 @@ export function parseCanonicalPaymentAttemptDocumentV3(
   const issues: ValidationIssue[] = [];
   const state = asString(raw.state);
   const verificationSource = asString(raw.verificationSource);
+  const paymentMethod = asString(raw.paymentMethod) || "checkout";
+  const qrState = asString(raw.qrState);
   const schemaVersion = asInteger(raw.schemaVersion);
   if (schemaVersion !== CANONICAL_PAYMENT_ATTEMPT_SCHEMA_VERSION) {
     issues.push(issue(
@@ -142,6 +159,12 @@ export function parseCanonicalPaymentAttemptDocumentV3(
       "verificationSource is invalid.",
       "verificationSource",
     ));
+  }
+  if (!isCanonicalPaymentMethod(paymentMethod)) {
+    issues.push(issue("INVALID_PAYMENT_METHOD", "paymentMethod is invalid.", "paymentMethod"));
+  }
+  if (qrState && !isCanonicalQrState(qrState)) {
+    issues.push(issue("INVALID_QR_STATE", "qrState is invalid.", "qrState"));
   }
 
   const amountPaise = asInteger(raw.amountPaise);
@@ -181,6 +204,7 @@ export function parseCanonicalPaymentAttemptDocumentV3(
       razorpayPaymentId: asString(raw.razorpayPaymentId),
       amountPaise: amountPaise ?? 0,
       currency: asString(raw.currency) || "INR",
+      paymentMethod: (paymentMethod || "checkout") as CanonicalPaymentMethod,
       offerCampaignId: asString(raw.offerCampaignId) || asString(raw.couponId),
       couponId: asString(raw.couponId),
       couponClaimId: asString(raw.couponClaimId),
@@ -224,6 +248,13 @@ export function parseCanonicalPaymentAttemptDocumentV3(
         campaignType: asString(couponRaw.campaignType),
         validUntil: asNullableDate(couponRaw.validUntil),
       },
+      razorpayQrCodeId: asString(raw.razorpayQrCodeId),
+      razorpayQrImageUrl: asString(raw.razorpayQrImageUrl),
+      qrState: qrState as CanonicalQrState | "",
+      qrCreatedAt: asNullableDate(raw.qrCreatedAt),
+      qrExpiresAt: asNullableDate(raw.qrExpiresAt),
+      qrClosedAt: asNullableDate(raw.qrClosedAt),
+      qrCloseReason: asString(raw.qrCloseReason),
     },
     issues: [],
   };

@@ -18,6 +18,7 @@ const expectedExportNames = [
   "completeBookingServiceV3",
   "completeOnboardingProfile",
   "createBookingDisputeV3",
+  "createBookingQrPaymentV3",
   "createBookingRequestV3",
   "createOfferCampaign",
   "createRazorpayPaymentOrderV3",
