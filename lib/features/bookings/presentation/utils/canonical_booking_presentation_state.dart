@@ -3,6 +3,8 @@ import '../../domain/models/booking_v3_models.dart';
 
 const Duration _canonicalNoShowDisputeWindow = Duration(hours: 24);
 
+enum CanonicalBookingDisputeDisplayState { none, open, resolved }
+
 CanonicalBookingStateV3 effectiveCanonicalBookingPresentationState(
   CanonicalBookingDocumentV3 booking,
 ) {
@@ -19,6 +21,7 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationState(
     otpEnteredAt: booking.lifecycle.otpEnteredAt,
     paymentStatus: booking.payment.status,
     paidAt: booking.lifecycle.paidAt,
+    disputeStatus: booking.dispute.status,
   );
 }
 
@@ -31,6 +34,7 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
   DateTime? otpEnteredAt,
   String? paymentStatus,
   DateTime? paidAt,
+  String? disputeStatus,
   DateTime? now,
 }) {
   final currentNow = now ?? DateTime.now();
@@ -53,7 +57,47 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
       !noShowDeadlineAt.isAfter(currentNow)) {
     return CanonicalBookingStateV3.noShow;
   }
+  final completionAvailableAt = canonicalBookingCompletionAvailableAtFromRaw(
+    bookingType: bookingType,
+    slotSchedule: slotSchedule,
+    rangeCheckOutDateTime: rangeCheckOutDateTime,
+  );
+  if (state == CanonicalBookingStateV3.inProgress &&
+      completionAvailableAt != null &&
+      !completionAvailableAt.isAfter(currentNow)) {
+    if (otpEnteredAt != null) {
+      return CanonicalBookingStateV3.completedPendingReview;
+    }
+    if (paymentIsConfirmed) {
+      return CanonicalBookingStateV3.noShow;
+    }
+  }
+  if (_isCompletedCanonicalBookingState(state) &&
+      disputeStatus?.trim().toLowerCase() == 'open') {
+    return CanonicalBookingStateV3.disputed;
+  }
   return state;
+}
+
+CanonicalBookingDisputeDisplayState canonicalBookingDisputeDisplayState(
+  CanonicalBookingDocumentV3 booking,
+) {
+  if (!_isCompletedCanonicalBookingState(booking.state)) {
+    return CanonicalBookingDisputeDisplayState.none;
+  }
+  final disputeStatus = booking.dispute.status.trim().toLowerCase();
+  if (disputeStatus == 'open') {
+    return CanonicalBookingDisputeDisplayState.open;
+  }
+  if (disputeStatus == 'resolved') {
+    return CanonicalBookingDisputeDisplayState.resolved;
+  }
+  return CanonicalBookingDisputeDisplayState.none;
+}
+
+bool _isCompletedCanonicalBookingState(CanonicalBookingStateV3 state) {
+  return state == CanonicalBookingStateV3.completedPendingReview ||
+      state == CanonicalBookingStateV3.completedFinal;
 }
 
 DateTime? canonicalBookingAuthoritativeServiceWindowEnd(

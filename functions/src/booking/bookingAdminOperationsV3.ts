@@ -446,8 +446,29 @@ function canonicalBookingNoShowDeadlineFromRaw(
   return schedule.scheduledEndAt;
 }
 
+function canonicalBookingCompletionAvailableAtFromRaw(
+  booking: CanonicalBookingDocumentV3,
+): Date | null {
+  if (booking.bookingType === "RANGE") {
+    const schedule = booking.schedule as CanonicalRangeScheduleV3 & {serviceAnchorAt: Date};
+    return schedule.checkOutDateTime;
+  }
+  const schedule = booking.schedule as CanonicalSlotScheduleV3 & {serviceAnchorAt: Date};
+  if (schedule.finalEndAt instanceof Date) {
+    return schedule.finalEndAt;
+  }
+  const segments = Array.isArray(schedule.segments) ?
+    schedule.segments.filter((segment) => segment.endAt.getTime() > segment.startAt.getTime()) :
+    [];
+  if (segments.length > 0) {
+    return segments[segments.length - 1].endAt;
+  }
+  return schedule.scheduledEndAt;
+}
+
 function effectiveCanonicalBookingStateForAdmin(
   booking: CanonicalBookingDocumentV3,
+  disputeStatus?: string,
   now = new Date(),
 ): string {
   if (booking.state === "ACCEPTED_AWAITING_PAYMENT" &&
@@ -465,6 +486,30 @@ function effectiveCanonicalBookingStateForAdmin(
     noShowDeadlineAt != null &&
     noShowDeadlineAt.getTime() <= now.getTime()) {
     return "NO_SHOW";
+  }
+  const completionAvailableAt = canonicalBookingCompletionAvailableAtFromRaw(booking);
+  if (booking.state === "IN_PROGRESS" &&
+    completionAvailableAt != null &&
+    completionAvailableAt.getTime() <= now.getTime()) {
+    if (booking.lifecycle.otpEnteredAt != null) {
+      return "COMPLETED_PENDING_REVIEW";
+    }
+    if (paymentConfirmed) {
+      return "NO_SHOW";
+    }
+  }
+  const normalizedDisputeStatus = (disputeStatus ?? booking.dispute.status)
+    .trim()
+    .toUpperCase();
+  if ((booking.state === "COMPLETED_PENDING_REVIEW" ||
+    booking.state === "COMPLETED_FINAL") &&
+    normalizedDisputeStatus === "OPEN") {
+    return "UNDER_DISPUTE";
+  }
+  if ((booking.state === "COMPLETED_PENDING_REVIEW" ||
+    booking.state === "COMPLETED_FINAL") &&
+    normalizedDisputeStatus === "RESOLVED") {
+    return "DISPUTE_RESOLVED";
   }
   return booking.state;
 }
@@ -558,7 +603,15 @@ async function listCanonicalBookingsByPrefixForAdmin(params: {
   const summaries = await Promise.all(snapshot.docs.map(async (doc) => {
     const parsed = parseCanonicalBookingDocumentV3(asRecord(doc.data()));
     if (!parsed.ok) return null;
-    const effectiveState = effectiveCanonicalBookingStateForAdmin(parsed.booking);
+    const related = await loadBookingRelatedState(params.firestore, doc.id);
+    const disputeStatus = canonicalDisputeStatusForAdmin({
+      booking: parsed.booking,
+      dispute: related.dispute,
+    });
+    const effectiveState = effectiveCanonicalBookingStateForAdmin(
+      parsed.booking,
+      disputeStatus,
+    );
     if (params.stateFilter && effectiveState.toUpperCase() !== params.stateFilter) {
       return null;
     }
@@ -653,6 +706,7 @@ async function loadBookingRelatedState(
   firestore: Firestore,
   bookingId: string,
 ): Promise<{
+  dispute: Record<string, unknown> | null;
   refund: Record<string, unknown> | null;
   payout: Record<string, unknown> | null;
   reconciliation: Record<string, unknown> | null;
@@ -664,6 +718,7 @@ async function loadBookingRelatedState(
   bookingPrivate: Record<string, unknown> | null;
 }> {
   const [
+    disputeSnapshot,
     refundSnapshot,
     payoutSnapshot,
     reconciliationSnapshot,
@@ -674,6 +729,7 @@ async function loadBookingRelatedState(
     payoutReadinessSnapshot,
     bookingPrivateSnapshot,
   ] = await Promise.all([
+    firestore.collection("disputes").doc(bookingId).get(),
     firestore.collection("refunds").doc(bookingId).get(),
     firestore.collection(CANONICAL_PROVIDER_PAYOUTS_COLLECTION).doc(bookingId).get(),
     firestore.collection(CANONICAL_FINANCIAL_RECONCILIATION_COLLECTION).doc(bookingId).get(),
@@ -685,6 +741,7 @@ async function loadBookingRelatedState(
     firestore.collection("bookingPrivate").doc(bookingId).get(),
   ]);
   return {
+    dispute: disputeSnapshot.exists ? asRecord(disputeSnapshot.data()) : null,
     refund: refundSnapshot.exists ? asRecord(refundSnapshot.data()) : null,
     payout: payoutSnapshot.exists ? asRecord(payoutSnapshot.data()) : null,
     reconciliation: reconciliationSnapshot.exists ? asRecord(reconciliationSnapshot.data()) : null,
@@ -699,6 +756,43 @@ async function loadBookingRelatedState(
     bookingPrivate:
       bookingPrivateSnapshot.exists ? asRecord(bookingPrivateSnapshot.data()) : null,
   };
+}
+
+function canonicalDisputeStatusForAdmin(params: {
+  booking: CanonicalBookingDocumentV3;
+  dispute: Record<string, unknown> | null;
+}): string {
+  const canonicalStatus = asString(params.dispute?.status);
+  if (canonicalStatus) {
+    return canonicalStatus;
+  }
+  return params.booking.dispute.status;
+}
+
+function canonicalDisputeResolutionTypeForAdmin(params: {
+  booking: CanonicalBookingDocumentV3;
+  dispute: Record<string, unknown> | null;
+}): string {
+  const disputeResolution = asRecord(params.dispute?.resolution);
+  const canonicalResolutionType = asString(disputeResolution.type);
+  if (canonicalResolutionType) {
+    return canonicalResolutionType;
+  }
+  return params.booking.dispute.resolution;
+}
+
+function canonicalDisputeRaisedAtForAdmin(params: {
+  booking: CanonicalBookingDocumentV3;
+  dispute: Record<string, unknown> | null;
+}): Date | null {
+  return asDate(params.dispute?.createdAt) ?? params.booking.dispute.raisedAt;
+}
+
+function canonicalDisputeResolvedAtForAdmin(params: {
+  booking: CanonicalBookingDocumentV3;
+  dispute: Record<string, unknown> | null;
+}): Date | null {
+  return asDate(params.dispute?.resolvedAt) ?? params.booking.dispute.resolvedAt;
 }
 
 async function loadLedgerSummary(
@@ -787,6 +881,45 @@ function evidenceMetadataFromPaths(params: {
   }));
 }
 
+async function loadCanonicalDisputeEvidenceMetadata(params: {
+  firestore: Firestore;
+  disputeId: string;
+  fallbackPaths: string[];
+  raisedAt: unknown;
+  defaultRole: string;
+}): Promise<Array<Record<string, unknown>>> {
+  const snapshot = await params.firestore
+    .collection("disputes")
+    .doc(params.disputeId)
+    .collection("evidence")
+    .get();
+  if (snapshot.docs.length === 0) {
+    return evidenceMetadataFromPaths({
+      paths: params.fallbackPaths,
+      raisedAt: params.raisedAt,
+      defaultRole: params.defaultRole,
+    });
+  }
+  const entries: Array<Record<string, unknown>> = snapshot.docs
+    .map((doc) => ({evidenceId: doc.id, ...asRecord(doc.data())}));
+  return entries
+    .sort((left, right) =>
+      (asDate(left.createdAt)?.getTime() ?? 0) -
+      (asDate(right.createdAt)?.getTime() ?? 0))
+    .map((entry, index) => ({
+      evidenceId: asString(entry.evidenceId) || `${index + 1}`,
+      uploaderRole: asString(entry.uploadedByRole) || params.defaultRole || "customer",
+      fileName: fileNameFromPath(asString(entry.storagePath)),
+      contentType: asString(entry.mimeType) || contentTypeFromPath(asString(entry.storagePath)),
+      sizeBytes: asInt(entry.sizeBytes, 0) || null,
+      submittedAt: iso(entry.createdAt) ?? iso(params.raisedAt),
+      storagePath: asString(entry.storagePath),
+      width: asInt(entry.width, 0) || null,
+      height: asInt(entry.height, 0) || null,
+      secureRetrievalRequired: true,
+    }));
+}
+
 function buildAdminActionMatrix(params: {
   actor: CanonicalActor;
   booking: CanonicalBookingDocumentV3 | null;
@@ -863,6 +996,7 @@ async function buildDisputeSummaryForAdmin(params: {
         (asString(related.payout?.status) || bookingState.booking.payout.status || null) :
         null,
     evidenceCount:
+      asInt(params.dispute.evidenceCount, 0) ||
       asArray(params.dispute.attachmentPaths).length ||
       asArray(params.dispute.attachments).length ||
       bookingState.booking.dispute.evidenceRefs.length,
@@ -1057,13 +1191,42 @@ export async function getCanonicalDisputeAdminDetailDataV3(params: {
     loadLedgerSummary(params.firestore, bookingId),
     loadBookingEvents(params.firestore, bookingId),
   ]);
+  const providerBaseEntitlementPaise = asInt(
+    related.payout?.providerEntitlementPaise,
+    bookingState.booking.financials?.providerPayoutPaise ?? 0,
+  );
+  const providerAlreadyPaidPaise = asInt(related.payout?.priorPaidPaise, 0);
+  const alreadyRefundedPaise = asInt(related.refund?.refundAmountPaise, 0);
+  const currentPettxoRetainedPaise = asInt(
+    related.payout?.pettxoRetainedPaise,
+    Math.max(
+      (bookingState.booking.financials?.customerPaidPaise ?? 0) -
+        providerBaseEntitlementPaise,
+      0,
+    ),
+  );
   const evidencePaths = asArray(dispute.attachmentPaths).length > 0 ?
     asArray(dispute.attachmentPaths).map((value) => asString(value)).filter(Boolean) :
     asArray(dispute.attachments).map((value) => asString(value)).filter(Boolean);
+  const defaultRole =
+    asString(dispute.raisedBy) ||
+    bookingState.booking.dispute.raisedBy ||
+    "customer";
+  const evidence = await loadCanonicalDisputeEvidenceMetadata({
+    firestore: params.firestore,
+    disputeId: params.disputeId,
+    fallbackPaths: evidencePaths,
+    raisedAt: dispute.createdAt,
+    defaultRole,
+  });
   const summary = await buildDisputeSummaryForAdmin({
     firestore: params.firestore,
     actor: params.actor,
     disputeId: params.disputeId,
+    dispute,
+  });
+  const disputeStatus = canonicalDisputeStatusForAdmin({
+    booking: bookingState.booking,
     dispute,
   });
   return {
@@ -1079,7 +1242,7 @@ export async function getCanonicalDisputeAdminDetailDataV3(params: {
       state: bookingState.booking.state,
       bookingType: bookingState.booking.bookingType,
       paymentStatus: bookingState.booking.payment.status,
-      disputeStatus: bookingState.booking.dispute.status,
+      disputeStatus,
       payoutStatus: bookingState.booking.payout.status,
       schedule: serviceSummaryFromBooking(bookingState.booking),
     },
@@ -1089,10 +1252,7 @@ export async function getCanonicalDisputeAdminDetailDataV3(params: {
       booking: bookingState.booking,
       bank: providerBank,
     }),
-    raisedByRole:
-      asString(dispute.raisedBy) ||
-      bookingState.booking.dispute.raisedBy ||
-      "customer",
+    raisedByRole: defaultRole,
     raisedByMaskedIdentity: buildRaisedByMaskedIdentity({
       booking: bookingState.booking,
       dispute,
@@ -1105,18 +1265,28 @@ export async function getCanonicalDisputeAdminDetailDataV3(params: {
       meta: asRecord(event.meta),
     })),
     messages: [],
-    evidence: evidenceMetadataFromPaths({
-      paths: evidencePaths,
-      raisedAt: dispute.createdAt,
-      defaultRole:
-        asString(dispute.raisedBy) ||
-        bookingState.booking.dispute.raisedBy ||
-        "customer",
-    }),
+    evidence,
     financialSnapshot: params.actor.canViewFinancials ? {
       bookingFinancial: related.bookingFinancial,
       bookingFinancialPolicyVersion: CANONICAL_FINANCIAL_POLICY_VERSION,
       immutableSnapshot: bookingState.booking.financials,
+      disputeFinancialContext: {
+        currency: bookingState.booking.financials?.currency ?? "INR",
+        customerPaidPaise: bookingState.booking.financials?.customerPaidPaise ?? 0,
+        alreadyRefundedPaise,
+        providerBaseEntitlementPaise,
+        providerAlreadyPaidPaise,
+        providerRemainingPayablePaise: Math.max(
+          providerBaseEntitlementPaise - providerAlreadyPaidPaise,
+          0,
+        ),
+        currentPettxoRetainedPaise,
+        canonicalPlatformCommissionPaise:
+          bookingState.booking.financials?.platformCommissionPaise ?? 0,
+        pettxoCouponFundingPaise:
+          bookingState.booking.financials?.pettxoCouponFundingPaise ?? 0,
+        currentResolution: asRecord(dispute.resolution),
+      },
     } : null,
     cancellationContext: related.cancellation,
     noShowContext: related.noShow,
@@ -1150,7 +1320,14 @@ async function buildBookingSummaryForAdmin(params: {
     loadUserDoc(params.firestore, params.booking.parentId),
     loadBankDoc(params.firestore, params.booking.providerId),
   ]);
-  const effectiveState = effectiveCanonicalBookingStateForAdmin(params.booking);
+  const disputeStatus = canonicalDisputeStatusForAdmin({
+    booking: params.booking,
+    dispute: related.dispute,
+  });
+  const effectiveState = effectiveCanonicalBookingStateForAdmin(
+    params.booking,
+    disputeStatus,
+  );
   return {
     bookingId: params.bookingId,
     state: effectiveState,
@@ -1161,7 +1338,19 @@ async function buildBookingSummaryForAdmin(params: {
     customer: customerSummaryFromBooking(params.booking, customerUser),
     provider: providerSummaryFromBooking({booking: params.booking, bank: providerBank}),
     service: serviceSummaryFromBooking(params.booking),
-    disputeStatus: params.booking.dispute.status,
+    disputeStatus,
+    disputeResolutionType: canonicalDisputeResolutionTypeForAdmin({
+      booking: params.booking,
+      dispute: related.dispute,
+    }),
+    disputeCreatedAt: iso(canonicalDisputeRaisedAtForAdmin({
+      booking: params.booking,
+      dispute: related.dispute,
+    })),
+    disputeResolvedAt: iso(canonicalDisputeResolvedAtForAdmin({
+      booking: params.booking,
+      dispute: related.dispute,
+    })),
     payoutStatus:
       params.actor.canViewFinancials ?
         (asString(related.payout?.status) || params.booking.payout.status) :
@@ -1249,12 +1438,20 @@ export async function listCanonicalBookingsForAdminDataV3(params: {
       const parsed = parseCanonicalBookingDocumentV3(asRecord(doc.data()));
       if (!parsed.ok) return false;
       const booking = parsed.booking;
-      const effectiveState = effectiveCanonicalBookingStateForAdmin(booking);
+      const related = await loadBookingRelatedState(params.firestore, doc.id);
+      const disputeStatus = canonicalDisputeStatusForAdmin({
+        booking,
+        dispute: related.dispute,
+      });
+      const effectiveState = effectiveCanonicalBookingStateForAdmin(
+        booking,
+        disputeStatus,
+      );
       if (stateFilter && effectiveState.toUpperCase() !== stateFilter) return false;
       if (paymentStatusFilter &&
         booking.payment.status.toLowerCase() !== paymentStatusFilter) return false;
       if (disputeStatusFilter &&
-        booking.dispute.status.toUpperCase() !== disputeStatusFilter) return false;
+        disputeStatus.toUpperCase() !== disputeStatusFilter) return false;
       if (bookingTypeFilter &&
         booking.bookingType.toUpperCase() !== bookingTypeFilter) return false;
       if (!matchesDateRange(booking.serviceAnchorAt, dateFrom, dateTo)) return false;
@@ -1295,14 +1492,20 @@ export async function getCanonicalBookingAdminDetailDataV3(params: {
     loadLedgerSummary(params.firestore, bookingState.bookingId),
     loadBookingEvents(params.firestore, bookingState.bookingId),
   ]);
+  const disputeStatus = canonicalDisputeStatusForAdmin({
+    booking: bookingState.booking,
+    dispute: related.dispute,
+  });
   const effectiveState = effectiveCanonicalBookingStateForAdmin(
     bookingState.booking,
+    disputeStatus,
   );
   return {
     bookingId: bookingState.bookingId,
     canonicalState: bookingState.booking.state,
     storedState: bookingState.booking.state,
     effectiveState,
+    effectiveBookingStatus: effectiveState,
     paymentState: bookingState.booking.payment.status,
     bookingType: bookingState.booking.bookingType,
     customer: customerSummaryFromBooking(bookingState.booking, customerUser),
@@ -1354,7 +1557,21 @@ export async function getCanonicalBookingAdminDetailDataV3(params: {
     payout: params.actor.canViewFinancials ? related.payout : null,
     dispute: {
       ...bookingState.booking.dispute,
-      raisedAt: bookingState.booking.dispute.raisedAt?.toISOString() ?? null,
+      status: disputeStatus,
+      raisedAt:
+        canonicalDisputeRaisedAtForAdmin({
+          booking: bookingState.booking,
+          dispute: related.dispute,
+        })?.toISOString() ?? null,
+      resolvedAt:
+        canonicalDisputeResolvedAtForAdmin({
+          booking: bookingState.booking,
+          dispute: related.dispute,
+        })?.toISOString() ?? null,
+      resolution: canonicalDisputeResolutionTypeForAdmin({
+        booking: bookingState.booking,
+        dispute: related.dispute,
+      }),
     },
     ledgerSummary: params.actor.canViewFinancials ? ledger : null,
     reconciliation: params.actor.canViewFinancials ? related.reconciliation : null,
@@ -1368,7 +1585,9 @@ export async function getCanonicalBookingAdminDetailDataV3(params: {
     permittedAdminActions: buildAdminActionMatrix({
       actor: params.actor,
       booking: bookingState.booking,
-      dispute: bookingState.booking.dispute as unknown as Record<string, unknown>,
+      dispute:
+        (related.dispute ??
+          bookingState.booking.dispute as unknown as Record<string, unknown>),
       payout: related.payout,
     }),
   };
@@ -1420,8 +1639,10 @@ export async function listCanonicalProviderPayoutsForAdminDataV3(params: {
         holdReason: asString(payout.holdReason),
         bankReadiness: asString(bank?.status) || "unknown",
         providerEarningsSummary: related.providerEarning,
-        disputeBlocker:
-          bookingState.booking.dispute.status.toUpperCase() === "OPEN",
+        disputeBlocker: canonicalDisputeStatusForAdmin({
+          booking: bookingState.booking,
+          dispute: related.dispute,
+        }).toUpperCase() === "OPEN",
         refundBlocker:
           ["required", "submitted", "pending"].includes(asString(related.refund?.state).toLowerCase()),
         reconciliationStatus:
@@ -1472,8 +1693,10 @@ export async function listCanonicalProviderPayoutsForAdminDataV3(params: {
         holdReason: asString(payout.holdReason),
         bankReadiness: asString(bank?.status) || "unknown",
         providerEarningsSummary: related.providerEarning,
-        disputeBlocker:
-          bookingState.booking.dispute.status.toUpperCase() === "OPEN",
+        disputeBlocker: canonicalDisputeStatusForAdmin({
+          booking: bookingState.booking,
+          dispute: related.dispute,
+        }).toUpperCase() === "OPEN",
         refundBlocker:
           ["required", "submitted", "pending"].includes(asString(related.refund?.state).toLowerCase()),
         reconciliationStatus: asString(related.reconciliation?.status),
