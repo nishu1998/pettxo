@@ -2,6 +2,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/bookings/data/repositories/booking_repository.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_request_models.dart';
+import 'package:pettexo/features/bookings/domain/models/booking_payment_order.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 void main() {
@@ -123,6 +124,30 @@ void main() {
         expect(attempts, 1);
       },
     );
+
+    test('maps QR switch lock into a safe canonical payment error', () {
+      final repository = BookingRepository();
+      final exception = repository.mapCanonicalPaymentFunctionsExceptionForTest(
+        FirebaseFunctionsException(
+          code: 'failed-precondition',
+          message: 'This QR payment is still active for a short safety window.',
+          details: <String, dynamic>{
+            'code': 'PAYMENT_QR_SWITCH_LOCKED',
+            'lockUntil': '2026-08-17T12:05:00.000Z',
+            'activeAttemptId': 'attempt-qr-1',
+            'paymentRail': 'qr',
+          },
+        ),
+      );
+
+      expect(
+        exception.code,
+        CanonicalPaymentFailureCode.paymentQrSwitchLocked,
+      );
+      expect(exception.lockUntil, isNotNull);
+      expect(exception.activeAttemptId, 'attempt-qr-1');
+      expect(exception.paymentRail, 'qr');
+    });
   });
 }
 

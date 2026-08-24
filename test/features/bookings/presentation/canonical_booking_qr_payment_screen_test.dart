@@ -52,6 +52,7 @@ void main() {
       'amountPaise': 25000,
       'currency': 'INR',
       'expiresAt': '2026-08-14T12:30:00.000Z',
+      'switchLockUntil': '2026-08-14T12:05:00.000Z',
       'pricingSummary': {
         'serviceSubtotalPaise': 25000,
         'couponDiscountPaise': 5000,
@@ -66,6 +67,7 @@ void main() {
     expect(result.qrCodeId, 'qr-1');
     expect(result.amountPaise, 25000);
     expect(result.idempotentReplay, true);
+    expect(result.switchLockUntil, isNotNull);
   });
 
   test(
@@ -94,7 +96,7 @@ void main() {
   );
 
   testWidgets(
-    'QR screen shows image, amount, countdown, waiting state, and replay-safe fallback action',
+    'QR screen shows image, amount, switch-protection countdown, waiting state, and replay-safe fallback action',
     (tester) async {
       bookingRepository.emitAttempt(
         _attemptFixture(state: CanonicalPaymentAttemptState.orderCreated),
@@ -109,7 +111,7 @@ void main() {
         find.byWidgetPredicate(
           (widget) =>
               widget is Text &&
-              (widget.data?.contains('Waiting for payment') ?? false),
+              (widget.data?.contains('Payment-method protection') ?? false),
           skipOffstage: false,
         ),
         findsWidgets,
@@ -126,7 +128,9 @@ void main() {
       expect(find.text('confirmation'), findsNothing);
 
       await tester.tap(switchMethodButton, warnIfMissed: false);
-      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.text('QR payment is still active'), findsOneWidget);
+      expect(find.text('Continue with QR'), findsOneWidget);
     },
   );
 
@@ -308,6 +312,10 @@ CanonicalQrPaymentResult _qrResult({
         .toUtc()
         .add(const Duration(minutes: 10))
         .toIso8601String(),
+    'switchLockUntil': DateTime.now()
+        .toUtc()
+        .add(const Duration(minutes: 5))
+        .toIso8601String(),
     'pricingSummary': {
       'serviceSubtotalPaise': 25000,
       'couponDiscountPaise': 0,
@@ -342,6 +350,10 @@ CanonicalPaymentAttemptReadModel _attemptFixture({
     refundRequiredAt: null,
     refundedAt: null,
     lastReconciledAt: null,
+    qrCreatedAt: DateTime.now().toUtc(),
+    qrSwitchLockedUntil:
+        DateTime.now().toUtc().add(const Duration(minutes: 5)),
+    qrExpiresAt: DateTime.now().toUtc().add(const Duration(minutes: 10)),
     pricingSummary: const CanonicalPaymentPricingSummary(
       serviceSubtotalPaise: 25000,
       couponDiscountPaise: 0,

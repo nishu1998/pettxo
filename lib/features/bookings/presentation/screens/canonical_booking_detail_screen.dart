@@ -4,6 +4,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -17,6 +18,7 @@ import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
+import '../../domain/models/canonical_booking_refund_models.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
@@ -71,13 +73,20 @@ class _CanonicalBookingDetailScreenState
   int _privateRetryTick = 0;
   Timer? _completionAvailabilityTicker;
   StreamSubscription<BookingReadModel?>? _serviceStartStateSubscription;
+  final TextEditingController _providerOtpController = TextEditingController();
   final TextEditingController _reviewCommentController =
       TextEditingController();
   final TextEditingController _disputeReasonController =
       TextEditingController();
   final TextEditingController _disputeDescriptionController =
       TextEditingController();
+  final ImagePicker _imagePicker = ImagePicker();
+  final List<_DraftDisputeEvidence> _disputeEvidence =
+      <_DraftDisputeEvidence>[];
   int _reviewRating = 0;
+  int _disputeUploadCurrentIndex = 0;
+  int _disputeUploadTotalCount = 0;
+  double _disputeUploadProgress = 0;
 
   String get _currentUserId =>
       widget.currentUserIdOverride?.trim().isNotEmpty == true
@@ -97,6 +106,7 @@ class _CanonicalBookingDetailScreenState
 
   @override
   void dispose() {
+    _providerOtpController.dispose();
     _reviewCommentController.dispose();
     _disputeReasonController.dispose();
     _disputeDescriptionController.dispose();
@@ -162,27 +172,43 @@ class _CanonicalBookingDetailScreenState
                     booking,
                     isParent,
                   )) {
-                    return _buildCustomerBookingDetailsExperience(
-                      booking: booking,
-                      participantPrivateData: participantSnapshot.data,
-                      participantErrorMessage: participantSnapshot.hasError
-                          ? 'Paid-only booking details could not be loaded right now.'
-                          : null,
-                      otpPrivateData: privateState.privateData,
-                      isOtpLoading: privateState.isLoading,
-                      otpErrorMessage: privateState.errorMessage,
+                    return StreamBuilder<CanonicalBookingRefundRecord?>(
+                      stream: _repository.watchCanonicalBookingRefund(
+                        widget.bookingId,
+                      ),
+                      builder: (context, refundSnapshot) {
+                        return _buildCustomerBookingDetailsExperience(
+                          booking: booking,
+                          participantPrivateData: participantSnapshot.data,
+                          participantErrorMessage: participantSnapshot.hasError
+                              ? 'Paid-only booking details could not be loaded right now.'
+                              : null,
+                          otpPrivateData: privateState.privateData,
+                          isOtpLoading: privateState.isLoading,
+                          otpErrorMessage: privateState.errorMessage,
+                          refundRecord: refundSnapshot.data,
+                        );
+                      },
                     );
                   }
                   if (_shouldUseRedesignedProviderBookingDetails(
                     booking,
                     userIsProvider,
                   )) {
-                    return _buildProviderBookingDetailsExperience(
-                      booking: booking,
-                      participantPrivateData: participantSnapshot.data,
-                      participantErrorMessage: participantSnapshot.hasError
-                          ? 'Paid-only booking details could not be loaded right now.'
-                          : null,
+                    return StreamBuilder<CanonicalBookingRefundRecord?>(
+                      stream: _repository.watchCanonicalBookingRefund(
+                        widget.bookingId,
+                      ),
+                      builder: (context, refundSnapshot) {
+                        return _buildProviderBookingDetailsExperience(
+                          booking: booking,
+                          participantPrivateData: participantSnapshot.data,
+                          participantErrorMessage: participantSnapshot.hasError
+                              ? 'Paid-only booking details could not be loaded right now.'
+                              : null,
+                          refundRecord: refundSnapshot.data,
+                        );
+                      },
                     );
                   }
                   return ListView(
@@ -440,14 +466,96 @@ class _CanonicalBookingDetailScreenState
     return '$hour:$minutes $meridiem';
   }
 
+  static String _customerDisputeOutcomeText(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return switch (booking.dispute.resolution.trim().toUpperCase()) {
+      'CUSTOMER_WINS' => 'Resolved in your favor',
+      'PROVIDER_WINS' => 'Resolved in provider\'s favor',
+      'CUSTOM_ALLOCATION' => 'Partial refund',
+      _ => 'Reviewed by Pettxo',
+    };
+  }
+
+  static String _providerDisputeOutcomeText(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return switch (booking.dispute.resolution.trim().toUpperCase()) {
+      'CUSTOMER_WINS' => 'Resolved in customer\'s favor',
+      'PROVIDER_WINS' => 'Resolved in your favor',
+      'CUSTOM_ALLOCATION' => 'Adjusted settlement',
+      _ => 'Reviewed by Pettxo',
+    };
+  }
+
+  static String _providerPayoutStatusText(CanonicalBookingDocumentV3 booking) {
+    final payoutStatus = booking.payout.status.trim().toLowerCase();
+    switch (payoutStatus) {
+      case 'held':
+        return booking.payout.holdReason.isNotEmpty
+            ? booking.payout.holdReason
+            : 'Payout is held until all financial checks are clear.';
+      case 'ready':
+        return 'Payout is ready inside Pettxo and waiting for secure processing.';
+      case 'processing':
+        return 'Payout processing has started.';
+      case 'paid':
+        return booking.payout.releasedAt != null
+            ? 'Payout completed on ${_dateTime(booking.payout.releasedAt)}.'
+            : 'Payout completed successfully.';
+      case 'failed':
+        return 'Payout needs Pettxo support review before it can proceed.';
+      case 'cancelled':
+        return 'No provider payout is due for this booking.';
+      default:
+        return 'Payout status will appear here once Pettxo finishes the final financial review.';
+    }
+  }
+
+  static String? _customerRefundStatusText({
+    required CanonicalBookingDocumentV3 booking,
+    required CanonicalBookingRefundRecord? refundRecord,
+  }) {
+    final approvedRefundPaise = booking.dispute.customerRefundPaise;
+    if (approvedRefundPaise <= 0) {
+      if (canonicalBookingDisputeDisplayState(booking) ==
+          CanonicalBookingDisputeDisplayState.resolved) {
+        return 'No customer refund was approved.';
+      }
+      return null;
+    }
+    final refundState = refundRecord?.state.trim().toLowerCase() ?? '';
+    if (refundState == 'processed' || refundState == 'confirmed') {
+      return 'Refunded: ${_moneyFromPaise(approvedRefundPaise)}';
+    }
+    if (refundState == 'failed') {
+      return 'Refund approved: ${_moneyFromPaise(approvedRefundPaise)}. Support review is in progress.';
+    }
+    if (refundState == 'required' ||
+        refundState == 'submitted' ||
+        refundState == 'pending') {
+      return 'Refund approved: ${_moneyFromPaise(approvedRefundPaise)}. Status: Processing.';
+    }
+    return 'Refund approved: ${_moneyFromPaise(approvedRefundPaise)}.';
+  }
+
   static String _statusLabel(CanonicalBookingDocumentV3 booking) {
     return switch (effectiveCanonicalBookingPresentationState(booking)) {
       CanonicalBookingStateV3.confirmed => 'Confirmed',
       CanonicalBookingStateV3.inProgress => 'In progress',
       CanonicalBookingStateV3.completedPendingReview => 'Completed',
       CanonicalBookingStateV3.completedFinal => 'Completed',
+      CanonicalBookingStateV3.disputed => 'Under dispute',
       CanonicalBookingStateV3.noShow => 'No show',
-      _ => booking.state.name,
+      CanonicalBookingStateV3.requested => 'Requested',
+      CanonicalBookingStateV3.pendingProvider => 'Pending provider',
+      CanonicalBookingStateV3.acceptedAwaitingPayment => 'Awaiting payment',
+      CanonicalBookingStateV3.paymentExpired => 'Payment expired',
+      CanonicalBookingStateV3.cancelledByParent => 'Cancelled by customer',
+      CanonicalBookingStateV3.cancelled => 'Cancelled',
+      CanonicalBookingStateV3.declined => 'Declined',
+      CanonicalBookingStateV3.expired => 'Expired',
+      CanonicalBookingStateV3.serviceNotStarted => 'Service not started',
     };
   }
 
@@ -472,6 +580,7 @@ class _CanonicalBookingDetailScreenState
     return effectiveState == CanonicalBookingStateV3.confirmed ||
         effectiveState == CanonicalBookingStateV3.inProgress ||
         effectiveState == CanonicalBookingStateV3.noShow ||
+        effectiveState == CanonicalBookingStateV3.disputed ||
         effectiveState == CanonicalBookingStateV3.completedPendingReview ||
         effectiveState == CanonicalBookingStateV3.completedFinal;
   }
@@ -485,6 +594,7 @@ class _CanonicalBookingDetailScreenState
     return effectiveState == CanonicalBookingStateV3.confirmed ||
         effectiveState == CanonicalBookingStateV3.inProgress ||
         effectiveState == CanonicalBookingStateV3.noShow ||
+        effectiveState == CanonicalBookingStateV3.disputed ||
         effectiveState == CanonicalBookingStateV3.completedPendingReview ||
         effectiveState == CanonicalBookingStateV3.completedFinal;
   }
@@ -505,6 +615,7 @@ class _CanonicalBookingDetailScreenState
     required CanonicalBookingPrivateData? otpPrivateData,
     required bool isOtpLoading,
     required String? otpErrorMessage,
+    required CanonicalBookingRefundRecord? refundRecord,
   }) {
     final isCompletedState =
         booking.state == CanonicalBookingStateV3.completedPendingReview ||
@@ -515,6 +626,7 @@ class _CanonicalBookingDetailScreenState
         booking: booking,
         participantPrivateData: participantPrivateData,
         participantErrorMessage: participantErrorMessage,
+        refundRecord: refundRecord,
       );
     }
 
@@ -630,14 +742,16 @@ class _CanonicalBookingDetailScreenState
     required CanonicalBookingDocumentV3 booking,
     required CanonicalBookingPrivateParticipantsData? participantPrivateData,
     required String? participantErrorMessage,
+    required CanonicalBookingRefundRecord? refundRecord,
   }) {
     final disputeDeadlineAt =
         booking.lifecycle.disputeDeadlineAt ??
         booking.lifecycle.reviewWindowEndsAt;
+    final disputeDisplayState = canonicalBookingDisputeDisplayState(booking);
     final reviewSubmitted =
         _reviewSubmittedLocally || booking.hasSubmittedReview;
     final hasOpenDispute =
-        booking.dispute.status.trim().toLowerCase() == 'open';
+        disputeDisplayState == CanonicalBookingDisputeDisplayState.open;
     final disputeWindowActive =
         disputeDeadlineAt != null && !DateTime.now().isAfter(disputeDeadlineAt);
     final canLeaveReview =
@@ -648,61 +762,59 @@ class _CanonicalBookingDetailScreenState
     final canRaiseDispute =
         booking.state == CanonicalBookingStateV3.completedPendingReview &&
         disputeWindowActive &&
-        !hasOpenDispute &&
+        disputeDisplayState == CanonicalBookingDisputeDisplayState.none &&
         !_isSubmittingDispute;
+    final customerRefundStatusText = _customerRefundStatusText(
+      booking: booking,
+      refundRecord: refundRecord,
+    );
+    final actionsModel = _buildCustomerCompletedActionsModel(
+      booking: booking,
+      canLeaveReview: canLeaveReview,
+      canRaiseDispute: canRaiseDispute,
+      reviewSubmitted: reviewSubmitted,
+      hasOpenDispute: hasOpenDispute,
+    );
     return SafeArea(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
         children: [
-          _CustomerCompletedSummaryCard(
-            serviceTitle: booking.service.serviceTitle,
-            providerName: booking.participants.provider.displayName,
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Completion status'),
+          const BookingDetailsSectionLabel('Booking summary'),
           const SizedBox(height: 10),
-          _CustomerCompletedStatusCard(
-            disputeDeadlineText: disputeDeadlineAt != null
-                ? _dateTimeWithMeridiem(disputeDeadlineAt)
-                : 'Not available',
-            canLeaveReview: canLeaveReview,
-            canRaiseDispute: canRaiseDispute,
-            reviewSubmitted: reviewSubmitted,
-            disputeOpen: hasOpenDispute,
-            disputeWindowActive: disputeWindowActive,
-            isSubmittingReview: _isSubmittingReview,
-            isSubmittingDispute: _isSubmittingDispute,
-            onLeaveReview: canLeaveReview
-                ? () => _showReviewSheet(booking)
-                : null,
-            onRaiseDispute: canRaiseDispute
-                ? () => _showDisputeSheet(booking)
-                : null,
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Service'),
+          BookingSummaryCard(rows: _buildCustomerSummaryRows(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking status'),
           const SizedBox(height: 10),
-          _CustomerCompletedServiceCard(
-            serviceTitle: booking.service.serviceTitle,
-            providerName: booking.participants.provider.displayName,
-            paymentLabel: _paymentStatusLabel(booking),
-            amountPaid: _money(booking),
-            confirmedAt: _dateTimeWithMeridiem(
-              booking.lifecycle.paidAt ?? booking.createdAt,
+          BookingStatusCard(model: _buildCustomerCompletedStatusCard(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking timeline'),
+          const SizedBox(height: 10),
+          BookingTimelineCard(steps: _buildCustomerCompletedTimeline(booking)),
+          if (disputeDisplayState ==
+              CanonicalBookingDisputeDisplayState.open) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Dispute status'),
+            const SizedBox(height: 10),
+            BookingSummaryCard(rows: _buildCustomerOpenDisputeRows(booking)),
+          ],
+          if (disputeDisplayState ==
+              CanonicalBookingDisputeDisplayState.resolved) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Dispute result'),
+            const SizedBox(height: 10),
+            BookingSummaryCard(
+              rows: _buildCustomerResolvedDisputeRows(
+                booking: booking,
+                refundStatusText: customerRefundStatusText,
+              ),
             ),
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Schedule'),
-          const SizedBox(height: 10),
-          BookingSummaryCard(
-            rows: _buildCustomerCompletedScheduleRows(booking),
-          ),
-          const SizedBox(height: 24),
+          ],
           if (_shouldShowCompletedCustomerAddressSection(
             participantPrivateData,
             participantErrorMessage,
           )) ...[
-            const BookingDetailsSectionLabel('Service address'),
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Service location'),
             const SizedBox(height: 10),
             _CustomerCompletedAddressCard(
               participantPrivateData: participantPrivateData,
@@ -719,8 +831,19 @@ class _CanonicalBookingDetailScreenState
                   ? null
                   : _retryPrivateReads,
             ),
-            const SizedBox(height: 24),
           ],
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Payment summary'),
+          const SizedBox(height: 10),
+          FinancialSummaryCard(rows: _buildCustomerPaymentRows(booking)),
+          if (actionsModel.primaryLabel != null ||
+              actionsModel.secondaryLabel != null) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Primary actions'),
+            const SizedBox(height: 10),
+            BookingActionsCard(model: actionsModel),
+          ],
+          const SizedBox(height: 16),
           const BookingDetailsSectionLabel('Booking chat'),
           const SizedBox(height: 10),
           _CustomerCompletedChatCard(
@@ -729,6 +852,16 @@ class _CanonicalBookingDetailScreenState
             onOpenChat: booking.privacy.chatUnlockedAt != null
                 ? () => _openBookingChat(widget.bookingId)
                 : null,
+          ),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Important information'),
+          const SizedBox(height: 10),
+          ImportantInformationCard(
+            model: _buildCustomerCompletedImportantInformationModel(
+              booking: booking,
+              disputeDeadlineAt: disputeDeadlineAt,
+              disputeDisplayState: disputeDisplayState,
+            ),
           ),
         ],
       ),
@@ -739,6 +872,7 @@ class _CanonicalBookingDetailScreenState
     required CanonicalBookingDocumentV3 booking,
     required CanonicalBookingPrivateParticipantsData? participantPrivateData,
     required String? participantErrorMessage,
+    required CanonicalBookingRefundRecord? refundRecord,
   }) {
     final effectiveState = effectiveCanonicalBookingPresentationState(booking);
     final isCompletedState =
@@ -749,6 +883,7 @@ class _CanonicalBookingDetailScreenState
         booking: booking,
         participantPrivateData: participantPrivateData,
         participantErrorMessage: participantErrorMessage,
+        refundRecord: refundRecord,
       );
     }
 
@@ -849,53 +984,42 @@ class _CanonicalBookingDetailScreenState
     required CanonicalBookingDocumentV3 booking,
     required CanonicalBookingPrivateParticipantsData? participantPrivateData,
     required String? participantErrorMessage,
+    required CanonicalBookingRefundRecord? refundRecord,
   }) {
-    final reviewWindowText = booking.lifecycle.reviewWindowEndsAt != null
-        ? '${_calendarDate(booking.lifecycle.reviewWindowEndsAt!)} • ${_timeOnly(booking.lifecycle.reviewWindowEndsAt!)}'
-        : 'Awaiting final sync';
-    final currentStateText =
-        booking.state == CanonicalBookingStateV3.completedPendingReview
-        ? 'Waiting for customer review or automatic finalization.'
-        : 'Customer review window is closed and the booking is finalized.';
+    final disputeDisplayState = canonicalBookingDisputeDisplayState(booking);
     return SafeArea(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
         children: [
-          _ProviderCompletedSummaryCard(
-            serviceTitle: booking.service.serviceTitle,
-            providerName: booking.participants.provider.displayName,
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Completion status'),
+          const BookingDetailsSectionLabel('Booking summary'),
           const SizedBox(height: 10),
-          _ProviderCompletedStatusCard(
-            statusText: 'Service completed successfully.',
-            reviewWindowText: reviewWindowText,
-            currentStateText: currentStateText,
-            isPendingReview:
-                booking.state == CanonicalBookingStateV3.completedPendingReview,
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Service'),
+          BookingSummaryCard(rows: _buildProviderSummaryRows(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking status'),
           const SizedBox(height: 10),
-          _ProviderCompletedServiceCard(
-            providerName: booking.participants.provider.displayName,
-            bookingType: _bookingTypeLabel(booking),
-            paymentLabel: _paymentStatusLabel(booking),
-            amountPaid: _money(booking),
-            completedAt: booking.completedAt != null
-                ? _timelineDateTimeLabel(booking.completedAt!)
-                : 'Pending sync',
-            serviceTitle: booking.service.serviceTitle,
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Schedule'),
+          BookingStatusCard(model: _buildProviderCompletedStatusCard(booking)),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Booking timeline'),
           const SizedBox(height: 10),
-          _ProviderCompletedScheduleCard(
-            rows: _buildProviderCompletedScheduleRows(booking),
-          ),
-          const SizedBox(height: 24),
-          const BookingDetailsSectionLabel('Paid booking details'),
+          BookingTimelineCard(steps: _buildProviderCompletedTimeline(booking)),
+          if (disputeDisplayState ==
+              CanonicalBookingDisputeDisplayState.open) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Dispute status'),
+            const SizedBox(height: 10),
+            BookingSummaryCard(rows: _buildProviderOpenDisputeRows(booking)),
+          ],
+          if (disputeDisplayState ==
+              CanonicalBookingDisputeDisplayState.resolved) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Dispute result'),
+            const SizedBox(height: 10),
+            BookingSummaryCard(
+              rows: _buildProviderResolvedDisputeRows(booking),
+            ),
+          ],
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Service location'),
           const SizedBox(height: 10),
           _ProviderCompletedPaidDetailsCard(
             participantPrivateData: participantPrivateData,
@@ -910,7 +1034,11 @@ class _CanonicalBookingDetailScreenState
                 ? null
                 : _retryPrivateReads,
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Payment summary'),
+          const SizedBox(height: 10),
+          FinancialSummaryCard(rows: _buildProviderPaymentRows(booking)),
+          const SizedBox(height: 16),
           const BookingDetailsSectionLabel('Booking chat'),
           const SizedBox(height: 10),
           _ProviderCompletedChatCard(
@@ -919,6 +1047,12 @@ class _CanonicalBookingDetailScreenState
             onOpenChat: booking.privacy.chatUnlockedAt != null
                 ? () => _openBookingChat(widget.bookingId)
                 : null,
+          ),
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Important information'),
+          const SizedBox(height: 10),
+          ImportantInformationCard(
+            model: _buildProviderCompletedImportantInformationModel(booking),
           ),
         ],
       ),
@@ -973,33 +1107,6 @@ class _CanonicalBookingDetailScreenState
       ),
     );
     return rows;
-  }
-
-  List<StatusSummaryRowModel> _buildCustomerCompletedScheduleRows(
-    CanonicalBookingDocumentV3 booking,
-  ) {
-    return [
-      StatusSummaryRowModel(
-        label: 'Type',
-        value: _bookingTypeLabel(booking),
-        icon: Icons.event_note_outlined,
-      ),
-      StatusSummaryRowModel(
-        label: 'Date',
-        value: _schedulePresentation(booking).dateLabel,
-        icon: Icons.calendar_today_outlined,
-      ),
-      StatusSummaryRowModel(
-        label: 'Time',
-        value: _schedulePresentation(booking).timeLabel,
-        icon: Icons.access_time_rounded,
-      ),
-      StatusSummaryRowModel(
-        label: 'Duration',
-        value: _schedulePresentation(booking).durationLabel,
-        icon: Icons.hourglass_bottom_rounded,
-      ),
-    ];
   }
 
   List<StatusSummaryRowModel> _buildProviderSummaryRows(
@@ -1063,43 +1170,6 @@ class _CanonicalBookingDetailScreenState
       ),
     );
     return rows;
-  }
-
-  String _providerVisibleCustomerName(
-    CanonicalBookingDocumentV3 booking,
-    CanonicalBookingPrivateParticipantsData? participantPrivateData,
-  ) {
-    return providerVisibleCustomerDisplayName(
-      booking,
-      revealedFullName: participantPrivateData?.fullName,
-    );
-  }
-
-  List<StatusSummaryRowModel> _buildProviderCompletedScheduleRows(
-    CanonicalBookingDocumentV3 booking,
-  ) {
-    return [
-      StatusSummaryRowModel(
-        label: 'Date',
-        value: _schedulePresentation(booking).dateLabel,
-        icon: Icons.calendar_today_outlined,
-      ),
-      StatusSummaryRowModel(
-        label: 'Time',
-        value: _schedulePresentation(booking).timeLabel,
-        icon: Icons.access_time_rounded,
-      ),
-      StatusSummaryRowModel(
-        label: 'Duration',
-        value: _schedulePresentation(booking).durationLabel,
-        icon: Icons.hourglass_bottom_rounded,
-      ),
-      StatusSummaryRowModel(
-        label: 'Visit type',
-        value: _bookingTypeLabel(booking),
-        icon: Icons.sell_outlined,
-      ),
-    ];
   }
 
   StatusCardPresentationModel _buildCustomerStatusCard(
@@ -1314,6 +1384,327 @@ class _CanonicalBookingDetailScreenState
     return steps;
   }
 
+  StatusCardPresentationModel _buildCustomerCompletedStatusCard(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final disputeDisplayState = canonicalBookingDisputeDisplayState(booking);
+    switch (disputeDisplayState) {
+      case CanonicalBookingDisputeDisplayState.open:
+        return const StatusCardPresentationModel(
+          icon: Icons.gavel_rounded,
+          title: 'Dispute under review',
+          explanation:
+              'Your dispute has been submitted and is being reviewed by Pettxo. Provider settlement is currently on hold until the case is resolved.',
+          accentColor: Color(0xFFE07A2D),
+          badgeLabel: 'Under dispute',
+        );
+      case CanonicalBookingDisputeDisplayState.resolved:
+        return const StatusCardPresentationModel(
+          icon: Icons.verified_rounded,
+          title: 'Dispute resolved',
+          explanation:
+              'Pettxo has completed the review of this dispute. See the dispute result section below for the final outcome.',
+          accentColor: Color(0xFF2D6CDF),
+          badgeLabel: 'Dispute resolved',
+        );
+      case CanonicalBookingDisputeDisplayState.none:
+        if (booking.state == CanonicalBookingStateV3.completedPendingReview) {
+          return const StatusCardPresentationModel(
+            icon: Icons.rate_review_outlined,
+            title: 'Completed, pending review',
+            explanation:
+                'The service has been completed. The customer review and dispute window is still active.',
+            accentColor: Color(0xFF2F9E44),
+            badgeLabel: 'Completed',
+          );
+        }
+        return const StatusCardPresentationModel(
+          icon: Icons.verified_rounded,
+          title: 'Completed',
+          explanation:
+              'The service has been completed successfully and the review window is closed.',
+          accentColor: Color(0xFF2F9E44),
+          badgeLabel: 'Completed',
+        );
+    }
+  }
+
+  StatusCardPresentationModel _buildProviderCompletedStatusCard(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final disputeDisplayState = canonicalBookingDisputeDisplayState(booking);
+    switch (disputeDisplayState) {
+      case CanonicalBookingDisputeDisplayState.open:
+        return const StatusCardPresentationModel(
+          icon: Icons.gavel_rounded,
+          title: 'Dispute under review',
+          explanation:
+              'The customer raised a dispute for this booking. Your settlement is currently on hold while Pettxo reviews the case.',
+          accentColor: Color(0xFFE07A2D),
+          badgeLabel: 'Under dispute',
+        );
+      case CanonicalBookingDisputeDisplayState.resolved:
+        return const StatusCardPresentationModel(
+          icon: Icons.verified_rounded,
+          title: 'Dispute resolved',
+          explanation:
+              'Pettxo has completed the review of this dispute. See the dispute result section below for the settlement outcome.',
+          accentColor: Color(0xFF2D6CDF),
+          badgeLabel: 'Resolved',
+        );
+      case CanonicalBookingDisputeDisplayState.none:
+        if (booking.state == CanonicalBookingStateV3.completedPendingReview) {
+          return const StatusCardPresentationModel(
+            icon: Icons.rate_review_outlined,
+            title: 'Completed, pending review',
+            explanation:
+                'The service has been completed. The customer review and dispute window is still active.',
+            accentColor: Color(0xFF2F9E44),
+            badgeLabel: 'Completed',
+          );
+        }
+        return const StatusCardPresentationModel(
+          icon: Icons.verified_rounded,
+          title: 'Completed',
+          explanation:
+              'The service has been completed successfully and the review window is closed.',
+          accentColor: Color(0xFF2F9E44),
+          badgeLabel: 'Completed',
+        );
+    }
+  }
+
+  List<BookingTimelineStepModel> _buildCustomerCompletedTimeline(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return _buildCompletedTimeline(booking);
+  }
+
+  List<BookingTimelineStepModel> _buildProviderCompletedTimeline(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return _buildCompletedTimeline(booking);
+  }
+
+  List<BookingTimelineStepModel> _buildCompletedTimeline(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final steps = <BookingTimelineStepModel>[];
+    if (booking.lifecycle.requestedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Request submitted',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.requestedAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.respondedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Provider accepted',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.respondedAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.paidAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Payment completed',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.paidAt!),
+        ),
+      );
+    }
+    if (booking.lifecycle.otpEnteredAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Service started',
+          timestamp: _timelineDateTimeLabel(booking.lifecycle.otpEnteredAt!),
+        ),
+      );
+    }
+    final completedAt = booking.lifecycle.completedAt ?? booking.completedAt;
+    if (completedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Service completed',
+          timestamp: _timelineDateTimeLabel(completedAt),
+          isHighlighted: true,
+        ),
+      );
+    }
+    if (booking.hasSubmittedReview && booking.review.submittedAt != null) {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Review submitted',
+          timestamp: _timelineDateTimeLabel(booking.review.submittedAt!),
+        ),
+      );
+    }
+    if (booking.dispute.raisedAt != null &&
+        booking.dispute.status.trim().toLowerCase() != 'none') {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Dispute submitted',
+          timestamp: _timelineDateTimeLabel(booking.dispute.raisedAt!),
+          tone: BookingTimelineStepTone.warning,
+        ),
+      );
+    }
+    if (booking.dispute.resolvedAt != null &&
+        booking.dispute.status.trim().toLowerCase() == 'resolved') {
+      steps.add(
+        BookingTimelineStepModel(
+          label: 'Dispute resolved',
+          timestamp: _timelineDateTimeLabel(booking.dispute.resolvedAt!),
+        ),
+      );
+    }
+    return steps;
+  }
+
+  List<StatusSummaryRowModel> _buildCustomerOpenDisputeRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return [
+      const StatusSummaryRowModel(
+        label: 'Status',
+        value: 'Under dispute',
+        icon: Icons.gavel_rounded,
+      ),
+      const StatusSummaryRowModel(
+        label: 'Review',
+        value:
+            'Your dispute has been submitted and is being reviewed by Pettxo.',
+        icon: Icons.manage_search_rounded,
+      ),
+      const StatusSummaryRowModel(
+        label: 'Settlement',
+        value:
+            'Provider settlement remains on hold until the case is resolved.',
+        icon: Icons.account_balance_wallet_outlined,
+      ),
+      if (booking.dispute.raisedAt != null)
+        StatusSummaryRowModel(
+          label: 'Submitted at',
+          value: _timelineDateTimeLabel(booking.dispute.raisedAt!),
+          icon: Icons.schedule_rounded,
+        ),
+    ];
+  }
+
+  List<StatusSummaryRowModel> _buildCustomerResolvedDisputeRows({
+    required CanonicalBookingDocumentV3 booking,
+    required String? refundStatusText,
+  }) {
+    final rows = <StatusSummaryRowModel>[
+      StatusSummaryRowModel(
+        label: 'Outcome',
+        value: _customerDisputeOutcomeText(booking),
+        icon: Icons.balance_rounded,
+      ),
+    ];
+    final resolution = booking.dispute.resolution.trim().toUpperCase();
+    if (resolution == 'CUSTOM_ALLOCATION') {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Your allocation',
+          value: _percentLabelFromAmount(
+            numeratorPaise: booking.dispute.customerRefundPaise,
+            denominatorPaise: booking.financials?.customerPaidPaise ?? 0,
+          ),
+          icon: Icons.percent_rounded,
+        ),
+      );
+    }
+    rows.add(
+      StatusSummaryRowModel(
+        label: 'Refund',
+        value: booking.dispute.customerRefundPaise > 0
+            ? _moneyFromPaise(booking.dispute.customerRefundPaise)
+            : 'No refund approved',
+        icon: Icons.currency_rupee_rounded,
+      ),
+    );
+    if (refundStatusText != null) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Refund status',
+          value: refundStatusText,
+          icon: Icons.payments_outlined,
+        ),
+      );
+    }
+    return rows;
+  }
+
+  List<StatusSummaryRowModel> _buildProviderOpenDisputeRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    return [
+      const StatusSummaryRowModel(
+        label: 'Status',
+        value: 'Under dispute',
+        icon: Icons.gavel_rounded,
+      ),
+      const StatusSummaryRowModel(
+        label: 'Review',
+        value: 'The customer raised a dispute for this booking.',
+        icon: Icons.manage_search_rounded,
+      ),
+      const StatusSummaryRowModel(
+        label: 'Settlement',
+        value: 'Your settlement is on hold while Pettxo reviews the case.',
+        icon: Icons.account_balance_wallet_outlined,
+      ),
+      if (booking.dispute.raisedAt != null)
+        StatusSummaryRowModel(
+          label: 'Submitted at',
+          value: _timelineDateTimeLabel(booking.dispute.raisedAt!),
+          icon: Icons.schedule_rounded,
+        ),
+    ];
+  }
+
+  List<StatusSummaryRowModel> _buildProviderResolvedDisputeRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final rows = <StatusSummaryRowModel>[
+      StatusSummaryRowModel(
+        label: 'Outcome',
+        value: _providerDisputeOutcomeText(booking),
+        icon: Icons.balance_rounded,
+      ),
+    ];
+    final resolution = booking.dispute.resolution.trim().toUpperCase();
+    if (resolution == 'CUSTOM_ALLOCATION') {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Your allocation',
+          value: _percentLabelFromAmount(
+            numeratorPaise: booking.dispute.providerReleasePaise,
+            denominatorPaise: booking.financials?.customerPaidPaise ?? 0,
+          ),
+          icon: Icons.percent_rounded,
+        ),
+      );
+    }
+    rows.add(
+      StatusSummaryRowModel(
+        label: 'Your final settlement',
+        value: _moneyFromPaise(booking.dispute.providerReleasePaise),
+        icon: Icons.currency_rupee_rounded,
+      ),
+    );
+    rows.add(
+      StatusSummaryRowModel(
+        label: 'Settlement status',
+        value: _humanizeSettlementStatus(booking.payout.status),
+        icon: Icons.payments_outlined,
+      ),
+    );
+    return rows;
+  }
+
   List<StatusFinancialRowModel> _buildCustomerPaymentRows(
     CanonicalBookingDocumentV3 booking,
   ) {
@@ -1353,6 +1744,125 @@ class _CanonicalBookingDetailScreenState
       ),
     );
     return rows;
+  }
+
+  List<StatusFinancialRowModel> _buildProviderPaymentRows(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final financials = booking.financials;
+    final settlementPaise = booking.dispute.providerReleasePaise > 0
+        ? booking.dispute.providerReleasePaise
+        : (booking.payout.providerPayoutPaise > 0
+              ? booking.payout.providerPayoutPaise
+              : financials?.providerPayoutPaise ?? 0);
+    return [
+      StatusFinancialRowModel(
+        label: 'Service Price',
+        value: _moneyFromPaise(financials?.serviceSubtotalPaise ?? 0),
+      ),
+      StatusFinancialRowModel(
+        label: 'Customer Paid',
+        value: _moneyFromPaise(financials?.customerPaidPaise ?? 0),
+      ),
+      StatusFinancialRowModel(
+        label: 'Final Settlement',
+        value: _moneyFromPaise(settlementPaise),
+        isEmphasized: true,
+      ),
+      StatusFinancialRowModel(
+        label: 'Settlement Status',
+        value: _humanizeSettlementStatus(booking.payout.status),
+        valueTone: booking.payout.status.trim().toLowerCase() == 'paid'
+            ? StatusFinancialValueTone.positive
+            : booking.payout.status.trim().toLowerCase() == 'held'
+            ? StatusFinancialValueTone.warning
+            : StatusFinancialValueTone.neutral,
+      ),
+    ];
+  }
+
+  StatusActionsPresentationModel _buildCustomerCompletedActionsModel({
+    required CanonicalBookingDocumentV3 booking,
+    required bool canLeaveReview,
+    required bool canRaiseDispute,
+    required bool reviewSubmitted,
+    required bool hasOpenDispute,
+  }) {
+    return StatusActionsPresentationModel(
+      primaryLabel: canLeaveReview
+          ? (reviewSubmitted || _isSubmittingReview
+                ? 'Review submitted'
+                : 'Leave review')
+          : null,
+      onPrimaryPressed: canLeaveReview ? () => _showReviewSheet(booking) : null,
+      secondaryLabel: canRaiseDispute
+          ? (hasOpenDispute || _isSubmittingDispute
+                ? 'Dispute submitted'
+                : 'Raise dispute')
+          : null,
+      onSecondaryPressed: canRaiseDispute
+          ? () => _showDisputeSheet(booking)
+          : null,
+      footnote: canLeaveReview || canRaiseDispute
+          ? 'Only the actions that still apply to this booking are shown here.'
+          : null,
+    );
+  }
+
+  StatusImportantInformationModel
+  _buildCustomerCompletedImportantInformationModel({
+    required CanonicalBookingDocumentV3 booking,
+    required DateTime? disputeDeadlineAt,
+    required CanonicalBookingDisputeDisplayState disputeDisplayState,
+  }) {
+    switch (disputeDisplayState) {
+      case CanonicalBookingDisputeDisplayState.open:
+        return const StatusImportantInformationModel(
+          title: 'Dispute review in progress',
+          body:
+              'Pettxo is reviewing the submitted dispute. Any approved refund will still depend on the separate refund execution state.',
+        );
+      case CanonicalBookingDisputeDisplayState.resolved:
+        return const StatusImportantInformationModel(
+          title: 'Refund timing can differ from the decision',
+          body:
+              'Dispute resolution confirms the decision, but refund processing can complete later. Check the refund status above for the latest execution state.',
+        );
+      case CanonicalBookingDisputeDisplayState.none:
+        return StatusImportantInformationModel(
+          title: 'Review and dispute window',
+          body: disputeDeadlineAt != null
+              ? 'This booking remains in the post-service review period until ${_dateTimeWithMeridiem(disputeDeadlineAt)}.'
+              : 'This completed booking is still in its post-service review period.',
+        );
+    }
+  }
+
+  StatusImportantInformationModel
+  _buildProviderCompletedImportantInformationModel(
+    CanonicalBookingDocumentV3 booking,
+  ) {
+    final disputeDisplayState = canonicalBookingDisputeDisplayState(booking);
+    switch (disputeDisplayState) {
+      case CanonicalBookingDisputeDisplayState.open:
+        return const StatusImportantInformationModel(
+          title: 'Settlement is on hold',
+          body:
+              'The dispute review is separate from payout execution. Your settlement remains on hold until Pettxo finishes the review and any remaining financial checks clear.',
+        );
+      case CanonicalBookingDisputeDisplayState.resolved:
+        return StatusImportantInformationModel(
+          title: 'Payout follows the final decision',
+          body:
+              'The dispute is resolved. Your payout still follows the live settlement state shown above: ${_providerPayoutStatusText(booking)}',
+        );
+      case CanonicalBookingDisputeDisplayState.none:
+        return const StatusImportantInformationModel(
+          title: 'Finalization remains automatic',
+          body:
+              'Completed bookings remain in the customer review window before final payout readiness is fully cleared.',
+        );
+    }
   }
 
   bool _shouldShowLocationSection(
@@ -1448,6 +1958,7 @@ class _CanonicalBookingDetailScreenState
   Future<void> _startServiceFlow({required String bookingId}) async {
     if (_isStartingService) return;
     final screenContext = context;
+    _providerOtpController.clear();
     try {
       final latest = await _repository.fetchCanonicalBooking(bookingId);
       if (latest is! CanonicalBookingReadModel ||
@@ -1466,10 +1977,10 @@ class _CanonicalBookingDetailScreenState
         isScrollControlled: true,
         backgroundColor: Colors.white,
         builder: (sheetContext) {
-          var otpValue = '';
-          var otpInputResetVersion = 0;
           return StatefulBuilder(
             builder: (context, setSheetState) {
+              final otpController = _providerOtpController;
+              final otpValue = otpController.text.trim();
               final canSubmit =
                   RegExp(r'^\d{6}$').hasMatch(otpValue) && !_isStartingService;
               Future<void> submitOtp() async {
@@ -1502,8 +2013,7 @@ class _CanonicalBookingDetailScreenState
                   final message = _serviceStartErrorMessage(error);
                   final shouldClearOtp = _shouldResetProviderOtpInput(error);
                   if (shouldClearOtp) {
-                    otpValue = '';
-                    otpInputResetVersion += 1;
+                    otpController.clear();
                     if (sheetContext.mounted) {
                       setSheetState(() {});
                     }
@@ -1550,20 +2060,15 @@ class _CanonicalBookingDetailScreenState
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
-                        key: ValueKey(
-                          'provider-otp-input-$otpInputResetVersion',
-                        ),
-                        initialValue: otpValue,
+                        key: const ValueKey('provider-otp-input'),
+                        controller: otpController,
                         keyboardType: TextInputType.number,
                         textInputAction: TextInputAction.done,
                         inputFormatters: [
                           FilteringTextInputFormatter.digitsOnly,
                           LengthLimitingTextInputFormatter(6),
                         ],
-                        onChanged: (value) {
-                          otpValue = value.trim();
-                          setSheetState(() {});
-                        },
+                        onChanged: (_) => setSheetState(() {}),
                         onTapOutside: (_) => FocusScope.of(context).unfocus(),
                         decoration: const InputDecoration(
                           counterText: '',
@@ -2033,6 +2538,12 @@ class _CanonicalBookingDetailScreenState
   Future<void> _showDisputeSheet(CanonicalBookingDocumentV3 booking) async {
     _disputeReasonController.clear();
     _disputeDescriptionController.clear();
+    setState(() {
+      _disputeEvidence.clear();
+      _disputeUploadCurrentIndex = 0;
+      _disputeUploadTotalCount = 0;
+      _disputeUploadProgress = 0;
+    });
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -2070,6 +2581,102 @@ class _CanonicalBookingDetailScreenState
                   hintText: 'Describe what went wrong',
                 ),
               ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Evidence (optional)',
+                      style: TextStyle(
+                        color: AppColors.textDark,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _isSubmittingDispute
+                        ? null
+                        : _pickDisputeEvidence,
+                    child: Text(
+                      _disputeEvidence.isEmpty
+                          ? '+ Add photos/screenshots'
+                          : 'Add more',
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'You can attach up to 5 screenshots or photos.',
+                style: TextStyle(color: AppColors.textGrey, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              if (_disputeEvidence.isNotEmpty)
+                SizedBox(
+                  height: 88,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _disputeEvidence.length,
+                    separatorBuilder: (_, ___) => const SizedBox(width: 10),
+                    itemBuilder: (context, index) {
+                      final item = _disputeEvidence[index];
+                      return Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: Image.memory(
+                              item.bytes,
+                              width: 88,
+                              height: 88,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          Positioned(
+                            right: 4,
+                            top: 4,
+                            child: InkWell(
+                              onTap: _isSubmittingDispute
+                                  ? null
+                                  : () => _removeDisputeEvidence(item),
+                              child: Container(
+                                decoration: const BoxDecoration(
+                                  color: Colors.black54,
+                                  shape: BoxShape.circle,
+                                ),
+                                padding: const EdgeInsets.all(4),
+                                child: const Icon(
+                                  Icons.close,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              if (_isSubmittingDispute && _disputeUploadTotalCount > 0) ...[
+                const SizedBox(height: 12),
+                LinearProgressIndicator(
+                  value: _disputeUploadProgress > 0
+                      ? _disputeUploadProgress
+                      : null,
+                  color: AppColors.primary,
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.12),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _disputeUploadCurrentIndex >= _disputeUploadTotalCount
+                      ? 'Validating and submitting your dispute...'
+                      : 'Uploading evidence ${_disputeUploadCurrentIndex + 1} of $_disputeUploadTotalCount...',
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -2101,6 +2708,57 @@ class _CanonicalBookingDetailScreenState
         );
       },
     );
+  }
+
+  Future<void> _pickDisputeEvidence() async {
+    if (_disputeEvidence.length >= 5) {
+      AppSnackbar.showInfo(
+        context,
+        'You can attach up to 5 screenshots or photos.',
+      );
+      return;
+    }
+    final files = await _imagePicker.pickMultiImage();
+    if (!mounted || files.isEmpty) return;
+    final remaining = 5 - _disputeEvidence.length;
+    final accepted = <_DraftDisputeEvidence>[];
+    for (final file in files) {
+      if (accepted.length >= remaining) break;
+      final extension = _fileExtension(file.name);
+      final contentType = _contentTypeForImageExtension(extension);
+      if (contentType == null) {
+        AppSnackbar.showError(
+          context,
+          'Only JPG, JPEG, PNG, or WEBP images are supported.',
+        );
+        continue;
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        AppSnackbar.showError(context, 'One selected image is empty.');
+        continue;
+      }
+      if (bytes.length > 5 * 1024 * 1024) {
+        AppSnackbar.showError(
+          context,
+          'Each evidence image must be 5 MB or smaller.',
+        );
+        continue;
+      }
+      accepted.add(
+        _DraftDisputeEvidence(
+          bytes: bytes,
+          fileName: file.name,
+          contentType: contentType,
+        ),
+      );
+    }
+    if (!mounted || accepted.isEmpty) return;
+    setState(() => _disputeEvidence.addAll(accepted));
+  }
+
+  void _removeDisputeEvidence(_DraftDisputeEvidence item) {
+    setState(() => _disputeEvidence.remove(item));
   }
 
   Future<void> _submitReview(
@@ -2189,11 +2847,46 @@ class _CanonicalBookingDetailScreenState
       return;
     }
     setState(() => _isSubmittingDispute = true);
+    var uploadedEvidence = const <UploadedBookingDisputeEvidence>[];
     try {
+      if (_disputeEvidence.isNotEmpty) {
+        uploadedEvidence = await _repository.uploadBookingDisputeEvidence(
+          bookingId: widget.bookingId,
+          evidence: _disputeEvidence
+              .map(
+                (item) => BookingDisputeDraftEvidence(
+                  bytes: item.bytes,
+                  fileName: item.fileName,
+                  contentType: item.contentType,
+                ),
+              )
+              .toList(growable: false),
+          onProgress:
+              ({
+                required currentIndex,
+                required totalCount,
+                required progress,
+              }) {
+                if (!mounted) return;
+                setState(() {
+                  _disputeUploadCurrentIndex = currentIndex;
+                  _disputeUploadTotalCount = totalCount;
+                  _disputeUploadProgress = progress;
+                });
+              },
+        );
+        if (!mounted) return;
+        setState(() {
+          _disputeUploadCurrentIndex = _disputeEvidence.length;
+          _disputeUploadTotalCount = _disputeEvidence.length;
+          _disputeUploadProgress = 1;
+        });
+      }
       await _repository.createBookingDisputeV3(
         bookingId: widget.bookingId,
         reason: reason,
         description: description,
+        evidence: uploadedEvidence,
       );
       if (!mounted) return;
       if (closeSheet) Navigator.of(context).pop();
@@ -2224,6 +2917,11 @@ class _CanonicalBookingDetailScreenState
           '[CanonicalDisputeSubmission] firebase_exception bookingId=${widget.bookingId} code=${error.code} message=${(error.message ?? '').trim()}',
         );
       }
+      if (uploadedEvidence.isNotEmpty) {
+        await _repository.cleanupUploadedBookingDisputeEvidence(
+          uploadedEvidence,
+        );
+      }
       if (!mounted) return;
       final normalizedCode = (detailCode ?? functionCode ?? '')
           .trim()
@@ -2243,17 +2941,51 @@ class _CanonicalBookingDetailScreenState
             : functionCode == 'invalid-argument' ||
                   text.contains('invalid-argument')
             ? 'Please check your dispute details and try again.'
+            : functionCode == 'resource-exhausted' ||
+                  normalizedCode == 'EVIDENCE_FILE_TOO_LARGE'
+            ? 'One of the selected images is too large.'
             : functionCode == 'failed-precondition' ||
                   text.contains('failed-precondition')
             ? 'This booking is not eligible for dispute submission.'
             : functionCode == 'unavailable' || text.contains('unavailable')
             ? 'Network is unavailable right now. Please try again.'
+            : normalizedCode == 'UNSUPPORTED_EVIDENCE_TYPE'
+            ? 'Only JPG, JPEG, PNG, or WEBP images are supported.'
+            : normalizedCode == 'DUPLICATE_EVIDENCE_REFERENCE' ||
+                  normalizedCode == 'DUPLICATE_EVIDENCE_ID'
+            ? 'Please reselect your dispute images and try again.'
             : 'Could not submit your dispute right now.',
       );
     } finally {
       if (mounted) {
-        setState(() => _isSubmittingDispute = false);
+        setState(() {
+          _isSubmittingDispute = false;
+          _disputeUploadCurrentIndex = 0;
+          _disputeUploadTotalCount = 0;
+          _disputeUploadProgress = 0;
+        });
       }
+    }
+  }
+
+  static String _fileExtension(String fileName) {
+    final trimmed = fileName.trim().toLowerCase();
+    final dotIndex = trimmed.lastIndexOf('.');
+    if (dotIndex < 0 || dotIndex >= trimmed.length - 1) return '';
+    return trimmed.substring(dotIndex + 1);
+  }
+
+  static String? _contentTypeForImageExtension(String extension) {
+    switch (extension.trim().toLowerCase()) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      default:
+        return null;
     }
   }
 
@@ -2267,6 +2999,36 @@ class _CanonicalBookingDetailScreenState
     return wholePercent % 1 == 0
         ? '${wholePercent.toStringAsFixed(0)}%'
         : '${wholePercent.toStringAsFixed(2)}%';
+  }
+
+  static String _percentLabelFromAmount({
+    required int numeratorPaise,
+    required int denominatorPaise,
+  }) {
+    if (denominatorPaise <= 0 || numeratorPaise <= 0) {
+      return '0%';
+    }
+    final basisPoints = ((numeratorPaise * 10000) / denominatorPaise).round();
+    return _percentLabel(basisPoints);
+  }
+
+  static String _humanizeSettlementStatus(String rawStatus) {
+    switch (rawStatus.trim().toLowerCase()) {
+      case 'held':
+        return 'Held';
+      case 'ready':
+        return 'Ready';
+      case 'processing':
+        return 'Processing';
+      case 'paid':
+        return 'Paid';
+      case 'failed':
+        return 'Support review required';
+      case 'cancelled':
+        return 'No payout due';
+      default:
+        return 'Pending';
+    }
   }
 
   static String _labelForTimingBand(String timingBand) {
@@ -2691,269 +3453,6 @@ class _CustomerCancellationCard extends StatelessWidget {
   }
 }
 
-class _CustomerCompletedSummaryCard extends StatelessWidget {
-  const _CustomerCompletedSummaryCard({
-    required this.serviceTitle,
-    required this.providerName,
-  });
-
-  final String serviceTitle;
-  final String providerName;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingDetailsSurfaceCard(
-      backgroundColor: const Color(0xFFFFFBF8),
-      borderColor: AppColors.primary.withValues(alpha: 0.10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      serviceTitle,
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 27,
-                        fontWeight: FontWeight.w900,
-                        height: 1.1,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      providerName,
-                      style: const TextStyle(
-                        color: AppColors.textGrey,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE4F6E9),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Text(
-                  'Completed',
-                  style: TextStyle(
-                    color: Color(0xFF248A52),
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          const Text(
-            'Your payment is confirmed. You can now leave a review, raise a dispute during the review window, contact the provider, view directions, or continue chatting.',
-            style: TextStyle(
-              color: AppColors.textGrey,
-              fontWeight: FontWeight.w600,
-              height: 1.5,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CustomerCompletedStatusCard extends StatelessWidget {
-  const _CustomerCompletedStatusCard({
-    required this.disputeDeadlineText,
-    required this.canLeaveReview,
-    required this.canRaiseDispute,
-    required this.reviewSubmitted,
-    required this.disputeOpen,
-    required this.disputeWindowActive,
-    required this.isSubmittingReview,
-    required this.isSubmittingDispute,
-    required this.onLeaveReview,
-    required this.onRaiseDispute,
-  });
-
-  final String disputeDeadlineText;
-  final bool canLeaveReview;
-  final bool canRaiseDispute;
-  final bool reviewSubmitted;
-  final bool disputeOpen;
-  final bool disputeWindowActive;
-  final bool isSubmittingReview;
-  final bool isSubmittingDispute;
-  final VoidCallback? onLeaveReview;
-  final VoidCallback? onRaiseDispute;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingDetailsSurfaceCard(
-      child: Column(
-        children: [
-          const _ProviderCompletedInfoRow(
-            icon: Icons.verified_rounded,
-            iconColor: Color(0xFF248A52),
-            iconBackgroundColor: Color(0xFFE8F7EC),
-            label: 'Status',
-            value: 'Service completed successfully.',
-          ),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedInfoRow(
-            icon: Icons.schedule_rounded,
-            iconColor: Color(0xFF2D6CDF),
-            iconBackgroundColor: Color(0xFFE8F1FF),
-            label: 'Dispute window',
-            value: disputeWindowActive
-                ? 'Raise a dispute before\n$disputeDeadlineText'
-                : 'The dispute window closed on\n$disputeDeadlineText',
-          ),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedInfoRow(
-            icon: Icons.hourglass_bottom_rounded,
-            iconColor: Color(0xFF8B57D9),
-            iconBackgroundColor: Color(0xFFF1E9FF),
-            label: 'Review',
-            value: reviewSubmitted
-                ? 'Your review has already been submitted.'
-                : 'You can leave a review at any time.',
-          ),
-          if (onLeaveReview != null || onRaiseDispute != null) ...[
-            const SizedBox(height: 18),
-            if (onLeaveReview != null)
-              GradientButton(
-                label: reviewSubmitted
-                    ? 'Review submitted'
-                    : isSubmittingReview
-                    ? 'Submitting...'
-                    : 'Leave Review',
-                onPressed: reviewSubmitted || isSubmittingReview
-                    ? null
-                    : onLeaveReview,
-                size: AppButtonSize.compact,
-                isLoading: isSubmittingReview,
-              ),
-            if (onRaiseDispute != null) ...[
-              const SizedBox(height: 12),
-              SecondaryButton(
-                label: disputeOpen
-                    ? 'Dispute submitted'
-                    : isSubmittingDispute
-                    ? 'Submitting...'
-                    : 'Raise Dispute',
-                onPressed: disputeOpen || isSubmittingDispute
-                    ? null
-                    : onRaiseDispute,
-                size: AppButtonSize.compact,
-              ),
-            ],
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _CustomerCompletedServiceCard extends StatelessWidget {
-  const _CustomerCompletedServiceCard({
-    required this.serviceTitle,
-    required this.providerName,
-    required this.paymentLabel,
-    required this.amountPaid,
-    required this.confirmedAt,
-  });
-
-  final String serviceTitle;
-  final String providerName;
-  final String paymentLabel;
-  final String amountPaid;
-  final String confirmedAt;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingDetailsSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _ProviderCompletedMetricRow(label: 'Title', value: serviceTitle),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(label: 'Provider', value: providerName),
-          const _ProviderDetailDivider(),
-          _CustomerCompletedServiceStatusRow(),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(
-            label: 'Payment',
-            value: paymentLabel == 'Payment confirmed'
-                ? paymentLabel
-                : 'Payment confirmed',
-          ),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(label: 'Amount Paid', value: amountPaid),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(
-            label: 'Confirmed At',
-            value: confirmedAt,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CustomerCompletedServiceStatusRow extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Expanded(
-          flex: 5,
-          child: Text(
-            'Status',
-            style: TextStyle(
-              color: AppColors.textGrey,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              height: 1.4,
-            ),
-          ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          flex: 7,
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE4F6E9),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: const Text(
-                'Completed',
-                style: TextStyle(
-                  color: Color(0xFF248A52),
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _CustomerCompletedAddressCard extends StatelessWidget {
   const _CustomerCompletedAddressCard({
     required this.participantPrivateData,
@@ -3007,7 +3506,7 @@ class _CustomerCompletedAddressCard extends StatelessWidget {
           const SizedBox(height: 16),
           if (onOpenMap != null)
             SecondaryButton(
-              label: 'Get Directions',
+              label: 'Get directions',
               onPressed: onOpenMap,
               icon: Icons.place_outlined,
               size: AppButtonSize.compact,
@@ -3073,7 +3572,7 @@ class _CustomerCompletedChatCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           GradientButton(
-            label: isOpening ? 'Opening...' : 'Message Provider',
+            label: isOpening ? 'Opening...' : 'Message provider',
             onPressed: isUnlocked && !isOpening ? onOpenChat : null,
             size: AppButtonSize.compact,
             isLoading: isOpening,
@@ -3081,240 +3580,6 @@ class _CustomerCompletedChatCard extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-class _ProviderCompletedSummaryCard extends StatelessWidget {
-  const _ProviderCompletedSummaryCard({
-    required this.serviceTitle,
-    required this.providerName,
-  });
-
-  final String serviceTitle;
-  final String providerName;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingDetailsSurfaceCard(
-      backgroundColor: const Color(0xFFF7FDF8),
-      borderColor: const Color(0xFFD7F0DE),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Expanded(child: SizedBox.shrink()),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE4F6E9),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Text(
-                  'Completed',
-                  style: TextStyle(
-                    color: Color(0xFF248A52),
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          Text(
-            serviceTitle,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 28,
-              fontWeight: FontWeight.w900,
-              height: 1.1,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            providerName,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFFD7F0DE)),
-            ),
-            child: const Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                BookingDetailsIconTile(
-                  icon: Icons.verified_rounded,
-                  iconColor: Color(0xFF248A52),
-                  backgroundColor: Color(0xFFE8F7EC),
-                  size: 32,
-                  iconSize: 18,
-                ),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'The service has been completed successfully.',
-                    style: TextStyle(
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w700,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProviderCompletedStatusCard extends StatelessWidget {
-  const _ProviderCompletedStatusCard({
-    required this.statusText,
-    required this.reviewWindowText,
-    required this.currentStateText,
-    required this.isPendingReview,
-  });
-
-  final String statusText;
-  final String reviewWindowText;
-  final String currentStateText;
-  final bool isPendingReview;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingDetailsSurfaceCard(
-      child: Column(
-        children: [
-          _ProviderCompletedInfoRow(
-            icon: Icons.verified_rounded,
-            iconColor: const Color(0xFF248A52),
-            iconBackgroundColor: const Color(0xFFE8F7EC),
-            label: 'Status',
-            value: statusText,
-          ),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedInfoRow(
-            icon: Icons.schedule_rounded,
-            iconColor: const Color(0xFFE07A2D),
-            iconBackgroundColor: const Color(0xFFFFF1E7),
-            label: 'Review window',
-            value: isPendingReview
-                ? 'Ends $reviewWindowText'
-                : 'Closed after $reviewWindowText',
-          ),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedInfoRow(
-            icon: Icons.hourglass_bottom_rounded,
-            iconColor: const Color(0xFFB67A00),
-            iconBackgroundColor: const Color(0xFFFFF5D9),
-            label: 'Current state',
-            value: currentStateText,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProviderCompletedServiceCard extends StatelessWidget {
-  const _ProviderCompletedServiceCard({
-    required this.serviceTitle,
-    required this.providerName,
-    required this.bookingType,
-    required this.paymentLabel,
-    required this.amountPaid,
-    required this.completedAt,
-  });
-
-  final String serviceTitle;
-  final String providerName;
-  final String bookingType;
-  final String paymentLabel;
-  final String amountPaid;
-  final String completedAt;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingDetailsSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Text(
-                'Service details',
-                style: TextStyle(
-                  color: AppColors.textDark,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE4F6E9),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Text(
-                  'Completed',
-                  style: TextStyle(
-                    color: Color(0xFF248A52),
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _ProviderCompletedMetricRow(label: 'Title', value: serviceTitle),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(label: 'Provider', value: providerName),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(
-            label: 'Booking type',
-            value: bookingType,
-          ),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(label: 'Payment', value: paymentLabel),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(label: 'Amount paid', value: amountPaid),
-          const _ProviderDetailDivider(),
-          _ProviderCompletedMetricRow(
-            label: 'Completed at',
-            value: completedAt,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProviderCompletedScheduleCard extends StatelessWidget {
-  const _ProviderCompletedScheduleCard({required this.rows});
-
-  final List<StatusSummaryRowModel> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    return BookingSummaryCard(rows: rows);
   }
 }
 
@@ -3825,48 +4090,6 @@ class _ProviderCompletedInfoRow extends StatelessWidget {
                 ),
               ],
             ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ProviderCompletedMetricRow extends StatelessWidget {
-  const _ProviderCompletedMetricRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          flex: 5,
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              height: 1.4,
-            ),
-          ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          flex: 7,
-          child: Text(
-            value,
-            textAlign: TextAlign.right,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              height: 1.4,
-            ),
           ),
         ),
       ],
@@ -4797,4 +5020,16 @@ class _ActionInfoRow extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DraftDisputeEvidence {
+  const _DraftDisputeEvidence({
+    required this.bytes,
+    required this.fileName,
+    required this.contentType,
+  });
+
+  final Uint8List bytes;
+  final String fileName;
+  final String contentType;
 }

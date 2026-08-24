@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../../core/services/firebase_resilience_service.dart';
@@ -11,6 +13,7 @@ import '../mappers/booking_document_mapper.dart';
 import '../../domain/models/booking_payment_order.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
+import '../../domain/models/canonical_booking_refund_models.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
@@ -24,6 +27,33 @@ enum CanonicalPrivateDataLoadFailureKind {
   malformedDocument,
   network,
   unknown,
+}
+
+class BookingDisputeDraftEvidence {
+  const BookingDisputeDraftEvidence({
+    required this.bytes,
+    required this.fileName,
+    required this.contentType,
+  });
+
+  final Uint8List bytes;
+  final String fileName;
+  final String contentType;
+}
+
+class UploadedBookingDisputeEvidence {
+  const UploadedBookingDisputeEvidence({
+    required this.evidenceId,
+    required this.storagePath,
+  });
+
+  final String evidenceId;
+  final String storagePath;
+
+  Map<String, dynamic> toCallableMap() => <String, dynamic>{
+    'evidenceId': evidenceId,
+    'storagePath': storagePath,
+  };
 }
 
 class CanonicalPrivateDataLoadException implements Exception {
@@ -230,12 +260,15 @@ String canonicalBookingRequestMessage(
 class BookingRepository {
   final FirebaseFirestore? _providedFirestore;
   final FirebaseFunctions? _providedFunctions;
+  final FirebaseStorage? _providedStorage;
 
   BookingRepository({
     FirebaseFirestore? firestore,
     FirebaseFunctions? functions,
+    FirebaseStorage? storage,
   }) : _providedFirestore = firestore,
-       _providedFunctions = functions;
+       _providedFunctions = functions,
+       _providedStorage = storage;
 
   FirebaseFirestore get _firestore =>
       _providedFirestore ?? FirebaseFirestore.instance;
@@ -243,6 +276,8 @@ class BookingRepository {
   FirebaseFunctions get _functions =>
       _providedFunctions ??
       FirebaseFunctions.instanceFor(region: 'asia-south1');
+
+  FirebaseStorage get _storage => _providedStorage ?? FirebaseStorage.instance;
 
   Stream<List<BookingReadModel>> watchReceivingBookingReadModels(
     String currentUserId, {
@@ -909,6 +944,31 @@ class BookingRepository {
     );
   }
 
+  Stream<CanonicalBookingRefundRecord?> watchCanonicalBookingRefund(
+    String bookingId,
+  ) {
+    final id = bookingId.trim();
+    if (id.isEmpty) return Stream.value(null);
+    return _firestore.collection('refunds').doc(id).snapshots().map((snapshot) {
+      if (!snapshot.exists) return null;
+      return CanonicalBookingRefundRecord.fromMap(
+        Map<String, dynamic>.from(snapshot.data() ?? const {}),
+      );
+    });
+  }
+
+  Future<CanonicalBookingRefundRecord?> fetchCanonicalBookingRefund(
+    String bookingId,
+  ) async {
+    final id = bookingId.trim();
+    if (id.isEmpty) return null;
+    final snapshot = await _firestore.collection('refunds').doc(id).get();
+    if (!snapshot.exists) return null;
+    return CanonicalBookingRefundRecord.fromMap(
+      Map<String, dynamic>.from(snapshot.data() ?? const {}),
+    );
+  }
+
   CanonicalBookingRequestException _mapCanonicalRequestError(
     FirebaseFunctionsException error,
   ) => mapCanonicalBookingRequestFunctionsException(error);
@@ -1012,6 +1072,8 @@ class BookingRepository {
         CanonicalPaymentFailureCode.paymentAlreadyConfirmed,
       'PAYMENT_RECONCILIATION_REQUIRED' =>
         CanonicalPaymentFailureCode.paymentReconciliationRequired,
+      'PAYMENT_QR_SWITCH_LOCKED' =>
+        CanonicalPaymentFailureCode.paymentQrSwitchLocked,
       _ => switch (error.code) {
         'unauthenticated' => CanonicalPaymentFailureCode.unauthenticated,
         _ => CanonicalPaymentFailureCode.unknown,
@@ -1021,7 +1083,27 @@ class BookingRepository {
     return CanonicalPaymentException(
       code: code,
       message: _canonicalPaymentMessage(code, error.message),
+      lockUntil: _readCanonicalPaymentDate(detailMap['lockUntil']),
+      activeAttemptId:
+          (detailMap['activeAttemptId'] as String? ??
+                  detailMap['paymentAttemptId'] as String? ??
+                  '')
+              .trim(),
+      paymentRail: (detailMap['paymentRail'] as String? ?? '').trim(),
     );
+  }
+
+  @visibleForTesting
+  CanonicalPaymentException mapCanonicalPaymentFunctionsExceptionForTest(
+    FirebaseFunctionsException error,
+  ) => _mapCanonicalPaymentError(error);
+
+  DateTime? _readCanonicalPaymentDate(Object? value) {
+    if (value is DateTime) return value.toLocal();
+    if (value is String && value.trim().isNotEmpty) {
+      return DateTime.tryParse(value)?.toLocal();
+    }
+    return null;
   }
 
   String _canonicalPaymentMessage(
@@ -1057,6 +1139,8 @@ class BookingRepository {
         return 'This booking payment is already confirmed.';
       case CanonicalPaymentFailureCode.paymentReconciliationRequired:
         return 'Payment was received and is being reconciled securely.';
+      case CanonicalPaymentFailureCode.paymentQrSwitchLocked:
+        return 'This QR payment is still active for your payment safety.';
       case CanonicalPaymentFailureCode.unknown:
         return fallback?.trim().isNotEmpty == true
             ? fallback!.trim()
@@ -1227,7 +1311,7 @@ class BookingRepository {
     required String bookingId,
     required String reason,
     required String description,
-    List<String> attachments = const [],
+    List<UploadedBookingDisputeEvidence> evidence = const [],
   }) async {
     final id = bookingId.trim();
     final trimmedReason = reason.trim();
@@ -1237,16 +1321,20 @@ class BookingRepository {
     }
 
     final callable = _functions.httpsCallable('createBookingDisputeV3');
-    final cleanedAttachments = attachments
-        .map((value) => value.trim())
-        .where((value) => value.isNotEmpty)
+    final cleanedEvidence = evidence
+        .where(
+          (value) =>
+              value.evidenceId.trim().isNotEmpty &&
+              value.storagePath.trim().isNotEmpty,
+        )
+        .map((value) => value.toCallableMap())
         .toList(growable: false);
     try {
       final result = await callable.call<Map<String, dynamic>>({
         'bookingId': id,
         'reason': trimmedReason,
         'description': trimmedDescription,
-        'attachments': cleanedAttachments,
+        'evidence': cleanedEvidence,
       });
       return (result.data['disputeId'] as String? ?? '').trim();
     } on FirebaseFunctionsException catch (error) {
@@ -1264,6 +1352,132 @@ class BookingRepository {
         '[CanonicalDisputeSubmission] unexpected_error callable=createBookingDisputeV3 bookingId=$id reasonPresent=${trimmedReason.isNotEmpty} descriptionLength=${trimmedDescription.length} error=$error',
       );
       rethrow;
+    }
+  }
+
+  Future<List<UploadedBookingDisputeEvidence>> uploadBookingDisputeEvidence({
+    required String bookingId,
+    required List<BookingDisputeDraftEvidence> evidence,
+    void Function({
+      required int currentIndex,
+      required int totalCount,
+      required double progress,
+    })?
+    onProgress,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+    if (uid.isEmpty) {
+      throw FirebaseException(
+        plugin: 'firebase_storage',
+        code: 'unauthenticated',
+        message: 'Please sign in again before uploading evidence.',
+      );
+    }
+    if (evidence.length > 5) {
+      throw FirebaseException(
+        plugin: 'firebase_storage',
+        code: 'too-many-files',
+        message: 'You can attach up to 5 screenshots or photos.',
+      );
+    }
+    if (evidence.isEmpty) return const <UploadedBookingDisputeEvidence>[];
+
+    final uploaded = <UploadedBookingDisputeEvidence>[];
+    final random = Random();
+    for (var index = 0; index < evidence.length; index++) {
+      final item = evidence[index];
+      final sizeBytes = item.bytes.length;
+      if (sizeBytes == 0) {
+        throw FirebaseException(
+          plugin: 'firebase_storage',
+          code: 'missing-file',
+          message: 'One selected image is empty.',
+        );
+      }
+      if (sizeBytes > 5 * 1024 * 1024) {
+        throw FirebaseException(
+          plugin: 'firebase_storage',
+          code: 'file-too-large',
+          message: 'Each evidence image must be 5 MB or smaller.',
+        );
+      }
+      final evidenceId =
+          'ev_${DateTime.now().microsecondsSinceEpoch}_${index + 1}_${random.nextInt(1 << 20)}';
+      final extension = _storageExtensionForContentType(
+        item.contentType,
+        fallbackFileName: item.fileName,
+      );
+      final storagePath =
+          'disputes/$bookingId/evidence/$uid/$evidenceId.$extension';
+      final ref = _storage.ref().child(storagePath);
+      final task = ref.putData(
+        item.bytes,
+        SettableMetadata(
+          contentType: item.contentType,
+          customMetadata: <String, String>{
+            'bookingId': bookingId,
+            'uploadedByUid': uid,
+            'uploadedByRole': 'parent',
+            'evidenceId': evidenceId,
+            'originalFileName': item.fileName.trim(),
+          },
+        ),
+      );
+      await for (final snapshot in task.snapshotEvents) {
+        final totalBytes = snapshot.totalBytes;
+        final progress = totalBytes <= 0
+            ? 0
+            : snapshot.bytesTransferred / totalBytes;
+        onProgress?.call(
+          currentIndex: index,
+          totalCount: evidence.length,
+          progress: progress.clamp(0, 1).toDouble(),
+        );
+      }
+      await task;
+      uploaded.add(
+        UploadedBookingDisputeEvidence(
+          evidenceId: evidenceId,
+          storagePath: storagePath,
+        ),
+      );
+    }
+    return uploaded;
+  }
+
+  Future<void> cleanupUploadedBookingDisputeEvidence(
+    List<UploadedBookingDisputeEvidence> evidence,
+  ) async {
+    for (final item in evidence) {
+      try {
+        await _storage.ref().child(item.storagePath).delete();
+      } on FirebaseException {
+        // Best-effort cleanup only.
+      } catch (_) {
+        // Best-effort cleanup only.
+      }
+    }
+  }
+
+  String _storageExtensionForContentType(
+    String contentType, {
+    required String fallbackFileName,
+  }) {
+    switch (contentType.trim().toLowerCase()) {
+      case 'image/jpeg':
+      case 'image/jpg':
+        return 'jpg';
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      default:
+        final fileName = fallbackFileName.trim().toLowerCase();
+        final dotIndex = fileName.lastIndexOf('.');
+        if (dotIndex >= 0 && dotIndex < fileName.length - 1) {
+          return fileName.substring(dotIndex + 1);
+        }
+        return 'jpg';
     }
   }
 

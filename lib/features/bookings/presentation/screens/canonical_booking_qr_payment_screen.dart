@@ -74,6 +74,10 @@ class _CanonicalBookingQrPaymentScreenState
         stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
         builder: (context, snapshot) {
           final booking = _canonicalBookingFromReadModel(snapshot.data);
+          final protectionDeadline = _protectionDeadline(booking);
+          final isProtectionActive =
+              protectionDeadline != null &&
+              protectionDeadline.isAfter(DateTime.now());
           final effectiveExpiry = _effectiveExpiry(booking);
           final isExpired =
               effectiveExpiry != null &&
@@ -88,8 +92,11 @@ class _CanonicalBookingQrPaymentScreenState
               CanonicalPaymentAttemptState.capturedRequiresReconciliation;
           final isCancelled =
               booking != null && _isCancelledState(booking.state);
-          final canSwitchMethod =
-              !hasRefundState && !hasReconciliationState && !isCancelled;
+          final canLeaveQr =
+              !hasRefundState &&
+              !hasReconciliationState &&
+              !isCancelled &&
+              !isProtectionActive;
 
           return SafeArea(
             child: ListView(
@@ -115,21 +122,33 @@ class _CanonicalBookingQrPaymentScreenState
                     booking: booking,
                     attempt: _latestAttempt,
                     isExpired: isExpired,
+                    isProtectionActive: isProtectionActive,
                   ),
                   body: _statusBody(
                     booking: booking,
                     attempt: _latestAttempt,
                     isExpired: isExpired,
+                    isProtectionActive: isProtectionActive,
                   ),
-                  deadline: !isExpired ? effectiveExpiry : null,
+                  protectionDeadline:
+                      isProtectionActive ? protectionDeadline : null,
                 ),
                 const SizedBox(height: 18),
                 SecondaryButton(
                   label: 'Use another payment method',
-                  onPressed: canSwitchMethod
-                      ? () => Navigator.of(context).maybePop()
-                      : null,
+                  onPressed: () {
+                    if (isProtectionActive && protectionDeadline != null) return;
+                    if (canLeaveQr) {
+                      Navigator.of(context).maybePop();
+                    }
+                  },
                 ),
+                if (isProtectionActive && protectionDeadline != null) ...[
+                  const SizedBox(height: 14),
+                  _QrSwitchProtectionHint(
+                    protectionDeadline: protectionDeadline,
+                  ),
+                ],
               ],
             ),
           );
@@ -191,32 +210,51 @@ class _CanonicalBookingQrPaymentScreenState
     return qrExpiry.isBefore(bookingDeadline) ? qrExpiry : bookingDeadline;
   }
 
+  DateTime? _protectionDeadline(CanonicalBookingDocumentV3? booking) {
+    final attemptDeadline = _latestAttempt?.qrSwitchLockedUntil;
+    if (attemptDeadline != null) return attemptDeadline;
+    return widget.qrPayment.switchLockUntil;
+  }
+
   String _statusHeadline({
     required CanonicalBookingDocumentV3? booking,
     required CanonicalPaymentAttemptReadModel? attempt,
     required bool isExpired,
+    required bool isProtectionActive,
   }) {
     if (booking?.state == CanonicalBookingStateV3.confirmed) {
       return 'Payment confirmed';
     }
     if (attempt != null) {
-      return switch (attempt.state) {
-        CanonicalPaymentAttemptState.refundRequired ||
-        CanonicalPaymentAttemptState.refundPending =>
-          'Payment under refund review',
-        CanonicalPaymentAttemptState.capturedRequiresReconciliation =>
-          'Verifying payment',
-        CanonicalPaymentAttemptState.expired => 'QR payment expired',
-        CanonicalPaymentAttemptState.failed => 'Payment could not be completed',
-        CanonicalPaymentAttemptState.confirmed => 'Payment confirmed',
-        _ => 'Waiting for payment…',
-      };
+      switch (attempt.state) {
+        case CanonicalPaymentAttemptState.refundRequired:
+        case CanonicalPaymentAttemptState.refundPending:
+          return 'Payment under refund review';
+        case CanonicalPaymentAttemptState.capturedRequiresReconciliation:
+          return 'Verifying payment';
+        case CanonicalPaymentAttemptState.expired:
+          return 'QR payment expired';
+        case CanonicalPaymentAttemptState.failed:
+          return 'Payment could not be completed';
+        case CanonicalPaymentAttemptState.confirmed:
+          return 'Payment confirmed';
+        default:
+          break;
+      }
     }
     if (booking != null && _isCancelledState(booking.state)) {
       return 'Booking cancelled';
     }
     if (isExpired || booking?.state == CanonicalBookingStateV3.paymentExpired) {
       return 'QR payment expired';
+    }
+    if (isProtectionActive) {
+      return 'Payment-method protection';
+    }
+    if (attempt != null) {
+      return switch (attempt.state) {
+        _ => 'Waiting for payment…',
+      };
     }
     return 'Waiting for payment…';
   }
@@ -225,28 +263,30 @@ class _CanonicalBookingQrPaymentScreenState
     required CanonicalBookingDocumentV3? booking,
     required CanonicalPaymentAttemptReadModel? attempt,
     required bool isExpired,
+    required bool isProtectionActive,
   }) {
     if (booking?.state == CanonicalBookingStateV3.confirmed) {
       return 'Your payment was received and the booking is now confirmed.';
     }
     if (attempt != null) {
-      return switch (attempt.state) {
-        CanonicalPaymentAttemptState.capturedRequiresReconciliation =>
-          'We\'re verifying your payment. Please don\'t make another payment for this booking.',
-        CanonicalPaymentAttemptState.refundRequired =>
-          'A duplicate or conflicting payment is being handled safely. Please do not pay again.',
-        CanonicalPaymentAttemptState.refundPending =>
-          'Your payment is being processed for refund safely. Please do not pay again.',
-        CanonicalPaymentAttemptState.expired =>
-          'This QR code is no longer active because the payment window ended.',
-        CanonicalPaymentAttemptState.failed =>
-          attempt.failureMessage.isNotEmpty
+      switch (attempt.state) {
+        case CanonicalPaymentAttemptState.capturedRequiresReconciliation:
+          return 'We\'re verifying your payment. Please don\'t make another payment for this booking.';
+        case CanonicalPaymentAttemptState.refundRequired:
+          return 'A duplicate or conflicting payment is being handled safely. Please do not pay again.';
+        case CanonicalPaymentAttemptState.refundPending:
+          return 'Your payment is being processed for refund safely. Please do not pay again.';
+        case CanonicalPaymentAttemptState.expired:
+          return 'This QR code is no longer active because the payment window ended.';
+        case CanonicalPaymentAttemptState.failed:
+          return attempt.failureMessage.isNotEmpty
               ? attempt.failureMessage
-              : 'This payment attempt could not be completed.',
-        CanonicalPaymentAttemptState.confirmed =>
-          'Your payment is confirmed and the booking is syncing.',
-        _ => 'Complete the payment in any UPI app after scanning this QR code.',
-      };
+              : 'This payment attempt could not be completed.';
+        case CanonicalPaymentAttemptState.confirmed:
+          return 'Your payment is confirmed and the booking is syncing.';
+        default:
+          break;
+      }
     }
     if (booking != null && _isCancelledState(booking.state)) {
       return 'This booking is no longer payable because it was cancelled.';
@@ -254,7 +294,12 @@ class _CanonicalBookingQrPaymentScreenState
     if (isExpired || booking?.state == CanonicalBookingStateV3.paymentExpired) {
       return 'This QR code expired when the booking payment window ended.';
     }
-    return 'Waiting for the backend to confirm payment after you scan this QR.';
+    if (isProtectionActive) {
+      return 'For your safety, another payment method stays unavailable for a short time while this QR might still be used. If you already paid, we\'ll confirm it automatically.';
+    }
+    return attempt != null
+        ? 'Complete the payment in any UPI app after scanning this QR code.'
+        : 'Waiting for the backend to confirm payment after you scan this QR.';
   }
 
   bool _isCancelledState(CanonicalBookingStateV3 state) {
@@ -274,6 +319,7 @@ class _CanonicalBookingQrPaymentScreenState
     final rupees = paise / 100;
     return '₹${rupees.toStringAsFixed(2)}';
   }
+
 }
 
 class _QrGlassTopBar extends StatelessWidget {
@@ -490,12 +536,12 @@ class _QrStatusCard extends StatelessWidget {
   const _QrStatusCard({
     required this.headline,
     required this.body,
-    required this.deadline,
+    required this.protectionDeadline,
   });
 
   final String headline;
   final String body;
-  final DateTime? deadline;
+  final DateTime? protectionDeadline;
 
   @override
   Widget build(BuildContext context) {
@@ -525,16 +571,64 @@ class _QrStatusCard extends StatelessWidget {
               fontWeight: FontWeight.w600,
             ),
           ),
-          if (deadline != null) ...[
+          if (protectionDeadline != null) ...[
             const SizedBox(height: 18),
             const Divider(height: 1),
             const SizedBox(height: 18),
             BookingDeadlineCountdown(
-              deadline: deadline,
-              label: 'Waiting for payment…',
+              deadline: protectionDeadline,
+              label: 'Payment-method protection',
               valueFontSize: 24,
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _QrSwitchProtectionHint extends StatelessWidget {
+  const _QrSwitchProtectionHint({required this.protectionDeadline});
+
+  final DateTime protectionDeadline;
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = BookingDeadlineCountdown.formatClock(protectionDeadline);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F4EA),
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'QR payment is still active',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'For your payment safety, another payment method will be available in $remaining. If you already paid this QR, please wait while we confirm your payment.',
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              height: 1.45,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Continue with QR',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
         ],
       ),
     );

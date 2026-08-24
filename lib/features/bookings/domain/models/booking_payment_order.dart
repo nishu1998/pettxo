@@ -224,6 +224,7 @@ class CanonicalQrPaymentResult {
   final String currency;
   final CanonicalPaymentPricingSummary pricingSummary;
   final DateTime? expiresAt;
+  final DateTime? switchLockUntil;
   final String state;
   final DateTime? confirmedAt;
   final bool idempotentReplay;
@@ -238,6 +239,7 @@ class CanonicalQrPaymentResult {
     required this.currency,
     required this.pricingSummary,
     required this.expiresAt,
+    required this.switchLockUntil,
     required this.state,
     required this.confirmedAt,
     required this.idempotentReplay,
@@ -271,6 +273,9 @@ class CanonicalQrPaymentResult {
           : _CanonicalPaymentParsing.asString(data['currency']),
       pricingSummary: pricingSummary,
       expiresAt: _CanonicalPaymentParsing.readDate(data['expiresAt']),
+      switchLockUntil: _CanonicalPaymentParsing.readDate(
+        data['switchLockUntil'],
+      ),
       state: _CanonicalPaymentParsing.asString(data['state']),
       confirmedAt: _CanonicalPaymentParsing.readDate(data['confirmedAt']),
       idempotentReplay: data['idempotentReplay'] == true,
@@ -372,6 +377,9 @@ class CanonicalPaymentAttemptReadModel {
   final DateTime? refundRequiredAt;
   final DateTime? refundedAt;
   final DateTime? lastReconciledAt;
+  final DateTime? qrCreatedAt;
+  final DateTime? qrSwitchLockedUntil;
+  final DateTime? qrExpiresAt;
   final CanonicalPaymentPricingSummary pricingSummary;
 
   const CanonicalPaymentAttemptReadModel({
@@ -394,6 +402,9 @@ class CanonicalPaymentAttemptReadModel {
     required this.refundRequiredAt,
     required this.refundedAt,
     required this.lastReconciledAt,
+    required this.qrCreatedAt,
+    required this.qrSwitchLockedUntil,
+    required this.qrExpiresAt,
     required this.pricingSummary,
   });
 
@@ -457,6 +468,11 @@ class CanonicalPaymentAttemptReadModel {
       lastReconciledAt: _CanonicalPaymentParsing.readDate(
         data['lastReconciledAt'],
       ),
+      qrCreatedAt: _CanonicalPaymentParsing.readDate(data['qrCreatedAt']),
+      qrSwitchLockedUntil: _CanonicalPaymentParsing.readDate(
+        data['qrSwitchLockedUntil'],
+      ),
+      qrExpiresAt: _CanonicalPaymentParsing.readDate(data['qrExpiresAt']),
       pricingSummary: CanonicalPaymentPricingSummary(
         serviceSubtotalPaise: _CanonicalPaymentParsing.asInt(
           pricingSnapshot['serviceSubtotalPaise'],
@@ -492,14 +508,24 @@ enum CanonicalPaymentFailureCode {
   pricingChanged,
   paymentAlreadyConfirmed,
   paymentReconciliationRequired,
+  paymentQrSwitchLocked,
   unknown,
 }
 
 class CanonicalPaymentException implements Exception {
   final CanonicalPaymentFailureCode code;
   final String message;
+  final DateTime? lockUntil;
+  final String activeAttemptId;
+  final String paymentRail;
 
-  const CanonicalPaymentException({required this.code, required this.message});
+  const CanonicalPaymentException({
+    required this.code,
+    required this.message,
+    this.lockUntil,
+    this.activeAttemptId = '',
+    this.paymentRail = '',
+  });
 
   @override
   String toString() => 'CanonicalPaymentException($code, $message)';

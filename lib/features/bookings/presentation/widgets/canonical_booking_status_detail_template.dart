@@ -591,41 +591,49 @@ class _FinancialRowTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(child: Text(row.label, style: labelStyle)),
           const SizedBox(width: 12),
-          shouldChip
-              ? Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 5,
-                  ),
-                  decoration: BoxDecoration(
-                    color: valueColor.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: valueColor.withValues(alpha: 0.24),
+          Flexible(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: shouldChip
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: valueColor.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: valueColor.withValues(alpha: 0.24),
+                        ),
+                      ),
+                      child: Text(
+                        row.value,
+                        softWrap: true,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          color: valueColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    )
+                  : Text(
+                      row.value,
+                      softWrap: true,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        color: valueColor,
+                        fontSize: row.isEmphasized ? 17 : 16,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
-                  ),
-                  child: Text(
-                    row.value,
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                      color: valueColor,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                )
-              : Text(
-                  row.value,
-                  textAlign: TextAlign.right,
-                  style: TextStyle(
-                    color: valueColor,
-                    fontSize: row.isEmphasized ? 17 : 16,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
+            ),
+          ),
         ],
       ),
     );
@@ -648,7 +656,7 @@ class _TwoColumnRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (labelIcon != null) ...[
             BookingDetailsIconTile(
@@ -661,26 +669,30 @@ class _TwoColumnRow extends StatelessWidget {
             const SizedBox(width: 10),
           ],
           Expanded(
+            flex: 4,
             child: Text(
               label,
               style: const TextStyle(
                 color: AppColors.textGrey,
                 fontSize: 15,
                 fontWeight: FontWeight.w800,
+                height: 1.35,
               ),
             ),
           ),
           const SizedBox(width: 14),
           Expanded(
+            flex: 6,
             child: Text(
               value,
-              maxLines: 2,
-              overflow: TextOverflow.fade,
+              softWrap: true,
+              maxLines: 4,
               textAlign: TextAlign.right,
               style: const TextStyle(
                 color: AppColors.textDark,
                 fontSize: 15,
                 fontWeight: FontWeight.w900,
+                height: 1.35,
               ),
             ),
           ),

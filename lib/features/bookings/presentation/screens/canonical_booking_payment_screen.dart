@@ -531,6 +531,9 @@ class _CanonicalBookingPaymentScreenState
         _handlePricingInvalidation(booking, error);
         return;
       }
+      if (error.activeAttemptId.isNotEmpty) {
+        _bindAttemptStream(error.activeAttemptId);
+      }
       if (checkoutSucceeded && _shouldObserveAfterVerificationError(error)) {
         _beginAuthoritativeObservation(
           message: _observationMessageForVerificationError(error),
@@ -539,7 +542,7 @@ class _CanonicalBookingPaymentScreenState
       }
       AppFeedback.show(
         context,
-        message: error.message,
+        message: _friendlyPaymentActionError(error),
         tone: AppFeedbackTone.error,
       );
     } catch (_) {
@@ -659,9 +662,14 @@ class _CanonicalBookingPaymentScreenState
         _handlePricingInvalidation(booking, error);
         return;
       }
+      if (error.activeAttemptId.isNotEmpty) {
+        _bindAttemptStream(error.activeAttemptId);
+      }
       final message = switch (error.code) {
         CanonicalPaymentFailureCode.paymentReconciliationRequired =>
           'We\'re verifying your payment. Please don\'t make another payment for this booking.',
+        CanonicalPaymentFailureCode.paymentQrSwitchLocked =>
+          _qrSwitchLockedMessage(error),
         _ => error.message,
       };
       AppFeedback.show(
@@ -861,6 +869,26 @@ class _CanonicalBookingPaymentScreenState
       default:
         return 'We couldn\'t load the payment total.';
     }
+  }
+
+  String _friendlyPaymentActionError(CanonicalPaymentException error) {
+    switch (error.code) {
+      case CanonicalPaymentFailureCode.paymentQrSwitchLocked:
+        return _qrSwitchLockedMessage(error);
+      case CanonicalPaymentFailureCode.paymentReconciliationRequired:
+        return 'Checking your previous payment. Please don\'t pay again.';
+      default:
+        return error.message;
+    }
+  }
+
+  String _qrSwitchLockedMessage(CanonicalPaymentException error) {
+    final lockUntil = error.lockUntil;
+    if (lockUntil == null) {
+      return 'QR payment is still active for your safety. Please wait before switching payment methods.';
+    }
+    final remaining = BookingDeadlineCountdown.formatClock(lockUntil);
+    return 'QR payment is still active. You can switch payment methods in $remaining.';
   }
 
   void _showVerificationOutcome(CanonicalPaymentVerificationResult result) {

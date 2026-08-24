@@ -10,6 +10,7 @@ import 'package:pettexo/features/bookings/domain/models/booking_read_model.dart'
 import 'package:pettexo/features/bookings/domain/models/booking_v3_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_cancellation_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_private.dart';
+import 'package:pettexo/features/bookings/domain/models/canonical_booking_refund_models.dart';
 import 'package:pettexo/features/bookings/presentation/controllers/canonical_booking_private_controller.dart';
 import 'package:pettexo/features/bookings/presentation/screens/canonical_booking_detail_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -124,7 +125,10 @@ void main() {
           privateController: privateController,
         );
 
-        expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+        await _scrollUntilTextVisible(
+          tester,
+          _calendarDateLabel(schedule.scheduledStartAt),
+        );
         expect(
           find.text(_calendarDateLabel(schedule.scheduledStartAt)),
           findsOneWidget,
@@ -135,7 +139,7 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(find.text('60 min'), findsOneWidget);
+        expect(find.text('1 hour'), findsOneWidget);
       },
     );
 
@@ -155,6 +159,10 @@ void main() {
           privateController: privateController,
         );
 
+        await _scrollUntilTextVisible(
+          tester,
+          _calendarDateLabel(schedule.scheduledStartAt),
+        );
         expect(
           find.text(_calendarDateLabel(schedule.scheduledStartAt)),
           findsOneWidget,
@@ -165,7 +173,7 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(find.text('120 min'), findsOneWidget);
+        expect(find.text('2 hours'), findsOneWidget);
       },
     );
 
@@ -186,6 +194,11 @@ void main() {
         currentUserIdOverride: 'provider-1',
       );
 
+      await _scrollUntilTextVisible(
+        tester,
+        _calendarDateLabel(schedule.checkInDateTime),
+      );
+      await _scrollUntilTextVisible(tester, 'Booking Type');
       expect(find.text('Stay booking'), findsOneWidget);
       expect(
         find.text(_calendarDateLabel(schedule.checkInDateTime)),
@@ -646,6 +659,41 @@ void main() {
     );
 
     testWidgets(
+      'provider OTP submit stays enabled after the sheet rebuilds with six visible digits',
+      (tester) async {
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) => Stream.value(_buildPrivateOtpData()),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+          currentUserIdOverride: 'provider-1',
+        );
+
+        await _scrollToProviderStartSection(tester);
+        await tester.tap(find.text('Enter customer OTP'));
+        await tester.pumpAndSettle();
+
+        final otpField = find.byKey(const ValueKey('provider-otp-input'));
+        await tester.enterText(otpField, '123456');
+        await tester.pump();
+
+        tester.testTextInput.hide();
+        await tester.pumpAndSettle();
+
+        expect(find.text('123456'), findsOneWidget);
+        final verifyButton = tester.widget<GradientButton>(
+          find.widgetWithText(GradientButton, 'Verify OTP'),
+        );
+        expect(verifyButton.onPressed, isNotNull);
+      },
+    );
+
+    testWidgets(
       'duplicate provider submit is prevented and request attempt id is sent once',
       (tester) async {
         bookingRepository.participantPrivateData =
@@ -847,20 +895,16 @@ void main() {
           currentUserIdOverride: 'provider-1',
         );
 
-        expect(
-          find.text('The service has been completed successfully.'),
-          findsOneWidget,
-        );
-        expect(find.text('Service completed successfully.'), findsOneWidget);
+        expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
+        expect(find.text('BOOKING TIMELINE'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'SERVICE LOCATION');
+        expect(find.text('SERVICE LOCATION'), findsOneWidget);
         await _scrollUntilTextVisible(tester, 'Customer phone');
         expect(find.text('Customer phone'), findsOneWidget);
-        expect(find.text('Service address'), findsOneWidget);
         expect(find.text('Provider contact'), findsNothing);
         expect(find.text('Provider phone'), findsNothing);
 
-        await _scrollUntilTextVisible(tester, 'Message Customer');
-        expect(find.text('Message Customer'), findsOneWidget);
-        expect(find.text('Get directions'), findsOneWidget);
       },
     );
 
@@ -883,14 +927,13 @@ void main() {
           privateController: privateController,
         );
 
-        expect(
-          find.text(
-            'Your payment is confirmed. You can now leave a review, raise a dispute during the review window, contact the provider, view directions, or continue chatting.',
-          ),
-          findsOneWidget,
-        );
-        expect(find.text('Leave Review'), findsOneWidget);
-        expect(find.text('Raise Dispute'), findsOneWidget);
+        expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+        expect(find.text('BOOKING STATUS'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
+        expect(find.text('BOOKING TIMELINE'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'PRIMARY ACTIONS');
+        expect(find.text('Leave review'), findsOneWidget);
+        expect(find.text('Raise dispute'), findsOneWidget);
         expect(find.text('SERVICE-START OTP'), findsNothing);
         expect(find.text('START OTP'), findsNothing);
         expect(
@@ -899,13 +942,8 @@ void main() {
           ),
           findsNothing,
         );
-
-        await _scrollUntilTextVisible(tester, 'Service address');
-        expect(find.text('Get Directions'), findsOneWidget);
-        expect(find.text('Call provider'), findsOneWidget);
-
-        await _scrollUntilTextVisible(tester, 'Message Provider');
-        expect(find.text('Message Provider'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'Message provider');
+        expect(find.text('Message provider'), findsOneWidget);
       },
     );
 
@@ -928,12 +966,164 @@ void main() {
           privateController: privateController,
         );
 
-        expect(find.text('Leave Review'), findsOneWidget);
-        expect(find.text('Raise Dispute'), findsNothing);
-        expect(
-          find.text('You can leave a review at any time.'),
-          findsOneWidget,
+        await _scrollUntilTextVisible(tester, 'PRIMARY ACTIONS');
+        expect(find.text('Leave review'), findsOneWidget);
+        expect(find.text('Raise dispute'), findsNothing);
+        expect(find.text('PRIMARY ACTIONS'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'open dispute uses canonical layout and dispute-first customer status',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          disputeStatus: 'OPEN',
+          disputeRaisedAt: DateTime.utc(2026, 7, 29, 8),
         );
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+        expect(find.text('BOOKING STATUS'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
+        expect(find.text('BOOKING TIMELINE'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'DISPUTE STATUS');
+        expect(find.text('DISPUTE STATUS'), findsOneWidget);
+        expect(find.text('Under dispute'), findsWidgets);
+        expect(find.text('Confirmed'), findsNothing);
+        expect(find.text('completedPendingReview'), findsNothing);
+        expect(find.text('COMPLETED_PENDING_REVIEW'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'resolved customer-wins dispute shows customer-safe result and refund state',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          disputeStatus: 'RESOLVED',
+          disputeResolution: 'CUSTOMER_WINS',
+          disputeRaisedAt: DateTime.utc(2026, 7, 29, 8),
+          disputeResolvedAt: DateTime.utc(2026, 7, 29, 10),
+          customerRefundPaise: 25000,
+          providerReleasePaise: 0,
+        );
+        bookingRepository.refundRecord = const CanonicalBookingRefundRecord(
+          bookingId: 'booking-1',
+          state: 'confirmed',
+          refundAmountPaise: 25000,
+          refundInstructionId: 'refund-1',
+          razorpayRefundId: 'rfnd_1',
+          createdAt: null,
+          submittedAt: null,
+          confirmedAt: null,
+          updatedAt: null,
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
+        expect(find.text('DISPUTE RESULT'), findsOneWidget);
+        expect(find.text('Resolved in your favor'), findsOneWidget);
+        expect(find.textContaining('Refunded: ₹250'), findsOneWidget);
+        expect(find.text('PROVIDER_WINS'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'resolved custom-allocation dispute shows customer-safe result and refund state',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          disputeStatus: 'RESOLVED',
+          disputeResolution: 'CUSTOM_ALLOCATION',
+          disputeRaisedAt: DateTime.utc(2026, 7, 29, 8),
+          disputeResolvedAt: DateTime.utc(2026, 7, 29, 10),
+          customerRefundPaise: 4500,
+          providerReleasePaise: 15500,
+        );
+        bookingRepository.refundRecord = const CanonicalBookingRefundRecord(
+          bookingId: 'booking-1',
+          state: 'pending',
+          refundAmountPaise: 4500,
+          refundInstructionId: 'refund-1',
+          razorpayRefundId: '',
+          createdAt: null,
+          submittedAt: null,
+          confirmedAt: null,
+          updatedAt: null,
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
+        expect(find.text('DISPUTE RESULT'), findsOneWidget);
+        expect(find.text('Partial refund'), findsOneWidget);
+        expect(find.text('45%'), findsNothing);
+        expect(find.textContaining('Refund approved'), findsOneWidget);
+        expect(find.textContaining('Status: Processing.'), findsOneWidget);
+        expect(find.text('provider final entitlement'), findsNothing);
+        expect(find.text('CUSTOM_ALLOCATION'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'resolved dispute shows provider-safe result and settlement status',
+      (tester) async {
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          disputeStatus: 'RESOLVED',
+          disputeResolution: 'PROVIDER_WINS',
+          disputeRaisedAt: DateTime.utc(2026, 7, 29, 8),
+          disputeResolvedAt: DateTime.utc(2026, 7, 29, 10),
+          customerRefundPaise: 0,
+          providerReleasePaise: 25000,
+          payoutStatus: 'PROCESSING',
+        );
+        bookingRepository.participantPrivateData =
+            _buildPrivateParticipantsData();
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+          currentUserIdOverride: 'provider-1',
+        );
+
+        await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
+        expect(find.text('DISPUTE RESULT'), findsOneWidget);
+        expect(find.text('Resolved in your favor'), findsOneWidget);
+        expect(find.text('Settlement status'), findsOneWidget);
+        expect(find.text('Processing'), findsWidgets);
+        expect(find.text('Pettxo retained amount'), findsNothing);
+        expect(find.text('CUSTOMER_WINS'), findsNothing);
       },
     );
 
@@ -955,12 +1145,9 @@ void main() {
           privateController: privateController,
         );
 
-        expect(find.text('Leave Review'), findsNothing);
-        expect(
-          find.text('Your review has already been submitted.'),
-          findsOneWidget,
-        );
-        expect(find.text('Raise Dispute'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'PRIMARY ACTIONS');
+        expect(find.text('Leave review'), findsNothing);
+        expect(find.text('Raise dispute'), findsOneWidget);
       },
     );
 
@@ -982,10 +1169,10 @@ void main() {
           privateController: privateController,
         );
 
-        await _scrollUntilTextVisible(tester, 'Leave Review');
-        await tester.ensureVisible(find.text('Leave Review'));
+        await _scrollUntilTextVisible(tester, 'Leave review');
+        await tester.ensureVisible(find.text('Leave review'));
         await tester.pump();
-        await tester.tap(find.text('Leave Review'));
+        await tester.tap(find.text('Leave review'));
         await tester.pumpAndSettle();
         await tester.tap(find.byType(IconButton).last);
         await tester.enterText(
@@ -1004,11 +1191,7 @@ void main() {
           'Excellent completed booking experience.',
         );
         expect(find.text('Review submitted successfully.'), findsOneWidget);
-        expect(find.text('Leave Review'), findsNothing);
-        expect(
-          find.text('Your review has already been submitted.'),
-          findsOneWidget,
-        );
+        expect(find.text('Leave review'), findsNothing);
       },
     );
 
@@ -1034,10 +1217,10 @@ void main() {
           privateController: privateController,
         );
 
-        await _scrollUntilTextVisible(tester, 'Leave Review');
-        await tester.ensureVisible(find.text('Leave Review'));
+        await _scrollUntilTextVisible(tester, 'Leave review');
+        await tester.ensureVisible(find.text('Leave review'));
         await tester.pump();
-        await tester.tap(find.text('Leave Review'));
+        await tester.tap(find.text('Leave review'));
         await tester.pumpAndSettle();
         await tester.tap(find.byType(IconButton).last);
         await tester.enterText(
@@ -1052,11 +1235,7 @@ void main() {
           find.text('Your review has already been submitted for this booking.'),
           findsOneWidget,
         );
-        expect(find.text('Leave Review'), findsNothing);
-        expect(
-          find.text('Your review has already been submitted.'),
-          findsOneWidget,
-        );
+        expect(find.text('Leave review'), findsNothing);
       },
     );
 
@@ -1078,8 +1257,8 @@ void main() {
           privateController: privateController,
         );
 
-        await _scrollUntilTextVisible(tester, 'Raise Dispute');
-        await tester.tap(find.text('Raise Dispute'));
+        await _scrollUntilTextVisible(tester, 'Raise dispute');
+        await tester.tap(find.text('Raise dispute'));
         await tester.pumpAndSettle();
 
         await tester.enterText(
@@ -1133,8 +1312,8 @@ void main() {
           privateController: privateController,
         );
 
-        await _scrollUntilTextVisible(tester, 'Raise Dispute');
-        await tester.tap(find.text('Raise Dispute'));
+        await _scrollUntilTextVisible(tester, 'Raise dispute');
+        await tester.tap(find.text('Raise dispute'));
         await tester.pumpAndSettle();
 
         await tester.enterText(
@@ -1153,6 +1332,51 @@ void main() {
           find.text('A dispute has already been raised for this booking.'),
           findsOneWidget,
         );
+      },
+    );
+
+    testWidgets(
+      'small-screen completed dispute layout avoids overflow and raw status leakage',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(320, 640));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          disputeStatus: 'RESOLVED',
+          disputeResolution: 'CUSTOM_ALLOCATION',
+          disputeRaisedAt: DateTime.utc(2026, 7, 29, 8),
+          disputeResolvedAt: DateTime.utc(2026, 7, 29, 10),
+          customerRefundPaise: 4500,
+          providerReleasePaise: 15500,
+          payoutStatus: 'PROCESSING',
+        );
+        bookingRepository.refundRecord = const CanonicalBookingRefundRecord(
+          bookingId: 'booking-1',
+          state: 'pending',
+          refundAmountPaise: 4500,
+          refundInstructionId: 'refund-1',
+          razorpayRefundId: '',
+          createdAt: null,
+          submittedAt: null,
+          confirmedAt: null,
+          updatedAt: null,
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'IMPORTANT INFORMATION');
+        expect(tester.takeException(), isNull);
+        expect(find.text('completedPendingReview'), findsNothing);
+        expect(find.text('COMPLETED_PENDING_REVIEW'), findsNothing);
+        expect(find.text('CUSTOM_ALLOCATION'), findsNothing);
       },
     );
   });
@@ -1222,6 +1446,7 @@ Future<void> _pumpScreen(
 class _FakeBookingRepository extends BookingRepository {
   CanonicalBookingDocumentV3? booking;
   CanonicalBookingPrivateParticipantsData? participantPrivateData;
+  CanonicalBookingRefundRecord? refundRecord;
   Stream<CanonicalBookingPrivateParticipantsData?>? participantPrivateStream;
   StreamController<BookingReadModel?>? bookingStreamController;
   Completer<void>? verifyBookingStartOtpCompleter;
@@ -1269,6 +1494,11 @@ class _FakeBookingRepository extends BookingRepository {
   Stream<CanonicalBookingCancellationRecord?> watchCanonicalBookingCancellation(
     String bookingId,
   ) => Stream.value(null);
+
+  @override
+  Stream<CanonicalBookingRefundRecord?> watchCanonicalBookingRefund(
+    String bookingId,
+  ) => Stream.value(refundRecord);
 
   @override
   Future<BookingReadModel?> fetchCanonicalBooking(String bookingId) async {
@@ -1333,7 +1563,7 @@ class _FakeBookingRepository extends BookingRepository {
     required String bookingId,
     required String reason,
     required String description,
-    List<String> attachments = const [],
+    List<UploadedBookingDisputeEvidence> evidence = const [],
   }) async {
     createBookingDisputeCallCount += 1;
     lastDisputeBookingId = bookingId;
@@ -1421,7 +1651,7 @@ String _calendarDateLabel(DateTime value) {
     'Dec',
   ];
   final local = value.toLocal();
-  return '${local.day} ${months[local.month - 1]} ${local.year}';
+  return '${months[local.month - 1]} ${local.day}, ${local.year}';
 }
 
 String _timeLabel(DateTime value) {
@@ -1435,11 +1665,26 @@ String _timeLabel(DateTime value) {
 }
 
 String _timeRangeLabel(DateTime start, DateTime end) {
-  return '${_timeLabel(start)} to ${_timeLabel(end)}';
+  return '${_timeLabel(start)} - ${_timeLabel(end)}';
 }
 
 String _timelineDateTimeLabel(DateTime value) {
-  return '${_calendarDateLabel(value)} · ${_timeLabel(value)}';
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final local = value.toLocal();
+  return '${local.day} ${months[local.month - 1]} ${local.year} · ${_timeLabel(value)}';
 }
 
 CanonicalBookingDocumentV3 _buildConfirmedBooking() {
@@ -2229,6 +2474,14 @@ CanonicalBookingDocumentV3 _buildCompletedPendingReviewBooking({
   CanonicalBookingStateV3 state =
       CanonicalBookingStateV3.completedPendingReview,
   bool reviewSubmitted = false,
+  String disputeStatus = 'none',
+  String disputeResolution = '',
+  DateTime? disputeRaisedAt,
+  DateTime? disputeResolvedAt,
+  int customerRefundPaise = 0,
+  int providerReleasePaise = 0,
+  String payoutStatus = 'HELD',
+  String payoutHoldReason = '',
 }) {
   final inProgress = _buildInProgressBooking();
   final effectiveCompletedAt = completedAt ?? DateTime.utc(2026, 7, 28, 4, 30);
@@ -2281,15 +2534,34 @@ CanonicalBookingDocumentV3 _buildCompletedPendingReviewBooking({
       privateParticipantsRefPath: inProgress.privacy.privateParticipantsRefPath,
     ),
     cancellation: inProgress.cancellation,
-    dispute: inProgress.dispute,
+    dispute: CanonicalBookingDisputeV3(
+      disputeId: disputeStatus == 'none' ? '' : 'booking-1',
+      status: disputeStatus,
+      raisedAt: disputeRaisedAt,
+      raisedBy: disputeStatus == 'none' ? null : 'parent',
+      reasonCode: disputeStatus == 'none' ? '' : 'SERVICE_QUALITY',
+      description: disputeStatus == 'none'
+          ? ''
+          : 'The provider did not arrive at the booked time.',
+      evidenceRefs: const <String>[],
+      resolvedAt: disputeResolvedAt,
+      resolvedBy: disputeResolvedAt == null ? null : 'admin',
+      resolution: disputeResolution,
+      resolutionVersion: disputeResolvedAt == null ? 0 : 1,
+      financialAdjustmentId: disputeResolvedAt == null ? '' : 'adjustment-1',
+      refundInstructionId:
+          customerRefundPaise > 0 ? 'refund-instruction-1' : '',
+      customerRefundPaise: customerRefundPaise,
+      providerReleasePaise: providerReleasePaise,
+    ),
     review: CanonicalBookingReviewV3(
       status: reviewSubmitted ? 'submitted' : '',
       reviewId: reviewSubmitted ? 'booking-1' : '',
       submittedAt: reviewSubmitted ? effectiveCompletedAt : null,
     ),
     payout: CanonicalBookingPayoutV3(
-      status: 'HELD',
-      holdReason: inProgress.payout.holdReason,
+      status: payoutStatus,
+      holdReason: payoutHoldReason,
       eligibleAt: effectiveReviewWindowEndsAt,
       readyAt: null,
       processingAt: null,

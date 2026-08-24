@@ -264,7 +264,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Use another payment method'), findsOneWidget);
-    expect(find.text('Waiting for payment…'), findsWidgets);
+    expect(find.text('Payment-method protection'), findsWidgets);
   });
 
   testWidgets(
@@ -470,6 +470,10 @@ CanonicalPaymentAttemptReadModel _attemptResult({
     refundRequiredAt: null,
     refundedAt: null,
     lastReconciledAt: DateTime.now().toUtc().subtract(const Duration(seconds: 10)),
+    qrCreatedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
+    qrSwitchLockedUntil:
+        DateTime.now().toUtc().add(const Duration(minutes: 4)),
+    qrExpiresAt: DateTime.now().toUtc().add(const Duration(minutes: 10)),
     pricingSummary: const CanonicalPaymentPricingSummary(
       serviceSubtotalPaise: 25000,
       couponDiscountPaise: 0,
@@ -714,6 +718,10 @@ CanonicalQrPaymentResult _qrResult({String mode = 'qr'}) {
     'expiresAt': DateTime.now()
         .toUtc()
         .add(const Duration(minutes: 10))
+        .toIso8601String(),
+    'switchLockUntil': DateTime.now()
+        .toUtc()
+        .add(const Duration(minutes: 5))
         .toIso8601String(),
     'pricingSummary': {
       'serviceSubtotalPaise': 25000,
