@@ -9,6 +9,7 @@ const {
   submitBookingReviewV3,
   createBookingDisputeV3,
   finalizeCompletedBookingV3,
+  reconcileCanonicalCompletionStateV3,
 } = require("../lib/booking/application/serviceCompletionOrchestrationV3.js");
 
 class FakeDocSnapshot {
@@ -100,6 +101,13 @@ function buildInProgressBooking() {
   booking.lifecycle.otpEnteredAt = otpEnteredAt;
   booking.lifecycle.serviceEndedAt = null;
   booking.payment.status = "paid";
+  return booking;
+}
+
+function buildRefundShadowedInProgressBooking() {
+  const booking = buildInProgressBooking();
+  booking.payment.status = "refunded";
+  booking.payment.razorpayRefundId = "rfnd_shadowed";
   return booking;
 }
 
@@ -234,6 +242,27 @@ test("provider completion moves IN_PROGRESS booking into COMPLETED_PENDING_REVIE
   );
 });
 
+test("provider completion still succeeds when refund mirroring overwrote display payment status", async () => {
+  const bookingId = "booking-complete-refund-shadow";
+  const booking = buildRefundShadowedInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await completeBookingServiceV3({
+    firestore,
+    bookingId,
+    providerUid: booking.providerId,
+    authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() + 5 * 60 * 1000),
+  });
+
+  assert.equal(result.code, "COMPLETED_PENDING_REVIEW");
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).state,
+    "COMPLETED_PENDING_REVIEW",
+  );
+});
+
 test("provider completion is rejected before the single-slot service end", async () => {
   const bookingId = "booking-complete-too-early";
   const booking = buildInProgressBooking();
@@ -286,6 +315,68 @@ test("provider completion succeeds once the final segment ends for a multi-day b
 
   assert.equal(result.code, "COMPLETED_PENDING_REVIEW");
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "COMPLETED_PENDING_REVIEW");
+});
+
+test("completion reconciliation repairs stale started bookings after the authoritative service end", async () => {
+  const bookingId = "booking-complete-reconcile-1";
+  const booking = buildInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await reconcileCanonicalCompletionStateV3({
+    firestore,
+    bookingId,
+    authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() + 5 * 60 * 1000),
+  });
+
+  assert.equal(result, "AUTO_COMPLETED_PENDING_REVIEW");
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).state,
+    "COMPLETED_PENDING_REVIEW",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).completion.reasonCode,
+    "system_auto_completed_after_service_end",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}`).audit.lastUpdatedBy,
+    "system",
+  );
+});
+
+test("completion reconciliation leaves in-progress booking unchanged before service end", async () => {
+  const bookingId = "booking-complete-reconcile-early-1";
+  const booking = buildInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await reconcileCanonicalCompletionStateV3({
+    firestore,
+    bookingId,
+    authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() - 1),
+  });
+
+  assert.equal(result, "NOOP");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
+});
+
+test("completion reconciliation leaves multi-day in-progress booking active until the final segment ends", async () => {
+  const bookingId = "booking-complete-reconcile-multiday-1";
+  const booking = buildMultiSegmentInProgressBooking();
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+  });
+
+  const result = await reconcileCanonicalCompletionStateV3({
+    firestore,
+    bookingId,
+    authoritativeNow: new Date(booking.schedule.firstSegmentEndAt.getTime() + 15 * 60 * 1000),
+  });
+
+  assert.equal(result, "NOOP");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
 });
 
 test("review submission is idempotent and updates the service review document once", async () => {

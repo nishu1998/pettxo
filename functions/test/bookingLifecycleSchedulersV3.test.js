@@ -22,6 +22,7 @@ const {
 const {
   runFinalizeCanonicalNoShowsSchedulerV3,
   scanCanonicalNoShowCandidatesByStateV3,
+  runFinalizeCompletedBookingsSchedulerV3,
 } = require("../lib/booking/bookingV3FlowFunctions.js");
 const {Timestamp} = require("firebase-admin/firestore");
 
@@ -712,6 +713,81 @@ test("no-show reconciliation repair normalizes Firestore Timestamp values from l
   assert.equal(
     firestore.store.has(`bookingServiceStarts/${bookingId}`),
     true,
+  );
+});
+
+test("no-show reconciliation still finalizes stale in-progress booking without valid start evidence", async () => {
+  const bookingId = "booking-no-show-stale-in-progress-1";
+  const booking = buildConfirmedSlotBookingFixture();
+  booking.state = "IN_PROGRESS";
+  booking.stateQueryValue = "IN_PROGRESS";
+  booking.lifecycle.otpEnteredAt = null;
+  booking.lifecycle.paidAt = new Date("2026-07-23T05:40:00.000Z");
+  booking.payment.status = "paid";
+  booking.privacy.contactUnlockedAt = new Date("2026-07-23T05:40:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingPrivate/${bookingId}`]: {
+      bookingId,
+      parentOtpCode: "123456",
+      providerOtpHash: "hash",
+      otpState: "ACTIVE",
+    },
+  });
+
+  const result = await reconcileCanonicalServiceStartArtifactsV3({
+    firestore,
+    bookingId,
+    authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() + 1),
+  });
+
+  assert.equal(result, "NO_SHOW_FINALIZED");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "NO_SHOW");
+});
+
+test("completed finalization scheduler auto-completes stale started bookings and finalizes due review-window bookings", async () => {
+  const inProgressId = "booking-stale-in-progress-finish-1";
+  const inProgressBooking = buildConfirmedSlotBookingFixture();
+  inProgressBooking.state = "IN_PROGRESS";
+  inProgressBooking.stateQueryValue = "IN_PROGRESS";
+  inProgressBooking.lifecycle.otpEnteredAt = new Date("2026-07-23T05:55:00.000Z");
+  inProgressBooking.payment.status = "paid";
+
+  const completedId = "booking-review-window-expired-1";
+  const completedBooking = buildConfirmedSlotBookingFixture();
+  completedBooking.state = "COMPLETED_PENDING_REVIEW";
+  completedBooking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  completedBooking.lifecycle.otpEnteredAt = new Date("2026-07-23T05:55:00.000Z");
+  completedBooking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  completedBooking.lifecycle.serviceEndedAt = new Date("2026-07-23T06:10:00.000Z");
+  completedBooking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T06:10:00.000Z");
+  completedBooking.lifecycle.disputeDeadlineAt = new Date("2026-07-24T06:10:00.000Z");
+
+  const firestore = new FakeFirestore({
+    [`bookings/${inProgressId}`]: inProgressBooking,
+    [`bookings/${completedId}`]: completedBooking,
+    [`bookingFinancials/${completedId}`]: {},
+    [`providerEarnings/${completedId}`]: {},
+    [`payoutReadiness/${completedId}`]: {},
+  });
+
+  await runFinalizeCompletedBookingsSchedulerV3({
+    firestore,
+    authoritativeNow: new Date("2026-07-24T06:11:00.000Z"),
+    schedulerLogger: {info: () => {}, error: () => {}},
+  });
+
+  assert.equal(
+    firestore.store.get(`bookings/${inProgressId}`).state,
+    "COMPLETED_PENDING_REVIEW",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${inProgressId}`).completion.reasonCode,
+    "system_auto_completed_after_service_end",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${completedId}`).state,
+    "COMPLETED_FINAL",
   );
 });
 

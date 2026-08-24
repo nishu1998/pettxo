@@ -16,6 +16,8 @@ const {
 } = require("../lib/booking/bookingAdminOperationsV3.js");
 const {
   buildAcceptedAwaitingPaymentSlotBookingFixture,
+  buildConfirmedSlotBookingFixture,
+  buildConfirmedRangeBookingFixture,
   buildCompletedFinalBookingFixture,
 } = require("../lib/booking/schema/bookingFixtures.js");
 
@@ -618,6 +620,84 @@ test("booking admin list and detail expose effective payment-expired state", asy
   assert.equal(detail.effectiveState, "PAYMENT_EXPIRED");
   assert.equal(detail.storedState, "ACCEPTED_AWAITING_PAYMENT");
   assert.equal(detail.paymentState, "ORDER_CREATED");
+});
+
+test("booking admin readers prefer canonical resolved dispute state over stale booking mirrors", async () => {
+  const {firestore, booking} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  booking.dispute.status = "OPEN";
+  firestore.store.set("bookings/booking-1", booking);
+  firestore.store.set("disputes/booking-1", {
+    ...firestore.store.get("disputes/booking-1"),
+    status: "RESOLVED",
+    resolvedAt: Timestamp.fromDate(new Date("2026-07-23T13:00:00.000Z")),
+    resolution: {
+      type: "CUSTOM_ALLOCATION",
+      customerRefundPaise: 12000,
+      providerFinalEntitlementPaise: 306000,
+    },
+  });
+
+  const list = await listCanonicalBookingsForAdminDataV3({
+    firestore,
+    actor,
+    input: {search: "booking-1"},
+  });
+  assert.equal(list.items.length, 1);
+  assert.equal(list.items[0].state, "DISPUTE_RESOLVED");
+  assert.equal(list.items[0].disputeStatus, "RESOLVED");
+  assert.equal(list.items[0].disputeResolutionType, "CUSTOM_ALLOCATION");
+
+  const detail = await getCanonicalBookingAdminDetailDataV3({
+    firestore,
+    actor,
+    bookingId: "booking-1",
+  });
+  assert.equal(detail.effectiveState, "DISPUTE_RESOLVED");
+  assert.equal(detail.dispute.status, "RESOLVED");
+  assert.equal(detail.dispute.resolution, "CUSTOM_ALLOCATION");
+
+  const disputeDetail = await getCanonicalDisputeAdminDetailDataV3({
+    firestore,
+    actor,
+    disputeId: "booking-1",
+  });
+  assert.equal(disputeDetail.bookingSummary.disputeStatus, "RESOLVED");
+});
+
+test("booking admin readers derive completed-pending-review from stale started in-progress booking after final service end", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const booking = buildConfirmedRangeBookingFixture();
+  booking.state = "IN_PROGRESS";
+  booking.stateQueryValue = "IN_PROGRESS";
+  booking.payment.status = "paid";
+  booking.lifecycle.paidAt = new Date("2026-08-18T00:30:00.000Z");
+  booking.lifecycle.otpEnteredAt = new Date("2026-08-18T00:35:00.000Z");
+  booking.schedule.checkInDateTime = new Date("2026-08-18T00:30:00.000Z");
+  booking.schedule.checkOutDateTime = new Date("2026-08-19T00:30:00.000Z");
+  booking.schedule.scheduledStartAt = new Date("2026-08-18T00:30:00.000Z");
+  booking.schedule.scheduledEndAt = new Date("2026-08-19T00:30:00.000Z");
+  booking.schedule.firstSegmentEndAt = new Date("2026-08-19T00:30:00.000Z");
+  booking.schedule.finalEndAt = new Date("2026-08-19T00:30:00.000Z");
+  booking.schedule.nights = 1;
+  booking.schedule.serviceAnchorAt = new Date("2026-08-18T00:30:00.000Z");
+  booking.service.checkInDateTime = new Date("2026-08-18T00:30:00.000Z");
+  booking.service.checkOutDateTime = new Date("2026-08-19T00:30:00.000Z");
+  booking.serviceAnchorAt = new Date("2026-08-18T00:30:00.000Z");
+  booking.checkInDateTime = new Date("2026-08-18T00:30:00.000Z");
+  booking.updatedAt = new Date("2026-08-19T00:31:00.000Z");
+  booking.createdAt = new Date("2026-08-18T00:00:00.000Z");
+  booking.bookingIdSearchKey = "fcxsk8oljx4qvdqzurnq";
+  firestore.store.set("bookings/FCxsk8oljX4qvdqZuRNq", booking);
+
+  const detail = await getCanonicalBookingAdminDetailDataV3({
+    firestore,
+    actor,
+    bookingId: "FCxsk8oljX4qvdqZuRNq",
+  });
+  assert.equal(detail.effectiveState, "COMPLETED_PENDING_REVIEW");
+  assert.equal(detail.storedState, "IN_PROGRESS");
 });
 
 test("listCanonicalProviderPayoutsForAdminDataV3 returns payout blockers and disabled-live flag", async () => {
