@@ -9,6 +9,36 @@ import 'package:pettexo/features/explore/domain/models/explore_feed_viewer_conte
 import 'package:pettexo/features/social/domain/models/social_post_model.dart';
 
 void main() {
+  group('sliceExploreFeedBatch', () {
+    test('preserves overflow posts for the next discover page', () {
+      final slice = sliceExploreFeedBatch(
+        filteredPosts: <SocialPostModel>[_post('p1'), _post('p2'), _post('p3')],
+        remainingSlots: 2,
+      );
+
+      expect(
+        slice.emittedPosts.map((post) => post.id).toList(growable: false),
+        <String>['p1', 'p2'],
+      );
+      expect(slice.hasOverflowInBatch, isTrue);
+      expect(slice.lastEmittedPostId, 'p2');
+    });
+
+    test('marks batch complete when the filtered posts fit the page', () {
+      final slice = sliceExploreFeedBatch(
+        filteredPosts: <SocialPostModel>[_post('p1'), _post('p2')],
+        remainingSlots: 3,
+      );
+
+      expect(
+        slice.emittedPosts.map((post) => post.id).toList(growable: false),
+        <String>['p1', 'p2'],
+      );
+      expect(slice.hasOverflowInBatch, isFalse);
+      expect(slice.lastEmittedPostId, 'p2');
+    });
+  });
+
   group('ExploreNearbyAuthReadiness', () {
     test('uses current session immediately when available', () async {
       final fakeSession = _FakeAuthSession(
@@ -278,6 +308,52 @@ void main() {
       );
       expect(callCount, 0);
     });
+  });
+}
+
+SocialPostModel _post(String id) {
+  return SocialPostModel.fromMap(<String, dynamic>{
+    'id': id,
+    'authorId': 'author-$id',
+    'authorType': 'user',
+    'authorDisplayName': 'Author $id',
+    'authorUsername': 'author_$id',
+    'authorPhotoUrl': '',
+    'authorCategoryLabel': '',
+    'authorCity': 'Bengaluru',
+    'authorState': 'Karnataka',
+    'imageUrls': const <String>['https://example.com/image.jpg'],
+    'thumbnailUrls': const <String>['https://example.com/thumb.jpg'],
+    'imageAspectRatio': 'square',
+    'caption': 'caption',
+    'hashtags': const <String>['pets'],
+    'likeCount': 0,
+    'commentCount': 0,
+    'shareCount': 0,
+    'reportCount': 0,
+    'saveCount': 0,
+    'visibilityStatus': 'visible',
+    'moderationStatus': 'approved',
+    'moderationReason': '',
+    'moderatedBy': '',
+    'isAdminPost': false,
+    'adminPriorityBoost': 0,
+    'recentEngagementScore': 0,
+    'discoverEligible': true,
+    'discoverScore': 10,
+    'discoverRankVersion': 1,
+    'homeEligible': true,
+    'homeScore': 10,
+    'homeRankVersion': 1,
+    'nearbyEligible': false,
+    'nearbyDistanceKm': null,
+    'nearbyDistanceLabel': '',
+    'feedGeohash3': '',
+    'feedGeohash4': '',
+    'feedGeohash5': '',
+    'feedLocationVersion': 0,
+    'createdAtEpoch': 1,
+    'usesNearbyFallback': false,
   });
 }
 

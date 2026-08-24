@@ -106,6 +106,45 @@ void main() {
         <String>['p3', 'p1', 'p2'],
       );
     });
+
+    test('emits buffered ranked candidates in later pagination steps', () {
+      final session = HomeFeedSession();
+      const viewerContext = HomeFeedViewerContext(
+        currentUserId: 'viewer',
+        city: '',
+        state: '',
+        followingIds: <String>{},
+        blockedUserIds: <String>{},
+        mutedUserIds: <String>{},
+        creatorsWhoBlockedViewerIds: <String>{},
+      );
+
+      session.reset(
+        candidates: <SocialPostModel>[
+          _post(id: 'p1', authorId: 'author-a', homeScore: 10),
+          _post(id: 'p2', authorId: 'author-b', homeScore: 9.9),
+          _post(id: 'p3', authorId: 'author-c', homeScore: 9.8),
+          _post(id: 'p4', authorId: 'author-d', homeScore: 9.7),
+        ],
+        viewerContext: viewerContext,
+        initialEntryCount: 2,
+        preserveSeenPosts: false,
+      );
+
+      expect(session.hasPendingCandidates, isTrue);
+      expect(
+        session.entries.map((entry) => entry.post.id).toList(growable: false),
+        <String>['p1', 'p2'],
+      );
+
+      session.emitMoreEntries(viewerContext: viewerContext, count: 2);
+
+      expect(session.hasPendingCandidates, isFalse);
+      expect(
+        session.entries.map((entry) => entry.post.id).toList(growable: false),
+        <String>['p1', 'p2', 'p3', 'p4'],
+      );
+    });
   });
 }
 
