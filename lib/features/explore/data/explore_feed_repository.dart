@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/services/firebase_app_scope.dart';
 import '../../../core/services/firestore_cache_service.dart';
 import '../../social/domain/models/social_post_model.dart';
+import '../../social/domain/social_feed_pagination.dart';
 import '../domain/models/explore_feed_kind.dart';
 import '../domain/models/explore_feed_page.dart';
 import '../domain/models/explore_feed_viewer_context.dart';
@@ -259,6 +260,44 @@ class ExploreNearbyAuthReadiness {
 typedef ExploreNearbyCallableInvoker =
     Future<Map<String, dynamic>> Function(Map<String, dynamic> payload);
 
+@visibleForTesting
+class ExploreFeedBatchSlice {
+  const ExploreFeedBatchSlice({
+    required this.emittedPosts,
+    required this.hasOverflowInBatch,
+    required this.lastEmittedPostId,
+  });
+
+  final List<SocialPostModel> emittedPosts;
+  final bool hasOverflowInBatch;
+  final String? lastEmittedPostId;
+}
+
+@visibleForTesting
+ExploreFeedBatchSlice sliceExploreFeedBatch({
+  required List<SocialPostModel> filteredPosts,
+  required int remainingSlots,
+}) {
+  if (filteredPosts.isEmpty || remainingSlots <= 0) {
+    return const ExploreFeedBatchSlice(
+      emittedPosts: <SocialPostModel>[],
+      hasOverflowInBatch: false,
+      lastEmittedPostId: null,
+    );
+  }
+
+  final emittedPosts = filteredPosts
+      .take(remainingSlots)
+      .toList(growable: false);
+  return ExploreFeedBatchSlice(
+    emittedPosts: emittedPosts,
+    hasOverflowInBatch: filteredPosts.length > emittedPosts.length,
+    lastEmittedPostId: emittedPosts.isEmpty
+        ? null
+        : emittedPosts.last.id.trim(),
+  );
+}
+
 abstract class ExploreFeedStrategy {
   const ExploreFeedStrategy();
 
@@ -396,7 +435,7 @@ class ExploreFeedRepository {
     DocumentSnapshot<Map<String, dynamic>>? startAfter,
     Map<String, dynamic>? cursor,
     Set<String> excludePostIds = const <String>{},
-    int limit = 10,
+    int limit = socialFeedPageSize,
   }) async {
     if (kind == ExploreFeedKind.nearby) {
       return _fetchNearbyPage(
@@ -477,9 +516,6 @@ class ExploreFeedRepository {
         break;
       }
 
-      cursor = snapshot.docs.last;
-      hasMore = snapshot.docs.length == pageSize;
-
       final filteredPosts = await _filterService.apply(
         posts: snapshot.docs
             .map(SocialPostModel.fromDocument)
@@ -487,7 +523,24 @@ class ExploreFeedRepository {
         viewerContext: viewerContext,
         seenPostIds: seenPostIds,
       );
-      posts.addAll(filteredPosts);
+      final batchSlice = sliceExploreFeedBatch(
+        filteredPosts: filteredPosts,
+        remainingSlots: math.max(0, limit - posts.length),
+      );
+      posts.addAll(batchSlice.emittedPosts);
+
+      if (batchSlice.hasOverflowInBatch) {
+        cursor = _findBatchCursorForEmittedPost(
+          snapshot.docs,
+          fallback: snapshot.docs.last,
+          lastEmittedPostId: batchSlice.lastEmittedPostId,
+        );
+        hasMore = true;
+        break;
+      }
+
+      cursor = snapshot.docs.last;
+      hasMore = snapshot.docs.length == pageSize;
     }
 
     return ExploreFeedPage(
@@ -496,6 +549,23 @@ class ExploreFeedRepository {
       hasMore: hasMore,
       usedLegacyFallback: useLegacyFallback,
     );
+  }
+
+  DocumentSnapshot<Map<String, dynamic>> _findBatchCursorForEmittedPost(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    required DocumentSnapshot<Map<String, dynamic>> fallback,
+    required String? lastEmittedPostId,
+  }) {
+    final targetId = lastEmittedPostId?.trim() ?? '';
+    if (targetId.isEmpty) {
+      return fallback;
+    }
+    for (final doc in docs) {
+      if (doc.id.trim() == targetId) {
+        return doc;
+      }
+    }
+    return fallback;
   }
 
   Future<ExploreFeedPage> _fetchNearbyPage({

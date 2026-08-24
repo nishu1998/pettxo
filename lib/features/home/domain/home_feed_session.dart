@@ -38,6 +38,8 @@ class HomeFeedSession {
 
   Set<String> get emittedPostIds => Set<String>.unmodifiable(_emittedPostIds);
 
+  bool get hasPendingCandidates => _candidateBuffer.isNotEmpty;
+
   void reset({
     required List<SocialPostModel> candidates,
     required HomeFeedViewerContext viewerContext,
@@ -76,6 +78,13 @@ class HomeFeedSession {
       }
     }
 
+    _appendNextEntries(count: count, viewerContext: viewerContext);
+  }
+
+  void emitMoreEntries({
+    required HomeFeedViewerContext viewerContext,
+    required int count,
+  }) {
     _appendNextEntries(count: count, viewerContext: viewerContext);
   }
 

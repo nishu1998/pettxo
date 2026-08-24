@@ -8,6 +8,7 @@ import '../../../core/services/network_status_service.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../social/data/follow_repository.dart';
 import '../../social/domain/models/social_post_model.dart';
+import '../../social/domain/social_feed_pagination.dart';
 
 class HomeFeedPage {
   final List<SocialPostModel> posts;
@@ -103,7 +104,7 @@ class HomeFeedRepository {
     required HomeFeedViewerContext viewerContext,
     DocumentSnapshot<Map<String, dynamic>>? startAfter,
     Set<String> excludePostIds = const <String>{},
-    int limit = 10,
+    int limit = socialFeedPageSize,
     bool forceRefresh = false,
   }) async {
     final posts = <SocialPostModel>[];

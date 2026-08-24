@@ -26,6 +26,7 @@ import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
+import '../../../social/domain/social_feed_pagination.dart';
 import '../../../social/presentation/widgets/live_author_resolver.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 
@@ -62,6 +63,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
   bool _isSearchBarVisible = true;
   String? _sectionsError;
   String? _nearbyError;
+  String? _discoverLoadMoreError;
   String? _searchError;
   String _searchQuery = '';
   ExploreFeedKind _activeFeedKind = ExploreFeedKind.discover;
@@ -255,12 +257,13 @@ class _ExploreScreenState extends State<ExploreScreen> {
       final feedPage = await _exploreFeedRepository.fetchPage(
         kind: ExploreFeedKind.discover,
         viewerContext: viewerContext,
-        limit: 10,
+        limit: socialFeedPageSize,
       );
 
       if (!mounted) return;
       setState(() {
         _viewerContext = viewerContext;
+        _discoverLoadMoreError = null;
         _discoverPosts = feedPage.posts;
         _discoverLastDocument = feedPage.lastDocument;
         _hasMoreDiscoverPosts = feedPage.hasMore;
@@ -307,22 +310,31 @@ class _ExploreScreenState extends State<ExploreScreen> {
             .map((post) => post.id.trim())
             .where((id) => id.isNotEmpty)
             .toSet(),
-        limit: 10,
+        limit: socialFeedPageSize,
       );
+      final existingIds = _discoverPosts
+          .map((post) => post.id.trim())
+          .where((id) => id.isNotEmpty)
+          .toSet();
+      final uniqueNewPosts = page.posts
+          .where((post) => existingIds.add(post.id.trim()))
+          .toList(growable: false);
       if (!mounted) return;
       setState(() {
-        _discoverPosts = <SocialPostModel>[..._discoverPosts, ...page.posts];
+        _discoverLoadMoreError = null;
+        _discoverPosts = <SocialPostModel>[
+          ..._discoverPosts,
+          ...uniqueNewPosts,
+        ];
         _discoverLastDocument = page.lastDocument;
-        _hasMoreDiscoverPosts = page.hasMore && page.posts.isNotEmpty;
+        _hasMoreDiscoverPosts = page.hasMore;
       });
       _saveCache();
     } catch (_) {
       if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: 'We could not load more posts right now.',
-        tone: AppFeedbackTone.warning,
-      );
+      setState(() {
+        _discoverLoadMoreError = 'We could not load more posts right now.';
+      });
     } finally {
       if (mounted) {
         setState(() => _isLoadingMoreDiscoverPosts = false);
@@ -765,7 +777,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     return false;
                   }
 
-                  if (metrics.pixels >= metrics.maxScrollExtent - 320) {
+                  if (metrics.pixels >=
+                      metrics.maxScrollExtent - socialFeedLoadMoreTriggerPx) {
                     if (_activeFeedKind == ExploreFeedKind.discover) {
                       if (_hasMoreDiscoverPosts &&
                           !_isLoadingMoreDiscoverPosts) {
@@ -918,10 +931,30 @@ class _ExploreScreenState extends State<ExploreScreen> {
           ),
           _FadeInSection(
             delay: const Duration(milliseconds: 40),
-            child: _DiscoverSection(
-              title: null,
-              posts: discoverPosts,
-              onOpenPost: _openPostDetail,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _DiscoverSection(
+                  title: null,
+                  posts: discoverPosts,
+                  onOpenPost: _openPostDetail,
+                ),
+                if (_isLoadingMoreDiscoverPosts)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Center(
+                      child: CircularProgressIndicator(strokeWidth: 2.4),
+                    ),
+                  )
+                else if (_discoverLoadMoreError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 14),
+                    child: _InlinePaginationError(
+                      message: _discoverLoadMoreError!,
+                      onRetry: _loadMoreDiscoverPosts,
+                    ),
+                  ),
+              ],
             ),
           ),
           if (discoverPosts.isEmpty && _trendingHashtags.isEmpty)
@@ -2596,6 +2629,44 @@ class _InlineEmptyState extends StatelessWidget {
           color: AppColors.textGrey,
           fontWeight: FontWeight.w500,
         ),
+      ),
+    );
+  }
+}
+
+class _InlinePaginationError extends StatelessWidget {
+  final String message;
+  final Future<void> Function() onRetry;
+
+  const _InlinePaginationError({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          TextButton(
+            onPressed: () => onRetry(),
+            child: const Text('Try again'),
+          ),
+        ],
       ),
     );
   }

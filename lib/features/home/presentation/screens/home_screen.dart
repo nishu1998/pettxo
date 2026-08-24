@@ -24,6 +24,7 @@ import '../../../social/data/follow_repository.dart';
 import '../../../social/data/services/post_publish_coordinator.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
+import '../../../social/domain/social_feed_pagination.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 import '../../../social/presentation/widgets/suggested_users_section.dart';
 
@@ -48,7 +49,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingMore = false;
   bool _isTopBarVisible = true;
   bool _hasMorePosts = true;
+  bool _hasMoreBackendPosts = true;
   String? _feedError;
+  String? _loadMoreError;
   DocumentSnapshot<Map<String, dynamic>>? _lastPostDocument;
   final List<SocialPostModel> _posts = <SocialPostModel>[];
   List<UserProfile> _suggestedUsers = const <UserProfile>[];
@@ -178,9 +181,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _feedError = null;
+      _loadMoreError = null;
       if (!hadExistingPosts) {
         _isLoadingFeed = true;
         _hasMorePosts = true;
+        _hasMoreBackendPosts = true;
         _lastPostDocument = null;
         _likedPostIds.clear();
       }
@@ -192,7 +197,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final page = await _homeFeedRepository.fetchPage(
         viewerContext: viewerContext,
-        limit: 10,
+        limit: socialFeedPageSize,
         forceRefresh: forceRefresh,
       );
       if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
@@ -227,7 +232,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _homeFeedSession.reset(
         candidates: replacementPosts,
         viewerContext: viewerContext,
-        initialEntryCount: 10,
+        initialEntryCount: socialFeedPageSize,
         preserveSeenPosts: forceRefresh,
       );
 
@@ -246,7 +251,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ..addAll(likedPostIds);
         _feedEntries = _homeFeedSession.entries;
         _lastPostDocument = page.lastDocument;
-        _hasMorePosts = page.hasMore;
+        _hasMoreBackendPosts = page.hasMore;
+        _syncHasMorePosts();
       });
       unawaited(_loadSuggestedUsers());
     } catch (error) {
@@ -276,13 +282,26 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadMorePosts() async {
     if (_isLoadingFeed || _isLoadingMore || !_hasMorePosts) return;
 
+    if (_homeFeedSession.hasPendingCandidates) {
+      setState(() {
+        _loadMoreError = null;
+        _homeFeedSession.emitMoreEntries(
+          viewerContext: _viewerContext,
+          count: socialFeedPageSize,
+        );
+        _feedEntries = _homeFeedSession.entries;
+        _syncHasMorePosts();
+      });
+      return;
+    }
+
     setState(() => _isLoadingMore = true);
     try {
       final page = await _homeFeedRepository.fetchPage(
         viewerContext: _viewerContext,
         startAfter: _lastPostDocument,
         excludePostIds: _homeFeedSession.emittedPostIds,
-        limit: 10,
+        limit: socialFeedPageSize,
       );
       final likedPostIds = await _socialPostRepository
           .fetchCurrentUserLikedPostIds(
@@ -295,23 +314,23 @@ class _HomeScreenState extends State<HomeScreen> {
       _homeFeedSession.appendCandidates(
         candidates: uniqueNewPosts,
         viewerContext: _viewerContext,
-        count: 10,
+        count: socialFeedPageSize,
       );
       if (!mounted) return;
       setState(() {
+        _loadMoreError = null;
         _posts.addAll(uniqueNewPosts);
         _likedPostIds.addAll(likedPostIds);
         _feedEntries = _homeFeedSession.entries;
         _lastPostDocument = page.lastDocument;
-        _hasMorePosts = page.hasMore && page.posts.isNotEmpty;
+        _hasMoreBackendPosts = page.hasMore;
+        _syncHasMorePosts();
       });
     } catch (_) {
       if (!mounted) return;
-      AppFeedback.show(
-        context,
-        message: 'We could not load more posts right now.',
-        tone: AppFeedbackTone.warning,
-      );
+      setState(() {
+        _loadMoreError = 'We could not load more posts right now.';
+      });
     } finally {
       if (mounted) {
         setState(() => _isLoadingMore = false);
@@ -358,9 +377,14 @@ class _HomeScreenState extends State<HomeScreen> {
       _scrollDeltaAccumulator = 0;
     }
 
-    if (pixels >= position.maxScrollExtent - 320) {
+    if (pixels >= position.maxScrollExtent - socialFeedLoadMoreTriggerPx) {
       _loadMorePosts();
     }
+  }
+
+  void _syncHasMorePosts() {
+    _hasMorePosts =
+        _homeFeedSession.hasPendingCandidates || _hasMoreBackendPosts;
   }
 
   void _handlePostUpdated(SocialPostModel updatedPost) {
@@ -521,6 +545,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   );
                 }
                 if (index >= _baseFeedItemCount) {
+                  if (_loadMoreError != null) {
+                    return _FeedStatusCard(
+                      title: 'Could not load more posts',
+                      message: _loadMoreError!,
+                      actionLabel: 'Try Again',
+                      onPressed: _loadMorePosts,
+                    );
+                  }
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: 16),
                     child: Center(child: CircularProgressIndicator()),
@@ -702,7 +734,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isLoadingFeed || _feedError != null || _feedEntries.isEmpty) {
       return 1;
     }
-    return _baseFeedItemCount + (_isLoadingMore ? 1 : 0);
+    return _baseFeedItemCount +
+        ((_isLoadingMore || _loadMoreError != null) ? 1 : 0);
   }
 }
 
