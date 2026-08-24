@@ -60,6 +60,7 @@ const expectedExportNames = [
   "moderateService",
   "pauseServicesForExpiredProviderVerification",
   "previewBookingCancellationV3",
+  "previewBookingDisputeResolutionV3",
   "previewBookingPaymentPricingV3",
   "processProviderVerificationDocumentCleanup",
   "processScheduledAccountDeletions",

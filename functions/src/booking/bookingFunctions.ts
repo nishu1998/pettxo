@@ -16,6 +16,7 @@ export {
   completeBookingServiceV3,
   submitBookingReviewV3,
   createBookingDisputeV3,
+  previewBookingDisputeResolutionV3,
   resolveBookingDisputeV3,
   listCanonicalDisputesV3,
   getCanonicalDisputeV3,

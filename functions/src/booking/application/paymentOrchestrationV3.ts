@@ -49,6 +49,7 @@ import {
 import type {ParentStatsV3} from "./bookingStats";
 import {applyParentStatsMutation, emptyParentStatsV3} from "./bookingStats";
 import {
+  fetchRazorpayPaymentV3,
   createRazorpayOrderV3,
   processRazorpayRefundV3,
   resolveCapturedRazorpayPaymentV3,
@@ -61,6 +62,7 @@ const RECONCILIATION_LEASE_MS = 2 * 60 * 1000;
 const RECONCILIATION_BASE_BACKOFF_MS = 30 * 1000;
 const RECONCILIATION_MAX_BACKOFF_MS = 15 * 60 * 1000;
 const DEFAULT_RECONCILIATION_LIMIT = 25;
+export const QR_SWITCH_PROTECTION_MS = 5 * 60 * 1000;
 export const CANONICAL_RECONCILIATION_ATTEMPT_STATES = [
   "CAPTURE_REPORTED",
   "CONFIRMING",
@@ -681,10 +683,35 @@ export function buildPaymentAttemptDocument(params: {
     razorpayQrImageUrl: "",
     qrState: "",
     qrCreatedAt: null,
+    qrSwitchLockedUntil: null,
     qrExpiresAt: null,
     qrClosedAt: null,
     qrCloseReason: "",
   };
+}
+
+export function resolveQrSwitchLockedUntil(params: {
+  booking: CanonicalBookingDocumentV3;
+  paymentAttempt: Record<string, unknown> | CanonicalPaymentAttemptDocumentV3 | null;
+}): Date | null {
+  const paymentAttempt = params.paymentAttempt;
+  if (paymentAttempt == null) return null;
+  const qrCreatedAt = asNullableDate(paymentAttempt.qrCreatedAt);
+  if (qrCreatedAt == null) return null;
+  const candidates = [
+    new Date(qrCreatedAt.getTime() + QR_SWITCH_PROTECTION_MS),
+  ];
+  const qrExpiresAt = asNullableDate(paymentAttempt.qrExpiresAt);
+  if (qrExpiresAt != null) {
+    candidates.push(qrExpiresAt);
+  }
+  const payDeadlineAt = params.booking.lifecycle.payDeadlineAt;
+  if (payDeadlineAt != null) {
+    candidates.push(payDeadlineAt);
+  }
+  return candidates.reduce((earliest, candidate) =>
+    candidate.getTime() < earliest.getTime() ? candidate : earliest
+  );
 }
 
 export function canonicalPaymentOrderMappingRef(
@@ -1786,6 +1813,18 @@ export async function persistFinalizePaymentResultV3(params: {
 }): Promise<void> {
   await params.firestore.runTransaction(async (transaction) => {
     if (params.result.ok) {
+      if (params.result.couponWrite) {
+        await consumeOfferUsageInTransaction({
+          firestore: params.firestore,
+          transaction,
+          uid: params.result.booking.parentId,
+          offerCampaignId: params.result.couponWrite.offerCampaignId,
+          bookingId: params.result.couponWrite.bookingId,
+          paymentAttemptId: params.result.couponWrite.paymentAttemptId,
+          couponCode: params.result.couponWrite.couponCode,
+          usageLimitPerUser: params.result.couponWrite.usageLimitPerUser,
+        });
+      }
       const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
       const privateWritePlan = params.result.privateWritePlan ?? {
         writeBookingPrivate: true,
@@ -1823,18 +1862,6 @@ export async function persistFinalizePaymentResultV3(params: {
       transaction.set(params.firestore.collection("payoutReadiness").doc(params.bookingId), params.result.financialWrites.payoutReadiness, {merge: true});
       transaction.set(params.firestore.collection("bookingChats").doc(params.bookingId), params.result.financialWrites.bookingChat, {merge: true});
       transaction.set(params.firestore.collection("chats").doc(params.bookingId), params.result.financialWrites.bookingChat, {merge: true});
-      if (params.result.couponWrite) {
-        await consumeOfferUsageInTransaction({
-          firestore: params.firestore,
-          transaction,
-          uid: params.result.booking.parentId,
-          offerCampaignId: params.result.couponWrite.offerCampaignId,
-          bookingId: params.result.couponWrite.bookingId,
-          paymentAttemptId: params.result.couponWrite.paymentAttemptId,
-          couponCode: params.result.couponWrite.couponCode,
-          usageLimitPerUser: params.result.couponWrite.usageLimitPerUser,
-        });
-      }
       for (const event of params.result.events) {
         transaction.set(
           params.firestore.collection("bookings").doc(params.bookingId).collection("events").doc(event.eventId),
@@ -2321,14 +2348,7 @@ export async function tryAcquireReconciliationLease(params: {
     const snapshot = await transaction.get(params.attemptRef);
     if (!snapshot.exists) return false;
     const attempt = snapshot.data() as CanonicalPaymentAttemptDocumentV3;
-    if (
-      !attempt.bookingId ||
-      !attempt.paymentAttemptId ||
-      attempt.terminalFailureAt != null ||
-      !CANONICAL_RECONCILIATION_ATTEMPT_STATES.includes(
-        attempt.state as typeof CANONICAL_RECONCILIATION_ATTEMPT_STATES[number],
-      )
-    ) {
+    if (!isReconciliationEligibleAttempt(attempt)) {
       return false;
     }
     const leaseExpiresAt = asNullableDate(attempt.leaseExpiresAt);
@@ -2365,8 +2385,9 @@ export function reconciliationDue(
   now: Date,
 ): boolean {
   if (attempt.terminalFailureAt != null) return false;
-  if (attempt.nextReconciliationAt == null) return true;
-  return attempt.nextReconciliationAt.getTime() <= now.getTime();
+  const nextReconciliationAt = asNullableDate(attempt.nextReconciliationAt);
+  if (nextReconciliationAt == null) return true;
+  return nextReconciliationAt.getTime() <= now.getTime();
 }
 
 function isNotCapturedError(error: unknown): boolean {
@@ -2383,6 +2404,40 @@ function isTransientGatewayError(error: unknown): boolean {
     error.code === "resource-exhausted";
 }
 
+function isTerminalPaymentAttemptState(state: string): boolean {
+  return [
+    "CONFIRMED",
+    "FAILED",
+    "EXPIRED",
+    "REFUNDED",
+  ].includes(state);
+}
+
+function isReconciliationEligibleAttempt(
+  attempt: CanonicalPaymentAttemptDocumentV3,
+): boolean {
+  if (!attempt.bookingId || !attempt.paymentAttemptId || attempt.terminalFailureAt != null) {
+    return false;
+  }
+  if (
+    CANONICAL_RECONCILIATION_ATTEMPT_STATES.includes(
+      attempt.state as typeof CANONICAL_RECONCILIATION_ATTEMPT_STATES[number],
+    )
+  ) {
+    return true;
+  }
+  const state = asString(attempt.state).toUpperCase();
+  if (isTerminalPaymentAttemptState(state)) return false;
+  return asString(attempt.razorpayPaymentId).length > 0 &&
+    (
+      asNullableDate(attempt.captureReportedAt) != null ||
+      asNullableDate(attempt.captureCreatedAt) != null ||
+      ["PAYMENT_CAPTURED", "REFUND_REQUIRED"].includes(
+        asString(attempt.qrState).toUpperCase(),
+      )
+    );
+}
+
 export async function reconcilePaymentAttemptsV3(params: {
   firestore: Firestore;
   keyId: string;
@@ -2391,6 +2446,8 @@ export async function reconcilePaymentAttemptsV3(params: {
   authoritativeNow?: Date;
   deps?: {
     verifyCapturedPayment?: typeof verifyCapturedBookingPaymentV3;
+    fetchPayment?: typeof fetchRazorpayPaymentV3;
+    finalizeCapturedPayment?: typeof finalizeCapturedCanonicalPaymentV3;
     submitRefundInstruction?: typeof submitRefundInstructionV3;
     persistNotifications?: typeof persistCanonicalNotificationsV3;
   };
@@ -2398,19 +2455,31 @@ export async function reconcilePaymentAttemptsV3(params: {
   const authoritativeNow = params.authoritativeNow ?? new Date();
   const verifyCapturedPayment =
     params.deps?.verifyCapturedPayment ?? verifyCapturedBookingPaymentV3;
+  const fetchPayment =
+    params.deps?.fetchPayment ?? fetchRazorpayPaymentV3;
+  const finalizeCapturedPayment =
+    params.deps?.finalizeCapturedPayment ?? finalizeCapturedCanonicalPaymentV3;
   const submitRefundInstruction =
     params.deps?.submitRefundInstruction ?? submitRefundInstructionV3;
   const persistNotifications =
     params.deps?.persistNotifications ?? persistCanonicalNotificationsV3;
-  const query = await params.firestore.collectionGroup("paymentAttempts")
+  const stateQuery = await params.firestore.collectionGroup("paymentAttempts")
     .where("state", "in", [...CANONICAL_RECONCILIATION_ATTEMPT_STATES])
     .limit(Math.max(params.limit ?? DEFAULT_RECONCILIATION_LIMIT, 1))
     .get();
+  const capturedQuery = await params.firestore.collectionGroup("paymentAttempts")
+    .where("razorpayPaymentId", ">", "")
+    .limit(Math.max(params.limit ?? DEFAULT_RECONCILIATION_LIMIT, 1))
+    .get();
+  const candidateDocs = new Map<string, FirebaseFirestore.QueryDocumentSnapshot<FirebaseFirestore.DocumentData>>();
+  for (const doc of [...stateQuery.docs, ...capturedQuery.docs]) {
+    candidateDocs.set(doc.ref.path, doc);
+  }
   let processed = 0;
 
-  for (const doc of query.docs) {
+  for (const doc of candidateDocs.values()) {
     const attempt = doc.data() as CanonicalPaymentAttemptDocumentV3;
-    if (!attempt.bookingId || !attempt.paymentAttemptId) continue;
+    if (!isReconciliationEligibleAttempt(attempt)) continue;
     if (!reconciliationDue(attempt, authoritativeNow)) continue;
 
     const acquired = await tryAcquireReconciliationLease({
@@ -2436,7 +2505,7 @@ export async function reconcilePaymentAttemptsV3(params: {
         continue;
       }
 
-      if (!attempt.razorpayPaymentId || !attempt.razorpayOrderId) {
+      if (!attempt.razorpayPaymentId) {
         await doc.ref.set({
           terminalFailureAt: FieldValue.serverTimestamp(),
           lastReconciledAt: FieldValue.serverTimestamp(),
@@ -2447,17 +2516,44 @@ export async function reconcilePaymentAttemptsV3(params: {
       }
 
       try {
-        const result = await verifyCapturedPayment({
-          firestore: params.firestore,
-          bookingId: attempt.bookingId,
-          paymentAttemptId: attempt.paymentAttemptId,
-          verificationSource: "reconciliation",
-          keyId: params.keyId,
-          keySecret: params.keySecret,
-          razorpayOrderId: attempt.razorpayOrderId,
-          razorpayPaymentId: attempt.razorpayPaymentId,
-          authoritativeNow,
-        });
+        const result = attempt.paymentMethod === "qr" && !attempt.razorpayOrderId ?
+          await (async () => {
+            const capture = await fetchPayment({
+              keyId: params.keyId,
+              keySecret: params.keySecret,
+              paymentId: attempt.razorpayPaymentId,
+            });
+            if (capture.status !== "captured") {
+              throw new HttpsError("failed-precondition", "Razorpay payment is not captured yet.");
+            }
+            return finalizeCapturedPayment({
+              firestore: params.firestore,
+              facts: {
+                bookingId: attempt.bookingId,
+                paymentAttemptId: attempt.paymentAttemptId,
+                razorpayOrderId: capture.orderId,
+                razorpayPaymentId: capture.id,
+                capturedAmountPaise: capture.amountPaise,
+                currency: capture.currency,
+                capturedAt: capture.capturedAt ?? capture.createdAt ?? authoritativeNow,
+                verificationSource: "reconciliation",
+              },
+              keyId: params.keyId,
+              keySecret: params.keySecret,
+              authoritativeNow,
+            });
+          })() :
+          await verifyCapturedPayment({
+            firestore: params.firestore,
+            bookingId: attempt.bookingId,
+            paymentAttemptId: attempt.paymentAttemptId,
+            verificationSource: "reconciliation",
+            keyId: params.keyId,
+            keySecret: params.keySecret,
+            razorpayOrderId: attempt.razorpayOrderId,
+            razorpayPaymentId: attempt.razorpayPaymentId,
+            authoritativeNow,
+          });
         await persistNotifications({
           firestore: params.firestore,
           notifications: result.notifications,

@@ -273,6 +273,31 @@ test("correct OTP is still allowed at the first segment end for a multi-day slot
   assert.equal(result.code, "VERIFIED_STARTED");
 });
 
+test("confirmed booking still starts when refund mirroring overwrote display payment status", async () => {
+  const {bookingId, booking, privateDoc} = buildConfirmedBookingSeed();
+  booking.payment.status = "refunded";
+  booking.payment.razorpayRefundId = "rfnd_123";
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingPrivate/${bookingId}`]: privateDoc,
+  });
+  const beforeScheduledStart = new Date(
+    booking.schedule.scheduledStartAt.getTime() - 60 * 1000,
+  );
+
+  const result = await verifyBookingStartOtpV3({
+    firestore,
+    bookingId,
+    providerId: booking.providerId,
+    otpCandidate: "482913",
+    requestAttemptId: "attempt-refund-shadow",
+    authoritativeNow: beforeScheduledStart,
+  });
+
+  assert.equal(result.code, "VERIFIED_STARTED");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
+});
+
 test("OTP is rejected after authoritative service end by one millisecond", async () => {
   const {bookingId, booking, privateDoc} = buildConfirmedBookingSeed();
   const firestore = new FakeFirestore({

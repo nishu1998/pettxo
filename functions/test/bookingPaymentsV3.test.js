@@ -15,6 +15,7 @@ const {
   finalizeCapturedCanonicalPaymentV3,
   persistFinalizePaymentResultV3,
   reconcilePaymentAttemptsV3,
+  resolveQrSwitchLockedUntil,
   submitRefundInstructionV3,
 } = require("../lib/booking/application/paymentOrchestrationV3.js");
 const {Timestamp} = require("firebase-admin/firestore");
@@ -164,6 +165,7 @@ test("buildPaymentAttemptDocument supports additive QR payment metadata", () => 
   assert.equal(attempt.razorpayQrImageUrl, "");
   assert.equal(attempt.qrState, "");
   assert.equal(attempt.qrCreatedAt, null);
+  assert.equal(attempt.qrSwitchLockedUntil, null);
   assert.equal(attempt.qrExpiresAt, null);
   assert.notEqual(
     attempt.paymentAttemptId,
@@ -174,6 +176,20 @@ test("buildPaymentAttemptDocument supports additive QR payment metadata", () => 
       paymentMethod: "checkout",
     }),
   );
+});
+
+test("resolveQrSwitchLockedUntil respects first QR creation and never extends the booking deadline", () => {
+  const booking = buildFutureAcceptedAwaitingPaymentBookingFixture();
+  booking.lifecycle.payDeadlineAt = new Date("2026-08-01T10:03:00.000Z");
+  const lockUntil = resolveQrSwitchLockedUntil({
+    booking,
+    paymentAttempt: {
+      qrCreatedAt: new Date("2026-08-01T09:59:00.000Z"),
+      qrExpiresAt: new Date("2026-08-01T10:20:00.000Z"),
+    },
+  });
+
+  assert.equal(lockUntil?.toISOString(), "2026-08-01T10:03:00.000Z");
 });
 
 function buildAttempt({booking, pricing, paymentAttemptId, razorpayOrderId}) {
@@ -710,6 +726,41 @@ class RacingOfferUsageFirestore extends FakeFirestore {
       });
     }
     return undefined;
+  }
+}
+
+class StrictOrderingTransaction extends FakeTransaction {
+  constructor(firestore) {
+    super(firestore);
+    this.hasPendingWrites = false;
+  }
+
+  async get(ref) {
+    if (this.hasPendingWrites) {
+      throw new Error(
+        "Firestore transactions require all reads to be executed before all writes.",
+      );
+    }
+    return super.get(ref);
+  }
+
+  set(ref, data, options) {
+    this.hasPendingWrites = true;
+    super.set(ref, data, options);
+  }
+}
+
+class StrictOrderingFirestore extends FakeFirestore {
+  async runTransaction(handler) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = new StrictOrderingTransaction(this);
+      const result = await handler(transaction);
+      const committed = await transaction.commit();
+      if (committed) {
+        return result;
+      }
+    }
+    throw new Error("transaction-conflict");
   }
 }
 
@@ -1750,6 +1801,63 @@ test("persistFinalizePaymentResultV3 consumes coupon usage exactly once for the 
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
 
   const usage = firestore.store.get("users/parent-1/offerUsage/campaign-idempotent-1");
+  assert.equal(usage.usedCount, 1);
+  assert.deepEqual(usage.consumedBookingIds, [bookingId]);
+});
+
+test("persistFinalizePaymentResultV3 reads coupon usage before transaction writes", async () => {
+  const bookingId = "booking-coupon-ordering-1";
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const pricing = resolveCanonicalPricingV3({
+    booking,
+    claimedOffer: {
+      status: "claimed",
+      offerCampaignId: "campaign-ordering-1",
+      offerId: "campaign-ordering-1",
+      discountType: "flat",
+      discountValue: 250,
+      usageLimit: 1,
+      usedCount: 0,
+      couponCode: "ORDER250",
+    },
+  });
+  booking.financials = pricing.financialSnapshot;
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId,
+    booking,
+    paymentAttempt: {
+      ...buildAttempt({
+        booking,
+        pricing,
+        paymentAttemptId: "attempt-coupon-ordering-1",
+        razorpayOrderId: "order_coupon_ordering_1",
+      }),
+      bookingId,
+    },
+    parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_coupon_ordering_1",
+      orderId: "order_coupon_ordering_1",
+      status: "captured",
+      amountPaise: pricing.financialSnapshot.customerPaidPaise,
+      currency: "INR",
+      createdAt: new Date("2026-07-22T10:25:00.000Z"),
+      capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+    },
+    authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+    verificationSource: "callable",
+  });
+
+  assert.equal(result.ok, true);
+  const firestore = new StrictOrderingFirestore();
+  await persistFinalizePaymentResultV3({firestore, result, bookingId});
+
+  const usage = firestore.store.get("users/parent-1/offerUsage/campaign-ordering-1");
   assert.equal(usage.usedCount, 1);
   assert.deepEqual(usage.consumedBookingIds, [bookingId]);
 });

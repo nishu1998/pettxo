@@ -329,7 +329,6 @@ export async function createRazorpayQrCodeV3(params: {
   keySecret: string;
   bookingId: string;
   paymentAttemptId: string;
-  customerUid: string;
   amountPaise: number;
   currency: string;
   closeBy: Date;
@@ -353,7 +352,6 @@ export async function createRazorpayQrCodeV3(params: {
   notes: {
     bookingId: params.bookingId,
     paymentAttemptId: params.paymentAttemptId,
-    customerUid: params.customerUid,
     purpose: "booking",
     ...params.notes,
   },

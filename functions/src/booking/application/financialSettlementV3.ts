@@ -1,6 +1,7 @@
 import {createHash} from "node:crypto";
 
 import {FieldValue, Timestamp, type Firestore} from "firebase-admin/firestore";
+import * as logger from "firebase-functions/logger";
 import {HttpsError} from "firebase-functions/https";
 
 import {
@@ -28,6 +29,7 @@ type AdminRole = "superAdmin" | "financeAdmin" | "customerSupportAdmin";
 type DisputeResolutionType =
   | "CUSTOMER_WINS"
   | "PROVIDER_WINS"
+  | "CUSTOM_ALLOCATION"
   | "PARTIAL_REFUND"
   | "CUSTOM_ADJUSTMENT";
 type ProviderPayoutStatus =
@@ -70,6 +72,10 @@ export type ResolveBookingDisputeInput = {
   policyReason: string;
   notes?: string;
   resolutionAttemptId: string;
+  customerAllocationBasisPoints?: number | null;
+  providerAllocationBasisPoints?: number | null;
+  pettxoAllocationBasisPoints?: number | null;
+  customerRefundBasisPoints?: number | null;
   customerRefundPaise?: number | null;
   providerFinalEntitlementPaise?: number | null;
 };
@@ -85,10 +91,45 @@ export type ResolveBookingDisputeResult = {
   resolutionType: DisputeResolutionType;
   disputeStatus: "RESOLVED";
   payoutStatus: ProviderPayoutStatus;
+  customerPaidPaise: number;
+  authoritativeAmountPaidPaise: number;
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerFinalPaise: number;
   customerRefundPaise: number;
+  providerAllocationPaise: number;
   providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
   pettxoFinalRetainedPaise: number;
+  refundToIssuePaise: number;
   idempotentReplay: boolean;
+};
+
+export type PreviewBookingDisputeResolutionResult = {
+  bookingId: string;
+  disputeId: string;
+  resolutionType: DisputeResolutionType;
+  currency: string;
+  customerPaidPaise: number;
+  authoritativeAmountPaidPaise: number;
+  alreadyRefundedPaise: number;
+  providerBaseEntitlementPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerRefundBasisPoints: number | null;
+  customerFinalPaise: number;
+  customerRefundPaise: number;
+  providerAllocationPaise: number;
+  providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  pettxoFinalRetainedPaise: number;
+  refundToIssuePaise: number;
 };
 
 export type ProviderPayoutDocumentV3 = {
@@ -356,6 +397,25 @@ function requireDate(value: unknown, field: string): Date {
   );
 }
 
+function resolveRequiredPayoutEligibleAt(params: {
+  booking: CanonicalBookingDocumentV3;
+  fallbackNow: Date;
+}): Date {
+  if (params.booking.payout.eligibleAt != null) {
+    return requireDate(
+      params.booking.payout.eligibleAt,
+      "bookings.payout.eligibleAt",
+    );
+  }
+  if (params.booking.lifecycle.finalizedAt != null) {
+    return requireDate(
+      params.booking.lifecycle.finalizedAt,
+      "bookings.lifecycle.finalizedAt",
+    );
+  }
+  return params.fallbackNow;
+}
+
 function nextPayoutRetryAt(now: Date, retryCount: number): Date {
   const multiplier = Math.max(retryCount, 1);
   const delay = Math.min(
@@ -522,6 +582,14 @@ function buildBaseLedgerEntries(params: {
 function serializeLedgerEntry(
   entry: BookingFinancialLedgerEntry,
 ): Record<string, unknown> {
+  const occurredAt = serializeRequiredTimestampLike(
+    entry.occurredAt,
+    "bookingFinancialLedger.occurredAt",
+  );
+  const createdAt = serializeRequiredTimestampLike(
+    entry.createdAt,
+    "bookingFinancialLedger.createdAt",
+  );
   return {
     entryId: entry.entryId,
     bookingId: entry.bookingId,
@@ -537,10 +605,31 @@ function serializeLedgerEntry(
     sourceType: entry.sourceType,
     sourceId: entry.sourceId,
     policyVersion: entry.policyVersion,
-    occurredAt: Timestamp.fromDate(entry.occurredAt),
-    createdAt: Timestamp.fromDate(entry.createdAt),
+    occurredAt,
+    createdAt,
     metadata: entry.metadata,
   };
+}
+
+function serializeRequiredTimestampLike(
+  value: unknown,
+  field: string,
+): Timestamp {
+  if (value instanceof Timestamp) {
+    return value;
+  }
+  const normalized = asDate(value);
+  if (normalized != null) {
+    return Timestamp.fromDate(normalized);
+  }
+  throw new HttpsError(
+    "failed-precondition",
+    `${field} is missing or malformed.`,
+    {
+      code: "INVALID_TIMESTAMP",
+      field,
+    },
+  );
 }
 
 function buildPayoutProfileSnapshot(
@@ -656,7 +745,10 @@ export function evaluateCanonicalProviderPayoutEligibilityV3(params: {
   const disputeStatus = params.booking.dispute.status.trim().toUpperCase();
   const payoutEligibleAt =
     asDate(params.existingPayout?.eligibleAt) ??
-    requireDate(params.booking.payout.eligibleAt, "bookings.payout.eligibleAt");
+    resolveRequiredPayoutEligibleAt({
+      booking: params.booking,
+      fallbackNow: params.authoritativeNow,
+    });
   const refundState = asString(params.existingRefund?.state).toLowerCase();
   const payoutProfile = buildPayoutProfileSnapshot(params.providerBankDetails);
 
@@ -752,16 +844,366 @@ function resolutionMatches(
   return asString(stored.inputFingerprint) === expectedFingerprint;
 }
 
+function validateAllocationBasisPoints(
+  value: number,
+  field: string,
+): number {
+  if (!Number.isInteger(value) || value < 0 || value > 10000) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${field} must be an integer between 0 and 10000.`,
+    );
+  }
+  return value;
+}
+
+function safeBigIntToNumber(value: bigint, field: string): number {
+  const numberValue = Number(value);
+  if (!Number.isSafeInteger(numberValue)) {
+    throw new HttpsError(
+      "failed-precondition",
+      `${field} exceeds the supported integer range.`,
+    );
+  }
+  return numberValue;
+}
+
+function allocatePoolPaiseByBasisPoints(params: {
+  customerPaidPaise: number;
+  customerAllocationBasisPoints: number;
+  providerAllocationBasisPoints: number;
+  pettxoAllocationBasisPoints: number;
+}): {
+  customerFinalPaise: number;
+  providerAllocationPaise: number;
+  pettxoFinalRetainedPaise: number;
+} {
+  const allocations = [
+    {
+      key: "customer" as const,
+      basisPoints: params.customerAllocationBasisPoints,
+      tieOrder: 0,
+    },
+    {
+      key: "provider" as const,
+      basisPoints: params.providerAllocationBasisPoints,
+      tieOrder: 1,
+    },
+    {
+      key: "pettxo" as const,
+      basisPoints: params.pettxoAllocationBasisPoints,
+      tieOrder: 2,
+    },
+  ];
+  const paidBigInt = BigInt(params.customerPaidPaise);
+  const denominator = 10000n;
+  const computed = allocations.map((allocation) => {
+    const product = paidBigInt * BigInt(allocation.basisPoints);
+    return {
+      ...allocation,
+      floorPaise: safeBigIntToNumber(
+        product / denominator,
+        `${allocation.key} allocation`,
+      ),
+      remainderBasisPoints: safeBigIntToNumber(
+        product % denominator,
+        `${allocation.key} remainder`,
+      ),
+    };
+  });
+  const totalFloorPaise = computed.reduce(
+    (sum, allocation) => sum + allocation.floorPaise,
+    0,
+  );
+  let undistributedPaise = params.customerPaidPaise - totalFloorPaise;
+  const result = new Map(
+    computed.map((allocation) => [allocation.key, allocation.floorPaise]),
+  );
+  const remainderOrder = [...computed].sort((left, right) => {
+    if (right.remainderBasisPoints !== left.remainderBasisPoints) {
+      return right.remainderBasisPoints - left.remainderBasisPoints;
+    }
+    return left.tieOrder - right.tieOrder;
+  });
+  for (const allocation of remainderOrder) {
+    if (undistributedPaise <= 0) break;
+    result.set(allocation.key, (result.get(allocation.key) ?? 0) + 1);
+    undistributedPaise -= 1;
+  }
+  return {
+    customerFinalPaise: result.get("customer") ?? 0,
+    providerAllocationPaise: result.get("provider") ?? 0,
+    pettxoFinalRetainedPaise: result.get("pettxo") ?? 0,
+  };
+}
+
+function deriveAllocationBasisPointsFromPaise(params: {
+  customerPaidPaise: number;
+  customerFinalPaise: number;
+  providerAllocationPaise: number;
+  pettxoFinalRetainedPaise: number;
+}): {
+  customerAllocationBasisPoints: number;
+  providerAllocationBasisPoints: number;
+  pettxoAllocationBasisPoints: number;
+} {
+  if (params.customerPaidPaise <= 0) {
+    return {
+      customerAllocationBasisPoints:
+        params.customerFinalPaise > 0 ? 10000 : 0,
+      providerAllocationBasisPoints:
+        params.providerAllocationPaise > 0 ? 10000 : 0,
+      pettxoAllocationBasisPoints:
+        params.customerFinalPaise === 0 &&
+          params.providerAllocationPaise === 0 &&
+          params.pettxoFinalRetainedPaise === 0 ?
+          10000 :
+          0,
+    };
+  }
+  const customerAllocationBasisPoints = Math.floor(
+    (params.customerFinalPaise * 10000) / params.customerPaidPaise,
+  );
+  const providerAllocationBasisPoints = Math.floor(
+    (params.providerAllocationPaise * 10000) / params.customerPaidPaise,
+  );
+  return {
+    customerAllocationBasisPoints,
+    providerAllocationBasisPoints,
+    pettxoAllocationBasisPoints:
+      10000 - customerAllocationBasisPoints - providerAllocationBasisPoints,
+  };
+}
+
+function normalizeThreePartyAllocationRequest(params: {
+  resolutionType: DisputeResolutionType;
+  customerPaidPaise: number;
+  providerBaseEntitlementPaise: number;
+  requestedCustomerAllocationBasisPoints: number | null;
+  requestedProviderAllocationBasisPoints: number | null;
+  requestedPettxoAllocationBasisPoints: number | null;
+  requestedCustomerRefundBasisPoints: number | null;
+  requestedCustomerRefundPaise: number | null;
+  requestedProviderEntitlementPaise: number | null;
+}): {
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerFinalPaise: number;
+  providerAllocationPaise: number;
+  providerFinalEntitlementPaise: number;
+  pettxoFinalRetainedPaise: number;
+  customerRefundBasisPoints: number | null;
+} {
+  const normalizedResolutionType =
+    params.resolutionType === "PARTIAL_REFUND" ?
+      "CUSTOM_ALLOCATION" :
+      params.resolutionType;
+  const providerBaseEntitlementPaise = Math.max(
+    params.providerBaseEntitlementPaise,
+    0,
+  );
+
+  if (normalizedResolutionType === "CUSTOMER_WINS") {
+    return {
+      customerAllocationBasisPoints: 10000,
+      providerAllocationBasisPoints: 0,
+      pettxoAllocationBasisPoints: 0,
+      customerFinalPaise: params.customerPaidPaise,
+      providerAllocationPaise: 0,
+      providerFinalEntitlementPaise: 0,
+      pettxoFinalRetainedPaise: 0,
+      customerRefundBasisPoints: 10000,
+    };
+  }
+
+  if (normalizedResolutionType === "PROVIDER_WINS") {
+    const providerAllocationPaise = Math.min(
+      providerBaseEntitlementPaise,
+      params.customerPaidPaise,
+    );
+    const pettxoFinalRetainedPaise = Math.max(
+      params.customerPaidPaise - providerAllocationPaise,
+      0,
+    );
+    const basisPoints = deriveAllocationBasisPointsFromPaise({
+      customerPaidPaise: params.customerPaidPaise,
+      customerFinalPaise: 0,
+      providerAllocationPaise,
+      pettxoFinalRetainedPaise,
+    });
+    return {
+      customerAllocationBasisPoints: basisPoints.customerAllocationBasisPoints,
+      providerAllocationBasisPoints: basisPoints.providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints: basisPoints.pettxoAllocationBasisPoints,
+      customerFinalPaise: 0,
+      providerAllocationPaise,
+      providerFinalEntitlementPaise: providerBaseEntitlementPaise,
+      pettxoFinalRetainedPaise,
+      customerRefundBasisPoints: 0,
+    };
+  }
+
+  if (normalizedResolutionType === "CUSTOM_ADJUSTMENT") {
+    const customerFinalPaise = params.requestedCustomerRefundPaise ?? 0;
+    const providerFinalEntitlementPaise =
+      params.requestedProviderEntitlementPaise ??
+      Math.max(params.customerPaidPaise - customerFinalPaise, 0);
+    const providerAllocationPaise = providerFinalEntitlementPaise;
+    const pettxoFinalRetainedPaise =
+      params.customerPaidPaise -
+      customerFinalPaise -
+      providerAllocationPaise;
+    const basisPoints = deriveAllocationBasisPointsFromPaise({
+      customerPaidPaise: params.customerPaidPaise,
+      customerFinalPaise,
+      providerAllocationPaise,
+      pettxoFinalRetainedPaise: Math.max(pettxoFinalRetainedPaise, 0),
+    });
+    return {
+      customerAllocationBasisPoints: basisPoints.customerAllocationBasisPoints,
+      providerAllocationBasisPoints: basisPoints.providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints: basisPoints.pettxoAllocationBasisPoints,
+      customerFinalPaise,
+      providerAllocationPaise,
+      providerFinalEntitlementPaise,
+      pettxoFinalRetainedPaise,
+      customerRefundBasisPoints: null,
+    };
+  }
+
+  const hasThreePartyAllocationInput =
+    params.requestedCustomerAllocationBasisPoints != null ||
+    params.requestedProviderAllocationBasisPoints != null ||
+    params.requestedPettxoAllocationBasisPoints != null;
+
+  if (
+    (
+      hasThreePartyAllocationInput ||
+      params.resolutionType === "CUSTOM_ALLOCATION"
+    ) &&
+    (
+      params.requestedCustomerAllocationBasisPoints == null ||
+      params.requestedProviderAllocationBasisPoints == null ||
+      params.requestedPettxoAllocationBasisPoints == null
+    )
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "customerAllocationBasisPoints, providerAllocationBasisPoints, and pettxoAllocationBasisPoints are required.",
+    );
+  }
+
+  if (
+    params.requestedCustomerAllocationBasisPoints != null &&
+    params.requestedProviderAllocationBasisPoints != null &&
+    params.requestedPettxoAllocationBasisPoints != null
+  ) {
+    const customerAllocationBasisPoints = validateAllocationBasisPoints(
+      params.requestedCustomerAllocationBasisPoints,
+      "customerAllocationBasisPoints",
+    );
+    const providerAllocationBasisPoints = validateAllocationBasisPoints(
+      params.requestedProviderAllocationBasisPoints,
+      "providerAllocationBasisPoints",
+    );
+    const pettxoAllocationBasisPoints = validateAllocationBasisPoints(
+      params.requestedPettxoAllocationBasisPoints,
+      "pettxoAllocationBasisPoints",
+    );
+    if (
+      customerAllocationBasisPoints +
+        providerAllocationBasisPoints +
+        pettxoAllocationBasisPoints !==
+      10000
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "customerAllocationBasisPoints + providerAllocationBasisPoints + pettxoAllocationBasisPoints must equal 10000.",
+      );
+    }
+    const allocated = allocatePoolPaiseByBasisPoints({
+      customerPaidPaise: params.customerPaidPaise,
+      customerAllocationBasisPoints,
+      providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints,
+    });
+    return {
+      customerAllocationBasisPoints,
+      providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints,
+      customerFinalPaise: allocated.customerFinalPaise,
+      providerAllocationPaise: allocated.providerAllocationPaise,
+      providerFinalEntitlementPaise: allocated.providerAllocationPaise,
+      pettxoFinalRetainedPaise: allocated.pettxoFinalRetainedPaise,
+      customerRefundBasisPoints: customerAllocationBasisPoints,
+    };
+  }
+
+  let customerFinalPaise = 0;
+  if (params.requestedCustomerRefundBasisPoints != null) {
+    const customerRefundBasisPoints = validateAllocationBasisPoints(
+      params.requestedCustomerRefundBasisPoints,
+      "customerRefundBasisPoints",
+    );
+    customerFinalPaise = safeBigIntToNumber(
+      (BigInt(params.customerPaidPaise) * BigInt(customerRefundBasisPoints)) /
+        10000n,
+      "customerRefundPaise",
+    );
+  } else {
+    customerFinalPaise = params.requestedCustomerRefundPaise ?? 0;
+  }
+  const providerAllocationPaise = Math.min(
+    providerBaseEntitlementPaise,
+    Math.max(params.customerPaidPaise - customerFinalPaise, 0),
+  );
+  const pettxoFinalRetainedPaise =
+    params.customerPaidPaise -
+    customerFinalPaise -
+    providerAllocationPaise;
+  const basisPoints = deriveAllocationBasisPointsFromPaise({
+    customerPaidPaise: params.customerPaidPaise,
+    customerFinalPaise,
+    providerAllocationPaise,
+    pettxoFinalRetainedPaise: Math.max(pettxoFinalRetainedPaise, 0),
+  });
+  return {
+    customerAllocationBasisPoints: basisPoints.customerAllocationBasisPoints,
+    providerAllocationBasisPoints: basisPoints.providerAllocationBasisPoints,
+    pettxoAllocationBasisPoints: basisPoints.pettxoAllocationBasisPoints,
+    customerFinalPaise,
+    providerAllocationPaise,
+    providerFinalEntitlementPaise: providerAllocationPaise,
+    pettxoFinalRetainedPaise,
+    customerRefundBasisPoints: params.requestedCustomerRefundBasisPoints ?? null,
+  };
+}
+
 function buildDisputeResolutionOutcome(params: {
   resolutionType: DisputeResolutionType;
   customerPaidPaise: number;
   alreadyRefundedPaise: number;
   providerBaseEntitlementPaise: number;
+  providerAlreadyPaidPaise: number;
+  requestedCustomerAllocationBasisPoints: number | null;
+  requestedProviderAllocationBasisPoints: number | null;
+  requestedPettxoAllocationBasisPoints: number | null;
+  requestedCustomerRefundBasisPoints: number | null;
   requestedCustomerRefundPaise: number | null;
   requestedProviderEntitlementPaise: number | null;
 }): {
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerRefundBasisPoints: number | null;
+  customerFinalPaise: number;
   customerRefundPaise: number;
+  providerAllocationPaise: number;
   providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
   pettxoFinalRetainedPaise: number;
   refundToIssuePaise: number;
 } {
@@ -769,72 +1211,98 @@ function buildDisputeResolutionOutcome(params: {
     params.customerPaidPaise - params.alreadyRefundedPaise,
     0,
   );
-  let customerRefundPaise = 0;
-  let providerFinalEntitlementPaise = params.providerBaseEntitlementPaise;
-
-  switch (params.resolutionType) {
-    case "CUSTOMER_WINS":
-      customerRefundPaise = params.customerPaidPaise;
-      providerFinalEntitlementPaise = 0;
-      break;
-    case "PROVIDER_WINS":
-      customerRefundPaise = params.alreadyRefundedPaise;
-      providerFinalEntitlementPaise = params.providerBaseEntitlementPaise;
-      break;
-    case "PARTIAL_REFUND":
-      customerRefundPaise = params.requestedCustomerRefundPaise ?? 0;
-      providerFinalEntitlementPaise = Math.min(
-        params.providerBaseEntitlementPaise,
-        Math.max(params.customerPaidPaise - customerRefundPaise, 0),
-      );
-      break;
-    case "CUSTOM_ADJUSTMENT":
-      customerRefundPaise = params.requestedCustomerRefundPaise ?? 0;
-      providerFinalEntitlementPaise =
-        params.requestedProviderEntitlementPaise ??
-        Math.min(
-          params.providerBaseEntitlementPaise,
-          Math.max(params.customerPaidPaise - customerRefundPaise, 0),
-        );
-      break;
-    default:
-      customerRefundPaise = 0;
-  }
-
-  if (customerRefundPaise < params.alreadyRefundedPaise) {
+  const normalized = normalizeThreePartyAllocationRequest({
+    resolutionType: params.resolutionType,
+    customerPaidPaise: params.customerPaidPaise,
+    providerBaseEntitlementPaise: params.providerBaseEntitlementPaise,
+    requestedCustomerAllocationBasisPoints:
+      params.requestedCustomerAllocationBasisPoints,
+    requestedProviderAllocationBasisPoints:
+      params.requestedProviderAllocationBasisPoints,
+    requestedPettxoAllocationBasisPoints:
+      params.requestedPettxoAllocationBasisPoints,
+    requestedCustomerRefundBasisPoints:
+      params.requestedCustomerRefundBasisPoints,
+    requestedCustomerRefundPaise: params.requestedCustomerRefundPaise,
+    requestedProviderEntitlementPaise:
+      params.requestedProviderEntitlementPaise,
+  });
+  if (normalized.customerFinalPaise < params.alreadyRefundedPaise) {
     throw new HttpsError(
       "failed-precondition",
       "Resolved refund cannot be less than the amount already refunded.",
     );
   }
-  if (customerRefundPaise > params.customerPaidPaise) {
+  if (normalized.customerFinalPaise > params.customerPaidPaise) {
     throw new HttpsError(
       "failed-precondition",
       "Customer refund exceeds the amount paid.",
     );
   }
-  if (providerFinalEntitlementPaise < 0) {
+  if (normalized.providerFinalEntitlementPaise < params.providerAlreadyPaidPaise) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Provider final entitlement cannot be less than the amount already paid.",
+    );
+  }
+  if (normalized.providerFinalEntitlementPaise < 0) {
     throw new HttpsError(
       "failed-precondition",
       "Provider entitlement cannot be negative.",
     );
   }
-  const pettxoFinalRetainedPaise =
-    params.customerPaidPaise -
-    customerRefundPaise -
-    providerFinalEntitlementPaise;
-  if (pettxoFinalRetainedPaise < 0) {
+  if (normalized.providerAllocationPaise < 0) {
     throw new HttpsError(
       "failed-precondition",
-      "Final financial allocation is invalid.",
+      "Provider allocation cannot be negative.",
     );
   }
+  if (normalized.pettxoFinalRetainedPaise < 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Pettxo final retained amount cannot be negative.",
+    );
+  }
+  if (
+    normalized.customerFinalPaise +
+      normalized.providerAllocationPaise +
+      normalized.pettxoFinalRetainedPaise !==
+    params.customerPaidPaise
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Final pool allocations must fully account for the captured customer payment.",
+    );
+  }
+  const providerCouponSubsidyPaise = Math.max(
+    normalized.providerFinalEntitlementPaise -
+      normalized.providerAllocationPaise,
+    0,
+  );
+  const providerRemainingPayablePaise = Math.max(
+    normalized.providerFinalEntitlementPaise - params.providerAlreadyPaidPaise,
+    0,
+  );
   return {
-    customerRefundPaise,
-    providerFinalEntitlementPaise,
-    pettxoFinalRetainedPaise,
+    customerAllocationBasisPoints:
+      normalized.customerAllocationBasisPoints,
+    providerAllocationBasisPoints:
+      normalized.providerAllocationBasisPoints,
+    pettxoAllocationBasisPoints:
+      normalized.pettxoAllocationBasisPoints,
+    customerRefundBasisPoints: normalized.customerRefundBasisPoints,
+    customerFinalPaise: normalized.customerFinalPaise,
+    customerRefundPaise: normalized.customerFinalPaise,
+    providerAllocationPaise: normalized.providerAllocationPaise,
+    providerFinalEntitlementPaise:
+      normalized.providerFinalEntitlementPaise,
+    providerCouponSubsidyPaise,
+    providerAlreadyPaidPaise: params.providerAlreadyPaidPaise,
+    providerRemainingPayablePaise,
+    pettxoFinalRetainedPaise:
+      normalized.pettxoFinalRetainedPaise,
     refundToIssuePaise: Math.min(
-      Math.max(customerRefundPaise - params.alreadyRefundedPaise, 0),
+      Math.max(normalized.customerFinalPaise - params.alreadyRefundedPaise, 0),
       availableCustomerRefundPaise,
     ),
   };
@@ -854,6 +1322,164 @@ function writeLedgerEntriesIfMissing(params: {
       {merge: true},
     );
   }
+}
+
+async function loadDisputeResolutionContext(params: {
+  firestore: Firestore;
+  disputeLookupId: string;
+}): Promise<{
+  disputeRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  dispute: Record<string, unknown>;
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  refundData: Record<string, unknown> | null;
+  payoutData: Record<string, unknown> | null;
+}> {
+  const disputeRef = params.firestore.collection("disputes").doc(params.disputeLookupId);
+  const disputeSnapshot = await disputeRef.get();
+  if (!disputeSnapshot.exists) {
+    throw new HttpsError("not-found", "Dispute not found.");
+  }
+  const dispute = asRecord(disputeSnapshot.data());
+  const bookingId = asString(dispute.bookingId) || disputeRef.id;
+  const bookingRef = params.firestore.collection("bookings").doc(bookingId);
+  const refundRef = params.firestore.collection("refunds").doc(bookingId);
+  const payoutRef = params.firestore
+    .collection(CANONICAL_PROVIDER_PAYOUTS_COLLECTION)
+    .doc(payoutIdForBooking(bookingId));
+  const [bookingSnapshot, refundSnapshot, payoutSnapshot] = await Promise.all([
+    bookingRef.get(),
+    refundRef.get(),
+    payoutRef.get(),
+  ]);
+  if (!bookingSnapshot.exists) {
+    throw new HttpsError("not-found", "Booking not found.");
+  }
+  const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
+  if (booking.financials == null) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Canonical booking financial snapshot is missing.",
+    );
+  }
+  return {
+    disputeRef,
+    dispute,
+    bookingId,
+    booking,
+    refundData: refundSnapshot.exists ? asRecord(refundSnapshot.data()) : null,
+    payoutData: payoutSnapshot.exists ? asRecord(payoutSnapshot.data()) : null,
+  };
+}
+
+function deriveDisputeSettlementFinancialContext(params: {
+  booking: CanonicalBookingDocumentV3;
+  payoutData: Record<string, unknown> | null;
+  resolutionType: DisputeResolutionType;
+}): {
+  customerPaidPaise: number;
+  providerBaseEntitlementPaise: number;
+  providerAlreadyPaidPaise: number;
+  currency: string;
+} {
+  const financials = asRecord(params.booking.financials);
+  const customerPaidPaise = asInt(financials.customerPaidPaise, -1);
+  if (customerPaidPaise < 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Financial settlement context is incomplete for this booking.",
+      {code: "INCOMPLETE_SETTLEMENT_CONTEXT", field: "customerPaidPaise"},
+    );
+  }
+  const providerBaseEntitlementPaise = asInt(
+    params.payoutData?.providerEntitlementPaise,
+    asInt(financials.providerPayoutPaise, -1),
+  );
+  if (
+    providerBaseEntitlementPaise < 0 &&
+    params.resolutionType !== "CUSTOMER_WINS"
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Financial settlement context is incomplete for this booking.",
+      {code: "INCOMPLETE_SETTLEMENT_CONTEXT", field: "providerPayoutPaise"},
+    );
+  }
+  return {
+    customerPaidPaise,
+    providerBaseEntitlementPaise: Math.max(providerBaseEntitlementPaise, 0),
+    providerAlreadyPaidPaise: asInt(params.payoutData?.priorPaidPaise, 0),
+    currency: asString(financials.currency) || "INR",
+  };
+}
+
+export async function previewBookingDisputeResolutionV3(params: {
+  firestore: Firestore;
+  input: ResolveBookingDisputeInput;
+  auth: {uid?: string} | undefined;
+}): Promise<PreviewBookingDisputeResolutionResult> {
+  const adminUid = requireUid(params.auth);
+  await requireFinanceAdminActor(params.firestore, adminUid);
+  const disputeLookupId =
+    params.input.disputeId?.trim() || params.input.bookingId?.trim();
+  if (!disputeLookupId) {
+    throw new HttpsError(
+      "invalid-argument",
+      "disputeId or bookingId is required.",
+    );
+  }
+  const context = await loadDisputeResolutionContext({
+    firestore: params.firestore,
+    disputeLookupId,
+  });
+  const financialContext = deriveDisputeSettlementFinancialContext({
+    booking: context.booking,
+    payoutData: context.payoutData,
+    resolutionType: params.input.resolutionType,
+  });
+  const outcome = buildDisputeResolutionOutcome({
+    resolutionType: params.input.resolutionType,
+    customerPaidPaise: financialContext.customerPaidPaise,
+    alreadyRefundedPaise: asInt(context.refundData?.refundAmountPaise, 0),
+    providerBaseEntitlementPaise:
+      financialContext.providerBaseEntitlementPaise,
+    providerAlreadyPaidPaise: financialContext.providerAlreadyPaidPaise,
+    requestedCustomerAllocationBasisPoints:
+      params.input.customerAllocationBasisPoints ?? null,
+    requestedProviderAllocationBasisPoints:
+      params.input.providerAllocationBasisPoints ?? null,
+    requestedPettxoAllocationBasisPoints:
+      params.input.pettxoAllocationBasisPoints ?? null,
+    requestedCustomerRefundBasisPoints:
+      params.input.customerRefundBasisPoints ?? null,
+    requestedCustomerRefundPaise: params.input.customerRefundPaise ?? null,
+    requestedProviderEntitlementPaise:
+      params.input.providerFinalEntitlementPaise ?? null,
+  });
+  return {
+    bookingId: context.bookingId,
+    disputeId: context.disputeRef.id,
+    resolutionType: params.input.resolutionType,
+    currency: financialContext.currency,
+    customerPaidPaise: financialContext.customerPaidPaise,
+    authoritativeAmountPaidPaise: financialContext.customerPaidPaise,
+    alreadyRefundedPaise: asInt(context.refundData?.refundAmountPaise, 0),
+    providerBaseEntitlementPaise:
+      financialContext.providerBaseEntitlementPaise,
+    providerAlreadyPaidPaise: financialContext.providerAlreadyPaidPaise,
+    providerRemainingPayablePaise: outcome.providerRemainingPayablePaise,
+    customerAllocationBasisPoints: outcome.customerAllocationBasisPoints,
+    providerAllocationBasisPoints: outcome.providerAllocationBasisPoints,
+    pettxoAllocationBasisPoints: outcome.pettxoAllocationBasisPoints,
+    customerRefundBasisPoints: outcome.customerRefundBasisPoints,
+    customerFinalPaise: outcome.customerFinalPaise,
+    customerRefundPaise: outcome.customerRefundPaise,
+    providerAllocationPaise: outcome.providerAllocationPaise,
+    providerFinalEntitlementPaise: outcome.providerFinalEntitlementPaise,
+    providerCouponSubsidyPaise: outcome.providerCouponSubsidyPaise,
+    pettxoFinalRetainedPaise: outcome.pettxoFinalRetainedPaise,
+    refundToIssuePaise: outcome.refundToIssuePaise,
+  };
 }
 
 export async function resolveBookingDisputeV3(params: {
@@ -880,17 +1506,30 @@ export async function resolveBookingDisputeV3(params: {
       "resolutionAttemptId is required.",
     );
   }
+  logger.info("booking.dispute.resolve.start", {
+    disputeLookupId,
+    resolutionType: params.input.resolutionType,
+    resolutionAttemptId: attemptId,
+  });
   const fingerprint = stableHash({
     disputeId: disputeLookupId,
     resolutionType: params.input.resolutionType,
     policyReason: params.input.policyReason.trim(),
     notes: params.input.notes?.trim() ?? "",
+    customerAllocationBasisPoints:
+      params.input.customerAllocationBasisPoints ?? null,
+    providerAllocationBasisPoints:
+      params.input.providerAllocationBasisPoints ?? null,
+    pettxoAllocationBasisPoints:
+      params.input.pettxoAllocationBasisPoints ?? null,
+    customerRefundBasisPoints: params.input.customerRefundBasisPoints ?? null,
     customerRefundPaise: params.input.customerRefundPaise ?? null,
     providerFinalEntitlementPaise:
       params.input.providerFinalEntitlementPaise ?? null,
   });
 
-  return params.firestore.runTransaction(async (transaction) => {
+  try {
+    return await params.firestore.runTransaction(async (transaction) => {
     const disputeRef = params.firestore.collection("disputes").doc(disputeLookupId);
     const disputeSnapshot = await transaction.get(disputeRef);
     if (!disputeSnapshot.exists) {
@@ -953,6 +1592,11 @@ export async function resolveBookingDisputeV3(params: {
         "Canonical booking financial snapshot is missing.",
       );
     }
+    const financialContext = deriveDisputeSettlementFinancialContext({
+      booking,
+      payoutData: payoutSnapshot.exists ? asRecord(payoutSnapshot.data()) : null,
+      resolutionType: params.input.resolutionType,
+    });
     if (resolutionSnapshot.exists) {
       const existing = asRecord(resolutionSnapshot.data());
       if (resolutionMatches(existing, fingerprint)) {
@@ -972,15 +1616,38 @@ export async function resolveBookingDisputeV3(params: {
           payoutStatus:
             (asString(existing.payoutStatus) as ProviderPayoutStatus) ||
             "HELD",
+          customerPaidPaise: asInt(existing.customerPaidPaise, 0),
+          authoritativeAmountPaidPaise: asInt(existing.customerPaidPaise, 0),
+          customerAllocationBasisPoints:
+            asInt(existing.customerAllocationBasisPoints, 0),
+          providerAllocationBasisPoints:
+            asInt(existing.providerAllocationBasisPoints, 0),
+          pettxoAllocationBasisPoints:
+            asInt(existing.pettxoAllocationBasisPoints, 0),
+          customerFinalPaise: asInt(existing.customerRefundPaise, 0),
           customerRefundPaise: asInt(existing.customerRefundPaise, 0),
+          providerAllocationPaise: asInt(
+            existing.providerAllocationPaise,
+            asInt(existing.providerFinalEntitlementPaise, 0),
+          ),
           providerFinalEntitlementPaise: asInt(
             existing.providerFinalEntitlementPaise,
+            0,
+          ),
+          providerCouponSubsidyPaise: asInt(
+            existing.providerCouponSubsidyPaise,
+            0,
+          ),
+          providerAlreadyPaidPaise: asInt(existing.providerAlreadyPaidPaise, 0),
+          providerRemainingPayablePaise: asInt(
+            existing.providerRemainingPayablePaise,
             0,
           ),
           pettxoFinalRetainedPaise: asInt(
             existing.pettxoFinalRetainedPaise,
             0,
           ),
+          refundToIssuePaise: asInt(existing.refundToIssuePaise, 0),
           idempotentReplay: true,
         };
       }
@@ -1001,22 +1668,35 @@ export async function resolveBookingDisputeV3(params: {
     const alreadyRefundedPaise = asInt(refundSnapshot.data()?.refundAmountPaise, 0);
     const outcome = buildDisputeResolutionOutcome({
       resolutionType: params.input.resolutionType,
-      customerPaidPaise: booking.financials.customerPaidPaise,
+      customerPaidPaise: financialContext.customerPaidPaise,
       alreadyRefundedPaise,
       providerBaseEntitlementPaise:
-        asInt(
-          payoutSnapshot.data()?.providerEntitlementPaise,
-          booking.financials.providerPayoutPaise,
-        ),
+        financialContext.providerBaseEntitlementPaise,
+      providerAlreadyPaidPaise: financialContext.providerAlreadyPaidPaise,
+      requestedCustomerAllocationBasisPoints:
+        params.input.customerAllocationBasisPoints ?? null,
+      requestedProviderAllocationBasisPoints:
+        params.input.providerAllocationBasisPoints ?? null,
+      requestedPettxoAllocationBasisPoints:
+        params.input.pettxoAllocationBasisPoints ?? null,
+      requestedCustomerRefundBasisPoints:
+        params.input.customerRefundBasisPoints ?? null,
       requestedCustomerRefundPaise: params.input.customerRefundPaise ?? null,
       requestedProviderEntitlementPaise:
         params.input.providerFinalEntitlementPaise ?? null,
     });
+    logger.info("booking.dispute.resolve.outcome_built", {
+      bookingId,
+      disputeId: disputeRef.id,
+      resolutionType: params.input.resolutionType,
+      customerRefundPaise: outcome.customerRefundPaise,
+      providerFinalEntitlementPaise: outcome.providerFinalEntitlementPaise,
+      refundToIssuePaise: outcome.refundToIssuePaise,
+    });
     const adjustmentTotalPaise =
-      Math.max(
+      Math.abs(
         booking.financials.providerPayoutPaise -
           outcome.providerFinalEntitlementPaise,
-        0,
       ) + outcome.refundToIssuePaise;
     const payoutEligibility = evaluateCanonicalProviderPayoutEligibilityV3({
       booking: {
@@ -1045,6 +1725,12 @@ export async function resolveBookingDisputeV3(params: {
           null,
       authoritativeNow: now,
     });
+    logger.info("booking.dispute.resolve.transaction_start", {
+      bookingId,
+      disputeId: disputeRef.id,
+      resolutionType: params.input.resolutionType,
+      payoutStatus: payoutEligibility.status,
+    });
 
     const payoutDoc =
       payoutSnapshot.exists ?
@@ -1055,6 +1741,10 @@ export async function resolveBookingDisputeV3(params: {
           financialAdjustmentTotalPaise: adjustmentTotalPaise,
           now,
         });
+    const payoutEligibleAt = resolveRequiredPayoutEligibleAt({
+      booking,
+      fallbackNow: now,
+    });
 
     const resolutionRecord = {
       resolutionId: resolutionRef.id,
@@ -1065,9 +1755,22 @@ export async function resolveBookingDisputeV3(params: {
       notes: params.input.notes?.trim() ?? "",
       resolutionAttemptId: attemptId,
       inputFingerprint: fingerprint,
+      customerPaidPaise: booking.financials.customerPaidPaise,
+      customerAllocationBasisPoints:
+        outcome.customerAllocationBasisPoints ?? null,
+      providerAllocationBasisPoints:
+        outcome.providerAllocationBasisPoints ?? null,
+      pettxoAllocationBasisPoints:
+        outcome.pettxoAllocationBasisPoints ?? null,
+      customerRefundBasisPoints: outcome.customerRefundBasisPoints ?? null,
       customerRefundPaise: outcome.customerRefundPaise,
+      providerAllocationPaise: outcome.providerAllocationPaise,
       providerFinalEntitlementPaise: outcome.providerFinalEntitlementPaise,
+      providerCouponSubsidyPaise: outcome.providerCouponSubsidyPaise,
+      providerAlreadyPaidPaise: outcome.providerAlreadyPaidPaise,
+      providerRemainingPayablePaise: outcome.providerRemainingPayablePaise,
       pettxoFinalRetainedPaise: outcome.pettxoFinalRetainedPaise,
+      refundToIssuePaise: outcome.refundToIssuePaise,
       refundInstructionId:
         outcome.refundToIssuePaise > 0 ?
           refundInstructionIdForDispute(disputeRef.id) :
@@ -1090,8 +1793,16 @@ export async function resolveBookingDisputeV3(params: {
           userId: booking.parentId,
           adjustmentType: "DISPUTE_RESOLUTION",
           policyVersion: CANONICAL_FINANCIAL_POLICY_VERSION,
+          customerAllocationBasisPoints:
+            outcome.customerAllocationBasisPoints ?? null,
+          providerAllocationBasisPoints:
+            outcome.providerAllocationBasisPoints ?? null,
+          pettxoAllocationBasisPoints:
+            outcome.pettxoAllocationBasisPoints ?? null,
           customerRefundPaise: outcome.customerRefundPaise,
+          providerAllocationPaise: outcome.providerAllocationPaise,
           providerEntitlementPaise: outcome.providerFinalEntitlementPaise,
+          providerCouponSubsidyPaise: outcome.providerCouponSubsidyPaise,
           pettxoFinalRetainedPaise: outcome.pettxoFinalRetainedPaise,
           gatewayFeeSunkPaise: booking.financials.gatewayFeeSunkPaise,
           couponCostPaise: booking.financials.pettxoCouponFundingPaise,
@@ -1151,10 +1862,7 @@ export async function resolveBookingDisputeV3(params: {
       financialAdjustmentTotalPaise: adjustmentTotalPaise,
       status: payoutEligibility.status,
       holdReason: payoutEligibility.holdReason,
-      eligibleAt:
-        Timestamp.fromDate(
-          booking.payout.eligibleAt ?? booking.lifecycle.finalizedAt ?? now,
-        ),
+      eligibleAt: Timestamp.fromDate(payoutEligibleAt),
       readyAt:
         payoutEligibility.readyAt == null ?
           null :
@@ -1199,9 +1907,18 @@ export async function resolveBookingDisputeV3(params: {
           type: params.input.resolutionType,
           policyReason: params.input.policyReason.trim(),
           notes: params.input.notes?.trim() ?? "",
+          customerAllocationBasisPoints:
+            outcome.customerAllocationBasisPoints ?? null,
+          providerAllocationBasisPoints:
+            outcome.providerAllocationBasisPoints ?? null,
+          pettxoAllocationBasisPoints:
+            outcome.pettxoAllocationBasisPoints ?? null,
+          customerRefundBasisPoints: outcome.customerRefundBasisPoints ?? null,
           customerRefundPaise: outcome.customerRefundPaise,
+          providerAllocationPaise: outcome.providerAllocationPaise,
           providerFinalEntitlementPaise:
             outcome.providerFinalEntitlementPaise,
+          providerCouponSubsidyPaise: outcome.providerCouponSubsidyPaise,
           pettxoFinalRetainedPaise: outcome.pettxoFinalRetainedPaise,
           refundToIssuePaise: outcome.refundToIssuePaise,
         },
@@ -1233,7 +1950,7 @@ export async function resolveBookingDisputeV3(params: {
           payoutEligibility.readyAt == null ?
             booking.payout.eligibleAt == null ?
               null :
-              Timestamp.fromDate(booking.payout.eligibleAt) :
+              Timestamp.fromDate(payoutEligibleAt) :
             Timestamp.fromDate(payoutEligibility.readyAt),
         "payout.providerPayoutPaise":
           outcome.providerFinalEntitlementPaise,
@@ -1349,6 +2066,12 @@ export async function resolveBookingDisputeV3(params: {
         }] :
         []),
     ];
+    logger.info("booking.dispute.resolve.ledger_prepare", {
+      bookingId,
+      disputeId: disputeRef.id,
+      resolutionType: params.input.resolutionType,
+      ledgerEntryCount: ledgerEntries.length,
+    });
     writeLedgerEntriesIfMissing({
       transaction,
       firestore: params.firestore,
@@ -1359,7 +2082,7 @@ export async function resolveBookingDisputeV3(params: {
       bookingRef.collection("events").doc("dispute_resolved"),
       {
         bookingId,
-        event: "disputed",
+        event: "dispute_resolved",
         actor: "admin",
         at: Timestamp.fromDate(now),
         meta: {
@@ -1418,6 +2141,12 @@ export async function resolveBookingDisputeV3(params: {
       now,
     });
 
+    logger.info("booking.dispute.resolve.transaction_success", {
+      bookingId,
+      disputeId: disputeRef.id,
+      resolutionType: params.input.resolutionType,
+      payoutStatus: payoutEligibility.status,
+    });
     return {
       ok: true,
       bookingId,
@@ -1433,12 +2162,35 @@ export async function resolveBookingDisputeV3(params: {
       disputeStatus: "RESOLVED",
       payoutStatus: payoutEligibility.status,
       customerRefundPaise: outcome.customerRefundPaise,
+      customerFinalPaise: outcome.customerFinalPaise,
+      customerAllocationBasisPoints: outcome.customerAllocationBasisPoints,
+      providerAllocationBasisPoints: outcome.providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints: outcome.pettxoAllocationBasisPoints,
+      providerAllocationPaise: outcome.providerAllocationPaise,
       providerFinalEntitlementPaise:
         outcome.providerFinalEntitlementPaise,
+      providerCouponSubsidyPaise: outcome.providerCouponSubsidyPaise,
+      providerAlreadyPaidPaise: outcome.providerAlreadyPaidPaise,
+      providerRemainingPayablePaise: outcome.providerRemainingPayablePaise,
       pettxoFinalRetainedPaise: outcome.pettxoFinalRetainedPaise,
+      customerPaidPaise: booking.financials.customerPaidPaise,
+      authoritativeAmountPaidPaise: booking.financials.customerPaidPaise,
+      refundToIssuePaise: outcome.refundToIssuePaise,
       idempotentReplay: false,
     };
-  });
+    });
+  } catch (error) {
+    const errorRecord = asRecord(error);
+    logger.error("booking.dispute.resolve.failed", {
+      disputeLookupId,
+      resolutionType: params.input.resolutionType,
+      resolutionAttemptId: attemptId,
+      errorCode: asString(errorRecord.code),
+      errorMessage:
+        error instanceof Error ? error.message : asString(errorRecord.message),
+    });
+    throw error;
+  }
 }
 
 function mapPayoutDocument(

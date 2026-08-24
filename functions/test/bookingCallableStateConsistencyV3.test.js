@@ -36,3 +36,10 @@ test("create-order authorization blocks new payment orders once a capture or ref
     /const requiresContinuationOnly =[\s\S]*?"CAPTURE_REPORTED"[\s\S]*?"CAPTURED_REQUIRES_RECONCILIATION"[\s\S]*?"REFUND_REQUIRED"[\s\S]*?"REFUND_PENDING"[\s\S]*?if \(params\.command === "create_order"\) \{[\s\S]*?if \(requiresContinuationOnly\) \{[\s\S]*?code: "PAYMENT_RECONCILIATION_REQUIRED"/,
   );
 });
+
+test("checkout switching uses a dedicated QR switch-lock result before creating another instrument", () => {
+  assert.match(
+    source,
+    /params\.paymentRail === "checkout"[\s\S]*?loadActiveQrSwitchLock[\s\S]*?code: "PAYMENT_QR_SWITCH_LOCKED"/,
+  );
+});

@@ -63,6 +63,36 @@ service firebase.storage {
       return request.resource.size <= 10 * 1024 * 1024;
     }
 
+    function canUploadBookingDisputeEvidence(bookingId, userId) {
+      return isOwner(userId) &&
+        isSupportedImage() &&
+        isMaxFiveMb() &&
+        !exists(/databases/(default)/documents/disputes/$(bookingId)) &&
+        firestore.get(
+          /databases/(default)/documents/bookings/$(bookingId)
+        ).data.parentId == request.auth.uid &&
+        firestore.get(
+          /databases/(default)/documents/bookings/$(bookingId)
+        ).data.state == 'COMPLETED_PENDING_REVIEW';
+    }
+
+    function canReadBookingDisputeEvidence(bookingId, userId) {
+      return isOwner(userId) ||
+        (
+          signedIn() &&
+          exists(/databases/(default)/documents/disputes/$(bookingId)) &&
+          (
+            firestore.get(
+              /databases/(default)/documents/disputes/$(bookingId)
+            ).data.customerId == request.auth.uid ||
+            firestore.get(
+              /databases/(default)/documents/disputes/$(bookingId)
+            ).data.providerId == request.auth.uid ||
+            isAdmin()
+          )
+        );
+    }
+
     match /users/{userId}/profile/{fileName} {
       allow read: if signedIn();
       allow write: if isOwner(userId) &&
@@ -84,11 +114,10 @@ service firebase.storage {
         isMaxFiveMb();
     }
 
-    match /disputes/{disputeId}/{userId}/{fileName} {
-      allow read: if signedIn();
-      allow write: if isOwner(userId) &&
-        isSupportedImage() &&
-        isMaxFiveMb();
+    match /disputes/{bookingId}/evidence/{userId}/{fileName} {
+      allow read: if canReadBookingDisputeEvidence(bookingId, userId);
+      allow create, update: if canUploadBookingDisputeEvidence(bookingId, userId);
+      allow delete: if canUploadBookingDisputeEvidence(bookingId, userId);
     }
 
     match /socialPosts/{userId}/{postId}/{folder}/{fileName} {

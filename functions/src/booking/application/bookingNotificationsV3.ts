@@ -31,6 +31,8 @@ export type BookingNotificationType =
   | "service_started"
   | "booking_no_show"
   | "service_completed"
+  | "booking_dispute_opened"
+  | "booking_dispute_resolved"
   | "review_received"
   | "booking_finalized"
   | "payout_ready";
@@ -615,6 +617,30 @@ export function buildServiceCompletedNotification(params: {
       data: {bookingType: params.bookingType, state: params.state},
     }),
   ];
+}
+
+export function buildBookingDisputeOpenedNotification(params: {
+  bookingId: string;
+  providerId: string;
+  bookingType: string;
+  state: string;
+}): BookingNotificationPlan {
+  return buildPlan({
+    bookingId: params.bookingId,
+    recipientUserId: params.providerId,
+    type: "booking_dispute_opened",
+    channels: ["push", "in_app"],
+    title: "Booking dispute opened",
+    body:
+      "A dispute has been raised for this booking. Your settlement is currently on hold while Pettxo reviews the case.",
+    data: {
+      bookingType: params.bookingType,
+      state: params.state,
+      recipientRole: "provider",
+      navigationIntent: "provider_booking",
+      bookingFlowVersion: "3.2",
+    },
+  });
 }
 
 export function buildBookingReviewReceivedNotification(params: {

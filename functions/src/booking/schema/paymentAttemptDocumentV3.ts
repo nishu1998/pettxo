@@ -74,6 +74,7 @@ export type CanonicalPaymentAttemptDocumentV3 = {
   razorpayQrImageUrl: string;
   qrState: CanonicalQrState | "";
   qrCreatedAt: Date | null;
+  qrSwitchLockedUntil: Date | null;
   qrExpiresAt: Date | null;
   qrClosedAt: Date | null;
   qrCloseReason: string;
@@ -252,6 +253,7 @@ export function parseCanonicalPaymentAttemptDocumentV3(
       razorpayQrImageUrl: asString(raw.razorpayQrImageUrl),
       qrState: qrState as CanonicalQrState | "",
       qrCreatedAt: asNullableDate(raw.qrCreatedAt),
+      qrSwitchLockedUntil: asNullableDate(raw.qrSwitchLockedUntil),
       qrExpiresAt: asNullableDate(raw.qrExpiresAt),
       qrClosedAt: asNullableDate(raw.qrClosedAt),
       qrCloseReason: asString(raw.qrCloseReason),

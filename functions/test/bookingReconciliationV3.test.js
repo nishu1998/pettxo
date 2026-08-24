@@ -107,6 +107,9 @@ class FakeQuery {
         if (filter.op === "==") {
           return data[filter.field] === filter.value;
         }
+        if (filter.op === ">") {
+          return data[filter.field] > filter.value;
+        }
         return false;
       });
     }
@@ -208,6 +211,15 @@ test("reconciliationDue respects future nextReconciliationAt and terminal attemp
       now,
     ),
     false,
+  );
+  assert.equal(
+    reconciliationDue(
+      buildAttempt("CONFIRMING", {
+        nextReconciliationAt: Timestamp.fromDate(new Date("2026-07-22T09:55:00.000Z")),
+      }),
+      now,
+    ),
+    true,
   );
 });
 
@@ -312,6 +324,56 @@ test("reconcilePaymentAttemptsV3 schedules retryable gateway failures determinis
   assert.equal(attempt.state, "CAPTURED_REQUIRES_RECONCILIATION");
   assert.equal(attempt.lastReconciliationCode, "GATEWAY_RETRY");
   assert.ok(attempt.nextReconciliationAt instanceof Timestamp);
+});
+
+test("reconcilePaymentAttemptsV3 rescues stale qr captures that only have a payment id", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_qr/paymentAttempts/attempt_qr": buildAttempt("ORDER_CREATED", {
+      bookingId: "booking_qr",
+      paymentAttemptId: "attempt_qr",
+      paymentMethod: "qr",
+      razorpayOrderId: "",
+      razorpayPaymentId: "pay_qr_stale_1",
+      captureReportedAt: Timestamp.fromDate(new Date("2026-07-22T09:55:00.000Z")),
+      qrState: "PAYMENT_CAPTURED",
+    }),
+  });
+  const processed = await reconcilePaymentAttemptsV3({
+    firestore,
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-07-22T10:00:00.000Z"),
+    deps: {
+      fetchPayment: async ({paymentId}) => ({
+        id: paymentId,
+        orderId: "",
+        status: "captured",
+        amountPaise: 200,
+        currency: "INR",
+        createdAt: new Date("2026-07-22T09:54:00.000Z"),
+        capturedAt: new Date("2026-07-22T09:55:00.000Z"),
+        receipt: "",
+        notes: {},
+      }),
+      finalizeCapturedPayment: async ({facts}) => ({
+        ok: true,
+        code: "CONFIRMED",
+        booking: {},
+        paymentAttempt: {state: "CONFIRMED", paymentAttemptId: facts.paymentAttemptId},
+        notifications: [],
+      }),
+      verifyCapturedPayment: async () => {
+        throw new Error("checkout verifier should not run for stale qr capture");
+      },
+      submitRefundInstruction: async () => "SKIPPED",
+    },
+  });
+
+  assert.equal(processed, 1);
+  assert.equal(
+    firestore.store.get("bookings/booking_qr/paymentAttempts/attempt_qr").lastReconciliationCode,
+    "CONFIRMED",
+  );
 });
 
 test("reconcilePaymentAttemptsV3 confirms eligible captures and records already-confirmed replays safely", async () => {

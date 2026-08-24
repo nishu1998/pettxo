@@ -16,6 +16,8 @@ const {
 } = require("../lib/booking/application/canonicalPaymentWebhookV3.js");
 const {
   closeQrAttemptIfActive,
+  closeBookingQrAttemptsBestEffort,
+  findBlockingBookingPaymentEvidence,
 } = require("../lib/booking/bookingV3FlowFunctions.js");
 const {
   buildCanonicalPaymentRaceFixture,
@@ -27,7 +29,8 @@ const {
 } = require("../lib/booking/application/paymentOrchestrationV3.js");
 
 class FakeDocSnapshot {
-  constructor(path, data) {
+  constructor(firestore, path, data) {
+    this.ref = new FakeDocRef(firestore, path);
     this.path = path;
     this.id = path.split("/").pop();
     this._data = data;
@@ -67,13 +70,20 @@ class FakeBatch {
 class FakeTransaction {
   constructor(firestore) {
     this.firestore = firestore;
+    this.hasWrites = false;
   }
 
   async get(ref) {
+    if (this.hasWrites) {
+      throw new Error(
+        "Firestore transactions require all reads to be executed before all writes.",
+      );
+    }
     return ref.get();
   }
 
   set(ref, data, options) {
+    this.hasWrites = true;
     this.firestore._set(ref.path, data, options);
   }
 }
@@ -95,7 +105,11 @@ class FakeDocRef {
   }
 
   async get() {
-    return new FakeDocSnapshot(this.path, this.firestore.store.get(this.path));
+    return new FakeDocSnapshot(
+      this.firestore,
+      this.path,
+      this.firestore.store.get(this.path),
+    );
   }
 
   async set(data, options) {
@@ -192,7 +206,7 @@ class FakeFirestore {
       .filter(([path]) =>
         path.startsWith(`${collectionPath}/`) &&
         path.split("/").length === targetSegments)
-      .map(([path, data]) => new FakeDocSnapshot(path, data));
+      .map(([path, data]) => new FakeDocSnapshot(this, path, data));
   }
 
   _docsForCollectionGroup(name) {
@@ -201,7 +215,7 @@ class FakeFirestore {
         const segments = path.split("/");
         return segments.length >= 2 && segments[segments.length - 2] === name;
       })
-      .map(([path, data]) => new FakeDocSnapshot(path, data));
+      .map(([path, data]) => new FakeDocSnapshot(this, path, data));
   }
 
   _set(path, data, options = {}) {
@@ -689,6 +703,115 @@ test("routeCanonicalWebhookEventV3 resolves qr_code.credited through QR mapping 
     firestore.store.get("canonicalQrPaymentMappings/qr_1").status,
     "CONFIRMED",
   );
+});
+
+test("closeBookingQrAttemptsBestEffort closes every active QR attempt on the booking", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_qr_close_all/paymentAttempts/attempt_old": {
+      paymentAttemptId: "attempt_old",
+      bookingId: "booking_qr_close_all",
+      paymentMethod: "qr",
+      qrState: "ACTIVE",
+      razorpayQrCodeId: "qr_old",
+    },
+    "bookings/booking_qr_close_all/paymentAttempts/attempt_current": {
+      paymentAttemptId: "attempt_current",
+      bookingId: "booking_qr_close_all",
+      paymentMethod: "qr",
+      qrState: "ACTIVE",
+      razorpayQrCodeId: "qr_current",
+    },
+  });
+
+  await closeBookingQrAttemptsBestEffort({
+    bookingId: "booking_qr_close_all",
+    bookingRef: firestore.collection("bookings").doc("booking_qr_close_all"),
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-07-22T10:30:00.000Z"),
+    reason: "SUPERSEDED",
+    localCloseReason: "QR_SUPERSEDED_BY_NEW_QR",
+    closeQr: async ({qrCodeId}) => ({
+      id: qrCodeId,
+      status: "closed",
+      imageUrl: "",
+      amountPaise: 0,
+      currency: "INR",
+      closeBy: null,
+      closedAt: new Date("2026-07-22T10:30:05.000Z"),
+      closeReason: "paid",
+    }),
+  });
+
+  assert.equal(
+    firestore.store.get(
+      "bookings/booking_qr_close_all/paymentAttempts/attempt_old",
+    ).qrState,
+    "SUPERSEDED",
+  );
+  assert.equal(
+    firestore.store.get(
+      "bookings/booking_qr_close_all/paymentAttempts/attempt_current",
+    ).qrState,
+    "SUPERSEDED",
+  );
+  assert.equal(
+    firestore.store.get("canonicalQrPaymentMappings/qr_old").status,
+    "SUPERSEDED",
+  );
+  assert.equal(
+    firestore.store.get("canonicalQrPaymentMappings/qr_current").status,
+    "SUPERSEDED",
+  );
+});
+
+test("findBlockingBookingPaymentEvidence scans attempts first and then qr mappings", async () => {
+  const firestore = new FakeFirestore({
+    "bookings/booking_block/paymentAttempts/attempt_open": {
+      paymentAttemptId: "attempt_open",
+      bookingId: "booking_block",
+      paymentMethod: "checkout",
+      state: "ORDER_CREATED",
+      razorpayPaymentId: "pay_attempt_block_1",
+    },
+    "canonicalQrPaymentMappings/qr_paid": {
+      bookingId: "booking_block",
+      paymentAttemptId: "attempt_qr",
+      status: "SUPERSEDED",
+      razorpayPaymentId: "pay_qr_block_1",
+    },
+  });
+
+  const attemptEvidence = await findBlockingBookingPaymentEvidence({
+    firestore,
+    bookingId: "booking_block",
+    bookingRef: firestore.collection("bookings").doc("booking_block"),
+  });
+  assert.deepEqual(attemptEvidence, {
+    source: "attempt",
+    paymentAttemptId: "attempt_open",
+    razorpayPaymentId: "pay_attempt_block_1",
+    state: "ORDER_CREATED",
+    qrCodeId: "",
+  });
+
+  await firestore.doc("bookings/booking_block/paymentAttempts/attempt_open").set({
+    razorpayPaymentId: "",
+    state: "ORDER_CREATED",
+  }, {merge: true});
+
+  const mappingEvidence = await findBlockingBookingPaymentEvidence({
+    firestore,
+    bookingId: "booking_block",
+    bookingRef: firestore.collection("bookings").doc("booking_block"),
+  });
+  assert.deepEqual(mappingEvidence, {
+    source: "qr_mapping",
+    paymentAttemptId: "attempt_qr",
+    razorpayPaymentId: "pay_qr_block_1",
+    state: "SUPERSEDED",
+    qrCodeId: "qr_paid",
+  });
 });
 
 test("routeCanonicalWebhookEventV3 safely rejects payment mismatches and quarantines unrecoverable captured payments", async () => {
