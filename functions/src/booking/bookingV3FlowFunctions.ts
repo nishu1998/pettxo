@@ -14,7 +14,7 @@ import {
   RAZORPAY_WEBHOOK_SECRET,
 } from "../config/secrets";
 import {normalizeServiceSchedulingMode} from "../serviceScheduling";
-import {auth, db} from "../shared/firebase";
+import {auth, db, storage} from "../shared/firebase";
 import {ACCEPT_WINDOW_MS} from "./domain/bookingConstants";
 import {
   ACTIONABLE_PROVIDER_REQUEST_STATES,
@@ -33,6 +33,7 @@ import {
 } from "./application/createBookingRequestV3";
 import {emptyParentStatsV3, emptyProviderStatsV3} from "./application/bookingStats";
 import {
+  CANONICAL_QR_PAYMENT_MAPPINGS_COLLECTION,
   canonicalPaymentOrderMappingRef,
   canonicalQrPaymentMappingRef,
   buildLegacyCouponRecordFromCampaignSelection,
@@ -42,6 +43,7 @@ import {
   persistFinalizePaymentResultV3,
   previewCanonicalPaymentPricingV3,
   reconcilePaymentAttemptsV3,
+  resolveQrSwitchLockedUntil,
   resolveCanonicalPricingV3,
   validatePreCheckoutAvailabilityV3,
   verifyCapturedBookingPaymentV3,
@@ -60,9 +62,11 @@ import {
   type ServiceStartApplyResult,
 } from "./application/serviceStartOrchestrationV3";
 import {
+  type CanonicalDisputeEvidenceRecord,
   completeBookingServiceV3 as completeBookingServiceApplicationV3,
   createBookingDisputeV3 as createBookingDisputeApplicationV3,
   finalizeCompletedBookingV3 as finalizeCompletedBookingApplicationV3,
+  reconcileCanonicalCompletionStateV3,
   submitBookingReviewV3 as submitBookingReviewApplicationV3,
 } from "./application/serviceCompletionOrchestrationV3";
 import {routeCanonicalWebhookEventV3} from "./application/canonicalPaymentWebhookV3";
@@ -71,6 +75,7 @@ import {
   CANONICAL_PROVIDER_PAYOUTS_COLLECTION,
   DisabledProviderPayoutGatewayV3,
   processProviderPayoutV3 as processProviderPayoutApplicationV3,
+  previewBookingDisputeResolutionV3 as previewBookingDisputeResolutionApplicationV3,
   processReadyProviderPayoutBatchV3,
   processRetryableProviderPayoutBatchV3,
   reconcileBookingFinancialsV3 as reconcileBookingFinancialsApplicationV3,
@@ -163,6 +168,7 @@ type CanonicalQrPaymentResponse =
       amountPaise: number;
       currency: string;
       expiresAt: string | null;
+      switchLockUntil: string | null;
       pricingSummary: CanonicalPaymentPricingSummaryResponse;
       idempotentReplay: boolean;
     }
@@ -291,10 +297,45 @@ type CanonicalDisputeResolutionResponse = {
   resolutionType: string;
   disputeStatus: string;
   payoutStatus: string;
+  customerPaidPaise: number;
+  authoritativeAmountPaidPaise: number;
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerFinalPaise: number;
   customerRefundPaise: number;
+  providerAllocationPaise: number;
   providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
   pettxoFinalRetainedPaise: number;
+  refundToIssuePaise: number;
   idempotentReplay: boolean;
+};
+
+type CanonicalDisputeResolutionPreviewResponse = {
+  bookingId: string;
+  disputeId: string;
+  resolutionType: string;
+  currency: string;
+  customerPaidPaise: number;
+  authoritativeAmountPaidPaise: number;
+  alreadyRefundedPaise: number;
+  providerBaseEntitlementPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerRefundBasisPoints: number | null;
+  customerFinalPaise: number;
+  customerRefundPaise: number;
+  providerAllocationPaise: number;
+  providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  pettxoFinalRetainedPaise: number;
+  refundToIssuePaise: number;
 };
 
 type CanonicalProviderPayoutResponse = {
@@ -393,6 +434,131 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value != null ?
     value as Record<string, unknown> :
     {};
+}
+
+type RequestedDisputeEvidence = {
+  evidenceId: string;
+  storagePath: string;
+};
+
+function fileExtensionFromPath(path: string): string {
+  const fileName = path.split("/").pop() ?? "";
+  const lastDot = fileName.lastIndexOf(".");
+  return lastDot >= 0 ? fileName.slice(lastDot + 1).toLowerCase() : "";
+}
+
+function normalizeRequestedDisputeEvidence(
+  rawEvidence: unknown,
+  rawAttachments: unknown[],
+): RequestedDisputeEvidence[] {
+  const requested = Array.isArray(rawEvidence) ? rawEvidence : [];
+  const normalizedFromEvidence = requested
+    .map((value) => asRecord(value))
+    .map((value) => ({
+      evidenceId: asString(value.evidenceId),
+      storagePath: asString(value.storagePath),
+    }))
+    .filter((value) => value.storagePath.length > 0);
+  if (normalizedFromEvidence.length > 0) {
+    return normalizedFromEvidence;
+  }
+  return rawAttachments
+    .map((value) => asString(value))
+    .filter((value) => value.length > 0)
+    .map((storagePath) => ({
+      evidenceId: asString(storagePath.split("/").pop()?.split(".").shift()),
+      storagePath,
+    }));
+}
+
+async function validateBookingDisputeEvidenceUploads(params: {
+  bookingId: string;
+  uid: string;
+  requestedEvidence: RequestedDisputeEvidence[];
+}): Promise<CanonicalDisputeEvidenceRecord[]> {
+  if (params.requestedEvidence.length === 0) return [];
+  if (params.requestedEvidence.length > 5) {
+    throw new HttpsError("invalid-argument", "You can attach up to 5 screenshots or photos.", {
+      code: "TOO_MANY_EVIDENCE_FILES",
+    });
+  }
+  const bucket = storage.bucket();
+  const seenStoragePaths = new Set<string>();
+  const seenEvidenceIds = new Set<string>();
+  const validated: CanonicalDisputeEvidenceRecord[] = [];
+  const allowedContentTypes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+  for (const item of params.requestedEvidence) {
+    const storagePath = item.storagePath.trim();
+    const evidenceId = item.evidenceId.trim();
+    const expectedPrefix = `disputes/${params.bookingId}/evidence/${params.uid}/`;
+    if (!storagePath.startsWith(expectedPrefix) || storagePath.includes("..")) {
+      throw new HttpsError("invalid-argument", "Evidence path is invalid.", {
+        code: "INVALID_EVIDENCE_PATH",
+      });
+    }
+    if (seenStoragePaths.has(storagePath)) {
+      throw new HttpsError("invalid-argument", "Duplicate evidence references are not allowed.", {
+        code: "DUPLICATE_EVIDENCE_REFERENCE",
+      });
+    }
+    const normalizedEvidenceId = evidenceId ||
+      asString(storagePath.split("/").pop()?.split(".").shift());
+    if (!normalizedEvidenceId) {
+      throw new HttpsError("invalid-argument", "Evidence id is missing.", {
+        code: "INVALID_EVIDENCE_ID",
+      });
+    }
+    if (seenEvidenceIds.has(normalizedEvidenceId)) {
+      throw new HttpsError("invalid-argument", "Duplicate evidence ids are not allowed.", {
+        code: "DUPLICATE_EVIDENCE_ID",
+      });
+    }
+    seenStoragePaths.add(storagePath);
+    seenEvidenceIds.add(normalizedEvidenceId);
+
+    const [metadata] = await bucket.file(storagePath).getMetadata();
+    const contentType = asString(metadata.contentType).toLowerCase();
+    if (!allowedContentTypes.has(contentType)) {
+      throw new HttpsError("invalid-argument", "Only JPG, JPEG, PNG, or WEBP images are supported.", {
+        code: "UNSUPPORTED_EVIDENCE_TYPE",
+      });
+    }
+    const sizeBytes = Number.parseInt(`${metadata.size ?? "0"}`, 10);
+    if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+      throw new HttpsError("failed-precondition", "Evidence file metadata is incomplete.", {
+        code: "INVALID_EVIDENCE_METADATA",
+      });
+    }
+    if (sizeBytes > 5 * 1024 * 1024) {
+      throw new HttpsError("invalid-argument", "Each evidence image must be 5 MB or smaller.", {
+        code: "EVIDENCE_FILE_TOO_LARGE",
+      });
+    }
+    const customMetadata = asRecord(metadata.metadata);
+    if (asString(customMetadata.bookingId) !== params.bookingId ||
+      asString(customMetadata.uploadedByUid) !== params.uid ||
+      asString(customMetadata.uploadedByRole) !== "parent") {
+      throw new HttpsError("permission-denied", "Evidence does not belong to this dispute request.", {
+        code: "EVIDENCE_OWNERSHIP_MISMATCH",
+      });
+    }
+    validated.push({
+      evidenceId: normalizedEvidenceId,
+      storagePath,
+      mimeType: contentType === "image/jpg" ? "image/jpeg" : contentType,
+      sizeBytes,
+      uploadedByUid: params.uid,
+      uploadedByRole: "parent",
+      createdAt: new Date(),
+      width: asInt(customMetadata.width, 0) > 0 ? asInt(customMetadata.width, 0) : null,
+      height: asInt(customMetadata.height, 0) > 0 ? asInt(customMetadata.height, 0) : null,
+    });
+  }
+  return validated.sort((left, right) => {
+    const leftKey = `${left.createdAt.getTime()}:${left.evidenceId}:${fileExtensionFromPath(left.storagePath)}`;
+    const rightKey = `${right.createdAt.getTime()}:${right.evidenceId}:${fileExtensionFromPath(right.storagePath)}`;
+    return leftKey.localeCompare(rightKey);
+  });
 }
 
 function asNullableDate(value: unknown): Date | null {
@@ -943,6 +1109,10 @@ function buildQrPaymentResponse(params: {
     amountPaise: params.amountPaise ?? pricingSummary.customerPaidPaise,
     currency: params.currency || pricingSummary.currency,
     expiresAt: (params.expiresAt ?? asNullableDate(params.paymentAttempt?.qrExpiresAt))?.toISOString() ?? null,
+    switchLockUntil: resolveQrSwitchLockedUntil({
+      booking: params.booking,
+      paymentAttempt: params.paymentAttempt,
+    })?.toISOString() ?? null,
     pricingSummary,
     idempotentReplay: params.idempotentReplay,
   };
@@ -1135,9 +1305,20 @@ function buildDisputeResolutionResponse(params: {
   resolutionType: string;
   disputeStatus: string;
   payoutStatus: string;
+  customerPaidPaise: number;
+  authoritativeAmountPaidPaise: number;
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerFinalPaise: number;
   customerRefundPaise: number;
+  providerAllocationPaise: number;
   providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
   pettxoFinalRetainedPaise: number;
+  refundToIssuePaise: number;
   idempotentReplay: boolean;
 }): CanonicalDisputeResolutionResponse {
   return {
@@ -1150,11 +1331,70 @@ function buildDisputeResolutionResponse(params: {
     resolutionType: params.resolutionType,
     disputeStatus: params.disputeStatus,
     payoutStatus: params.payoutStatus,
+    customerPaidPaise: params.customerPaidPaise,
+    authoritativeAmountPaidPaise: params.authoritativeAmountPaidPaise,
+    customerAllocationBasisPoints: params.customerAllocationBasisPoints,
+    providerAllocationBasisPoints: params.providerAllocationBasisPoints,
+    pettxoAllocationBasisPoints: params.pettxoAllocationBasisPoints,
+    customerFinalPaise: params.customerFinalPaise,
     customerRefundPaise: params.customerRefundPaise,
+    providerAllocationPaise: params.providerAllocationPaise,
     providerFinalEntitlementPaise:
       params.providerFinalEntitlementPaise,
+    providerCouponSubsidyPaise: params.providerCouponSubsidyPaise,
+    providerAlreadyPaidPaise: params.providerAlreadyPaidPaise,
+    providerRemainingPayablePaise: params.providerRemainingPayablePaise,
     pettxoFinalRetainedPaise: params.pettxoFinalRetainedPaise,
+    refundToIssuePaise: params.refundToIssuePaise,
     idempotentReplay: params.idempotentReplay,
+  };
+}
+
+function buildDisputeResolutionPreviewResponse(params: {
+  bookingId: string;
+  disputeId: string;
+  resolutionType: string;
+  currency: string;
+  customerPaidPaise: number;
+  authoritativeAmountPaidPaise: number;
+  alreadyRefundedPaise: number;
+  providerBaseEntitlementPaise: number;
+  providerAlreadyPaidPaise: number;
+  providerRemainingPayablePaise: number;
+  customerAllocationBasisPoints: number | null;
+  providerAllocationBasisPoints: number | null;
+  pettxoAllocationBasisPoints: number | null;
+  customerRefundBasisPoints: number | null;
+  customerFinalPaise: number;
+  customerRefundPaise: number;
+  providerAllocationPaise: number;
+  providerFinalEntitlementPaise: number;
+  providerCouponSubsidyPaise: number;
+  pettxoFinalRetainedPaise: number;
+  refundToIssuePaise: number;
+}): CanonicalDisputeResolutionPreviewResponse {
+  return {
+    bookingId: params.bookingId,
+    disputeId: params.disputeId,
+    resolutionType: params.resolutionType,
+    currency: params.currency,
+    customerPaidPaise: params.customerPaidPaise,
+    authoritativeAmountPaidPaise: params.authoritativeAmountPaidPaise,
+    alreadyRefundedPaise: params.alreadyRefundedPaise,
+    providerBaseEntitlementPaise: params.providerBaseEntitlementPaise,
+    providerAlreadyPaidPaise: params.providerAlreadyPaidPaise,
+    providerRemainingPayablePaise: params.providerRemainingPayablePaise,
+    customerAllocationBasisPoints: params.customerAllocationBasisPoints,
+    providerAllocationBasisPoints: params.providerAllocationBasisPoints,
+    pettxoAllocationBasisPoints: params.pettxoAllocationBasisPoints,
+    customerRefundBasisPoints: params.customerRefundBasisPoints,
+    customerFinalPaise: params.customerFinalPaise,
+    customerRefundPaise: params.customerRefundPaise,
+    providerAllocationPaise: params.providerAllocationPaise,
+    providerFinalEntitlementPaise: params.providerFinalEntitlementPaise,
+    providerCouponSubsidyPaise: params.providerCouponSubsidyPaise,
+    pettxoFinalRetainedPaise: params.pettxoFinalRetainedPaise,
+    refundToIssuePaise: params.refundToIssuePaise,
   };
 }
 
@@ -1570,6 +1810,228 @@ export async function closeBookingQrAttemptsBestEffort(params: {
   }
 }
 
+async function retireBookingQrAttemptsForPaymentSwitch(params: {
+  booking: CanonicalBookingDocumentV3;
+  bookingId: string;
+  bookingRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  keyId: string;
+  keySecret: string;
+  authoritativeNow: Date;
+  reason: "SUPERSEDED";
+  localCloseReason: string;
+}): Promise<void> {
+  const qrAttemptsSnapshot = await params.bookingRef
+    .collection("paymentAttempts")
+    .where("paymentMethod", "==", "qr")
+    .limit(20)
+    .get();
+  for (const attemptDoc of qrAttemptsSnapshot.docs) {
+    const attempt = attemptDoc.data() as Record<string, unknown>;
+    const qrState = asString(attempt.qrState).toUpperCase();
+    if (qrState !== "ACTIVE") continue;
+    if (hasQrCaptureEvidence(attempt)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "An earlier QR payment is still being reconciled. Please wait for Pettxo to finish processing it.",
+        {
+          code: "PAYMENT_RECONCILIATION_REQUIRED",
+          paymentAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+          paymentRail: "qr",
+          qrCodeId: asString(attempt.razorpayQrCodeId),
+        },
+      );
+    }
+    const lockUntil = resolveQrSwitchLockedUntil({
+      booking: params.booking,
+      paymentAttempt: attempt,
+    });
+    if (lockUntil != null && lockUntil.getTime() > params.authoritativeNow.getTime()) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This QR payment is still active for a short safety window.",
+        {
+          code: "PAYMENT_QR_SWITCH_LOCKED",
+          paymentAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+          activeAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+          paymentRail: "qr",
+          qrCodeId: asString(attempt.razorpayQrCodeId),
+          lockUntil: lockUntil.toISOString(),
+        },
+      );
+    }
+    const qrCodeId = asString(attempt.razorpayQrCodeId);
+    if (!qrCodeId) continue;
+    let closedQr;
+    try {
+      closedQr = await closeRazorpayQrCodeV3({
+        keyId: params.keyId,
+        keySecret: params.keySecret,
+        qrCodeId,
+      });
+    } catch (error) {
+      throw new HttpsError(
+        "failed-precondition",
+        "We are checking your previous QR payment before switching payment methods.",
+        {
+          code: "PAYMENT_RECONCILIATION_REQUIRED",
+          paymentAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+          paymentRail: "qr",
+          qrCodeId,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+    await attemptDoc.ref.set({
+      qrState: params.reason,
+      qrClosedAt: closedQr.closedAt ?? Timestamp.fromDate(params.authoritativeNow),
+      qrCloseReason: params.localCloseReason || closedQr.closeReason || params.reason,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await canonicalQrPaymentMappingRef(db, qrCodeId).set({
+      bookingId: params.bookingId,
+      paymentAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+      status: params.reason,
+      updatedAt: FieldValue.serverTimestamp(),
+      closedAt: closedQr.closedAt != null ?
+        Timestamp.fromDate(closedQr.closedAt) :
+        FieldValue.serverTimestamp(),
+      closeReason: params.localCloseReason || closedQr.closeReason || params.reason,
+    }, {merge: true});
+  }
+}
+
+function hasBlockingAttemptPaymentEvidence(attempt: Record<string, unknown>): boolean {
+  const paymentState = asString(attempt.state).toUpperCase();
+  if (isPaymentAttemptUncertainOrCaptured(paymentState)) {
+    return true;
+  }
+  if (asString(attempt.razorpayPaymentId).length > 0) {
+    return true;
+  }
+  if (asNullableDate(attempt.captureReportedAt) != null || asNullableDate(attempt.captureCreatedAt) != null) {
+    return true;
+  }
+  return [
+    "PAYMENT_CAPTURED",
+    "REFUND_REQUIRED",
+    "CONFIRMED",
+  ].includes(asString(attempt.qrState).toUpperCase());
+}
+
+function hasQrCaptureEvidence(attempt: Record<string, unknown>): boolean {
+  return asString(attempt.razorpayPaymentId).length > 0 ||
+    asNullableDate(attempt.captureReportedAt) != null ||
+    asNullableDate(attempt.captureCreatedAt) != null ||
+    [
+      "PAYMENT_CAPTURED",
+      "CONFIRMED",
+      "REFUND_REQUIRED",
+      "REFUND_PENDING",
+    ].includes(asString(attempt.state).toUpperCase()) ||
+    [
+      "PAYMENT_CAPTURED",
+      "CONFIRMED",
+      "REFUND_REQUIRED",
+    ].includes(asString(attempt.qrState).toUpperCase());
+}
+
+function isQrSwitchLockActive(params: {
+  booking: CanonicalBookingDocumentV3;
+  attempt: Record<string, unknown>;
+  now: Date;
+}): boolean {
+  const qrState = asString(params.attempt.qrState).toUpperCase();
+  if (qrState !== "ACTIVE") return false;
+  if (hasQrCaptureEvidence(params.attempt)) return false;
+  const lockUntil = resolveQrSwitchLockedUntil({
+    booking: params.booking,
+    paymentAttempt: params.attempt,
+  });
+  return lockUntil != null && lockUntil.getTime() > params.now.getTime();
+}
+
+async function loadActiveQrSwitchLock(params: {
+  booking: CanonicalBookingDocumentV3;
+  bookingRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+  now: Date;
+}): Promise<{
+  paymentAttemptId: string;
+  lockUntil: Date;
+  qrCodeId: string;
+} | null> {
+  const attemptsSnapshot = await params.bookingRef
+    .collection("paymentAttempts")
+    .where("paymentMethod", "==", "qr")
+    .limit(20)
+    .get();
+  for (const attemptDoc of attemptsSnapshot.docs) {
+    const attempt = attemptDoc.data() as Record<string, unknown>;
+    if (!isQrSwitchLockActive({
+      booking: params.booking,
+      attempt,
+      now: params.now,
+    })) {
+      continue;
+    }
+    const lockUntil = resolveQrSwitchLockedUntil({
+      booking: params.booking,
+      paymentAttempt: attempt,
+    });
+    if (lockUntil == null) continue;
+    return {
+      paymentAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+      lockUntil,
+      qrCodeId: asString(attempt.razorpayQrCodeId),
+    };
+  }
+  return null;
+}
+
+export async function findBlockingBookingPaymentEvidence(params: {
+  firestore: FirebaseFirestore.Firestore;
+  bookingId: string;
+  bookingRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+}): Promise<{
+  source: "attempt" | "qr_mapping";
+  paymentAttemptId: string;
+  razorpayPaymentId: string;
+  state: string;
+  qrCodeId: string;
+} | null> {
+  const attemptsSnapshot = await params.bookingRef.collection("paymentAttempts").limit(20).get();
+  for (const attemptDoc of attemptsSnapshot.docs) {
+    const attempt = attemptDoc.data() as Record<string, unknown>;
+    if (!hasBlockingAttemptPaymentEvidence(attempt)) continue;
+    return {
+      source: "attempt",
+      paymentAttemptId: asString(attempt.paymentAttemptId) || attemptDoc.id,
+      razorpayPaymentId: asString(attempt.razorpayPaymentId),
+      state: asString(attempt.state).toUpperCase(),
+      qrCodeId: asString(attempt.razorpayQrCodeId),
+    };
+  }
+
+  const qrMappingsSnapshot = await params.firestore
+    .collection(CANONICAL_QR_PAYMENT_MAPPINGS_COLLECTION)
+    .where("bookingId", "==", params.bookingId)
+    .limit(20)
+    .get();
+  for (const mappingDoc of qrMappingsSnapshot.docs) {
+    const mapping = mappingDoc.data() as Record<string, unknown>;
+    const paymentId = asString(mapping.razorpayPaymentId);
+    if (!paymentId) continue;
+    return {
+      source: "qr_mapping",
+      paymentAttemptId: asString(mapping.paymentAttemptId),
+      razorpayPaymentId: paymentId,
+      state: asString(mapping.status).toUpperCase(),
+      qrCodeId: mappingDoc.id,
+    };
+  }
+
+  return null;
+}
+
 async function authorizeCanonicalBookingCommand(params: {
   bookingId: string;
   authenticatedUserId: string;
@@ -1633,6 +2095,7 @@ async function authorizeCanonicalPaymentCommand(params: {
   paymentAttemptId?: string;
   authenticatedUserId: string;
   command: "create_order" | "verify";
+  paymentRail?: "checkout" | "qr";
   now: Date;
 }): Promise<AuthorizedCanonicalPaymentCommandContext> {
   const bookingRef = db.collection("bookings").doc(params.bookingId);
@@ -1700,6 +2163,46 @@ async function authorizeCanonicalPaymentCommand(params: {
         "This payment is already being finalized or refunded. Please wait for Pettxo to finish processing it.",
         {code: "PAYMENT_RECONCILIATION_REQUIRED"},
       );
+    }
+    const blockingEvidence = await findBlockingBookingPaymentEvidence({
+      firestore: db,
+      bookingId: params.bookingId,
+      bookingRef,
+    });
+    if (blockingEvidence) {
+      throw new HttpsError(
+        "failed-precondition",
+        "An earlier payment for this booking is still being reconciled. Please wait for Pettxo to finish processing it.",
+        {
+          code: "PAYMENT_RECONCILIATION_REQUIRED",
+          source: blockingEvidence.source,
+          paymentAttemptId: blockingEvidence.paymentAttemptId,
+          razorpayPaymentId: blockingEvidence.razorpayPaymentId,
+          qrCodeId: blockingEvidence.qrCodeId,
+          state: blockingEvidence.state,
+        },
+      );
+    }
+    if (params.paymentRail === "checkout") {
+      const switchLock = await loadActiveQrSwitchLock({
+        booking,
+        bookingRef,
+        now: params.now,
+      });
+      if (switchLock) {
+        throw new HttpsError(
+          "failed-precondition",
+          "This QR payment is still active for a short safety window.",
+          {
+            code: "PAYMENT_QR_SWITCH_LOCKED",
+            paymentAttemptId: switchLock.paymentAttemptId,
+            activeAttemptId: switchLock.paymentAttemptId,
+            paymentRail: "qr",
+            qrCodeId: switchLock.qrCodeId,
+            lockUntil: switchLock.lockUntil.toISOString(),
+          },
+        );
+      }
     }
   }
 
@@ -2204,6 +2707,7 @@ export const createRazorpayPaymentOrderV3 = onCall(
     paymentAttemptId,
     authenticatedUserId: uid,
     command: "create_order",
+    paymentRail: "checkout",
     now: authoritativeNow,
   });
   const canonicalService = buildCanonicalServiceSource({
@@ -2256,17 +2760,19 @@ export const createRazorpayPaymentOrderV3 = onCall(
   const keyId = asString(RAZORPAY_KEY_ID.value());
   const keySecret = asString(RAZORPAY_KEY_SECRET.value());
   if (authorized.paymentAttemptRef && authorized.paymentAttempt && paymentMethod === "qr") {
-    await closeQrAttemptIfActive({
+    await retireBookingQrAttemptsForPaymentSwitch({
+      booking: authorized.booking,
       bookingId,
-      paymentAttemptRef: authorized.paymentAttemptRef,
-      paymentAttempt: authorized.paymentAttempt,
+      bookingRef: authorized.bookingRef,
       keyId,
       keySecret,
       authoritativeNow,
       reason: "SUPERSEDED",
+      localCloseReason: "CHECKOUT_SUPERSEDED_QR",
     });
   } else {
-    await closeBookingQrAttemptsBestEffort({
+    await retireBookingQrAttemptsForPaymentSwitch({
+      booking: authorized.booking,
       bookingId,
       bookingRef: authorized.bookingRef,
       keyId,
@@ -2410,6 +2916,7 @@ export const createBookingQrPaymentV3 = onCall(
     bookingId,
     authenticatedUserId: uid,
     command: "create_order",
+    paymentRail: "qr",
     now: authoritativeNow,
   });
   const claimedOffer = await loadSelectedCouponForCheckout({
@@ -2435,17 +2942,23 @@ export const createBookingQrPaymentV3 = onCall(
     claimedOffer: claimedOffer ?? null,
     authoritativeNow,
   });
-  const qrAttemptId = createDeterministicPaymentAttemptId({
+  const reusableQrAttemptId = createDeterministicPaymentAttemptId({
     bookingId,
     parentId: authorized.booking.parentId,
     pricingHash: pricing.pricingHash,
     paymentMethod: "qr",
   });
-  const qrAttemptRef = authorized.bookingRef.collection("paymentAttempts").doc(qrAttemptId);
-  const qrAttemptSnapshot = await qrAttemptRef.get();
+  const reusableQrAttemptRef =
+    authorized.bookingRef.collection("paymentAttempts").doc(reusableQrAttemptId);
+  const qrAttemptSnapshot = await reusableQrAttemptRef.get();
   const existingQrAttempt = qrAttemptSnapshot.exists ?
     qrAttemptSnapshot.data() as Record<string, unknown> :
     null;
+  const qrAttemptId =
+    existingQrAttempt != null && !isReusableQrAttempt(existingQrAttempt, authoritativeNow) ?
+      authorized.bookingRef.collection("paymentAttempts").doc().id :
+      reusableQrAttemptId;
+  const qrAttemptRef = authorized.bookingRef.collection("paymentAttempts").doc(qrAttemptId);
 
   if (pricing.financialSnapshot.customerPaidPaise === 0) {
     const parent = await buildParentIdentity(uid);
@@ -2496,13 +3009,13 @@ export const createBookingQrPaymentV3 = onCall(
   if (isReusableQrAttempt(existingQrAttempt, authoritativeNow)) {
     logger.info("booking-qr-create-reuse", {
       bookingId,
-      paymentAttemptId: qrAttemptId,
+      paymentAttemptId: reusableQrAttemptId,
       qrCodeId: asString(existingQrAttempt?.razorpayQrCodeId),
     });
     return buildQrPaymentResponse({
       bookingId,
       booking: authorized.booking,
-      paymentAttemptId: qrAttemptId,
+      paymentAttemptId: reusableQrAttemptId,
       paymentAttempt: existingQrAttempt,
       mode: "qr",
       idempotentReplay: true,
@@ -2511,17 +3024,16 @@ export const createBookingQrPaymentV3 = onCall(
 
   const keyId = asString(RAZORPAY_KEY_ID.value());
   const keySecret = asString(RAZORPAY_KEY_SECRET.value());
-  if (existingQrAttempt != null) {
-    await closeQrAttemptIfActive({
-      bookingId,
-      paymentAttemptRef: qrAttemptRef,
-      paymentAttempt: existingQrAttempt,
-      keyId,
-      keySecret,
-      authoritativeNow,
-      reason: "SUPERSEDED",
-    });
-  }
+  await retireBookingQrAttemptsForPaymentSwitch({
+    booking: authorized.booking,
+    bookingId,
+    bookingRef: authorized.bookingRef,
+    keyId,
+    keySecret,
+    authoritativeNow,
+    reason: "SUPERSEDED",
+    localCloseReason: "QR_SUPERSEDED_BY_NEW_QR",
+  });
   const qrExpiryLimit = authorized.booking.lifecycle.payDeadlineAt;
   if (!qrExpiryLimit) {
     throw new HttpsError("failed-precondition", "The payment window has expired.", {
@@ -2562,14 +3074,12 @@ export const createBookingQrPaymentV3 = onCall(
     keySecret,
     bookingId,
     paymentAttemptId: paymentAttempt.paymentAttemptId,
-    customerUid: uid,
     amountPaise: paymentAttempt.amountPaise,
     currency: paymentAttempt.currency,
     closeBy: effectiveQrExpiry,
     notes: {
       bookingId,
       paymentAttemptId: paymentAttempt.paymentAttemptId,
-      customerUid: uid,
       purpose: "booking",
     },
   });
@@ -2584,6 +3094,14 @@ export const createBookingQrPaymentV3 = onCall(
     razorpayQrImageUrl: qrCode.imageUrl,
     qrState: "ACTIVE" as const,
     qrCreatedAt: authoritativeNow,
+    qrSwitchLockedUntil: resolveQrSwitchLockedUntil({
+      booking: authorized.booking,
+      paymentAttempt: {
+        ...paymentAttempt,
+        qrCreatedAt: authoritativeNow,
+        qrExpiresAt: qrCode.closeBy ?? effectiveQrExpiry,
+      },
+    }),
     qrExpiresAt: qrCode.closeBy ?? effectiveQrExpiry,
     qrClosedAt: qrCode.closedAt,
     qrCloseReason: qrCode.closeReason,
@@ -3368,9 +3886,10 @@ export const createBookingDisputeV3 = onCall(
     const reason = asString(request.data?.reason);
     const description = asString(request.data?.description);
     const rawAttachments = Array.isArray(request.data?.attachments) ? request.data?.attachments : [];
-    const attachments = rawAttachments
-      .map((value: unknown) => asString(value))
-      .filter((value: string) => value.length > 0);
+    const requestedEvidence = normalizeRequestedDisputeEvidence(
+      request.data?.evidence,
+      rawAttachments,
+    );
     if (!bookingId || !reason || !description) {
       throw new HttpsError("invalid-argument", "bookingId, reason, and description are required.");
     }
@@ -3386,13 +3905,19 @@ export const createBookingDisputeV3 = onCall(
       });
     }
     try {
+      const validatedEvidence = await validateBookingDisputeEvidenceUploads({
+        bookingId,
+        uid,
+        requestedEvidence,
+      });
       const result = await createBookingDisputeApplicationV3({
         firestore: db,
         bookingId,
         parentUid: uid,
         reason,
         description,
-        attachments,
+        attachments: validatedEvidence.map((item) => item.storagePath),
+        evidenceRecords: validatedEvidence,
       });
       if (result.code === "NOT_FOUND") {
         throw new HttpsError("not-found", "Booking not found.", {code: result.code});
@@ -3434,6 +3959,7 @@ export const createBookingDisputeV3 = onCall(
         existingDisputeStatus: booking.dispute.status,
         reasonPresent: reason.length > 0,
         descriptionLength: description.length,
+        evidenceCount: requestedEvidence.length,
         code:
           error instanceof HttpsError ?
             (typeof errorDetails?.code === "string" ? errorDetails.code : error.code) :
@@ -3464,11 +3990,28 @@ export const resolveBookingDisputeV3 = onCall(
           asString(data.resolutionType) as
             | "CUSTOMER_WINS"
             | "PROVIDER_WINS"
+            | "CUSTOM_ALLOCATION"
             | "PARTIAL_REFUND"
             | "CUSTOM_ADJUSTMENT",
         policyReason: asString(data.policyReason),
         notes: asString(data.notes),
         resolutionAttemptId: asString(data.resolutionAttemptId),
+        customerAllocationBasisPoints:
+          data.customerAllocationBasisPoints == null ?
+            null :
+            asInt(data.customerAllocationBasisPoints, 0),
+        providerAllocationBasisPoints:
+          data.providerAllocationBasisPoints == null ?
+            null :
+            asInt(data.providerAllocationBasisPoints, 0),
+        pettxoAllocationBasisPoints:
+          data.pettxoAllocationBasisPoints == null ?
+            null :
+            asInt(data.pettxoAllocationBasisPoints, 0),
+        customerRefundBasisPoints:
+          data.customerRefundBasisPoints == null ?
+            null :
+            asInt(data.customerRefundBasisPoints, 0),
         customerRefundPaise:
           data.customerRefundPaise == null ?
             null :
@@ -3480,6 +4023,61 @@ export const resolveBookingDisputeV3 = onCall(
       },
     });
     return buildDisputeResolutionResponse(result);
+  },
+);
+
+export const previewBookingDisputeResolutionV3 = onCall(
+  {invoker: "private"},
+  async (request) => {
+    const uid = requireUid(request.auth);
+    await requireFinanceAdmin(uid);
+    const data =
+      typeof request.data === "object" && request.data != null ?
+        request.data as Record<string, unknown> :
+        {};
+    const result = await previewBookingDisputeResolutionApplicationV3({
+      firestore: db,
+      auth: request.auth,
+      input: {
+        disputeId: asString(data.disputeId),
+        bookingId: asString(data.bookingId),
+        resolutionType:
+          asString(data.resolutionType) as
+            | "CUSTOMER_WINS"
+            | "PROVIDER_WINS"
+            | "CUSTOM_ALLOCATION"
+            | "PARTIAL_REFUND"
+            | "CUSTOM_ADJUSTMENT",
+        policyReason: asString(data.policyReason),
+        notes: asString(data.notes),
+        resolutionAttemptId: asString(data.resolutionAttemptId) || "preview",
+        customerAllocationBasisPoints:
+          data.customerAllocationBasisPoints == null ?
+            null :
+            asInt(data.customerAllocationBasisPoints, 0),
+        providerAllocationBasisPoints:
+          data.providerAllocationBasisPoints == null ?
+            null :
+            asInt(data.providerAllocationBasisPoints, 0),
+        pettxoAllocationBasisPoints:
+          data.pettxoAllocationBasisPoints == null ?
+            null :
+            asInt(data.pettxoAllocationBasisPoints, 0),
+        customerRefundBasisPoints:
+          data.customerRefundBasisPoints == null ?
+            null :
+            asInt(data.customerRefundBasisPoints, 0),
+        customerRefundPaise:
+          data.customerRefundPaise == null ?
+            null :
+            asInt(data.customerRefundPaise, 0),
+        providerFinalEntitlementPaise:
+          data.providerFinalEntitlementPaise == null ?
+            null :
+            asInt(data.providerFinalEntitlementPaise, 0),
+      },
+    });
+    return buildDisputeResolutionPreviewResponse(result);
   },
 );
 
@@ -4127,16 +4725,109 @@ export async function scanCanonicalNoShowCandidatesByStateV3(params: {
 export const finalizeCompletedBookingsV3 = onSchedule(
   {schedule: "every 15 minutes", timeZone: "Asia/Kolkata"},
   async () => {
-    const snapshot = await db
-      .collection("bookings")
-      .where("state", "==", "COMPLETED_PENDING_REVIEW")
-      .limit(100)
-      .get();
-    for (const doc of snapshot.docs) {
-      await finalizeCompletedBookingApplicationV3({
-        firestore: db,
-        bookingId: doc.id,
-      });
-    }
+    await runFinalizeCompletedBookingsSchedulerV3();
   },
 );
+
+const COMPLETION_SCAN_BATCH_SIZE = 100;
+
+export async function runFinalizeCompletedBookingsSchedulerV3(params?: {
+  authoritativeNow?: Date;
+  firestore?: typeof db;
+  schedulerLogger?: Pick<typeof logger, "info" | "error">;
+}): Promise<void> {
+  const authoritativeNow = params?.authoritativeNow ?? new Date();
+  const firestore = params?.firestore ?? db;
+  const schedulerLogger = params?.schedulerLogger ?? logger;
+
+  schedulerLogger.info("bookingV3.scheduler.completedFinalization.started", {
+    schedule: "every 15 minutes",
+    timeZone: "Asia/Kolkata",
+    authoritativeAt: authoritativeNow.toISOString(),
+  });
+
+  let scannedInProgress = 0;
+  let autoCompletedPendingReview = 0;
+  let scannedCompletedPendingReview = 0;
+  let finalized = 0;
+  let lastInProgressId: string | null = null;
+  let lastCompletedId: string | null = null;
+
+  while (true) {
+    let query = firestore
+      .collection("bookings")
+      .where("stateQueryValue", "==", "IN_PROGRESS")
+      .orderBy(FieldPath.documentId())
+      .limit(COMPLETION_SCAN_BATCH_SIZE);
+    if (lastInProgressId != null) {
+      query = query.startAfter(lastInProgressId);
+    }
+    const snapshot = await query.get();
+    if (snapshot.empty) break;
+    scannedInProgress += snapshot.size;
+    for (const doc of snapshot.docs) {
+      try {
+        const result = await reconcileCanonicalCompletionStateV3({
+          firestore,
+          bookingId: doc.id,
+          authoritativeNow,
+        });
+        if (result === "AUTO_COMPLETED_PENDING_REVIEW") {
+          autoCompletedPendingReview += 1;
+        }
+      } catch (error) {
+        const normalized = normalizeError(error);
+        schedulerLogger.error("bookingV3.scheduler.completedFinalization.inProgressBookingFailed", {
+          bookingId: doc.id,
+          message: normalized.message,
+          stack: normalized.stack,
+        });
+      }
+    }
+    lastInProgressId = snapshot.docs[snapshot.docs.length - 1]?.id ?? null;
+    if (snapshot.size < COMPLETION_SCAN_BATCH_SIZE) break;
+  }
+
+  while (true) {
+    let query = firestore
+      .collection("bookings")
+      .where("stateQueryValue", "==", "COMPLETED_PENDING_REVIEW")
+      .orderBy(FieldPath.documentId())
+      .limit(COMPLETION_SCAN_BATCH_SIZE);
+    if (lastCompletedId != null) {
+      query = query.startAfter(lastCompletedId);
+    }
+    const snapshot = await query.get();
+    if (snapshot.empty) break;
+    scannedCompletedPendingReview += snapshot.size;
+    for (const doc of snapshot.docs) {
+      try {
+        const result = await finalizeCompletedBookingApplicationV3({
+          firestore,
+          bookingId: doc.id,
+          authoritativeNow,
+        });
+        if (result.code === "FINALIZED") {
+          finalized += 1;
+        }
+      } catch (error) {
+        const normalized = normalizeError(error);
+        schedulerLogger.error("bookingV3.scheduler.completedFinalization.completedBookingFailed", {
+          bookingId: doc.id,
+          message: normalized.message,
+          stack: normalized.stack,
+        });
+      }
+    }
+    lastCompletedId = snapshot.docs[snapshot.docs.length - 1]?.id ?? null;
+    if (snapshot.size < COMPLETION_SCAN_BATCH_SIZE) break;
+  }
+
+  schedulerLogger.info("bookingV3.scheduler.completedFinalization.completed", {
+    scannedInProgress,
+    autoCompletedPendingReview,
+    scannedCompletedPendingReview,
+    finalized,
+    authoritativeAt: authoritativeNow.toISOString(),
+  });
+}

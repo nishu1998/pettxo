@@ -2,10 +2,12 @@ import {Timestamp, type Firestore} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
 
 import type {CanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
+import {hasAuthoritativeConfirmedBookingPaymentV3} from "./bookingPaymentConfirmationV3";
 import {buildBookingEventPlan} from "./bookingEventsWriter";
 import type {BookingNotificationPlan} from "./bookingNotificationsV3";
 import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 import {
+  buildBookingDisputeOpenedNotification,
   buildBookingFinalizedNotifications,
   buildBookingPayoutReadyNotifications,
   buildBookingReviewReceivedNotification,
@@ -81,6 +83,18 @@ export type DisputeSubmissionResult = {
   createdAt: Date | null;
 };
 
+export type CanonicalDisputeEvidenceRecord = {
+  evidenceId: string;
+  storagePath: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedByUid: string;
+  uploadedByRole: "parent";
+  createdAt: Date;
+  width: number | null;
+  height: number | null;
+};
+
 export type CompletionFinalizationResult = {
   code: CompletionFinalizationCode;
   bookingId: string;
@@ -88,6 +102,10 @@ export type CompletionFinalizationResult = {
   finalizedAt: Date | null;
   payoutEligibleAt: Date | null;
 };
+
+export type CompletionReconciliationResult =
+  | "NOOP"
+  | "AUTO_COMPLETED_PENDING_REVIEW";
 
 export type CompletionFinalizationEvaluation = {
   code: CompletionFinalizationCode;
@@ -102,12 +120,6 @@ function asDate(value: unknown): Date | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
   if (value instanceof Timestamp) return value.toDate();
   return null;
-}
-
-function isPaymentConfirmedV3(booking: CanonicalBookingDocumentV3): boolean {
-  const status = booking.payment.status.trim().toLowerCase();
-  return booking.lifecycle.paidAt != null &&
-    (status === "paid" || status === "confirmed");
 }
 
 function hasOpenDisputeV3(booking: CanonicalBookingDocumentV3): boolean {
@@ -295,6 +307,83 @@ function buildCompletionPayoutDocuments(params: {
   };
 }
 
+function buildCompletedPendingReviewTransition(params: {
+  booking: CanonicalBookingDocumentV3;
+  bookingId: string;
+  completedAt: Date;
+  reviewWindowEndsAt: Date;
+  actor: "provider" | "system";
+  completionReason: "provider_marked_complete" | "system_auto_completed_after_service_end";
+}) {
+  const payoutDocs = buildCompletionPayoutDocuments({
+    booking: params.booking,
+    bookingId: params.bookingId,
+    completedAt: params.completedAt,
+    reviewWindowEndsAt: params.reviewWindowEndsAt,
+  });
+  const event = buildBookingEventPlan({
+    bookingId: params.bookingId,
+    event: "service_completed",
+    actor: params.actor,
+    at: params.completedAt,
+    meta: {
+      policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
+      completionReason: params.completionReason,
+    },
+  });
+  const notifications = buildServiceCompletedNotification({
+    bookingId: params.bookingId,
+    parentId: params.booking.parentId,
+    bookingType: params.booking.bookingType,
+    state: "COMPLETED_PENDING_REVIEW",
+  });
+  const nextLifecycle = {
+    ...params.booking.lifecycle,
+    serviceEndedAt: Timestamp.fromDate(params.completedAt),
+    completedAt: Timestamp.fromDate(params.completedAt),
+    reviewWindowEndsAt: Timestamp.fromDate(params.reviewWindowEndsAt),
+    disputeDeadlineAt: Timestamp.fromDate(params.reviewWindowEndsAt),
+  };
+  const nextPayout = {
+    ...params.booking.payout,
+    status: "HELD",
+    eligibleAt: Timestamp.fromDate(params.reviewWindowEndsAt),
+    providerPayoutPaise: params.booking.financials!.providerPayoutPaise,
+  };
+  const nextPrivacy = {
+    ...params.booking.privacy,
+    otpVisibleToParent: false,
+  };
+  const bookingWithCompletion =
+    params.booking as CanonicalBookingDocumentV3 & {completion?: Record<string, unknown> | null};
+  const nextCompletion = {
+    ...(typeof bookingWithCompletion.completion === "object" && bookingWithCompletion.completion != null ?
+      bookingWithCompletion.completion :
+      {}),
+    reasonCode: params.completionReason,
+    policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
+  };
+  const nextDispute = {
+    ...params.booking.dispute,
+    status: params.booking.dispute.status || "none",
+  };
+  const nextAudit = {
+    ...params.booking.audit,
+    lastUpdatedBy: params.actor,
+  };
+  return {
+    payoutDocs,
+    event,
+    notifications,
+    nextLifecycle,
+    nextPayout,
+    nextPrivacy,
+    nextCompletion,
+    nextDispute,
+    nextAudit,
+  };
+}
+
 export async function completeBookingServiceV3(params: {
   firestore: Firestore;
   bookingId: string;
@@ -385,7 +474,7 @@ export async function completeBookingServiceV3(params: {
         reviewWindowEndsAt: null,
       };
     }
-    if (!isPaymentConfirmedV3(booking)) {
+    if (!hasAuthoritativeConfirmedBookingPaymentV3(booking)) {
       return {
         code: "PAYMENT_NOT_CONFIRMED",
         bookingId: params.bookingId,
@@ -439,78 +528,32 @@ export async function completeBookingServiceV3(params: {
       completedAt: completedAt.toISOString(),
       reviewWindowEndsAt: reviewWindowEndsAt.toISOString(),
     });
-    const payoutDocs = buildCompletionPayoutDocuments({
+    const transition = buildCompletedPendingReviewTransition({
       booking,
       bookingId: params.bookingId,
       completedAt,
       reviewWindowEndsAt,
-    });
-    const event = buildBookingEventPlan({
-      bookingId: params.bookingId,
-      event: "service_completed",
       actor: "provider",
-      at: completedAt,
-      meta: {policyVersion: SERVICE_COMPLETION_POLICY_VERSION},
-    });
-    const notifications = buildServiceCompletedNotification({
-      bookingId: params.bookingId,
-      parentId: booking.parentId,
-      bookingType: booking.bookingType,
-      state: "COMPLETED_PENDING_REVIEW",
+      completionReason: "provider_marked_complete",
     });
     console.info("SERVICE_COMPLETE_WRITES_PREPARED", {
       bookingId: params.bookingId,
       providerUid: params.providerUid,
       targetState: "COMPLETED_PENDING_REVIEW",
-      notificationCount: notifications.length,
+      notificationCount: transition.notifications.length,
     });
-
-    const nextLifecycle = {
-      ...booking.lifecycle,
-      serviceEndedAt: Timestamp.fromDate(completedAt),
-      completedAt: Timestamp.fromDate(completedAt),
-      reviewWindowEndsAt: Timestamp.fromDate(reviewWindowEndsAt),
-      disputeDeadlineAt: Timestamp.fromDate(reviewWindowEndsAt),
-    };
-    const nextPayout = {
-      ...booking.payout,
-      status: "HELD",
-      eligibleAt: Timestamp.fromDate(reviewWindowEndsAt),
-      providerPayoutPaise: booking.financials.providerPayoutPaise,
-    };
-    const nextPrivacy = {
-      ...booking.privacy,
-      otpVisibleToParent: false,
-    };
-    const existingCompletion =
-      typeof bookingData.completion === "object" && bookingData.completion != null ?
-        bookingData.completion as Record<string, unknown> :
-        {};
-    const nextCompletion = {
-      ...existingCompletion,
-      reasonCode: "provider_marked_complete",
-      policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
-    };
-    const nextDispute = {
-      ...booking.dispute,
-      status: "none",
-    };
-    const nextAudit = {
-      ...booking.audit,
-      lastUpdatedBy: "provider",
-    };
 
     transaction.set(bookingRef, {
       state: "COMPLETED_PENDING_REVIEW",
       stateQueryValue: "COMPLETED_PENDING_REVIEW",
       completedAt: Timestamp.fromDate(completedAt),
       updatedAt: Timestamp.fromDate(completedAt),
-      lifecycle: nextLifecycle,
-      payout: nextPayout,
-      privacy: nextPrivacy,
-      completion: nextCompletion,
-      dispute: nextDispute,
-      audit: nextAudit,
+      lifecycle: transition.nextLifecycle,
+      payout: transition.nextPayout,
+      privacy: transition.nextPrivacy,
+      completion: transition.nextCompletion,
+      dispute: transition.nextDispute,
+      audit: transition.nextAudit,
     }, {merge: true});
     transaction.set(completionRef, {
       bookingId: params.bookingId,
@@ -524,20 +567,20 @@ export async function completeBookingServiceV3(params: {
       updatedAt: Timestamp.fromDate(completedAt),
     }, {merge: true});
     transaction.set(
-      bookingRef.collection("events").doc(event.eventId),
+      bookingRef.collection("events").doc(transition.event.eventId),
       {
-        ...event.record,
-        at: Timestamp.fromDate(event.record.at),
+        ...transition.event.record,
+        at: Timestamp.fromDate(transition.event.record.at),
       },
       {merge: true},
     );
-    transaction.set(bookingFinancialRef, payoutDocs.bookingFinancial, {merge: true});
-    transaction.set(providerEarningRef, payoutDocs.providerEarning, {merge: true});
-    transaction.set(payoutReadinessRef, payoutDocs.payoutReadiness, {merge: true});
+    transaction.set(bookingFinancialRef, transition.payoutDocs.bookingFinancial, {merge: true});
+    transaction.set(providerEarningRef, transition.payoutDocs.providerEarning, {merge: true});
+    transaction.set(payoutReadinessRef, transition.payoutDocs.payoutReadiness, {merge: true});
     persistNotificationsInTransaction({
       firestore: params.firestore,
       transaction,
-      notifications,
+      notifications: transition.notifications,
       actorId: params.providerUid,
       createdAt: completedAt,
     });
@@ -562,6 +605,102 @@ export async function completeBookingServiceV3(params: {
       targetState: result.state,
     });
     return result;
+  });
+}
+
+export async function reconcileCanonicalCompletionStateV3(params: {
+  firestore: Firestore;
+  bookingId: string;
+  authoritativeNow?: Date;
+}): Promise<CompletionReconciliationResult> {
+  const authoritativeNow = params.authoritativeNow ?? new Date();
+  const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
+  const completionRef = params.firestore
+    .collection(BOOKING_SERVICE_COMPLETIONS_COLLECTION)
+    .doc(params.bookingId);
+  const bookingFinancialRef = params.firestore.collection("bookingFinancials").doc(params.bookingId);
+  const providerEarningRef = params.firestore.collection("providerEarnings").doc(params.bookingId);
+  const payoutReadinessRef = params.firestore.collection("payoutReadiness").doc(params.bookingId);
+
+  return params.firestore.runTransaction(async (transaction) => {
+    const [bookingSnapshot, completionSnapshot] = await Promise.all([
+      transaction.get(bookingRef),
+      transaction.get(completionRef),
+    ]);
+    if (!bookingSnapshot.exists) {
+      return "NOOP";
+    }
+    const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
+    if (booking.state !== "IN_PROGRESS" || booking.lifecycle.otpEnteredAt == null) {
+      return "NOOP";
+    }
+    if (!hasAuthoritativeConfirmedBookingPaymentV3(booking) || booking.financials == null) {
+      return "NOOP";
+    }
+    const completionAvailableAt = resolveCanonicalCompletionAvailableAtV3({
+      booking,
+    });
+    if (completionAvailableAt.code !== "RESOLVED" ||
+        completionAvailableAt.expectedServiceEndAt == null ||
+        authoritativeNow.getTime() < completionAvailableAt.expectedServiceEndAt.getTime()) {
+      return "NOOP";
+    }
+
+    const completedAt = new Date(authoritativeNow.getTime());
+    const reviewWindowEndsAt = new Date(completedAt.getTime() + CANONICAL_REVIEW_WINDOW_MS);
+    const transition = buildCompletedPendingReviewTransition({
+      booking,
+      bookingId: params.bookingId,
+      completedAt,
+      reviewWindowEndsAt,
+      actor: "system",
+      completionReason: "system_auto_completed_after_service_end",
+    });
+
+    transaction.set(bookingRef, {
+      state: "COMPLETED_PENDING_REVIEW",
+      stateQueryValue: "COMPLETED_PENDING_REVIEW",
+      completedAt: Timestamp.fromDate(completedAt),
+      updatedAt: Timestamp.fromDate(completedAt),
+      lifecycle: transition.nextLifecycle,
+      payout: transition.nextPayout,
+      privacy: transition.nextPrivacy,
+      completion: transition.nextCompletion,
+      dispute: transition.nextDispute,
+      audit: transition.nextAudit,
+    }, {merge: true});
+    transaction.set(completionRef, {
+      bookingId: params.bookingId,
+      providerId: booking.providerId,
+      parentId: booking.parentId,
+      completedAt: Timestamp.fromDate(completedAt),
+      reviewWindowEndsAt: Timestamp.fromDate(reviewWindowEndsAt),
+      completionReason: "system_auto_completed_after_service_end",
+      policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
+      createdAt: completionSnapshot.exists ?
+        (completionSnapshot.data() as Record<string, unknown>).createdAt ?? Timestamp.fromDate(completedAt) :
+        Timestamp.fromDate(completedAt),
+      updatedAt: Timestamp.fromDate(completedAt),
+    }, {merge: true});
+    transaction.set(
+      bookingRef.collection("events").doc(transition.event.eventId),
+      {
+        ...transition.event.record,
+        at: Timestamp.fromDate(transition.event.record.at),
+      },
+      {merge: true},
+    );
+    transaction.set(bookingFinancialRef, transition.payoutDocs.bookingFinancial, {merge: true});
+    transaction.set(providerEarningRef, transition.payoutDocs.providerEarning, {merge: true});
+    transaction.set(payoutReadinessRef, transition.payoutDocs.payoutReadiness, {merge: true});
+    persistNotificationsInTransaction({
+      firestore: params.firestore,
+      transaction,
+      notifications: transition.notifications,
+      actorId: "system",
+      createdAt: completedAt,
+    });
+    return "AUTO_COMPLETED_PENDING_REVIEW";
   });
 }
 
@@ -842,6 +981,7 @@ export async function createBookingDisputeV3(params: {
   reason: string;
   description: string;
   attachments: string[];
+  evidenceRecords?: CanonicalDisputeEvidenceRecord[];
   authoritativeNow?: Date;
 }): Promise<DisputeSubmissionResult> {
   const authoritativeNow = params.authoritativeNow ?? new Date();
@@ -852,6 +992,8 @@ export async function createBookingDisputeV3(params: {
   const bookingFinancialRef = params.firestore.collection("bookingFinancials").doc(params.bookingId);
   const providerEarningRef = params.firestore.collection("providerEarnings").doc(params.bookingId);
   const payoutReadinessRef = params.firestore.collection("payoutReadiness").doc(params.bookingId);
+  const providerPayoutRef = params.firestore.collection("providerPayouts").doc(params.bookingId);
+  const evidenceRecords = [...(params.evidenceRecords ?? [])];
 
   return params.firestore.runTransaction(async (transaction) => {
     const [bookingSnapshot, disputeSnapshot] = await Promise.all([
@@ -942,13 +1084,26 @@ export async function createBookingDisputeV3(params: {
       at: authoritativeNow,
       meta: {reason: params.reason},
     });
+    const notifications = [buildBookingDisputeOpenedNotification({
+      bookingId: params.bookingId,
+      providerId: booking.providerId,
+      bookingType: booking.bookingType,
+      state: booking.state,
+    })];
     transaction.set(disputeRef, {
+      disputeId: params.bookingId,
       bookingId: params.bookingId,
       providerId: booking.providerId,
       parentId: booking.parentId,
+      customerId: booking.parentId,
+      bookingStateAtCreation: booking.state,
+      raisedBy: "parent",
+      reasonCode: params.reason,
       reason: params.reason,
       description: params.description,
       attachments: params.attachments,
+      attachmentPaths: params.attachments,
+      evidenceCount: evidenceRecords.length,
       createdAt: Timestamp.fromDate(authoritativeNow),
       status: "OPEN",
       source: "canonical_v3",
@@ -967,6 +1122,7 @@ export async function createBookingDisputeV3(params: {
       updatedAt: Timestamp.fromDate(authoritativeNow),
       dispute: {
         ...bookingDispute,
+        disputeId: params.bookingId,
         status: "OPEN",
         raisedAt: Timestamp.fromDate(authoritativeNow),
         raisedBy: "parent",
@@ -998,6 +1154,14 @@ export async function createBookingDisputeV3(params: {
       eligibilityReason: "Held because the customer opened a dispute during the review window.",
       updatedAt: Timestamp.fromDate(authoritativeNow),
     }, {merge: true});
+    transaction.set(providerPayoutRef, {
+      bookingId: params.bookingId,
+      providerId: booking.providerId,
+      status: "HELD",
+      holdReason: "CUSTOMER_DISPUTE_OPEN",
+      updatedAt: Timestamp.fromDate(authoritativeNow),
+      policyVersion: "v3.2_slice9",
+    }, {merge: true});
     transaction.set(
       bookingRef.collection("events").doc(event.eventId),
       {
@@ -1006,6 +1170,32 @@ export async function createBookingDisputeV3(params: {
       },
       {merge: true},
     );
+    for (const evidence of evidenceRecords) {
+      transaction.set(
+        disputeRef.collection("evidence").doc(evidence.evidenceId),
+        {
+          evidenceId: evidence.evidenceId,
+          disputeId: params.bookingId,
+          bookingId: params.bookingId,
+          storagePath: evidence.storagePath,
+          mimeType: evidence.mimeType,
+          sizeBytes: evidence.sizeBytes,
+          uploadedByUid: evidence.uploadedByUid,
+          uploadedByRole: evidence.uploadedByRole,
+          createdAt: Timestamp.fromDate(evidence.createdAt),
+          width: evidence.width,
+          height: evidence.height,
+        },
+        {merge: false},
+      );
+    }
+    persistNotificationsInTransaction({
+      firestore: params.firestore,
+      transaction,
+      notifications,
+      actorId: params.parentUid,
+      createdAt: authoritativeNow,
+    });
 
     return {
       code: "DISPUTE_CREATED",

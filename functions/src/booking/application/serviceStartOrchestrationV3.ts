@@ -5,6 +5,7 @@ import {HttpsError} from "firebase-functions/https";
 
 import type {CanonicalBookingDocumentV3, CanonicalRangeScheduleV3, CanonicalSlotScheduleV3} from "../schema/bookingDocumentV3";
 import type {CanonicalBookingPrivateDocumentV3} from "../schema/paymentAttemptDocumentV3";
+import {hasAuthoritativeConfirmedBookingPaymentV3} from "./bookingPaymentConfirmationV3";
 import {buildBookingEventPlan} from "./bookingEventsWriter";
 import {
   buildBookingNoShowNotifications,
@@ -146,12 +147,6 @@ export type NoShowEvaluationResult = {
   serviceAnchorAt: Date | null;
   expectedServiceEndAt: Date | null;
 };
-
-function hasConfirmedPaymentV3(booking: CanonicalBookingDocumentV3): boolean {
-  const normalizedStatus = booking.payment.status.trim().toLowerCase();
-  return booking.lifecycle.paidAt != null &&
-    (normalizedStatus === "paid" || normalizedStatus === "confirmed");
-}
 
 function asDate(value: unknown): Date | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
@@ -407,7 +402,6 @@ export function evaluateCanonicalNoShowEligibilityV3(params: {
     };
   }
   if (booking.lifecycle.otpEnteredAt != null ||
-      booking.state === "IN_PROGRESS" ||
       booking.state === "COMPLETED_PENDING_REVIEW" ||
       booking.state === "COMPLETED_FINAL" ||
       params.hasSuccessfulServiceStartArtifact === true) {
@@ -417,7 +411,8 @@ export function evaluateCanonicalNoShowEligibilityV3(params: {
       expectedServiceEndAt: resolveAuthoritativeServiceEndV3({booking}).expectedServiceEndAt,
     };
   }
-  if (booking.state !== "CONFIRMED" || !hasConfirmedPaymentV3(booking)) {
+  if ((booking.state !== "CONFIRMED" && booking.state !== "IN_PROGRESS") ||
+      !hasAuthoritativeConfirmedBookingPaymentV3(booking)) {
     return {
       code: "INELIGIBLE_STATE",
       serviceAnchorAt: asDate(serviceAnchorAt(booking)),
@@ -663,7 +658,7 @@ export async function verifyBookingStartOtpV3(params: {
       }
       if (booking.state !== "CONFIRMED") {
         return {
-          code: !hasConfirmedPaymentV3(booking)
+          code: !hasAuthoritativeConfirmedBookingPaymentV3(booking)
             ? "PAYMENT_NOT_CONFIRMED"
             : "INVALID_STATE",
           bookingId: params.bookingId,
@@ -673,7 +668,7 @@ export async function verifyBookingStartOtpV3(params: {
           retryAfterMs: null,
         };
       }
-      if (!hasConfirmedPaymentV3(booking)) {
+      if (!hasAuthoritativeConfirmedBookingPaymentV3(booking)) {
         return {
           code: "PAYMENT_NOT_CONFIRMED",
           bookingId: params.bookingId,
