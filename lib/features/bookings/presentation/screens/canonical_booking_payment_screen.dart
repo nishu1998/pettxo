@@ -8,10 +8,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../../core/widgets/pettxo_full_screen_loader.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/domain/models/available_offer.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
@@ -70,6 +70,7 @@ class _CanonicalBookingPaymentScreenState
   CanonicalPaymentPricingPreviewResult? _pricingPreview;
   bool _isPreparingOrder = false;
   bool _isPreparingQr = false;
+  bool _isVerifyingPayment = false;
   bool _isCheckoutOpen = false;
   bool _isObservingConfirmation = false;
   bool _hasNavigatedToConfirmation = false;
@@ -381,6 +382,21 @@ class _CanonicalBookingPaymentScreenState
                     ],
                   ],
                 ),
+                if (_isPreparingOrder)
+                  const PettxoFullScreenLoader(
+                    message: 'PREPARING SECURE PAYMENT...',
+                    mode: PettxoFullScreenLoaderMode.frosted,
+                  ),
+                if (_isVerifyingPayment)
+                  const PettxoFullScreenLoader(
+                    message: 'VERIFYING PAYMENT...',
+                    mode: PettxoFullScreenLoaderMode.frosted,
+                  ),
+                if (_isPreparingQr)
+                  const PettxoFullScreenLoader(
+                    message: 'CREATING SECURE QR...',
+                    mode: PettxoFullScreenLoaderMode.frosted,
+                  ),
               ],
             ),
           );
@@ -427,7 +443,6 @@ class _CanonicalBookingPaymentScreenState
 
     var checkoutSucceeded = false;
     setState(() => _isPreparingOrder = true);
-    AppLoader.showWithMessage('Preparing secure payment...');
 
     try {
       final orderResult = await _bookingRepository.createPaymentOrderV3(
@@ -447,9 +462,11 @@ class _CanonicalBookingPaymentScreenState
       _bindAttemptStream(orderResult.paymentAttemptId);
 
       if (orderResult.isZeroPayable) {
-        AppLoader.hide();
         if (!mounted) return;
-        setState(() => _isObservingConfirmation = true);
+        setState(() {
+          _isPreparingOrder = false;
+          _isObservingConfirmation = true;
+        });
         AppFeedback.show(
           context,
           message: 'No payment is required. Confirming your booking now...',
@@ -459,10 +476,12 @@ class _CanonicalBookingPaymentScreenState
       }
 
       final user = FirebaseAuth.instance.currentUser;
-      AppLoader.hide();
       if (!mounted) return;
 
-      setState(() => _isCheckoutOpen = true);
+      setState(() {
+        _isPreparingOrder = false;
+        _isCheckoutOpen = true;
+      });
       final checkoutResult = await _razorpayCheckoutService.openCheckout(
         order: orderResult.toCheckoutOrder(),
         customerName: user?.displayName?.trim().isNotEmpty == true
@@ -476,7 +495,7 @@ class _CanonicalBookingPaymentScreenState
 
       if (!mounted) return;
 
-      AppLoader.showWithMessage('Verifying payment...');
+      setState(() => _isVerifyingPayment = true);
       final verification = await _bookingRepository.verifyPaymentV3(
         bookingId: orderResult.bookingId,
         paymentAttemptId: orderResult.paymentAttemptId,
@@ -485,7 +504,9 @@ class _CanonicalBookingPaymentScreenState
         razorpaySignature: checkoutResult.signature,
       );
 
-      AppLoader.hide();
+      if (mounted) {
+        setState(() => _isVerifyingPayment = false);
+      }
       if (!mounted) return;
 
       if (verification.needsAuthoritativeObservation) {
@@ -505,7 +526,6 @@ class _CanonicalBookingPaymentScreenState
 
       _showVerificationOutcome(verification);
     } on RazorpayCheckoutDismissed {
-      AppLoader.hide();
       if (!mounted) return;
       AppFeedback.show(
         context,
@@ -514,7 +534,9 @@ class _CanonicalBookingPaymentScreenState
         tone: AppFeedbackTone.info,
       );
     } on RazorpayCheckoutFailure catch (error) {
-      AppLoader.hide();
+      if (mounted) {
+        setState(() => _isVerifyingPayment = false);
+      }
       if (!mounted) return;
       AppFeedback.show(
         context,
@@ -524,7 +546,9 @@ class _CanonicalBookingPaymentScreenState
         tone: AppFeedbackTone.error,
       );
     } on CanonicalPaymentException catch (error) {
-      AppLoader.hide();
+      if (mounted) {
+        setState(() => _isVerifyingPayment = false);
+      }
       if (!mounted) return;
       if (error.code == CanonicalPaymentFailureCode.couponInvalid ||
           error.code == CanonicalPaymentFailureCode.pricingChanged) {
@@ -546,7 +570,9 @@ class _CanonicalBookingPaymentScreenState
         tone: AppFeedbackTone.error,
       );
     } catch (_) {
-      AppLoader.hide();
+      if (mounted) {
+        setState(() => _isVerifyingPayment = false);
+      }
       if (!mounted) return;
       if (checkoutSucceeded) {
         _beginAuthoritativeObservation(
@@ -561,10 +587,10 @@ class _CanonicalBookingPaymentScreenState
         tone: AppFeedbackTone.error,
       );
     } finally {
-      AppLoader.hide();
       if (mounted) {
         setState(() {
           _isPreparingOrder = false;
+          _isVerifyingPayment = false;
           _isCheckoutOpen = false;
         });
       }
@@ -600,7 +626,6 @@ class _CanonicalBookingPaymentScreenState
     }
 
     setState(() => _isPreparingQr = true);
-    AppLoader.showWithMessage('Creating secure QR...');
 
     try {
       if (kDebugMode) {
@@ -622,7 +647,6 @@ class _CanonicalBookingPaymentScreenState
         idempotentReplay: qrResult.idempotentReplay,
       );
       _bindAttemptStream(qrResult.paymentAttemptId);
-      AppLoader.hide();
       if (!mounted) return;
       if (kDebugMode) {
         debugPrint(
@@ -650,7 +674,6 @@ class _CanonicalBookingPaymentScreenState
         ),
       );
     } on CanonicalPaymentException catch (error) {
-      AppLoader.hide();
       if (!mounted) return;
       if (kDebugMode) {
         debugPrint(
@@ -680,7 +703,6 @@ class _CanonicalBookingPaymentScreenState
             : AppFeedbackTone.error,
       );
     } catch (_) {
-      AppLoader.hide();
       if (!mounted) return;
       if (kDebugMode) {
         debugPrint(
@@ -693,7 +715,6 @@ class _CanonicalBookingPaymentScreenState
         tone: AppFeedbackTone.error,
       );
     } finally {
-      AppLoader.hide();
       if (mounted) {
         setState(() => _isPreparingQr = false);
       }
