@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/services/remote_config_service.dart';
+import '../../../../core/widgets/pettxo_full_screen_loader.dart';
 import '../../../home/presentation/screens/home_screen.dart';
 import '../../../onboarding/data/services/onboarding_state_service.dart';
 import '../../../onboarding/screens/onboarding_screen.dart';
@@ -155,7 +156,14 @@ class _AuthGatewayScreenState extends State<AuthGatewayScreen> {
       backgroundColor: AppColors.background,
       body: Center(
         child: _isResolving
-            ? const CircularProgressIndicator()
+            ? const Stack(
+                children: [
+                  PettxoFullScreenLoader(
+                    message: 'FETCHING PUPS...',
+                    mode: PettxoFullScreenLoaderMode.opaque,
+                  ),
+                ],
+              )
             : Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
