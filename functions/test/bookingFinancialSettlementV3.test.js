@@ -1281,7 +1281,7 @@ test("three-party allocation rounding stays exact with uneven paise", async () =
   );
 });
 
-test("coupon-aware provider wins preserves canonical provider entitlement while custom allocation only splits the customer-paid pool", async () => {
+test("coupon-aware provider wins uses the explicit 85/15 pool split while keeping coupon subsidy separate from the customer-paid pool", async () => {
   const bookingId = "booking-dispute-coupon-preset-1";
   const booking = buildOpenDisputeBooking();
   booking.financials.customerPaidPaise = 80000;
@@ -1321,10 +1321,13 @@ test("coupon-aware provider wins preserves canonical provider entitlement while 
       resolutionAttemptId: "provider-wins-coupon",
     },
   });
-  assert.equal(providerWins.providerAllocationPaise, 80000);
+  assert.equal(providerWins.customerAllocationBasisPoints, 0);
+  assert.equal(providerWins.providerAllocationBasisPoints, 8500);
+  assert.equal(providerWins.pettxoAllocationBasisPoints, 1500);
+  assert.equal(providerWins.providerAllocationPaise, 68000);
   assert.equal(providerWins.providerFinalEntitlementPaise, 85000);
-  assert.equal(providerWins.providerCouponSubsidyPaise, 5000);
-  assert.equal(providerWins.pettxoFinalRetainedPaise, 0);
+  assert.equal(providerWins.providerCouponSubsidyPaise, 17000);
+  assert.equal(providerWins.pettxoFinalRetainedPaise, 12000);
 
   const customAllocation = await resolveBookingDisputeV3({
     firestore,
@@ -1348,6 +1351,76 @@ test("coupon-aware provider wins preserves canonical provider entitlement while 
   assert.equal(
     firestore.store.get(`providerPayouts/${bookingId}`).couponCostPaise,
     20000,
+  );
+});
+
+test("provider wins preview and final remain consistent with the explicit 85/15 preset on a 1000 rupee payment", async () => {
+  const bookingId = "booking-dispute-provider-wins-85-15";
+  const booking = buildOpenDisputeBooking();
+  booking.financials.customerPaidPaise = 100000;
+  booking.financials.providerPayoutPaise = 85000;
+  booking.financials.platformCommissionPaise = 15000;
+
+  const firestore = new FakeFirestore({
+    [`users/admin-1`]: {adminRole: "financeAdmin"},
+    [`bookings/${bookingId}`]: booking,
+    [`disputes/${bookingId}`]: {
+      disputeId: bookingId,
+      bookingId,
+      providerId: booking.providerId,
+      parentId: booking.parentId,
+      customerId: booking.parentId,
+      status: "OPEN",
+      source: "canonical_v3",
+    },
+    [`bookingFinancials/${bookingId}`]: {},
+    [`providerEarnings/${bookingId}`]: {},
+    [`payoutReadiness/${bookingId}`]: {},
+    [`users/${booking.providerId}/providerBankDetails/main`]: {
+      status: "submitted",
+      accountNumberMasked: "XXXX1200",
+    },
+  });
+
+  const input = {
+    disputeId: bookingId,
+    resolutionType: "PROVIDER_WINS",
+    policyReason: "Provider wins explicit preset",
+    resolutionAttemptId: "provider-wins-85-15",
+  };
+
+  const preview = await previewBookingDisputeResolutionV3({
+    firestore,
+    auth: {uid: "admin-1"},
+    input,
+  });
+  const result = await resolveBookingDisputeV3({
+    firestore,
+    auth: {uid: "admin-1"},
+    input,
+    authoritativeNow: new Date("2026-07-23T08:00:00.000Z"),
+  });
+
+  assert.equal(preview.customerFinalPaise, 0);
+  assert.equal(preview.customerRefundPaise, 0);
+  assert.equal(preview.customerAllocationBasisPoints, 0);
+  assert.equal(preview.providerAllocationBasisPoints, 8500);
+  assert.equal(preview.pettxoAllocationBasisPoints, 1500);
+  assert.equal(preview.providerAllocationPaise, 85000);
+  assert.equal(preview.providerFinalEntitlementPaise, 85000);
+  assert.equal(preview.providerCouponSubsidyPaise, 0);
+  assert.equal(preview.pettxoFinalRetainedPaise, 15000);
+  assert.equal(preview.refundToIssuePaise, 0);
+
+  assert.equal(result.customerFinalPaise, preview.customerFinalPaise);
+  assert.equal(result.providerAllocationPaise, preview.providerAllocationPaise);
+  assert.equal(
+    result.providerFinalEntitlementPaise,
+    preview.providerFinalEntitlementPaise,
+  );
+  assert.equal(
+    result.pettxoFinalRetainedPaise,
+    preview.pettxoFinalRetainedPaise,
   );
 });
 

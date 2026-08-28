@@ -3995,6 +3995,7 @@ export const resolveBookingDisputeV3 = onCall(
             | "CUSTOM_ADJUSTMENT",
         policyReason: asString(data.policyReason),
         notes: asString(data.notes),
+        publicResolutionMessage: asString(data.publicResolutionMessage),
         resolutionAttemptId: asString(data.resolutionAttemptId),
         customerAllocationBasisPoints:
           data.customerAllocationBasisPoints == null ?
@@ -4050,6 +4051,7 @@ export const previewBookingDisputeResolutionV3 = onCall(
             | "CUSTOM_ADJUSTMENT",
         policyReason: asString(data.policyReason),
         notes: asString(data.notes),
+        publicResolutionMessage: asString(data.publicResolutionMessage),
         resolutionAttemptId: asString(data.resolutionAttemptId) || "preview",
         customerAllocationBasisPoints:
           data.customerAllocationBasisPoints == null ?

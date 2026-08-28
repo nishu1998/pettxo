@@ -71,6 +71,7 @@ export type ResolveBookingDisputeInput = {
   resolutionType: DisputeResolutionType;
   policyReason: string;
   notes?: string;
+  publicResolutionMessage?: string;
   resolutionAttemptId: string;
   customerAllocationBasisPoints?: number | null;
   providerAllocationBasisPoints?: number | null;
@@ -1018,28 +1019,22 @@ function normalizeThreePartyAllocationRequest(params: {
   }
 
   if (normalizedResolutionType === "PROVIDER_WINS") {
-    const providerAllocationPaise = Math.min(
-      providerBaseEntitlementPaise,
-      params.customerPaidPaise,
-    );
-    const pettxoFinalRetainedPaise = Math.max(
-      params.customerPaidPaise - providerAllocationPaise,
-      0,
-    );
-    const basisPoints = deriveAllocationBasisPointsFromPaise({
+    const providerAllocationBasisPoints = 8500;
+    const pettxoAllocationBasisPoints = 1500;
+    const allocated = allocatePoolPaiseByBasisPoints({
       customerPaidPaise: params.customerPaidPaise,
-      customerFinalPaise: 0,
-      providerAllocationPaise,
-      pettxoFinalRetainedPaise,
+      customerAllocationBasisPoints: 0,
+      providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints,
     });
     return {
-      customerAllocationBasisPoints: basisPoints.customerAllocationBasisPoints,
-      providerAllocationBasisPoints: basisPoints.providerAllocationBasisPoints,
-      pettxoAllocationBasisPoints: basisPoints.pettxoAllocationBasisPoints,
+      customerAllocationBasisPoints: 0,
+      providerAllocationBasisPoints,
+      pettxoAllocationBasisPoints,
       customerFinalPaise: 0,
-      providerAllocationPaise,
+      providerAllocationPaise: allocated.providerAllocationPaise,
       providerFinalEntitlementPaise: providerBaseEntitlementPaise,
-      pettxoFinalRetainedPaise,
+      pettxoFinalRetainedPaise: allocated.pettxoFinalRetainedPaise,
       customerRefundBasisPoints: 0,
     };
   }
@@ -1515,8 +1510,10 @@ export async function resolveBookingDisputeV3(params: {
     disputeId: disputeLookupId,
     resolutionType: params.input.resolutionType,
     policyReason: params.input.policyReason.trim(),
-    notes: params.input.notes?.trim() ?? "",
-    customerAllocationBasisPoints:
+        notes: params.input.notes?.trim() ?? "",
+        publicResolutionMessage:
+          params.input.publicResolutionMessage?.trim() ?? "",
+        customerAllocationBasisPoints:
       params.input.customerAllocationBasisPoints ?? null,
     providerAllocationBasisPoints:
       params.input.providerAllocationBasisPoints ?? null,
@@ -1907,6 +1904,8 @@ export async function resolveBookingDisputeV3(params: {
           type: params.input.resolutionType,
           policyReason: params.input.policyReason.trim(),
           notes: params.input.notes?.trim() ?? "",
+          publicMessage:
+            params.input.publicResolutionMessage?.trim() ?? "",
           customerAllocationBasisPoints:
             outcome.customerAllocationBasisPoints ?? null,
           providerAllocationBasisPoints:
@@ -1925,6 +1924,8 @@ export async function resolveBookingDisputeV3(params: {
         resolutionVersion: 1,
         resolvedAt: Timestamp.fromDate(now),
         resolvedByAdminId: adminUid,
+        publicResolutionMessage:
+          params.input.publicResolutionMessage?.trim() ?? "",
         financialAdjustmentId: adjustmentRef.id,
         auditEntryId: `booking.dispute_resolved.${bookingId}`,
         updatedAt: Timestamp.fromDate(now),
@@ -1945,6 +1946,8 @@ export async function resolveBookingDisputeV3(params: {
         "dispute.customerRefundPaise": outcome.customerRefundPaise,
         "dispute.providerReleasePaise":
           outcome.providerFinalEntitlementPaise,
+        "dispute.publicResolutionMessage":
+          params.input.publicResolutionMessage?.trim() ?? "",
         "payout.status": payoutEligibility.status,
         "payout.eligibleAt":
           payoutEligibility.readyAt == null ?
