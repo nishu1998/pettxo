@@ -12,6 +12,8 @@ import '../../../../core/services/firebase_resilience_service.dart';
 import '../mappers/booking_document_mapper.dart';
 import '../../domain/models/booking_payment_order.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
+import '../../domain/models/canonical_booking_dispute_models.dart';
+import '../../domain/models/canonical_booking_payout_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
 import '../../domain/models/canonical_booking_refund_models.dart';
 import '../../domain/models/booking_read_model.dart';
@@ -967,6 +969,36 @@ class BookingRepository {
     return CanonicalBookingRefundRecord.fromMap(
       Map<String, dynamic>.from(snapshot.data() ?? const {}),
     );
+  }
+
+  Stream<CanonicalBookingDisputeRecord?> watchCanonicalBookingDispute(
+    String bookingId,
+  ) {
+    final id = bookingId.trim();
+    if (id.isEmpty) return Stream.value(null);
+    return _firestore.collection('disputes').doc(id).snapshots().map((
+      snapshot,
+    ) {
+      if (!snapshot.exists) return null;
+      return CanonicalBookingDisputeRecord.fromMap(
+        Map<String, dynamic>.from(snapshot.data() ?? const {}),
+      );
+    });
+  }
+
+  Stream<CanonicalBookingPayoutRecord?> watchCanonicalBookingProviderPayout(
+    String bookingId,
+  ) {
+    final id = bookingId.trim();
+    if (id.isEmpty) return Stream.value(null);
+    return _firestore.collection('providerPayouts').doc(id).snapshots().map((
+      snapshot,
+    ) {
+      if (!snapshot.exists) return null;
+      return CanonicalBookingPayoutRecord.fromMap(
+        Map<String, dynamic>.from(snapshot.data() ?? const {}),
+      );
+    });
   }
 
   CanonicalBookingRequestException _mapCanonicalRequestError(

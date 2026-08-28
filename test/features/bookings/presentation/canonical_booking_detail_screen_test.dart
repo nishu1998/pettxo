@@ -9,7 +9,9 @@ import 'package:pettexo/features/bookings/domain/models/booking_document_v3.dart
 import 'package:pettexo/features/bookings/domain/models/booking_read_model.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_v3_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_cancellation_models.dart';
+import 'package:pettexo/features/bookings/domain/models/canonical_booking_dispute_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_private.dart';
+import 'package:pettexo/features/bookings/domain/models/canonical_booking_payout_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_refund_models.dart';
 import 'package:pettexo/features/bookings/presentation/controllers/canonical_booking_private_controller.dart';
 import 'package:pettexo/features/bookings/presentation/screens/canonical_booking_detail_screen.dart';
@@ -904,7 +906,6 @@ void main() {
         expect(find.text('Customer phone'), findsOneWidget);
         expect(find.text('Provider contact'), findsNothing);
         expect(find.text('Provider phone'), findsNothing);
-
       },
     );
 
@@ -1017,6 +1018,18 @@ void main() {
           customerRefundPaise: 25000,
           providerReleasePaise: 0,
         );
+        bookingRepository.disputeRecord = const CanonicalBookingDisputeRecord(
+          disputeId: 'booking-1',
+          bookingId: 'booking-1',
+          status: 'RESOLVED',
+          createdAt: null,
+          resolvedAt: null,
+          resolutionType: 'CUSTOMER_WINS',
+          customerRefundPaise: 25000,
+          providerFinalEntitlementPaise: 0,
+          publicResolutionMessage:
+              'We approved your refund after reviewing the dispute.',
+        );
         bookingRepository.refundRecord = const CanonicalBookingRefundRecord(
           bookingId: 'booking-1',
           state: 'confirmed',
@@ -1041,8 +1054,14 @@ void main() {
 
         await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
         expect(find.text('DISPUTE RESULT'), findsOneWidget);
-        expect(find.text('Resolved in your favor'), findsOneWidget);
-        expect(find.textContaining('Refunded: ₹250'), findsOneWidget);
+        expect(find.text('Dispute resolved'), findsWidgets);
+        expect(find.text('Customer wins'), findsOneWidget);
+        expect(find.textContaining('Refund approved: ₹250'), findsOneWidget);
+        expect(find.textContaining('₹250 refunded.'), findsOneWidget);
+        expect(
+          find.text('We approved your refund after reviewing the dispute.'),
+          findsOneWidget,
+        );
         expect(find.text('PROVIDER_WINS'), findsNothing);
       },
     );
@@ -1082,10 +1101,10 @@ void main() {
 
         await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
         expect(find.text('DISPUTE RESULT'), findsOneWidget);
-        expect(find.text('Partial refund'), findsOneWidget);
+        expect(find.text('Custom allocation'), findsOneWidget);
         expect(find.text('45%'), findsNothing);
         expect(find.textContaining('Refund approved'), findsOneWidget);
-        expect(find.textContaining('Status: Processing.'), findsOneWidget);
+        expect(find.textContaining('Processing.'), findsOneWidget);
         expect(find.text('provider final entitlement'), findsNothing);
         expect(find.text('CUSTOM_ALLOCATION'), findsNothing);
       },
@@ -1103,6 +1122,33 @@ void main() {
           providerReleasePaise: 25000,
           payoutStatus: 'PROCESSING',
         );
+        bookingRepository.disputeRecord = const CanonicalBookingDisputeRecord(
+          disputeId: 'booking-1',
+          bookingId: 'booking-1',
+          status: 'RESOLVED',
+          createdAt: null,
+          resolvedAt: null,
+          resolutionType: 'PROVIDER_WINS',
+          customerRefundPaise: 0,
+          providerFinalEntitlementPaise: 25000,
+          publicResolutionMessage:
+              'We confirmed the completed service and released the final settlement decision.',
+        );
+        bookingRepository.payoutRecord = const CanonicalBookingPayoutRecord(
+          payoutId: 'payout-1',
+          bookingId: 'booking-1',
+          status: 'PROCESSING',
+          holdReason: '',
+          providerEntitlementPaise: 25000,
+          priorPaidPaise: 0,
+          remainingPayablePaise: 25000,
+          eligibleAt: null,
+          readyAt: null,
+          processingAt: null,
+          paidAt: null,
+          failedAt: null,
+          failureCode: '',
+        );
         bookingRepository.participantPrivateData =
             _buildPrivateParticipantsData();
         final privateController = CanonicalBookingPrivateController(
@@ -1119,11 +1165,85 @@ void main() {
 
         await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
         expect(find.text('DISPUTE RESULT'), findsOneWidget);
-        expect(find.text('Resolved in your favor'), findsOneWidget);
+        expect(find.text('Provider wins'), findsOneWidget);
         expect(find.text('Settlement status'), findsOneWidget);
         expect(find.text('Processing'), findsWidgets);
+        expect(
+          find.text(
+            'We confirmed the completed service and released the final settlement decision.',
+          ),
+          findsOneWidget,
+        );
         expect(find.text('Pettxo retained amount'), findsNothing);
         expect(find.text('CUSTOMER_WINS'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'authoritative resolved dispute overrides stale open booking mirror and updates live',
+      (tester) async {
+        bookingRepository.bookingStreamController =
+            StreamController<BookingReadModel?>.broadcast();
+        bookingRepository.disputeStreamController =
+            StreamController<CanonicalBookingDisputeRecord?>.broadcast();
+        bookingRepository.booking = _buildCompletedPendingReviewBooking(
+          disputeStatus: 'OPEN',
+          disputeRaisedAt: DateTime.utc(2026, 7, 29, 8),
+        );
+        bookingRepository.disputeRecord = const CanonicalBookingDisputeRecord(
+          disputeId: 'booking-1',
+          bookingId: 'booking-1',
+          status: 'OPEN',
+          createdAt: null,
+          resolvedAt: null,
+          resolutionType: '',
+          customerRefundPaise: 0,
+          providerFinalEntitlementPaise: 0,
+          publicResolutionMessage: '',
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+        );
+
+        await _scrollUntilTextVisible(tester, 'DISPUTE STATUS');
+        expect(find.text('Under dispute'), findsWidgets);
+
+        bookingRepository.emitDispute(
+          CanonicalBookingDisputeRecord(
+            disputeId: 'booking-1',
+            bookingId: 'booking-1',
+            status: 'RESOLVED',
+            createdAt: null,
+            resolvedAt: DateTime.utc(2026, 7, 29, 10),
+            resolutionType: 'PROVIDER_WINS',
+            customerRefundPaise: 0,
+            providerFinalEntitlementPaise: 25000,
+            publicResolutionMessage:
+                'Pettxo has completed the dispute review for this booking.',
+          ),
+        );
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        await _scrollUntilTextVisible(tester, 'DISPUTE RESULT');
+        expect(find.text('DISPUTE RESULT'), findsOneWidget);
+        expect(find.text('Dispute under review'), findsNothing);
+        expect(find.textContaining('until the case is resolved'), findsNothing);
+        expect(find.text('Provider wins'), findsOneWidget);
+        expect(
+          find.text(
+            'Pettxo has completed the dispute review for this booking.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Dispute resolved'), findsWidgets);
       },
     );
 
@@ -1446,9 +1566,13 @@ Future<void> _pumpScreen(
 class _FakeBookingRepository extends BookingRepository {
   CanonicalBookingDocumentV3? booking;
   CanonicalBookingPrivateParticipantsData? participantPrivateData;
+  CanonicalBookingDisputeRecord? disputeRecord;
+  CanonicalBookingPayoutRecord? payoutRecord;
   CanonicalBookingRefundRecord? refundRecord;
   Stream<CanonicalBookingPrivateParticipantsData?>? participantPrivateStream;
   StreamController<BookingReadModel?>? bookingStreamController;
+  StreamController<CanonicalBookingDisputeRecord?>? disputeStreamController;
+  StreamController<CanonicalBookingPayoutRecord?>? payoutStreamController;
   Completer<void>? verifyBookingStartOtpCompleter;
   Future<void> Function()? onVerifyBookingStartOtp;
   Future<void> Function()? onCompleteBookingService;
@@ -1499,6 +1623,26 @@ class _FakeBookingRepository extends BookingRepository {
   Stream<CanonicalBookingRefundRecord?> watchCanonicalBookingRefund(
     String bookingId,
   ) => Stream.value(refundRecord);
+
+  @override
+  Stream<CanonicalBookingDisputeRecord?> watchCanonicalBookingDispute(
+    String bookingId,
+  ) async* {
+    yield disputeRecord;
+    if (disputeStreamController != null) {
+      yield* disputeStreamController!.stream;
+    }
+  }
+
+  @override
+  Stream<CanonicalBookingPayoutRecord?> watchCanonicalBookingProviderPayout(
+    String bookingId,
+  ) async* {
+    yield payoutRecord;
+    if (payoutStreamController != null) {
+      yield* payoutStreamController!.stream;
+    }
+  }
 
   @override
   Future<BookingReadModel?> fetchCanonicalBooking(String bookingId) async {
@@ -1583,6 +1727,16 @@ class _FakeBookingRepository extends BookingRepository {
         booking: nextBooking,
       ),
     );
+  }
+
+  void emitDispute(CanonicalBookingDisputeRecord? nextDispute) {
+    disputeRecord = nextDispute;
+    disputeStreamController?.add(nextDispute);
+  }
+
+  void emitPayout(CanonicalBookingPayoutRecord? nextPayout) {
+    payoutRecord = nextPayout;
+    payoutStreamController?.add(nextPayout);
   }
 }
 
@@ -2148,6 +2302,7 @@ CanonicalBookingDocumentV3 _buildConfirmedBookingDocument({
       refundInstructionId: '',
       customerRefundPaise: 0,
       providerReleasePaise: 0,
+      publicResolutionMessage: '',
     ),
     payout: const CanonicalBookingPayoutV3(
       status: 'not_eligible',
@@ -2423,6 +2578,7 @@ CanonicalBookingDocumentV3 _buildInProgressBooking({DateTime? otpEnteredAt}) {
       refundInstructionId: '',
       customerRefundPaise: 0,
       providerReleasePaise: 0,
+      publicResolutionMessage: '',
     ),
     payout: const CanonicalBookingPayoutV3(
       status: 'not_eligible',
@@ -2549,10 +2705,12 @@ CanonicalBookingDocumentV3 _buildCompletedPendingReviewBooking({
       resolution: disputeResolution,
       resolutionVersion: disputeResolvedAt == null ? 0 : 1,
       financialAdjustmentId: disputeResolvedAt == null ? '' : 'adjustment-1',
-      refundInstructionId:
-          customerRefundPaise > 0 ? 'refund-instruction-1' : '',
+      refundInstructionId: customerRefundPaise > 0
+          ? 'refund-instruction-1'
+          : '',
       customerRefundPaise: customerRefundPaise,
       providerReleasePaise: providerReleasePaise,
+      publicResolutionMessage: '',
     ),
     review: CanonicalBookingReviewV3(
       status: reviewSubmitted ? 'submitted' : '',

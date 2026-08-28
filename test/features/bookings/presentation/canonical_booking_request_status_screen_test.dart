@@ -460,6 +460,7 @@ CanonicalBookingDocumentV3 _buildPendingProviderBooking() {
       capacitySnapshot: 1,
       serviceLocationType: 'provider_location',
       currency: 'INR',
+      schedulingMode: 'fixedDuration',
       snapshotVersion: 1,
     ),
     schedule: CanonicalSlotBookingScheduleV3(
@@ -578,6 +579,7 @@ CanonicalBookingDocumentV3 _buildPendingProviderBooking() {
       refundInstructionId: '',
       customerRefundPaise: 0,
       providerReleasePaise: 0,
+      publicResolutionMessage: '',
     ),
     payout: const CanonicalBookingPayoutV3(
       status: '',

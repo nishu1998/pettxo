@@ -341,6 +341,7 @@ class CanonicalBookingDisputeV3 {
   final String refundInstructionId;
   final int customerRefundPaise;
   final int providerReleasePaise;
+  final String publicResolutionMessage;
 
   const CanonicalBookingDisputeV3({
     required this.disputeId,
@@ -358,7 +359,52 @@ class CanonicalBookingDisputeV3 {
     required this.refundInstructionId,
     required this.customerRefundPaise,
     required this.providerReleasePaise,
+    required this.publicResolutionMessage,
   });
+
+  CanonicalBookingDisputeV3 copyWith({
+    String? disputeId,
+    String? status,
+    DateTime? raisedAt,
+    bool clearRaisedAt = false,
+    String? raisedBy,
+    bool clearRaisedBy = false,
+    String? reasonCode,
+    String? description,
+    List<String>? evidenceRefs,
+    DateTime? resolvedAt,
+    bool clearResolvedAt = false,
+    String? resolvedBy,
+    bool clearResolvedBy = false,
+    String? resolution,
+    int? resolutionVersion,
+    String? financialAdjustmentId,
+    String? refundInstructionId,
+    int? customerRefundPaise,
+    int? providerReleasePaise,
+    String? publicResolutionMessage,
+  }) {
+    return CanonicalBookingDisputeV3(
+      disputeId: disputeId ?? this.disputeId,
+      status: status ?? this.status,
+      raisedAt: clearRaisedAt ? null : (raisedAt ?? this.raisedAt),
+      raisedBy: clearRaisedBy ? null : (raisedBy ?? this.raisedBy),
+      reasonCode: reasonCode ?? this.reasonCode,
+      description: description ?? this.description,
+      evidenceRefs: evidenceRefs ?? this.evidenceRefs,
+      resolvedAt: clearResolvedAt ? null : (resolvedAt ?? this.resolvedAt),
+      resolvedBy: clearResolvedBy ? null : (resolvedBy ?? this.resolvedBy),
+      resolution: resolution ?? this.resolution,
+      resolutionVersion: resolutionVersion ?? this.resolutionVersion,
+      financialAdjustmentId:
+          financialAdjustmentId ?? this.financialAdjustmentId,
+      refundInstructionId: refundInstructionId ?? this.refundInstructionId,
+      customerRefundPaise: customerRefundPaise ?? this.customerRefundPaise,
+      providerReleasePaise: providerReleasePaise ?? this.providerReleasePaise,
+      publicResolutionMessage:
+          publicResolutionMessage ?? this.publicResolutionMessage,
+    );
+  }
 }
 
 class CanonicalBookingReviewV3 {
@@ -408,6 +454,49 @@ class CanonicalBookingPayoutV3 {
     required this.failureCode,
     required this.retryCount,
   });
+
+  CanonicalBookingPayoutV3 copyWith({
+    String? status,
+    String? holdReason,
+    DateTime? eligibleAt,
+    bool clearEligibleAt = false,
+    DateTime? readyAt,
+    bool clearReadyAt = false,
+    DateTime? processingAt,
+    bool clearProcessingAt = false,
+    DateTime? releasedAt,
+    bool clearReleasedAt = false,
+    DateTime? failedAt,
+    bool clearFailedAt = false,
+    int? providerPayoutPaise,
+    int? priorPaidPaise,
+    int? remainingPayablePaise,
+    String? payoutReference,
+    String? externalTransactionId,
+    String? failureCode,
+    int? retryCount,
+  }) {
+    return CanonicalBookingPayoutV3(
+      status: status ?? this.status,
+      holdReason: holdReason ?? this.holdReason,
+      eligibleAt: clearEligibleAt ? null : (eligibleAt ?? this.eligibleAt),
+      readyAt: clearReadyAt ? null : (readyAt ?? this.readyAt),
+      processingAt: clearProcessingAt
+          ? null
+          : (processingAt ?? this.processingAt),
+      releasedAt: clearReleasedAt ? null : (releasedAt ?? this.releasedAt),
+      failedAt: clearFailedAt ? null : (failedAt ?? this.failedAt),
+      providerPayoutPaise: providerPayoutPaise ?? this.providerPayoutPaise,
+      priorPaidPaise: priorPaidPaise ?? this.priorPaidPaise,
+      remainingPayablePaise:
+          remainingPayablePaise ?? this.remainingPayablePaise,
+      payoutReference: payoutReference ?? this.payoutReference,
+      externalTransactionId:
+          externalTransactionId ?? this.externalTransactionId,
+      failureCode: failureCode ?? this.failureCode,
+      retryCount: retryCount ?? this.retryCount,
+    );
+  }
 }
 
 class CanonicalBookingStatisticsV3 {
@@ -548,6 +637,48 @@ class CanonicalBookingDocumentV3 {
   bool get isSlotBooking => bookingType == BookingV3Type.slot;
   bool get isRangeBooking => bookingType == BookingV3Type.range;
   bool get hasSubmittedReview => review.isSubmitted;
+
+  CanonicalBookingDocumentV3 copyWith({
+    CanonicalBookingDisputeV3? dispute,
+    CanonicalBookingPayoutV3? payout,
+    DateTime? updatedAt,
+  }) {
+    return CanonicalBookingDocumentV3(
+      schemaVersion: schemaVersion,
+      bookingModelVersion: bookingModelVersion,
+      documentFormat: documentFormat,
+      bookingType: bookingType,
+      state: state,
+      participants: participants,
+      service: service,
+      schedule: schedule,
+      lifecycle: lifecycle,
+      payment: payment,
+      financials: financials,
+      privacy: privacy,
+      cancellation: cancellation,
+      dispute: dispute ?? this.dispute,
+      review: review,
+      payout: payout ?? this.payout,
+      statistics: statistics,
+      audit: audit,
+      parentId: parentId,
+      providerId: providerId,
+      serviceId: serviceId,
+      stateQueryValue: stateQueryValue,
+      bookingTypeQueryValue: bookingTypeQueryValue,
+      serviceAnchorAt: serviceAnchorAt,
+      scheduledStartAt: scheduledStartAt,
+      checkInDateTime: checkInDateTime,
+      acceptDeadlineAt: acceptDeadlineAt,
+      payDeadlineAt: payDeadlineAt,
+      completedAt: completedAt,
+      customerId: customerId,
+      serviceOwnerId: serviceOwnerId,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
 }
 
 class CanonicalBookingDocumentParseResult {
@@ -1360,6 +1491,7 @@ class _CanonicalBookingDocumentParser {
       refundInstructionId: _readString(map['refundInstructionId']),
       customerRefundPaise: _readInt(map['customerRefundPaise']) ?? 0,
       providerReleasePaise: _readInt(map['providerReleasePaise']) ?? 0,
+      publicResolutionMessage: _readString(map['publicResolutionMessage']),
     );
   }
 
@@ -1808,7 +1940,8 @@ class _CanonicalBookingDocumentParser {
       final matchesSlot = slotIds.isNotEmpty && slotIds.contains(slot.slotId);
       final matchesDate =
           serviceDateKey.isNotEmpty &&
-          (slot.serviceDateKey == serviceDateKey || slot.dateKey == serviceDateKey);
+          (slot.serviceDateKey == serviceDateKey ||
+              slot.dateKey == serviceDateKey);
       if (!matchesSlot && !matchesDate) {
         continue;
       }

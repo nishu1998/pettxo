@@ -176,7 +176,9 @@ void main() {
       final attempt = _attemptResult(
         state: CanonicalPaymentAttemptState.capturedRequiresReconciliation,
       );
-      booking = _buildBookingFixture(paymentAttemptId: attempt.paymentAttemptId);
+      booking = _buildBookingFixture(
+        paymentAttemptId: attempt.paymentAttemptId,
+      );
       bookingRepository.emitBooking(booking);
       bookingRepository.emitAttempt(attempt);
       bookingRepository.previewResultsByOfferId[''] = _previewResult(
@@ -195,7 +197,9 @@ void main() {
       expect(_gradientButtonFinder('Pay with Razorpay'), findsNothing);
       expect(_secondaryButtonFinder('Payment unavailable'), findsNWidgets(2));
       expect(
-        find.text('Payment was captured and is awaiting backend reconciliation.'),
+        find.text(
+          'Payment was captured and is awaiting backend reconciliation.',
+        ),
         findsWidgets,
       );
     },
@@ -463,16 +467,21 @@ CanonicalPaymentAttemptReadModel _attemptResult({
     retryCount: 0,
     orderExpiresAt: DateTime.now().toUtc().add(const Duration(minutes: 20)),
     orderCreatedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 2)),
-    checkoutOpenedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
-    captureReportedAt: DateTime.now().toUtc().subtract(const Duration(seconds: 30)),
+    checkoutOpenedAt: DateTime.now().toUtc().subtract(
+      const Duration(minutes: 1),
+    ),
+    captureReportedAt: DateTime.now().toUtc().subtract(
+      const Duration(seconds: 30),
+    ),
     confirmedAt: null,
     failedAt: null,
     refundRequiredAt: null,
     refundedAt: null,
-    lastReconciledAt: DateTime.now().toUtc().subtract(const Duration(seconds: 10)),
+    lastReconciledAt: DateTime.now().toUtc().subtract(
+      const Duration(seconds: 10),
+    ),
     qrCreatedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
-    qrSwitchLockedUntil:
-        DateTime.now().toUtc().add(const Duration(minutes: 4)),
+    qrSwitchLockedUntil: DateTime.now().toUtc().add(const Duration(minutes: 4)),
     qrExpiresAt: DateTime.now().toUtc().add(const Duration(minutes: 10)),
     pricingSummary: const CanonicalPaymentPricingSummary(
       serviceSubtotalPaise: 25000,
@@ -637,6 +646,7 @@ CanonicalBookingDocumentV3 _buildBookingFixture({
       refundInstructionId: '',
       customerRefundPaise: 0,
       providerReleasePaise: 0,
+      publicResolutionMessage: '',
     ),
     payout: const CanonicalBookingPayoutV3(
       status: 'not_eligible',

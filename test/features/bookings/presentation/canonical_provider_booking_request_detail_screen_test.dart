@@ -553,6 +553,7 @@ CanonicalBookingDocumentV3 _buildCanonicalBooking({
       refundInstructionId: '',
       customerRefundPaise: 0,
       providerReleasePaise: 0,
+      publicResolutionMessage: '',
     ),
     payout: CanonicalBookingPayoutV3(
       status: payoutStatus,

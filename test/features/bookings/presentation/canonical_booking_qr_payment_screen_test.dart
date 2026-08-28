@@ -351,8 +351,7 @@ CanonicalPaymentAttemptReadModel _attemptFixture({
     refundedAt: null,
     lastReconciledAt: null,
     qrCreatedAt: DateTime.now().toUtc(),
-    qrSwitchLockedUntil:
-        DateTime.now().toUtc().add(const Duration(minutes: 5)),
+    qrSwitchLockedUntil: DateTime.now().toUtc().add(const Duration(minutes: 5)),
     qrExpiresAt: DateTime.now().toUtc().add(const Duration(minutes: 10)),
     pricingSummary: const CanonicalPaymentPricingSummary(
       serviceSubtotalPaise: 25000,
@@ -519,6 +518,7 @@ CanonicalBookingDocumentV3 _buildBookingFixture({
       refundInstructionId: '',
       customerRefundPaise: 0,
       providerReleasePaise: 0,
+      publicResolutionMessage: '',
     ),
     payout: const CanonicalBookingPayoutV3(
       status: 'not_eligible',

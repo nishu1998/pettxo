@@ -72,8 +72,17 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
       return CanonicalBookingStateV3.noShow;
     }
   }
+  final normalizedDisputeStatus = disputeStatus?.trim().toLowerCase();
+  if (state == CanonicalBookingStateV3.disputed) {
+    if (normalizedDisputeStatus == 'resolved') {
+      return CanonicalBookingStateV3.completedFinal;
+    }
+    if (normalizedDisputeStatus == 'open') {
+      return CanonicalBookingStateV3.disputed;
+    }
+  }
   if (_isCompletedCanonicalBookingState(state) &&
-      disputeStatus?.trim().toLowerCase() == 'open') {
+      normalizedDisputeStatus == 'open') {
     return CanonicalBookingStateV3.disputed;
   }
   return state;
@@ -82,7 +91,10 @@ CanonicalBookingStateV3 effectiveCanonicalBookingPresentationStateFromRaw(
 CanonicalBookingDisputeDisplayState canonicalBookingDisputeDisplayState(
   CanonicalBookingDocumentV3 booking,
 ) {
-  if (!_isCompletedCanonicalBookingState(booking.state)) {
+  final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+  if (!_isCompletedCanonicalBookingState(booking.state) &&
+      !_isCompletedCanonicalBookingState(effectiveState) &&
+      effectiveState != CanonicalBookingStateV3.disputed) {
     return CanonicalBookingDisputeDisplayState.none;
   }
   final disputeStatus = booking.dispute.status.trim().toLowerCase();

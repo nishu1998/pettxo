@@ -17,7 +17,9 @@ import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_document_v3.dart';
 import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
+import '../../domain/models/canonical_booking_dispute_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
+import '../../domain/models/canonical_booking_payout_models.dart';
 import '../../domain/models/canonical_booking_refund_models.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/booking_v3_models.dart';
@@ -92,6 +94,73 @@ class _CanonicalBookingDetailScreenState
       widget.currentUserIdOverride?.trim().isNotEmpty == true
       ? widget.currentUserIdOverride!.trim()
       : FirebaseAuth.instance.currentUser?.uid.trim() ?? '';
+
+  CanonicalBookingDocumentV3 _bookingWithAuthoritativeDispute(
+    CanonicalBookingDocumentV3 booking,
+    CanonicalBookingDisputeRecord? disputeRecord,
+  ) {
+    if (disputeRecord == null) return booking;
+    final authoritativeStatus = disputeRecord.status.trim();
+    final authoritativeResolution = disputeRecord.resolutionType.trim();
+    final authoritativeMessage = disputeRecord.publicResolutionMessage.trim();
+    final updatedDispute = booking.dispute.copyWith(
+      disputeId: disputeRecord.disputeId.isNotEmpty
+          ? disputeRecord.disputeId
+          : booking.dispute.disputeId,
+      status: authoritativeStatus.isNotEmpty
+          ? authoritativeStatus
+          : booking.dispute.status,
+      raisedAt: disputeRecord.createdAt ?? booking.dispute.raisedAt,
+      resolvedAt: disputeRecord.resolvedAt ?? booking.dispute.resolvedAt,
+      resolution: authoritativeResolution.isNotEmpty
+          ? authoritativeResolution
+          : booking.dispute.resolution,
+      customerRefundPaise:
+          disputeRecord.customerRefundPaise > 0 ||
+              authoritativeStatus.toLowerCase() == 'resolved'
+          ? disputeRecord.customerRefundPaise
+          : booking.dispute.customerRefundPaise,
+      providerReleasePaise:
+          disputeRecord.providerFinalEntitlementPaise > 0 ||
+              authoritativeStatus.toLowerCase() == 'resolved'
+          ? disputeRecord.providerFinalEntitlementPaise
+          : booking.dispute.providerReleasePaise,
+      publicResolutionMessage: authoritativeMessage.isNotEmpty
+          ? authoritativeMessage
+          : booking.dispute.publicResolutionMessage,
+    );
+    return booking.copyWith(dispute: updatedDispute);
+  }
+
+  CanonicalBookingDocumentV3 _bookingWithAuthoritativePayout(
+    CanonicalBookingDocumentV3 booking,
+    CanonicalBookingPayoutRecord? payoutRecord,
+  ) {
+    if (payoutRecord == null) return booking;
+    return booking.copyWith(
+      payout: booking.payout.copyWith(
+        status: payoutRecord.status.isNotEmpty
+            ? payoutRecord.status
+            : booking.payout.status,
+        holdReason: payoutRecord.holdReason.isNotEmpty
+            ? payoutRecord.holdReason
+            : booking.payout.holdReason,
+        eligibleAt: payoutRecord.eligibleAt ?? booking.payout.eligibleAt,
+        readyAt: payoutRecord.readyAt ?? booking.payout.readyAt,
+        processingAt: payoutRecord.processingAt ?? booking.payout.processingAt,
+        releasedAt: payoutRecord.paidAt ?? booking.payout.releasedAt,
+        failedAt: payoutRecord.failedAt ?? booking.payout.failedAt,
+        providerPayoutPaise: payoutRecord.providerEntitlementPaise > 0
+            ? payoutRecord.providerEntitlementPaise
+            : booking.payout.providerPayoutPaise,
+        priorPaidPaise: payoutRecord.priorPaidPaise,
+        remainingPayablePaise: payoutRecord.remainingPayablePaise,
+        failureCode: payoutRecord.failureCode.isNotEmpty
+            ? payoutRecord.failureCode
+            : booking.payout.failureCode,
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -172,21 +241,33 @@ class _CanonicalBookingDetailScreenState
                     booking,
                     isParent,
                   )) {
-                    return StreamBuilder<CanonicalBookingRefundRecord?>(
-                      stream: _repository.watchCanonicalBookingRefund(
+                    return StreamBuilder<CanonicalBookingDisputeRecord?>(
+                      stream: _repository.watchCanonicalBookingDispute(
                         widget.bookingId,
                       ),
-                      builder: (context, refundSnapshot) {
-                        return _buildCustomerBookingDetailsExperience(
-                          booking: booking,
-                          participantPrivateData: participantSnapshot.data,
-                          participantErrorMessage: participantSnapshot.hasError
-                              ? 'Paid-only booking details could not be loaded right now.'
-                              : null,
-                          otpPrivateData: privateState.privateData,
-                          isOtpLoading: privateState.isLoading,
-                          otpErrorMessage: privateState.errorMessage,
-                          refundRecord: refundSnapshot.data,
+                      builder: (context, disputeSnapshot) {
+                        final displayBooking = _bookingWithAuthoritativeDispute(
+                          booking,
+                          disputeSnapshot.data,
+                        );
+                        return StreamBuilder<CanonicalBookingRefundRecord?>(
+                          stream: _repository.watchCanonicalBookingRefund(
+                            widget.bookingId,
+                          ),
+                          builder: (context, refundSnapshot) {
+                            return _buildCustomerBookingDetailsExperience(
+                              booking: displayBooking,
+                              participantPrivateData: participantSnapshot.data,
+                              participantErrorMessage:
+                                  participantSnapshot.hasError
+                                  ? 'Paid-only booking details could not be loaded right now.'
+                                  : null,
+                              otpPrivateData: privateState.privateData,
+                              isOtpLoading: privateState.isLoading,
+                              otpErrorMessage: privateState.errorMessage,
+                              refundRecord: refundSnapshot.data,
+                            );
+                          },
                         );
                       },
                     );
@@ -195,18 +276,45 @@ class _CanonicalBookingDetailScreenState
                     booking,
                     userIsProvider,
                   )) {
-                    return StreamBuilder<CanonicalBookingRefundRecord?>(
-                      stream: _repository.watchCanonicalBookingRefund(
+                    return StreamBuilder<CanonicalBookingDisputeRecord?>(
+                      stream: _repository.watchCanonicalBookingDispute(
                         widget.bookingId,
                       ),
-                      builder: (context, refundSnapshot) {
-                        return _buildProviderBookingDetailsExperience(
-                          booking: booking,
-                          participantPrivateData: participantSnapshot.data,
-                          participantErrorMessage: participantSnapshot.hasError
-                              ? 'Paid-only booking details could not be loaded right now.'
-                              : null,
-                          refundRecord: refundSnapshot.data,
+                      builder: (context, disputeSnapshot) {
+                        final disputeAwareBooking =
+                            _bookingWithAuthoritativeDispute(
+                              booking,
+                              disputeSnapshot.data,
+                            );
+                        return StreamBuilder<CanonicalBookingPayoutRecord?>(
+                          stream: _repository
+                              .watchCanonicalBookingProviderPayout(
+                                widget.bookingId,
+                              ),
+                          builder: (context, payoutSnapshot) {
+                            final displayBooking =
+                                _bookingWithAuthoritativePayout(
+                                  disputeAwareBooking,
+                                  payoutSnapshot.data,
+                                );
+                            return StreamBuilder<CanonicalBookingRefundRecord?>(
+                              stream: _repository.watchCanonicalBookingRefund(
+                                widget.bookingId,
+                              ),
+                              builder: (context, refundSnapshot) {
+                                return _buildProviderBookingDetailsExperience(
+                                  booking: displayBooking,
+                                  participantPrivateData:
+                                      participantSnapshot.data,
+                                  participantErrorMessage:
+                                      participantSnapshot.hasError
+                                      ? 'Paid-only booking details could not be loaded right now.'
+                                      : null,
+                                  refundRecord: refundSnapshot.data,
+                                );
+                              },
+                            );
+                          },
                         );
                       },
                     );
@@ -470,9 +578,9 @@ class _CanonicalBookingDetailScreenState
     CanonicalBookingDocumentV3 booking,
   ) {
     return switch (booking.dispute.resolution.trim().toUpperCase()) {
-      'CUSTOMER_WINS' => 'Resolved in your favor',
-      'PROVIDER_WINS' => 'Resolved in provider\'s favor',
-      'CUSTOM_ALLOCATION' => 'Partial refund',
+      'CUSTOMER_WINS' => 'Customer wins',
+      'PROVIDER_WINS' => 'Provider wins',
+      'CUSTOM_ALLOCATION' => 'Custom allocation',
       _ => 'Reviewed by Pettxo',
     };
   }
@@ -481,9 +589,9 @@ class _CanonicalBookingDetailScreenState
     CanonicalBookingDocumentV3 booking,
   ) {
     return switch (booking.dispute.resolution.trim().toUpperCase()) {
-      'CUSTOMER_WINS' => 'Resolved in customer\'s favor',
-      'PROVIDER_WINS' => 'Resolved in your favor',
-      'CUSTOM_ALLOCATION' => 'Adjusted settlement',
+      'CUSTOMER_WINS' => 'Customer wins',
+      'PROVIDER_WINS' => 'Provider wins',
+      'CUSTOM_ALLOCATION' => 'Custom allocation',
       _ => 'Reviewed by Pettxo',
     };
   }
@@ -526,17 +634,17 @@ class _CanonicalBookingDetailScreenState
     }
     final refundState = refundRecord?.state.trim().toLowerCase() ?? '';
     if (refundState == 'processed' || refundState == 'confirmed') {
-      return 'Refunded: ${_moneyFromPaise(approvedRefundPaise)}';
+      return '${_moneyFromPaise(approvedRefundPaise)} refunded.';
     }
     if (refundState == 'failed') {
-      return 'Refund approved: ${_moneyFromPaise(approvedRefundPaise)}. Support review is in progress.';
+      return '${_moneyFromPaise(approvedRefundPaise)} refund approved. Support review in progress.';
     }
     if (refundState == 'required' ||
         refundState == 'submitted' ||
         refundState == 'pending') {
-      return 'Refund approved: ${_moneyFromPaise(approvedRefundPaise)}. Status: Processing.';
+      return '${_moneyFromPaise(approvedRefundPaise)} refund approved. Processing.';
     }
-    return 'Refund approved: ${_moneyFromPaise(approvedRefundPaise)}.';
+    return '${_moneyFromPaise(approvedRefundPaise)} refund approved.';
   }
 
   static String _statusLabel(CanonicalBookingDocumentV3 booking) {
@@ -617,10 +725,13 @@ class _CanonicalBookingDetailScreenState
     required String? otpErrorMessage,
     required CanonicalBookingRefundRecord? refundRecord,
   }) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
     final isCompletedState =
         booking.state == CanonicalBookingStateV3.completedPendingReview ||
-        booking.state == CanonicalBookingStateV3.completedFinal;
-    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+        booking.state == CanonicalBookingStateV3.completedFinal ||
+        effectiveState == CanonicalBookingStateV3.completedPendingReview ||
+        effectiveState == CanonicalBookingStateV3.completedFinal ||
+        effectiveState == CanonicalBookingStateV3.disputed;
     if (isCompletedState) {
       return _buildCustomerCompletedBookingDetailsExperience(
         booking: booking,
@@ -877,7 +988,10 @@ class _CanonicalBookingDetailScreenState
     final effectiveState = effectiveCanonicalBookingPresentationState(booking);
     final isCompletedState =
         booking.state == CanonicalBookingStateV3.completedPendingReview ||
-        booking.state == CanonicalBookingStateV3.completedFinal;
+        booking.state == CanonicalBookingStateV3.completedFinal ||
+        effectiveState == CanonicalBookingStateV3.completedPendingReview ||
+        effectiveState == CanonicalBookingStateV3.completedFinal ||
+        effectiveState == CanonicalBookingStateV3.disputed;
     if (isCompletedState) {
       return _buildProviderCompletedBookingDetailsExperience(
         booking: booking,
@@ -1403,7 +1517,7 @@ class _CanonicalBookingDetailScreenState
           icon: Icons.verified_rounded,
           title: 'Dispute resolved',
           explanation:
-              'Pettxo has completed the review of this dispute. See the dispute result section below for the final outcome.',
+              'Pettxo has reviewed and resolved your dispute. See the result below.',
           accentColor: Color(0xFF2D6CDF),
           badgeLabel: 'Dispute resolved',
         );
@@ -1448,9 +1562,9 @@ class _CanonicalBookingDetailScreenState
           icon: Icons.verified_rounded,
           title: 'Dispute resolved',
           explanation:
-              'Pettxo has completed the review of this dispute. See the dispute result section below for the settlement outcome.',
+              'Pettxo has reviewed and resolved this booking dispute. See the settlement result below.',
           accentColor: Color(0xFF2D6CDF),
-          badgeLabel: 'Resolved',
+          badgeLabel: 'Dispute resolved',
         );
       case CanonicalBookingDisputeDisplayState.none:
         if (booking.state == CanonicalBookingStateV3.completedPendingReview) {
@@ -1597,6 +1711,11 @@ class _CanonicalBookingDetailScreenState
     required String? refundStatusText,
   }) {
     final rows = <StatusSummaryRowModel>[
+      const StatusSummaryRowModel(
+        label: 'Status',
+        value: 'Dispute resolved',
+        icon: Icons.verified_rounded,
+      ),
       StatusSummaryRowModel(
         label: 'Outcome',
         value: _customerDisputeOutcomeText(booking),
@@ -1620,8 +1739,8 @@ class _CanonicalBookingDetailScreenState
       StatusSummaryRowModel(
         label: 'Refund',
         value: booking.dispute.customerRefundPaise > 0
-            ? _moneyFromPaise(booking.dispute.customerRefundPaise)
-            : 'No refund approved',
+            ? 'Refund approved: ${_moneyFromPaise(booking.dispute.customerRefundPaise)}'
+            : 'No refund was awarded.',
         icon: Icons.currency_rupee_rounded,
       ),
     );
@@ -1631,6 +1750,24 @@ class _CanonicalBookingDetailScreenState
           label: 'Refund status',
           value: refundStatusText,
           icon: Icons.payments_outlined,
+        ),
+      );
+    }
+    if (booking.dispute.resolvedAt != null) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Resolved at',
+          value: _timelineDateTimeLabel(booking.dispute.resolvedAt!),
+          icon: Icons.schedule_rounded,
+        ),
+      );
+    }
+    if (booking.dispute.publicResolutionMessage.trim().isNotEmpty) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Resolution message',
+          value: booking.dispute.publicResolutionMessage.trim(),
+          icon: Icons.chat_bubble_outline_rounded,
         ),
       );
     }
@@ -1669,6 +1806,11 @@ class _CanonicalBookingDetailScreenState
     CanonicalBookingDocumentV3 booking,
   ) {
     final rows = <StatusSummaryRowModel>[
+      const StatusSummaryRowModel(
+        label: 'Status',
+        value: 'Dispute resolved',
+        icon: Icons.verified_rounded,
+      ),
       StatusSummaryRowModel(
         label: 'Outcome',
         value: _providerDisputeOutcomeText(booking),
@@ -1702,6 +1844,24 @@ class _CanonicalBookingDetailScreenState
         icon: Icons.payments_outlined,
       ),
     );
+    if (booking.dispute.resolvedAt != null) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Resolved at',
+          value: _timelineDateTimeLabel(booking.dispute.resolvedAt!),
+          icon: Icons.schedule_rounded,
+        ),
+      );
+    }
+    if (booking.dispute.publicResolutionMessage.trim().isNotEmpty) {
+      rows.add(
+        StatusSummaryRowModel(
+          label: 'Resolution message',
+          value: booking.dispute.publicResolutionMessage.trim(),
+          icon: Icons.chat_bubble_outline_rounded,
+        ),
+      );
+    }
     return rows;
   }
 
