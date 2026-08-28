@@ -17,18 +17,38 @@ import '../../../auth/presentation/screens/auth_gateway_screen.dart';
 import '../../../support/presentation/screens/help_support_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({
+    super.key,
+    ProfileRepository? profileRepository,
+    ProviderOnboardingRepository? providerOnboardingRepository,
+    SettingsService? settingsService,
+    Future<UserProfile> Function()? loadProfileOverride,
+    Future<ProviderOnboardingSnapshot> Function()?
+    loadProviderOnboardingOverride,
+    Future<AppSettings> Function()? loadSettingsOverride,
+    Future<void> Function()? signOutOverride,
+  }) : _profileRepository = profileRepository,
+       _providerOnboardingRepository = providerOnboardingRepository,
+       _settingsService = settingsService,
+       _loadProfileOverride = loadProfileOverride,
+       _loadProviderOnboardingOverride = loadProviderOnboardingOverride,
+       _loadSettingsOverride = loadSettingsOverride,
+       _signOutOverride = signOutOverride;
+
+  final ProfileRepository? _profileRepository;
+  final ProviderOnboardingRepository? _providerOnboardingRepository;
+  final SettingsService? _settingsService;
+  final Future<UserProfile> Function()? _loadProfileOverride;
+  final Future<ProviderOnboardingSnapshot> Function()?
+  _loadProviderOnboardingOverride;
+  final Future<AppSettings> Function()? _loadSettingsOverride;
+  final Future<void> Function()? _signOutOverride;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final AuthService _authService = AuthService();
-  final ProfileRepository _profileRepository = ProfileRepository();
-  final ProviderOnboardingRepository _providerOnboardingRepository =
-      ProviderOnboardingRepository();
-  final SettingsService _settingsService = SettingsService();
   AppSettings _settings = const AppSettings.defaults();
   UserProfile? _profile;
   ProviderOnboardingSnapshot? _providerOnboarding;
@@ -43,12 +63,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettings() async {
     try {
-      final settings = await _settingsService.loadSettings();
-      final profile = await _profileRepository.getCurrentUserProfile();
+      final settings =
+          await widget._loadSettingsOverride?.call() ??
+          await (widget._settingsService ?? SettingsService()).loadSettings();
+      final profile =
+          await widget._loadProfileOverride?.call() ??
+          await (widget._profileRepository ?? ProfileRepository())
+              .getCurrentUserProfile();
       ProviderOnboardingSnapshot? providerOnboarding;
       try {
-        providerOnboarding = await _providerOnboardingRepository
-            .fetchCurrentOnboarding();
+        providerOnboarding =
+            await widget._loadProviderOnboardingOverride?.call() ??
+            await (widget._providerOnboardingRepository ??
+                    ProviderOnboardingRepository())
+                .fetchCurrentOnboarding();
       } catch (_) {
         providerOnboarding = null;
       }
@@ -93,7 +121,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _updateSettings(AppSettings settings) async {
     setState(() => _settings = settings);
-    await _settingsService.saveSettings(settings);
+    await (widget._settingsService ?? SettingsService()).saveSettings(settings);
   }
 
   Future<void> _signOut() async {
@@ -105,7 +133,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       confirmLabel: 'Sign Out',
       isDestructive: true,
       errorMessage: 'Unable to sign out. Please try again.',
-      onConfirm: () => _authService.logout(),
+      onConfirm: () async {
+        final override = widget._signOutOverride;
+        if (override != null) {
+          await override();
+          return;
+        }
+        await AuthService().logout();
+      },
     );
     if (confirmed != true || !mounted) return;
 
