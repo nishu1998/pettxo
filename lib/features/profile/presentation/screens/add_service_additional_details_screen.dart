@@ -6,13 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/services/app_loader.dart';
 import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../../core/widgets/pettxo_full_screen_loader.dart';
 import '../../../auth/data/services/user_service.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
@@ -332,12 +332,6 @@ class _AddServiceAdditionalDetailsScreenState
         );
       }
 
-      AppLoader.showWithMessage(
-        _selectedPhotos.isEmpty
-            ? 'Setting up your service...'
-            : 'Uploading images...',
-      );
-
       final profile = await _profileRepository.getCurrentUserProfile();
       final currentAuthUid = FirebaseAuth.instance.currentUser?.uid ?? '';
       if (kDebugMode) {
@@ -366,7 +360,6 @@ class _AddServiceAdditionalDetailsScreenState
       await _providerOnboardingRepository
           .syncServicesForCurrentVerificationStatus();
 
-      AppLoader.hide();
       if (!mounted) return;
 
       AppFeedback.show(
@@ -376,7 +369,6 @@ class _AddServiceAdditionalDetailsScreenState
       );
       Navigator.pop(context, true);
     } catch (error, stackTrace) {
-      AppLoader.hide();
       if (!mounted) return;
       if (kDebugMode) {
         debugPrint('Service publish failed: $error');
@@ -395,7 +387,6 @@ class _AddServiceAdditionalDetailsScreenState
       };
       AppFeedback.show(context, message: message, tone: AppFeedbackTone.error);
     } finally {
-      AppLoader.hide();
       if (mounted) {
         setState(() => _isPublishing = false);
       }
@@ -520,163 +511,170 @@ class _AddServiceAdditionalDetailsScreenState
     final topContentPadding =
         MediaQuery.paddingOf(context).top + AddServiceFlowHeader.contentHeight;
 
-    return Scaffold(
-      backgroundColor: _screenBackground,
-      body: GestureDetector(
-        onTap: () => FocusScope.of(context).unfocus(),
-        child: Stack(
-          children: [
-            ListView(
-              padding: EdgeInsets.fromLTRB(
-                18,
-                topContentPadding,
-                18,
-                bottomInset + 28,
-              ),
-              children: [
-                const _IntroCard(
-                  subtitle:
-                      'Add optional photos and private notes to make your service feel complete before publishing.',
+    return PopScope(
+      canPop: !_isPublishing,
+      child: Scaffold(
+        backgroundColor: _screenBackground,
+        body: GestureDetector(
+          onTap: () => FocusScope.of(context).unfocus(),
+          child: Stack(
+            children: [
+              ListView(
+                padding: EdgeInsets.fromLTRB(
+                  18,
+                  topContentPadding,
+                  18,
+                  bottomInset + 28,
                 ),
-                const SizedBox(height: 18),
-                _SectionCard(
-                  title: 'Add photos',
-                  children: [
-                    const Text(
-                      'Show your space, past work, or setup. This builds trust.',
-                      style: TextStyle(
-                        color: AppColors.textGrey,
-                        fontSize: 13.5,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${_selectedPhotos.length} / $_maxPhotos selected',
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        ..._selectedPhotos.asMap().entries.map((entry) {
-                          return _PhotoTile(
-                            photo: entry.value,
-                            onRemove: () {
-                              setState(() {
-                                _selectedPhotos.removeAt(entry.key);
-                              });
-                            },
-                          );
-                        }),
-                        if (_selectedPhotos.length < _maxPhotos)
-                          _AddPhotoTile(onTap: _pickPhotos),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Supports JPG, JPEG, PNG, and WEBP up to 5 MB each. Photos are cropped to Portrait 4:5 before upload for a cleaner service layout.',
-                      style: TextStyle(
-                        color: AppColors.textGrey,
-                        fontSize: 12.5,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                _SectionCard(
-                  title: 'Instructions or notes (optional)',
-                  children: [
-                    _NotesField(
-                      fieldKey: _notesFieldKey,
-                      controller: _notesController,
-                      focusNode: _notesFocusNode,
-                      errorText: _notesError,
-                      isHighlighted: _highlightNotes,
-                      onChanged: (_) {
-                        setState(() {
-                          _notesError = null;
-                          _highlightNotes = false;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                _SectionCard(
-                  title: 'Ready to publish',
-                  children: const [_WarningNotice()],
-                ),
-                if (!_hasStoredProviderAgreement) ...[
+                children: [
+                  const _IntroCard(
+                    subtitle:
+                        'Add optional photos and private notes to make your service feel complete before publishing.',
+                  ),
                   const SizedBox(height: 18),
                   _SectionCard(
-                    title: 'Provider Agreement',
+                    title: 'Add photos',
                     children: [
-                      LegalConsentCheckbox(
-                        value: _acceptedProviderAgreement,
-                        onChanged: (value) {
-                          setState(() {
-                            _acceptedProviderAgreement = value ?? false;
-                            if (_acceptedProviderAgreement) {
-                              _providerConsentError = null;
-                            }
-                          });
-                        },
-                        errorText: _providerConsentError,
-                        segments: [
-                          const LegalConsentSegment(text: 'I agree to the '),
-                          LegalConsentSegment(
-                            text: 'Service Provider Agreement',
-                            onTap: () =>
-                                PolicyLinkService.openExternalPolicyUrlWithFeedback(
-                                  context,
-                                  PolicyLinkService.providerPolicyKey,
-                                ),
-                          ),
-                          const LegalConsentSegment(text: '.'),
+                      const Text(
+                        'Show your space, past work, or setup. This builds trust.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 13.5,
+                          height: 1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${_selectedPhotos.length} / $_maxPhotos selected',
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          ..._selectedPhotos.asMap().entries.map((entry) {
+                            return _PhotoTile(
+                              photo: entry.value,
+                              onRemove: () {
+                                setState(() {
+                                  _selectedPhotos.removeAt(entry.key);
+                                });
+                              },
+                            );
+                          }),
+                          if (_selectedPhotos.length < _maxPhotos)
+                            _AddPhotoTile(onTap: _pickPhotos),
                         ],
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Supports JPG, JPEG, PNG, and WEBP up to 5 MB each. Photos are cropped to Portrait 4:5 before upload for a cleaner service layout.',
+                        style: TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 12.5,
+                          height: 1.5,
+                        ),
                       ),
                     ],
                   ),
-                ],
-                const SizedBox(height: 22),
-                Stack(
-                  children: [
-                    GradientButton(
-                      label: _isPublishing
-                          ? 'Publishing...'
-                          : 'Publish Service',
-                      onPressed:
-                          _isFormValid && _hasValidFlowDraft && !_isPublishing
-                          ? _handlePublishPress
-                          : null,
+                  const SizedBox(height: 18),
+                  _SectionCard(
+                    title: 'Instructions or notes (optional)',
+                    children: [
+                      _NotesField(
+                        fieldKey: _notesFieldKey,
+                        controller: _notesController,
+                        focusNode: _notesFocusNode,
+                        errorText: _notesError,
+                        isHighlighted: _highlightNotes,
+                        onChanged: (_) {
+                          setState(() {
+                            _notesError = null;
+                            _highlightNotes = false;
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  _SectionCard(
+                    title: 'Ready to publish',
+                    children: const [_WarningNotice()],
+                  ),
+                  if (!_hasStoredProviderAgreement) ...[
+                    const SizedBox(height: 18),
+                    _SectionCard(
+                      title: 'Provider Agreement',
+                      children: [
+                        LegalConsentCheckbox(
+                          value: _acceptedProviderAgreement,
+                          onChanged: (value) {
+                            setState(() {
+                              _acceptedProviderAgreement = value ?? false;
+                              if (_acceptedProviderAgreement) {
+                                _providerConsentError = null;
+                              }
+                            });
+                          },
+                          errorText: _providerConsentError,
+                          segments: [
+                            const LegalConsentSegment(text: 'I agree to the '),
+                            LegalConsentSegment(
+                              text: 'Service Provider Agreement',
+                              onTap: () =>
+                                  PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                                    context,
+                                    PolicyLinkService.providerPolicyKey,
+                                  ),
+                            ),
+                            const LegalConsentSegment(text: '.'),
+                          ],
+                        ),
+                      ],
                     ),
-                    if ((!_isFormValid || !_hasValidFlowDraft) &&
-                        !_isPublishing)
-                      Positioned.fill(
-                        child: Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(16),
-                            onTap: _handlePublishPress,
+                  ],
+                  const SizedBox(height: 22),
+                  Stack(
+                    children: [
+                      GradientButton(
+                        label: _isPublishing
+                            ? 'Publishing...'
+                            : 'Publish Service',
+                        onPressed:
+                            _isFormValid && _hasValidFlowDraft && !_isPublishing
+                            ? _handlePublishPress
+                            : null,
+                      ),
+                      if ((!_isFormValid || !_hasValidFlowDraft) &&
+                          !_isPublishing)
+                        Positioned.fill(
+                          child: Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(16),
+                              onTap: _handlePublishPress,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
+                ],
+              ),
+              AddServiceFlowHeader(
+                title: 'Additional Details',
+                onBack: () => Navigator.pop(context),
+              ),
+              if (_isPublishing)
+                const PettxoFullScreenLoader(
+                  message: 'CREATING YOUR SERVICE...',
                 ),
-              ],
-            ),
-            AddServiceFlowHeader(
-              title: 'Additional Details',
-              onBack: () => Navigator.pop(context),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
