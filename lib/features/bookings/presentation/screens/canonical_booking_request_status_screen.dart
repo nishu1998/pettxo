@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
+import '../../../../core/widgets/pettxo_full_screen_loader.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_document_v3.dart';
@@ -55,6 +55,7 @@ class _CanonicalBookingRequestStatusScreenState
       widget.servicesRepository ?? ServicesRepository();
   Timer? _ticker;
   bool _isCancelling = false;
+  bool _isLoadingServiceDetails = false;
 
   @override
   void initState() {
@@ -93,133 +94,158 @@ class _CanonicalBookingRequestStatusScreenState
                 ? null
                 : _buildTerminalPresentation(canonicalBooking);
             final canOpenPayment = _canOpenCanonicalPayment(canonicalBooking);
-            if (terminalPresentation != null) {
-              return SafeArea(
-                child: CanonicalBookingStatusDetailTemplate(
-                  model: terminalPresentation,
-                ),
-              );
-            }
-            return SafeArea(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
-                children: [
-                  _CustomerRequestOverviewCard(
-                    serviceName:
-                        canonicalBooking?.service.serviceTitle
-                                .trim()
-                                .isNotEmpty ==
-                            true
-                        ? canonicalBooking!.service.serviceTitle
-                        : widget.serviceName,
-                    providerName:
-                        canonicalBooking?.participants.provider.displayName
-                                .trim()
-                                .isNotEmpty ==
-                            true
-                        ? canonicalBooking!.participants.provider.displayName
-                        : widget.providerName,
-                    category: canonicalBooking?.service.category ?? '',
-                    currentState: canonicalBooking == null
-                        ? widget.initialResult.state
-                        : _effectiveDisplayState(canonicalBooking),
-                    serviceImageUrl: widget.serviceImageUrl,
-                    serviceId: canonicalBooking?.serviceId ?? '',
-                    servicesRepository: _servicesRepository,
-                  ),
-                  const SizedBox(height: 16),
-                  const BookingDetailsSectionLabel('Booking summary'),
-                  const SizedBox(height: 10),
-                  BookingSummaryCard(
-                    rows: _buildActiveSummaryRows(canonicalBooking),
-                  ),
-                  const SizedBox(height: 16),
-                  const BookingDetailsSectionLabel('Booking status'),
-                  const SizedBox(height: 10),
-                  BookingStatusCard(
-                    model: _buildActiveStatusCard(canonicalBooking, status),
-                  ),
-                  const SizedBox(height: 16),
-                  const BookingDetailsSectionLabel('Booking timeline'),
-                  const SizedBox(height: 10),
-                  BookingTimelineCard(
-                    steps: _buildActiveTimeline(canonicalBooking),
-                  ),
-                  if (_activeDeadline(canonicalBooking) != null ||
-                      status.timerStartsAtLabel != null) ...[
-                    const SizedBox(height: 16),
-                    const BookingDetailsSectionLabel('Response window'),
-                    const SizedBox(height: 10),
-                    _ActiveCountdownCard(
-                      title: canOpenPayment
-                          ? 'Payment window'
-                          : 'Response window',
-                      deadline: _activeDeadline(canonicalBooking),
-                      fallbackMessage: status.timerStartsAtLabel,
+            return Stack(
+              children: [
+                if (terminalPresentation != null)
+                  SafeArea(
+                    child: CanonicalBookingStatusDetailTemplate(
+                      model: terminalPresentation,
                     ),
-                  ],
-                  const SizedBox(height: 16),
-                  const BookingDetailsSectionLabel('Financial summary'),
-                  const SizedBox(height: 10),
-                  FinancialSummaryCard(
-                    rows: _buildActiveFinancialRows(
-                      canOpenPayment: canOpenPayment,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const BookingDetailsSectionLabel('Important information'),
-                  const SizedBox(height: 10),
-                  ImportantInformationCard(
-                    model: _buildActiveInformation(
-                      canOpenPayment: canOpenPayment,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const BookingDetailsSectionLabel('Primary actions'),
-                  const SizedBox(height: 10),
-                  BookingDetailsSurfaceCard(
-                    child: Column(
+                  )
+                else
+                  SafeArea(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
                       children: [
-                        if (status.canCancel)
-                          SecondaryButton(
-                            label: _isCancelling
-                                ? 'Cancelling...'
-                                : 'Cancel Request',
-                            onPressed: _isCancelling ? null : _cancelRequest,
-                            icon: Icons.close_rounded,
+                        _CustomerRequestOverviewCard(
+                          serviceName:
+                              canonicalBooking?.service.serviceTitle
+                                      .trim()
+                                      .isNotEmpty ==
+                                  true
+                              ? canonicalBooking!.service.serviceTitle
+                              : widget.serviceName,
+                          providerName:
+                              canonicalBooking
+                                      ?.participants
+                                      .provider
+                                      .displayName
+                                      .trim()
+                                      .isNotEmpty ==
+                                  true
+                              ? canonicalBooking!
+                                    .participants
+                                    .provider
+                                    .displayName
+                              : widget.providerName,
+                          category: canonicalBooking?.service.category ?? '',
+                          currentState: canonicalBooking == null
+                              ? widget.initialResult.state
+                              : _effectiveDisplayState(canonicalBooking),
+                          serviceImageUrl: widget.serviceImageUrl,
+                          serviceId: canonicalBooking?.serviceId ?? '',
+                          servicesRepository: _servicesRepository,
+                        ),
+                        const SizedBox(height: 16),
+                        const BookingDetailsSectionLabel('Booking summary'),
+                        const SizedBox(height: 10),
+                        BookingSummaryCard(
+                          rows: _buildActiveSummaryRows(canonicalBooking),
+                        ),
+                        const SizedBox(height: 16),
+                        const BookingDetailsSectionLabel('Booking status'),
+                        const SizedBox(height: 10),
+                        BookingStatusCard(
+                          model: _buildActiveStatusCard(
+                            canonicalBooking,
+                            status,
                           ),
-                        if (canOpenPayment) ...[
-                          if (status.canCancel) const SizedBox(height: 10),
-                          GradientButton(
-                            label:
-                                canonicalBooking!.payment.paymentAttemptId
-                                    .trim()
-                                    .isNotEmpty
-                                ? 'Resume Payment'
-                                : 'Pay Now',
-                            onPressed: () => Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => CanonicalBookingPaymentScreen(
-                                  bookingId: widget.bookingId,
-                                  serviceName: widget.serviceName,
-                                  providerName: widget.providerName,
-                                  serviceImageUrl: widget.serviceImageUrl,
-                                ),
-                              ),
-                            ),
+                        ),
+                        const SizedBox(height: 16),
+                        const BookingDetailsSectionLabel('Booking timeline'),
+                        const SizedBox(height: 10),
+                        BookingTimelineCard(
+                          steps: _buildActiveTimeline(canonicalBooking),
+                        ),
+                        if (_activeDeadline(canonicalBooking) != null ||
+                            status.timerStartsAtLabel != null) ...[
+                          const SizedBox(height: 16),
+                          const BookingDetailsSectionLabel('Response window'),
+                          const SizedBox(height: 10),
+                          _ActiveCountdownCard(
+                            title: canOpenPayment
+                                ? 'Payment window'
+                                : 'Response window',
+                            deadline: _activeDeadline(canonicalBooking),
+                            fallbackMessage: status.timerStartsAtLabel,
                           ),
                         ],
-                        if (status.canCancel || canOpenPayment)
-                          const SizedBox(height: 10),
-                        SecondaryButton(
-                          label: 'Close',
-                          onPressed: _handleClosePressed,
+                        const SizedBox(height: 16),
+                        const BookingDetailsSectionLabel('Financial summary'),
+                        const SizedBox(height: 10),
+                        FinancialSummaryCard(
+                          rows: _buildActiveFinancialRows(
+                            canOpenPayment: canOpenPayment,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const BookingDetailsSectionLabel(
+                          'Important information',
+                        ),
+                        const SizedBox(height: 10),
+                        ImportantInformationCard(
+                          model: _buildActiveInformation(
+                            canOpenPayment: canOpenPayment,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const BookingDetailsSectionLabel('Primary actions'),
+                        const SizedBox(height: 10),
+                        BookingDetailsSurfaceCard(
+                          child: Column(
+                            children: [
+                              if (status.canCancel)
+                                SecondaryButton(
+                                  label: _isCancelling
+                                      ? 'Cancelling...'
+                                      : 'Cancel Request',
+                                  onPressed: _isCancelling
+                                      ? null
+                                      : _cancelRequest,
+                                  icon: Icons.close_rounded,
+                                ),
+                              if (canOpenPayment) ...[
+                                if (status.canCancel)
+                                  const SizedBox(height: 10),
+                                GradientButton(
+                                  label:
+                                      canonicalBooking!.payment.paymentAttemptId
+                                          .trim()
+                                          .isNotEmpty
+                                      ? 'Resume Payment'
+                                      : 'Pay Now',
+                                  onPressed: () => Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          CanonicalBookingPaymentScreen(
+                                            bookingId: widget.bookingId,
+                                            serviceName: widget.serviceName,
+                                            providerName: widget.providerName,
+                                            serviceImageUrl:
+                                                widget.serviceImageUrl,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (status.canCancel || canOpenPayment)
+                                const SizedBox(height: 10),
+                              SecondaryButton(
+                                label: 'Close',
+                                onPressed: _handleClosePressed,
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
                   ),
-                ],
-              ),
+                if (_isLoadingServiceDetails)
+                  const PettxoFullScreenLoader(
+                    message: 'LOADING SERVICE DETAILS...',
+                    mode: PettxoFullScreenLoaderMode.frosted,
+                  ),
+              ],
             );
           },
         ),
@@ -1279,7 +1305,8 @@ class _CanonicalBookingRequestStatusScreenState
 
   Future<void> _bookAgain(CanonicalBookingDocumentV3 booking) async {
     final serviceId = booking.serviceId.trim();
-    if (serviceId.isEmpty) {
+    if (serviceId.isEmpty || _isLoadingServiceDetails) {
+      if (_isLoadingServiceDetails) return;
       AppSnackbar.showWarning(
         context,
         'This service is not available to book again right now.',
@@ -1287,10 +1314,9 @@ class _CanonicalBookingRequestStatusScreenState
       return;
     }
 
-    AppLoader.showWithMessage('Loading service details...');
+    setState(() => _isLoadingServiceDetails = true);
     try {
       final service = await _servicesRepository.fetchServiceById(serviceId);
-      AppLoader.hide();
       if (!mounted) return;
 
       if (service == null || service.isDeleted || !service.isActive) {
@@ -1312,9 +1338,12 @@ class _CanonicalBookingRequestStatusScreenState
         ),
       );
     } catch (_) {
-      AppLoader.hide();
       if (!mounted) return;
       AppSnackbar.showError(context, 'Could not open this service right now.');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingServiceDetails = false);
+      }
     }
   }
 

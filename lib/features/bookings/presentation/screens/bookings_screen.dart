@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
-import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/pettxo_full_screen_loader.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
@@ -80,6 +80,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
   String? _canonicalActionBookingId;
   String? _canonicalActionType;
   String? _openingCanonicalBookingId;
+  bool _isLoadingServiceDetails = false;
   final Map<String, String> _bookingDiagnosticsSignatures = {};
   bool _isHandlingBackNavigation = false;
 
@@ -387,7 +388,8 @@ class _BookingsScreenState extends State<BookingsScreen> {
     CanonicalBookingDocumentV3 booking,
   ) async {
     final serviceId = booking.serviceId.trim();
-    if (serviceId.isEmpty) {
+    if (serviceId.isEmpty || _isLoadingServiceDetails) {
+      if (_isLoadingServiceDetails) return;
       _showToast(
         'This service is not available to book again right now.',
         tone: AppSnackbarTone.warning,
@@ -395,10 +397,9 @@ class _BookingsScreenState extends State<BookingsScreen> {
       return;
     }
 
-    AppLoader.showWithMessage('Loading service details...');
+    setState(() => _isLoadingServiceDetails = true);
     try {
       final service = await _servicesRepository.fetchServiceById(serviceId);
-      AppLoader.hide();
       if (!mounted) return;
 
       if (service == null || service.isDeleted || !service.isActive) {
@@ -420,12 +421,15 @@ class _BookingsScreenState extends State<BookingsScreen> {
         ),
       );
     } catch (_) {
-      AppLoader.hide();
       if (!mounted) return;
       _showToast(
         'Could not open this service right now.',
         tone: AppSnackbarTone.error,
       );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingServiceDetails = false);
+      }
     }
   }
 
@@ -866,6 +870,11 @@ class _BookingsScreenState extends State<BookingsScreen> {
                 ),
               ),
             ),
+            if (_isLoadingServiceDetails)
+              const PettxoFullScreenLoader(
+                message: 'LOADING SERVICE DETAILS...',
+                mode: PettxoFullScreenLoaderMode.frosted,
+              ),
           ],
         ),
         bottomNavigationBar: const SocialBottomNav(
