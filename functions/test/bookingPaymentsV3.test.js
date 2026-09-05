@@ -2391,6 +2391,63 @@ test("submitRefundInstructionV3 uses the QR-originated Razorpay payment id witho
   }
 });
 
+test("submitRefundInstructionV3 skips dispute-origin manual refunds before any Razorpay submission", async () => {
+  const bookingId = "booking-dispute-manual-refund-1";
+  const originalRefundProcessor = razorpayGateway.processRazorpayRefundV3;
+  let callCount = 0;
+  razorpayGateway.processRazorpayRefundV3 = async () => {
+    callCount += 1;
+    return {
+      razorpayRefundId: "rfnd_should_not_run",
+      status: "submitted",
+    };
+  };
+
+  try {
+    const firestore = new FakeFirestore({
+      [`bookings/${bookingId}/paymentAttempts/attempt-1`]: {
+        bookingId,
+        paymentAttemptId: "attempt-1",
+        state: "REFUND_REQUIRED",
+        amountPaise: 25000,
+        razorpayPaymentId: "pay_manual_refund_1",
+        reconciliationAttemptCount: 0,
+      },
+      [`refunds/${bookingId}`]: {
+        bookingId,
+        paymentAttemptId: "attempt-1",
+        refundAmountPaise: 25000,
+        reasonCode: "DISPUTE_CUSTOMER_REFUND",
+        state: "pending",
+        origin: "DISPUTE_RESOLUTION",
+        executionMode: "MANUAL",
+      },
+    });
+
+    const outcome = await submitRefundInstructionV3({
+      firestore,
+      bookingId,
+      paymentAttemptId: "attempt-1",
+      keyId: "key",
+      keySecret: "secret",
+      authoritativeNow: new Date("2026-07-22T10:40:00.000Z"),
+    });
+
+    assert.equal(outcome, "SKIPPED");
+    assert.equal(callCount, 0);
+    assert.equal(
+      firestore.store.get(`bookings/${bookingId}/paymentAttempts/attempt-1`).state,
+      "REFUND_REQUIRED",
+    );
+    assert.equal(
+      firestore.store.get(`refunds/${bookingId}`).state,
+      "pending",
+    );
+  } finally {
+    razorpayGateway.processRazorpayRefundV3 = originalRefundProcessor;
+  }
+});
+
 test("zero-payable capacity loss stays unconfirmed without creating a Razorpay refund instruction", () => {
   const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
   const pricing = resolveCanonicalPricingV3({

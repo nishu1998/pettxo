@@ -574,6 +574,14 @@ test("completed pending review booking finalizes exactly once when the review wi
     [`bookingFinancials/${bookingId}`]: {},
     [`providerEarnings/${bookingId}`]: {},
     [`payoutReadiness/${bookingId}`]: {},
+    [`users/${booking.providerId}/providerBankDetails/main`]: {
+      status: "submitted",
+      schemaVersion: 3,
+      hasBankAccount: true,
+      hasUpi: false,
+      preferredPayoutMethod: "BANK_ACCOUNT",
+      accountNumberMasked: "XXXX4321",
+    },
   });
 
   const result = await finalizeCompletedBookingV3({
@@ -586,12 +594,61 @@ test("completed pending review booking finalizes exactly once when the review wi
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "COMPLETED_FINAL");
   assert.equal(firestore.store.get(`payoutReadiness/${bookingId}`).status, "READY");
   assert.equal(
+    firestore.store.get(`providerPayouts/${bookingId}`).status,
+    "READY",
+  );
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/provider_payout_${bookingId}`).status,
+    "READY",
+  );
+  assert.equal(
     firestore.store.get(`bookings/${bookingId}/events/booking_finalized`).event,
     "booking_finalized",
   );
   assert.equal(
     firestore.store.get(`bookings/${bookingId}/events/payout_ready`).event,
     "payout_ready",
+  );
+});
+
+test("finalization keeps payout held and creates a held provider obligation when payout details are missing", async () => {
+  const bookingId = "booking-finalize-held-1";
+  const booking = buildInProgressBooking();
+  booking.state = "COMPLETED_PENDING_REVIEW";
+  booking.stateQueryValue = "COMPLETED_PENDING_REVIEW";
+  booking.lifecycle.completedAt = new Date("2026-07-23T06:10:00.000Z");
+  booking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T06:10:00.000Z");
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`bookingFinancials/${bookingId}`]: {},
+    [`providerEarnings/${bookingId}`]: {},
+    [`payoutReadiness/${bookingId}`]: {},
+  });
+
+  const result = await finalizeCompletedBookingV3({
+    firestore,
+    bookingId,
+    authoritativeNow: new Date("2026-07-24T06:11:00.000Z"),
+  });
+
+  assert.equal(result.code, "FINALIZED");
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "COMPLETED_FINAL");
+  assert.equal(firestore.store.get(`payoutReadiness/${bookingId}`).status, "HELD");
+  assert.equal(
+    firestore.store.get(`providerPayouts/${bookingId}`).status,
+    "HELD",
+  );
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/provider_payout_${bookingId}`).status,
+    "HELD",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${bookingId}/events/booking_finalized`).event,
+    "booking_finalized",
+  );
+  assert.equal(
+    firestore.store.has(`bookings/${bookingId}/events/payout_ready`),
+    false,
   );
 });
 

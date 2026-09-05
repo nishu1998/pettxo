@@ -327,6 +327,207 @@ function seedCanonicalQrBookingStore() {
   });
 }
 
+function computeSettlementAggregate(providerStatus, customerStatus) {
+  const actionable = [providerStatus, customerStatus].filter(Boolean);
+  if (actionable.length === 0) return "COMPLETED";
+  const completedCount = actionable.filter((status) => status === "COMPLETED").length;
+  const terminalCount = actionable.filter((status) =>
+    status === "COMPLETED" || status === "CANCELLED",
+  ).length;
+  if (completedCount === 0) return "PENDING";
+  if (terminalCount >= actionable.length) return "COMPLETED";
+  return "PARTIALLY_COMPLETED";
+}
+
+function computeManualSettlementStatus(providerStatus, customerStatus) {
+  if (customerStatus && customerStatus !== "COMPLETED" && customerStatus !== "CANCELLED") {
+    return customerStatus;
+  }
+  if (providerStatus) return providerStatus;
+  if (customerStatus) return customerStatus;
+  return "COMPLETED";
+}
+
+async function seedManualDisputeRefundScenario(overrides = {}) {
+  const ids = {
+    bookingId: "booking_manual_refund_1",
+    paymentAttemptId: "attempt_manual_refund_1",
+    razorpayOrderId: "order_manual_refund_1",
+    razorpayPaymentId: "pay_manual_refund_1",
+    ...overrides.ids,
+  };
+  const fixture = buildCanonicalPaymentRaceFixture({ids});
+  const confirmResult = finalizeCapturedBookingPaymentV3({
+    bookingId: fixture.ids.bookingId,
+    booking: fixture.booking,
+    paymentAttempt: fixture.paymentAttempt,
+    parent: fixture.parent,
+    service: fixture.service,
+    slotOccupancy: fixture.slotOccupancy,
+    rangeOccupancy: fixture.rangeOccupancy,
+    razorpayPayment: fixture.razorpayPayment,
+    authoritativeNow: fixture.authoritativeNow,
+    verificationSource: "callable",
+  });
+  const firestore = new FakeFirestore({
+    [`canonicalPaymentOrderMappings/${fixture.ids.razorpayOrderId}`]: {
+      bookingId: fixture.ids.bookingId,
+      paymentAttemptId: fixture.ids.paymentAttemptId,
+      schemaVersion: 1,
+    },
+  });
+  await persistFinalizePaymentResultV3({
+    firestore,
+    result: confirmResult,
+    bookingId: fixture.ids.bookingId,
+  });
+
+  const customerRefundAmountPaise = overrides.customerRefundAmountPaise ?? 3000;
+  const providerPayoutAmountPaise = overrides.providerPayoutAmountPaise ?? 5500;
+  const providerStatus = overrides.providerStatus ?? "READY";
+  const customerStatus = overrides.customerStatus ?? "PROCESSING";
+  const refundState = overrides.refundState ?? "manual_recorded";
+  const manualRefundStatus = overrides.manualRefundStatus ?? "INITIATED";
+  const refundId = overrides.refundId ?? "rfnd_manual_1";
+  const resolutionId = `resolution_${fixture.ids.bookingId}`;
+  const customerObligationId = `customer_refund_${resolutionId}`;
+  const providerObligationId = `provider_payout_${fixture.ids.bookingId}`;
+  const aggregateStatus = computeSettlementAggregate(providerStatus, customerStatus);
+  const manualSettlementStatus = computeManualSettlementStatus(
+    providerStatus,
+    customerStatus,
+  );
+  const obligationIds = [];
+  if (providerStatus) obligationIds.push(providerObligationId);
+  if (customerStatus) obligationIds.push(customerObligationId);
+
+  firestore._set(`bookings/${fixture.ids.bookingId}`, {
+    dispute: {
+      disputeId: fixture.ids.bookingId,
+      status: "RESOLVED",
+      resolution: "PARTIAL_REFUND",
+      financialSettlementStatus: aggregateStatus,
+      manualSettlementObligationIds: obligationIds,
+    },
+    payment: {
+      status: "CONFIRMED",
+      razorpayPaymentId: fixture.ids.razorpayPaymentId,
+      razorpayOrderId: fixture.ids.razorpayOrderId,
+    },
+  }, {merge: true});
+  firestore._set(`refunds/${fixture.ids.bookingId}`, {
+    bookingId: fixture.ids.bookingId,
+    paymentAttemptId: fixture.ids.paymentAttemptId,
+    userId: fixture.booking.parentId,
+    providerId: fixture.booking.providerId,
+    razorpayPaymentId: fixture.ids.razorpayPaymentId,
+    razorpayRefundId: refundId,
+    refundAmountPaise: customerRefundAmountPaise,
+    state: refundState,
+    executionMode: "MANUAL",
+    origin: "DISPUTE_RESOLUTION",
+    manualRefundStatus,
+    updatedAt: fixture.authoritativeNow,
+  }, {merge: true});
+  firestore._set(`bookingDisputeResolutions/${resolutionId}`, {
+    resolutionId,
+    bookingId: fixture.ids.bookingId,
+    disputeId: fixture.ids.bookingId,
+    resolutionType: "PARTIAL_REFUND",
+    customerRefundPaise: customerRefundAmountPaise,
+    providerFinalEntitlementPaise: providerPayoutAmountPaise,
+    financialSettlementStatus: aggregateStatus,
+    manualSettlementObligationIds: obligationIds,
+  }, {merge: true});
+  firestore._set(`disputes/${fixture.ids.bookingId}`, {
+    disputeId: fixture.ids.bookingId,
+    bookingId: fixture.ids.bookingId,
+    status: "RESOLVED",
+    financialSettlementStatus: aggregateStatus,
+    resolution: {
+      type: "PARTIAL_REFUND",
+      financialSettlementStatus: aggregateStatus,
+      manualSettlementObligationIds: obligationIds,
+    },
+  }, {merge: true});
+  firestore._set(`manualSettlementObligations/${customerObligationId}`, {
+    obligationId: customerObligationId,
+    bookingId: fixture.ids.bookingId,
+    disputeId: fixture.ids.bookingId,
+    disputeResolutionId: resolutionId,
+    recipientType: "CUSTOMER",
+    obligationType: "CUSTOMER_REFUND",
+    recipientUserId: fixture.booking.parentId,
+    amountPaise: customerRefundAmountPaise,
+    currency: "INR",
+    source: "DISPUTE_RESOLUTION",
+    status: customerStatus,
+    financialSettlementStatus: aggregateStatus,
+    reasonCode: "DISPUTE_CUSTOMER_REFUND",
+    holdReason: "",
+    relatedPayoutId: "",
+    relatedRefundId: fixture.ids.bookingId,
+    paymentAttemptId: fixture.ids.paymentAttemptId,
+    razorpayOrderId: fixture.ids.razorpayOrderId,
+    razorpayPaymentId: fixture.ids.razorpayPaymentId,
+    createdAt: fixture.authoritativeNow,
+    updatedAt: fixture.authoritativeNow,
+    readyAt: fixture.authoritativeNow,
+    completedAt: customerStatus === "COMPLETED" ? fixture.authoritativeNow : null,
+    completedByAdminUid: customerStatus === "COMPLETED" ? "super-1" : "",
+    metadata: {razorpayRefundId: refundId},
+  }, {merge: true});
+  if (providerStatus) {
+    firestore._set(`manualSettlementObligations/${providerObligationId}`, {
+      obligationId: providerObligationId,
+      bookingId: fixture.ids.bookingId,
+      disputeId: fixture.ids.bookingId,
+      disputeResolutionId: resolutionId,
+      recipientType: "PROVIDER",
+      obligationType: "PROVIDER_PAYOUT",
+      recipientUserId: fixture.booking.providerId,
+      amountPaise: providerPayoutAmountPaise,
+      currency: "INR",
+      source: "DISPUTE_RESOLUTION",
+      status: providerStatus,
+      financialSettlementStatus: aggregateStatus,
+      reasonCode: "DISPUTE_PROVIDER_PAYOUT",
+      holdReason: "",
+      relatedPayoutId: fixture.ids.bookingId,
+      relatedRefundId: fixture.ids.bookingId,
+      paymentAttemptId: fixture.ids.paymentAttemptId,
+      razorpayOrderId: fixture.ids.razorpayOrderId,
+      razorpayPaymentId: fixture.ids.razorpayPaymentId,
+      createdAt: fixture.authoritativeNow,
+      updatedAt: fixture.authoritativeNow,
+      readyAt: fixture.authoritativeNow,
+      completedAt: providerStatus === "COMPLETED" ? fixture.authoritativeNow : null,
+      completedByAdminUid: providerStatus === "COMPLETED" ? "super-1" : "",
+      metadata: {},
+    }, {merge: true});
+    firestore._set(`providerPayouts/${fixture.ids.bookingId}`, {
+      payoutId: fixture.ids.bookingId,
+      bookingId: fixture.ids.bookingId,
+      providerId: fixture.booking.providerId,
+      status: providerStatus === "COMPLETED" ? "PAID" : "READY",
+      providerEntitlementPaise: providerPayoutAmountPaise,
+      priorPaidPaise: providerStatus === "COMPLETED" ? providerPayoutAmountPaise : 0,
+      remainingPayablePaise: providerStatus === "COMPLETED" ? 0 : providerPayoutAmountPaise,
+      currency: "INR",
+    }, {merge: true});
+  }
+  firestore._set(`payoutReadiness/${fixture.ids.bookingId}`, {
+    status: providerStatus === "COMPLETED" ? "PAID" : "READY",
+    payoutStatus: providerStatus === "COMPLETED" ? "PAID" : "READY",
+    manualSettlementStatus,
+  }, {merge: true});
+  firestore._set(`providerEarnings/${fixture.ids.bookingId}`, {
+    status: providerStatus === "COMPLETED" ? "PAID" : "READY",
+  }, {merge: true});
+
+  return {fixture, firestore, resolutionId, customerObligationId, providerObligationId};
+}
+
 test("verifyRazorpayWebhookSignatureV3 uses the raw webhook body", () => {
   const secret = "webhook_secret";
   const rawBody = Buffer.from('{"event":"payment.captured","id":1}');
@@ -1531,4 +1732,214 @@ test("refund.processed synchronizes cancellation refund status and persists safe
   assert.equal(notificationDoc.type, "booking_refund_processed");
   assertNoPrivateLeakage(notificationDoc.data);
   assertNoPrivateLeakage(notificationDoc);
+});
+
+test("manual dispute refund.created stays non-final and does not enter cancellation refund flow", async () => {
+  const {fixture, firestore, customerObligationId, providerObligationId, resolutionId} =
+    await seedManualDisputeRefundScenario({
+      ids: {
+        bookingId: "booking_manual_created_1",
+        paymentAttemptId: "attempt_manual_created_1",
+        razorpayOrderId: "order_manual_created_1",
+        razorpayPaymentId: "pay_manual_created_1",
+      },
+      providerStatus: "READY",
+      customerStatus: "PROCESSING",
+      manualRefundStatus: "INITIATED",
+      refundState: "manual_recorded",
+    });
+
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "refund.created:rfnd_manual_created_1",
+    eventName: "refund.created",
+    paymentEntity: {},
+    refundEntity: {
+      id: "rfnd_manual_1",
+      payment_id: fixture.ids.razorpayPaymentId,
+      amount: 3000,
+      status: "created",
+    },
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-07-22T10:45:00.000Z"),
+  });
+
+  assert.equal(result.outcome, "REFUND_UPDATED");
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/${customerObligationId}`).status,
+    "PROCESSING",
+  );
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/${providerObligationId}`).status,
+    "READY",
+  );
+  assert.equal(
+    firestore.store.get(`bookingDisputeResolutions/${resolutionId}`).financialSettlementStatus,
+    "PENDING",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${fixture.ids.bookingId}`).state,
+    "manual_recorded",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${fixture.ids.bookingId}`).manualRefundStatus,
+    "CREATED",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${fixture.ids.bookingId}`).payment.status,
+    "CONFIRMED",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${fixture.ids.bookingId}`).status,
+    "READY",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${fixture.ids.bookingId}`).manualSettlementStatus,
+    "PROCESSING",
+  );
+  assert.equal(
+    firestore.store.has(`bookingCancellations/${fixture.ids.bookingId}`),
+    false,
+  );
+});
+
+test("manual dispute refund.processed completes only the refund obligation and preserves provider payout state", async () => {
+  const {fixture, firestore, customerObligationId, providerObligationId, resolutionId} =
+    await seedManualDisputeRefundScenario({
+      ids: {
+        bookingId: "booking_manual_processed_1",
+        paymentAttemptId: "attempt_manual_processed_1",
+        razorpayOrderId: "order_manual_processed_1",
+        razorpayPaymentId: "pay_manual_processed_1",
+      },
+      providerStatus: "COMPLETED",
+      customerStatus: "PROCESSING",
+      manualRefundStatus: "INITIATED",
+      refundState: "manual_recorded",
+    });
+
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "refund.processed:rfnd_manual_processed_1",
+    eventName: "refund.processed",
+    paymentEntity: {},
+    refundEntity: {
+      id: "rfnd_manual_1",
+      payment_id: fixture.ids.razorpayPaymentId,
+      amount: 3000,
+      status: "processed",
+    },
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-07-22T10:50:00.000Z"),
+  });
+
+  assert.equal(result.outcome, "REFUND_UPDATED");
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/${customerObligationId}`).status,
+    "COMPLETED",
+  );
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/${providerObligationId}`).status,
+    "COMPLETED",
+  );
+  assert.equal(
+    firestore.store.get(`bookingDisputeResolutions/${resolutionId}`).financialSettlementStatus,
+    "COMPLETED",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${fixture.ids.bookingId}`).state,
+    "processed",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${fixture.ids.bookingId}`).manualRefundStatus,
+    "PROCESSED",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${fixture.ids.bookingId}`).payment.status,
+    "CONFIRMED",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${fixture.ids.bookingId}`).status,
+    "PAID",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${fixture.ids.bookingId}`).manualSettlementStatus,
+    "COMPLETED",
+  );
+  assert.equal(
+    firestore.store.has(`bookingCancellations/${fixture.ids.bookingId}`),
+    false,
+  );
+});
+
+test("manual dispute refund.failed moves the refund obligation into attention without destructive booking refund mutations", async () => {
+  const {fixture, firestore, customerObligationId, providerObligationId, resolutionId} =
+    await seedManualDisputeRefundScenario({
+      ids: {
+        bookingId: "booking_manual_failed_1",
+        paymentAttemptId: "attempt_manual_failed_1",
+        razorpayOrderId: "order_manual_failed_1",
+        razorpayPaymentId: "pay_manual_failed_1",
+      },
+      providerStatus: "COMPLETED",
+      customerStatus: "PROCESSING",
+      manualRefundStatus: "INITIATED",
+      refundState: "manual_recorded",
+    });
+
+  const result = await routeCanonicalWebhookEventV3({
+    firestore,
+    eventId: "refund.failed:rfnd_manual_failed_1",
+    eventName: "refund.failed",
+    paymentEntity: {},
+    refundEntity: {
+      id: "rfnd_manual_1",
+      payment_id: fixture.ids.razorpayPaymentId,
+      amount: 3000,
+      status: "failed",
+    },
+    keyId: "key",
+    keySecret: "secret",
+    authoritativeNow: new Date("2026-07-22T10:55:00.000Z"),
+  });
+
+  assert.equal(result.outcome, "REFUND_UPDATED");
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/${customerObligationId}`).status,
+    "NEEDS_ATTENTION",
+  );
+  assert.equal(
+    firestore.store.get(`manualSettlementObligations/${providerObligationId}`).status,
+    "COMPLETED",
+  );
+  assert.equal(
+    firestore.store.get(`bookingDisputeResolutions/${resolutionId}`).financialSettlementStatus,
+    "PARTIALLY_COMPLETED",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${fixture.ids.bookingId}`).state,
+    "failed",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${fixture.ids.bookingId}`).manualRefundStatus,
+    "FAILED",
+  );
+  assert.equal(
+    firestore.store.get(`bookings/${fixture.ids.bookingId}`).payment.status,
+    "CONFIRMED",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${fixture.ids.bookingId}`).status,
+    "PAID",
+  );
+  assert.equal(
+    firestore.store.get(`payoutReadiness/${fixture.ids.bookingId}`).manualSettlementStatus,
+    "NEEDS_ATTENTION",
+  );
+  assert.equal(
+    firestore.store.has(`bookingCancellations/${fixture.ids.bookingId}`),
+    false,
+  );
 });

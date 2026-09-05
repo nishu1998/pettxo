@@ -2128,6 +2128,14 @@ export async function submitRefundInstructionV3(params: {
   if (loaded.attempt.state !== "REFUND_REQUIRED" && loaded.attempt.state !== "REFUND_PENDING") {
     return "SKIPPED";
   }
+  const refundExecutionMode = asString(loaded.refund.executionMode).toUpperCase();
+  const refundOrigin = asString(loaded.refund.origin).toUpperCase();
+  if (
+    refundExecutionMode === "MANUAL" ||
+    refundOrigin === "DISPUTE_RESOLUTION"
+  ) {
+    return "SKIPPED";
+  }
   if (!loaded.attempt.razorpayPaymentId) return "SKIPPED";
 
   try {

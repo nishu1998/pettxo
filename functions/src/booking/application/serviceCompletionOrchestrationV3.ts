@@ -13,6 +13,11 @@ import {
   buildBookingReviewReceivedNotification,
   buildServiceCompletedNotification,
 } from "./bookingNotificationsV3";
+import {
+  buildCanonicalProviderPayoutDocumentV3,
+  evaluateCanonicalProviderPayoutEligibilityV3,
+  syncManualSettlementObligationsV3,
+} from "./financialSettlementV3";
 import {resolveCanonicalCompletionAvailableAtV3} from "./serviceStartOrchestrationV3";
 
 export const BOOKING_SERVICE_COMPLETIONS_COLLECTION = "bookingServiceCompletions";
@@ -1241,6 +1246,7 @@ export async function finalizeCompletedBookingV3(params: {
   const bookingFinancialRef = params.firestore.collection("bookingFinancials").doc(params.bookingId);
   const providerEarningRef = params.firestore.collection("providerEarnings").doc(params.bookingId);
   const payoutReadinessRef = params.firestore.collection("payoutReadiness").doc(params.bookingId);
+  const providerPayoutRef = params.firestore.collection("providerPayouts").doc(params.bookingId);
 
   return params.firestore.runTransaction(async (transaction) => {
     const bookingSnapshot = await transaction.get(bookingRef);
@@ -1276,7 +1282,73 @@ export async function finalizeCompletedBookingV3(params: {
         payoutEligibleAt: null,
       };
     }
+    const providerBankRef = params.firestore
+      .collection("users")
+      .doc(booking.providerId)
+      .collection("providerBankDetails")
+      .doc("main");
+    const [providerPayoutSnapshot, providerBankDetailsSnapshot, existingProviderObligationSnapshot] =
+      await Promise.all([
+        transaction.get(providerPayoutRef),
+        transaction.get(providerBankRef),
+        transaction.get(
+          params.firestore
+            .collection("manualSettlementObligations")
+            .doc(`provider_payout_${params.bookingId}`),
+        ),
+      ]);
+    const existingPayout = providerPayoutSnapshot.exists ?
+      providerPayoutSnapshot.data() ?? {} :
+      null;
     const finalizedAt = new Date(authoritativeNow.getTime());
+    const finalizedBooking = {
+      ...booking,
+      state: "COMPLETED_FINAL" as const,
+      payout: {
+        ...booking.payout,
+        eligibleAt: finalizedAt,
+      },
+    };
+    const payoutEligibility = evaluateCanonicalProviderPayoutEligibilityV3({
+      booking: finalizedBooking,
+      existingPayout,
+      existingRefund: null,
+      providerBankDetails:
+        providerBankDetailsSnapshot.exists ?
+          providerBankDetailsSnapshot.data() ?? {} :
+          null,
+      authoritativeNow: finalizedAt,
+    });
+    const payoutDocument = buildCanonicalProviderPayoutDocumentV3({
+      bookingId: params.bookingId,
+      booking: finalizedBooking,
+      priorPaidPaise: Number(existingPayout?.priorPaidPaise ?? 0) || 0,
+      status: payoutEligibility.status,
+      holdReason: payoutEligibility.holdReason,
+      eligibleAt: finalizedAt,
+      readyAt: payoutEligibility.readyAt,
+      now: finalizedAt,
+    });
+    const obligationSync = syncManualSettlementObligationsV3({
+      transaction,
+      firestore: params.firestore,
+      bookingId: params.bookingId,
+      booking: finalizedBooking,
+      now: finalizedAt,
+      providerPayout: {
+        payoutId: payoutDocument.payoutId,
+        providerEntitlementPaise: payoutDocument.providerEntitlementPaise,
+        remainingPayablePaise: payoutDocument.remainingPayablePaise,
+        status: payoutDocument.status,
+        holdReason: payoutDocument.holdReason,
+        readyAt: payoutDocument.readyAt,
+      },
+      source: "NORMAL_COMPLETION",
+      existingProviderObligation:
+        existingProviderObligationSnapshot.exists ?
+          existingProviderObligationSnapshot.data() ?? {} :
+          null,
+    });
     const finalEvent = buildBookingEventPlan({
       bookingId: params.bookingId,
       event: "booking_finalized",
@@ -1298,40 +1370,50 @@ export async function finalizeCompletedBookingV3(params: {
         bookingType: booking.bookingType,
         state: "COMPLETED_FINAL",
       }),
-      ...buildBookingPayoutReadyNotifications({
-        bookingId: params.bookingId,
-        providerId: booking.providerId,
-        bookingType: booking.bookingType,
-        state: "COMPLETED_FINAL",
-      }),
+      ...(payoutEligibility.status === "READY" ?
+        buildBookingPayoutReadyNotifications({
+          bookingId: params.bookingId,
+          providerId: booking.providerId,
+          bookingType: booking.bookingType,
+          state: "COMPLETED_FINAL",
+        }) :
+        []),
     ];
     transaction.set(bookingRef, {
       state: "COMPLETED_FINAL",
       stateQueryValue: "COMPLETED_FINAL",
       updatedAt: Timestamp.fromDate(finalizedAt),
       "lifecycle.finalizedAt": Timestamp.fromDate(finalizedAt),
-      "payout.status": "READY",
+      "payout.status": payoutEligibility.status,
       "payout.eligibleAt": Timestamp.fromDate(finalizedAt),
       "payout.providerPayoutPaise": booking.financials.providerPayoutPaise,
       "audit.lastUpdatedBy": "system",
     }, {merge: true});
     transaction.set(bookingFinancialRef, {
-      status: "READY",
+      status: payoutEligibility.status === "READY" ? "READY" : "HELD",
       payoutEligibleAt: Timestamp.fromDate(finalizedAt),
       disputeStatus: "NONE",
       updatedAt: Timestamp.fromDate(finalizedAt),
       policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
     }, {merge: true});
     transaction.set(providerEarningRef, {
-      status: "READY",
-      eligibleAt: Timestamp.fromDate(finalizedAt),
+      status: payoutEligibility.status === "READY" ? "READY" : "HELD",
+      eligibleAt:
+        payoutEligibility.readyAt == null ?
+          null :
+          Timestamp.fromDate(payoutEligibility.readyAt),
       updatedAt: Timestamp.fromDate(finalizedAt),
       policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
     }, {merge: true});
     transaction.set(payoutReadinessRef, {
-      status: "READY",
-      payoutStatus: "READY",
-      eligibleAt: Timestamp.fromDate(finalizedAt),
+      status: payoutEligibility.status,
+      payoutStatus: payoutEligibility.status,
+      manualSettlementStatus:
+        obligationSync.providerObligation?.status ?? "CANCELLED",
+      eligibleAt:
+        payoutEligibility.readyAt == null ?
+          null :
+          Timestamp.fromDate(payoutEligibility.readyAt),
       providerAmount: booking.financials.providerPayoutPaise,
       providerAmountPaise: booking.financials.providerPayoutPaise,
       pettxoAmount: booking.financials.platformCommissionPaise,
@@ -1342,7 +1424,19 @@ export async function finalizeCompletedBookingV3(params: {
       couponCostPaise: booking.financials.pettxoCouponFundingPaise,
       policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
       updatedAt: Timestamp.fromDate(finalizedAt),
-      eligibilityReason: "Ready because the review and dispute window closed without an open dispute.",
+      eligibilityReason:
+        payoutEligibility.holdReason ||
+        "Ready because the review and dispute window closed without an open dispute.",
+    }, {merge: true});
+    transaction.set(providerPayoutRef, {
+      ...payoutDocument,
+      eligibleAt: Timestamp.fromDate(finalizedAt),
+      readyAt:
+        payoutDocument.readyAt == null ?
+          null :
+          Timestamp.fromDate(payoutDocument.readyAt),
+      createdAt: existingPayout?.createdAt ?? Timestamp.fromDate(finalizedAt),
+      updatedAt: Timestamp.fromDate(finalizedAt),
     }, {merge: true});
     transaction.set(
       bookingRef.collection("events").doc(finalEvent.eventId),
@@ -1352,14 +1446,16 @@ export async function finalizeCompletedBookingV3(params: {
       },
       {merge: true},
     );
-    transaction.set(
-      bookingRef.collection("events").doc(payoutEvent.eventId),
-      {
-        ...payoutEvent.record,
-        at: Timestamp.fromDate(payoutEvent.record.at),
-      },
-      {merge: true},
-    );
+    if (payoutEligibility.status === "READY") {
+      transaction.set(
+        bookingRef.collection("events").doc(payoutEvent.eventId),
+        {
+          ...payoutEvent.record,
+          at: Timestamp.fromDate(payoutEvent.record.at),
+        },
+        {merge: true},
+      );
+    }
     persistNotificationsInTransaction({
       firestore: params.firestore,
       transaction,

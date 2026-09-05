@@ -178,6 +178,18 @@ function buildOpenDisputeBooking() {
   return booking;
 }
 
+function validProviderBankDetails(overrides = {}) {
+  return {
+    status: "submitted",
+    schemaVersion: 3,
+    hasBankAccount: true,
+    hasUpi: false,
+    preferredPayoutMethod: "BANK_ACCOUNT",
+    accountNumberMasked: "XXXX1234",
+    ...overrides,
+  };
+}
+
 test("dispute resolution is idempotent for matching repeated admin requests", async () => {
   const bookingId = "booking-dispute-1";
   const booking = buildOpenDisputeBooking();
@@ -238,7 +250,25 @@ test("dispute resolution is idempotent for matching repeated admin requests", as
   );
   assert.equal(
     firestore.store.get(`refunds/${bookingId}`).state,
-    "required",
+    "pending",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${bookingId}`).executionMode,
+    "MANUAL",
+  );
+  assert.equal(
+    firestore.store.get(`refunds/${bookingId}`).origin,
+    "DISPUTE_RESOLUTION",
+  );
+  assert.equal(
+    firestore.store.has(`manualSettlementObligations/provider_payout_${bookingId}`),
+    false,
+  );
+  assert.equal(
+    firestore.store.get(
+      `manualSettlementObligations/customer_refund_resolution_${bookingId}`,
+    ).obligationType,
+    "CUSTOMER_REFUND",
   );
 });
 
@@ -320,10 +350,8 @@ test("provider payout processing remains source-complete but live-disabled by de
       providerEntitlementPaise: booking.financials.providerPayoutPaise,
       remainingPayablePaise: booking.financials.providerPayoutPaise,
     },
-    [`users/${booking.providerId}/providerBankDetails/main`]: {
-      status: "submitted",
-      accountNumberMasked: "XXXX4321",
-    },
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
   });
 
   const result = await processProviderPayoutV3({
@@ -367,10 +395,8 @@ test("provider payout processing normalizes Firestore Timestamp eligibleAt value
 
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
-    [`users/${booking.providerId}/providerBankDetails/main`]: {
-      status: "submitted",
-      accountNumberMasked: "XXXX4321",
-    },
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
   });
 
   const result = await processProviderPayoutV3({
@@ -444,10 +470,8 @@ test("provider payout processing accepts serialized timestamp shapes from canoni
 
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
-    [`users/${booking.providerId}/providerBankDetails/main`]: {
-      status: "submitted",
-      accountNumberMasked: "XXXX4321",
-    },
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
   });
 
   const result = await processProviderPayoutV3({
@@ -478,10 +502,8 @@ test("provider payout processing does not crash when payout eligibleAt is malfor
 
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
-    [`users/${booking.providerId}/providerBankDetails/main`]: {
-      status: "submitted",
-      accountNumberMasked: "XXXX4321",
-    },
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
   });
 
   const result = await processProviderPayoutV3({
@@ -565,6 +587,10 @@ test("customer-win dispute on 100 percent Pettxo coupon never issues cash refund
   assert.equal(
     firestore.store.get(`providerPayouts/${bookingId}`).remainingPayablePaise,
     0,
+  );
+  assert.equal(
+    firestore.store.has(`manualSettlementObligations/provider_payout_${bookingId}`),
+    false,
   );
 });
 
@@ -657,10 +683,8 @@ test("successful payout processing is exactly once across replay and writes one 
 
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
-    [`users/${booking.providerId}/providerBankDetails/main`]: {
-      status: "submitted",
-      accountNumberMasked: "XXXX4321",
-    },
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
   });
 
   const first = await processProviderPayoutV3({
@@ -825,10 +849,8 @@ test("retry payout batch does not crash on Firestore Timestamp retry fields", as
       createdAt: Timestamp.fromDate(new Date("2026-07-23T08:00:00.000Z")),
       updatedAt: Timestamp.fromDate(new Date("2026-07-23T08:00:00.000Z")),
     },
-    [`users/${booking.providerId}/providerBankDetails/main`]: {
-      status: "submitted",
-      accountNumberMasked: "XXXX9999",
-    },
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX9999"}),
   });
 
   const results = await processRetryableProviderPayoutBatchV3({

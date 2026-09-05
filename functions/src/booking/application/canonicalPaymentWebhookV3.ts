@@ -51,6 +51,298 @@ function asRecord(value: unknown): Record<string, unknown> {
     {};
 }
 
+function mapManualSettlementObligationStatus(value: unknown):
+  "HELD" | "READY" | "PROCESSING" | "COMPLETED" | "CANCELLED" | "NEEDS_ATTENTION" {
+  const normalized = asString(value).toUpperCase();
+  if (
+    normalized === "HELD" ||
+    normalized === "READY" ||
+    normalized === "PROCESSING" ||
+    normalized === "COMPLETED" ||
+    normalized === "CANCELLED" ||
+    normalized === "NEEDS_ATTENTION"
+  ) {
+    return normalized;
+  }
+  return "HELD";
+}
+
+function isManualDisputeRefund(refund: Record<string, unknown> | null): boolean {
+  if (refund == null) return false;
+  return (
+    asString(refund.executionMode).toUpperCase() === "MANUAL" ||
+    asString(refund.origin).toUpperCase() === "DISPUTE_RESOLUTION"
+  );
+}
+
+function computeManualSettlementAggregateStatus(params: {
+  providerObligation: Record<string, unknown> | null;
+  customerObligation: Record<string, unknown> | null;
+}): "PENDING" | "PARTIALLY_COMPLETED" | "COMPLETED" {
+  const obligations = [params.providerObligation, params.customerObligation]
+    .filter((entry): entry is Record<string, unknown> => entry != null)
+    .filter((entry) => asInt(entry.amountPaise, 0) > 0);
+  if (obligations.length === 0) return "COMPLETED";
+  const completedCount = obligations.filter((entry) =>
+    mapManualSettlementObligationStatus(entry.status) === "COMPLETED",
+  ).length;
+  const terminalCount = obligations.filter((entry) => {
+    const status = mapManualSettlementObligationStatus(entry.status);
+    return status === "COMPLETED" || status === "CANCELLED";
+  }).length;
+  if (completedCount === 0) return "PENDING";
+  if (terminalCount >= obligations.length) return "COMPLETED";
+  return "PARTIALLY_COMPLETED";
+}
+
+function deriveManualSettlementStatus(params: {
+  providerObligation: Record<string, unknown> | null;
+  customerObligation: Record<string, unknown> | null;
+}): string {
+  const customerStatus = mapManualSettlementObligationStatus(
+    params.customerObligation?.status,
+  );
+  if (
+    params.customerObligation != null &&
+    customerStatus !== "COMPLETED" &&
+    customerStatus !== "CANCELLED"
+  ) {
+    return customerStatus;
+  }
+  if (params.providerObligation != null) {
+    return mapManualSettlementObligationStatus(params.providerObligation.status);
+  }
+  if (params.customerObligation != null) {
+    return customerStatus;
+  }
+  return "COMPLETED";
+}
+
+function manualRefundResolutionIdForBooking(bookingId: string): string {
+  return `resolution_${bookingId}`;
+}
+
+function manualCustomerRefundObligationIdForBooking(bookingId: string): string {
+  return `customer_refund_${manualRefundResolutionIdForBooking(bookingId)}`;
+}
+
+function manualProviderPayoutObligationIdForBooking(bookingId: string): string {
+  return `provider_payout_${bookingId}`;
+}
+
+async function handleManualDisputeRefundWebhook(params: {
+  firestore: Firestore;
+  eventId: string;
+  eventName: "refund.created" | "refund.processed" | "refund.failed";
+  bookingId: string;
+  paymentAttemptId: string;
+  refundId: string;
+  paymentId: string;
+  refundAmountPaise: number;
+  authoritativeNow: Date;
+}): Promise<CanonicalWebhookResult | null> {
+  const refundRef = params.firestore.collection("refunds").doc(params.bookingId);
+  const existingRefundSnapshot = await refundRef.get();
+  if (!existingRefundSnapshot.exists) return null;
+  const existingRefund = asRecord(existingRefundSnapshot.data());
+  if (!isManualDisputeRefund(existingRefund)) return null;
+  const existingRefundId = asString(existingRefund.razorpayRefundId);
+  if (
+    existingRefundId &&
+    params.refundId &&
+    existingRefundId !== params.refundId
+  ) {
+    return {
+      outcome: "INVALID_CANONICAL_MAPPING",
+      bookingId: params.bookingId,
+      paymentAttemptId: params.paymentAttemptId,
+      retryable: false,
+      failureCode: "REFUND_ID_MISMATCH",
+      notifications: [],
+    };
+  }
+
+  return await params.firestore.runTransaction(async (transaction) => {
+    const customerObligationRef = params.firestore
+      .collection("manualSettlementObligations")
+      .doc(manualCustomerRefundObligationIdForBooking(params.bookingId));
+    const providerObligationRef = params.firestore
+      .collection("manualSettlementObligations")
+      .doc(manualProviderPayoutObligationIdForBooking(params.bookingId));
+    const resolutionRef = params.firestore
+      .collection("bookingDisputeResolutions")
+      .doc(manualRefundResolutionIdForBooking(params.bookingId));
+    const disputeRef = params.firestore.collection("disputes").doc(params.bookingId);
+    const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
+    const payoutReadinessRef = params.firestore
+      .collection("payoutReadiness")
+      .doc(params.bookingId);
+    const [
+      refundSnapshot,
+      customerObligationSnapshot,
+      providerObligationSnapshot,
+      resolutionSnapshot,
+      disputeSnapshot,
+      payoutReadinessSnapshot,
+    ] = await Promise.all([
+      transaction.get(refundRef),
+      transaction.get(customerObligationRef),
+      transaction.get(providerObligationRef),
+      transaction.get(resolutionRef),
+      transaction.get(disputeRef),
+      transaction.get(payoutReadinessRef),
+    ]);
+    const refund = refundSnapshot.exists ? asRecord(refundSnapshot.data()) : {};
+    if (!isManualDisputeRefund(refund)) {
+      return null;
+    }
+
+    const customerObligation =
+      customerObligationSnapshot.exists ?
+        asRecord(customerObligationSnapshot.data()) :
+        null;
+    const providerObligation =
+      providerObligationSnapshot.exists ?
+        asRecord(providerObligationSnapshot.data()) :
+        null;
+
+    const currentCustomerStatus = mapManualSettlementObligationStatus(
+      customerObligation?.status,
+    );
+    const nextCustomerStatus =
+      params.eventName === "refund.processed" ? "COMPLETED" :
+      params.eventName === "refund.failed" ? "NEEDS_ATTENTION" :
+      (
+        currentCustomerStatus === "COMPLETED" ? "COMPLETED" :
+        currentCustomerStatus === "NEEDS_ATTENTION" ? "PROCESSING" :
+        currentCustomerStatus === "CANCELLED" ? "CANCELLED" :
+        "PROCESSING"
+      );
+
+    const nextCustomerObligation =
+      customerObligation == null ? null : {
+        ...customerObligation,
+        obligationId: asString(customerObligation.obligationId),
+        amountPaise: asInt(customerObligation.amountPaise, 0),
+        status: nextCustomerStatus,
+        financialSettlementStatus: "PENDING",
+        completedAt:
+          nextCustomerStatus === "COMPLETED" ?
+            Timestamp.fromDate(params.authoritativeNow) :
+            null,
+        completedByAdminUid:
+          nextCustomerStatus === "COMPLETED" ?
+            asString(customerObligation.completedByAdminUid) :
+            "",
+        updatedAt: Timestamp.fromDate(params.authoritativeNow),
+        metadata: {
+          ...asRecord(customerObligation.metadata),
+          razorpayRefundId:
+            params.refundId || asString(refund.razorpayRefundId),
+          lastWebhookEvent: params.eventName,
+          lastWebhookEventId: params.eventId,
+        },
+      };
+
+    const aggregateStatus = computeManualSettlementAggregateStatus({
+      providerObligation,
+      customerObligation: nextCustomerObligation,
+    });
+    const obligationIds = [
+      ...(providerObligation != null && asInt(providerObligation.amountPaise, 0) > 0 ?
+        [asString(providerObligation.obligationId)] :
+        []),
+      ...(nextCustomerObligation != null && asInt(nextCustomerObligation.amountPaise, 0) > 0 ?
+        [asString(nextCustomerObligation.obligationId)] :
+        []),
+    ];
+
+    transaction.set(refundRef, {
+      bookingId: params.bookingId,
+      paymentAttemptId: params.paymentAttemptId,
+      razorpayPaymentId: params.paymentId,
+      razorpayRefundId: params.refundId || asString(refund.razorpayRefundId),
+      refundAmountPaise: params.refundAmountPaise,
+      executionMode: "MANUAL",
+      origin: "DISPUTE_RESOLUTION",
+      state:
+        params.eventName === "refund.processed" ? "processed" :
+        params.eventName === "refund.failed" ? "failed" :
+        (asString(refund.state) || "manual_recorded"),
+      manualRefundStatus:
+        params.eventName === "refund.processed" ? "PROCESSED" :
+        params.eventName === "refund.failed" ? "FAILED" :
+        "CREATED",
+      submittedAt:
+        params.eventName === "refund.created" ?
+          FieldValue.serverTimestamp() :
+          (refund.submittedAt ?? null),
+      confirmedAt:
+        params.eventName === "refund.processed" ?
+          FieldValue.serverTimestamp() :
+          (refund.confirmedAt ?? null),
+      lastErrorCode:
+        params.eventName === "refund.failed" ?
+          (asString(refund.lastErrorCode) || "refund_failed") :
+          "",
+      manualWebhookLastEvent: params.eventName,
+      manualWebhookLastEventId: params.eventId,
+      manualWebhookObservedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    if (nextCustomerObligation != null) {
+      transaction.set(customerObligationRef, {
+        status: nextCustomerObligation.status,
+        financialSettlementStatus: aggregateStatus,
+        completedAt: nextCustomerObligation.completedAt,
+        completedByAdminUid: nextCustomerObligation.completedByAdminUid,
+        updatedAt: nextCustomerObligation.updatedAt,
+        metadata: nextCustomerObligation.metadata,
+      }, {merge: true});
+    }
+
+    if (resolutionSnapshot.exists) {
+      transaction.set(resolutionRef, {
+        financialSettlementStatus: aggregateStatus,
+        manualSettlementObligationIds: obligationIds,
+        updatedAt: Timestamp.fromDate(params.authoritativeNow),
+      }, {merge: true});
+    }
+    if (disputeSnapshot.exists) {
+      transaction.set(disputeRef, {
+        financialSettlementStatus: aggregateStatus,
+        "resolution.financialSettlementStatus": aggregateStatus,
+        "resolution.manualSettlementObligationIds": obligationIds,
+        updatedAt: Timestamp.fromDate(params.authoritativeNow),
+      }, {merge: true});
+    }
+    transaction.set(bookingRef, {
+      updatedAt: Timestamp.fromDate(params.authoritativeNow),
+      "dispute.financialSettlementStatus": aggregateStatus,
+      "dispute.manualSettlementObligationIds": obligationIds,
+    }, {merge: true});
+    if (payoutReadinessSnapshot.exists || providerObligation != null || nextCustomerObligation != null) {
+      transaction.set(payoutReadinessRef, {
+        manualSettlementStatus: deriveManualSettlementStatus({
+          providerObligation,
+          customerObligation: nextCustomerObligation,
+        }),
+        updatedAt: Timestamp.fromDate(params.authoritativeNow),
+      }, {merge: true});
+    }
+
+    return {
+      outcome: "REFUND_UPDATED",
+      bookingId: params.bookingId,
+      paymentAttemptId: params.paymentAttemptId,
+      retryable: false,
+      failureCode: "",
+      notifications: [],
+    };
+  });
+}
+
 function buildCancellationRefundNotification(params: {
   bookingId: string;
   parentId: string;
@@ -924,6 +1216,20 @@ export async function routeCanonicalWebhookEventV3(params: {
       .collection("paymentAttempts")
       .doc(mapping.paymentAttemptId);
     const refundAmountPaise = asInt(params.refundEntity.amount, loaded.attempt.amountPaise);
+    const manualDisputeResult = await handleManualDisputeRefundWebhook({
+      firestore: params.firestore,
+      eventId: params.eventId,
+      eventName: params.eventName,
+      bookingId: mapping.bookingId,
+      paymentAttemptId: mapping.paymentAttemptId,
+      refundId,
+      paymentId,
+      refundAmountPaise,
+      authoritativeNow,
+    });
+    if (manualDisputeResult != null) {
+      return manualDisputeResult;
+    }
     const state = params.eventName === "refund.processed" ?
       "processed" :
       (params.eventName === "refund.created" ? "submitted" : "failed");

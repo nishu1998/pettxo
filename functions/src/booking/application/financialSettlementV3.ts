@@ -18,6 +18,8 @@ export const CANONICAL_FINANCIAL_LEDGER_COLLECTION =
   "bookingFinancialLedger";
 export const CANONICAL_FINANCIAL_RECONCILIATION_COLLECTION =
   "bookingFinancialReconciliation";
+export const CANONICAL_MANUAL_SETTLEMENT_OBLIGATIONS_COLLECTION =
+  "manualSettlementObligations";
 export const CANONICAL_FINANCIAL_POLICY_VERSION = "v3.2_slice9";
 export const CANONICAL_PROVIDER_PAYOUTS_LIVE_ENABLED = false;
 
@@ -39,6 +41,25 @@ type ProviderPayoutStatus =
   | "PAID"
   | "FAILED"
   | "CANCELLED";
+type ManualSettlementRecipientType = "PROVIDER" | "CUSTOMER";
+type ManualSettlementObligationType =
+  | "PROVIDER_PAYOUT"
+  | "CUSTOMER_REFUND";
+type ManualSettlementObligationSource =
+  | "NORMAL_COMPLETION"
+  | "DISPUTE_RESOLUTION";
+type ManualSettlementObligationStatus =
+  | "HELD"
+  | "READY"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "NEEDS_ATTENTION";
+type DisputeFinancialSettlementStatus =
+  | "NONE"
+  | "PENDING"
+  | "PARTIALLY_COMPLETED"
+  | "COMPLETED";
 type LedgerEntryType =
   | "PAYMENT_CAPTURED"
   | "CUSTOMER_REFUND"
@@ -49,6 +70,7 @@ type LedgerEntryType =
   | "CANCELLATION_ADJUSTMENT"
   | "NO_SHOW_ALLOCATION"
   | "DISPUTE_ADJUSTMENT"
+  | "MANUAL_SETTLEMENT_OBLIGATION"
   | "MANUAL_ADJUSTMENT";
 type ReconciliationStatus =
   | "BALANCED"
@@ -164,6 +186,36 @@ export type ProviderPayoutDocumentV3 = {
   policyVersion: string;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type ManualSettlementObligationDocumentV3 = {
+  obligationId: string;
+  bookingId: string;
+  disputeId: string;
+  disputeResolutionId: string;
+  recipientType: ManualSettlementRecipientType;
+  obligationType: ManualSettlementObligationType;
+  recipientUserId: string;
+  amountPaise: number;
+  currency: string;
+  source: ManualSettlementObligationSource;
+  status: ManualSettlementObligationStatus;
+  financialSettlementStatus: DisputeFinancialSettlementStatus;
+  reasonCode: string;
+  holdReason: string;
+  relatedPayoutId: string;
+  relatedRefundId: string;
+  paymentAttemptId: string;
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  readyAt: Date | null;
+  completedAt: Date | null;
+  completedByAdminUid: string;
+  cancelledAt: Date | null;
+  metadata: Record<string, unknown>;
+  policyVersion: string;
 };
 
 type PayoutGatewaySuccess = {
@@ -349,6 +401,25 @@ function refundInstructionIdForDispute(disputeId: string): string {
   return `refund_${disputeId}`;
 }
 
+function providerPayoutObligationIdForBooking(bookingId: string): string {
+  return `provider_payout_${bookingId}`;
+}
+
+function customerRefundObligationIdForResolution(
+  disputeResolutionId: string,
+): string {
+  return `customer_refund_${disputeResolutionId}`;
+}
+
+function manualSettlementObligationRef(
+  firestore: Firestore,
+  obligationId: string,
+) {
+  return firestore
+    .collection(CANONICAL_MANUAL_SETTLEMENT_OBLIGATIONS_COLLECTION)
+    .doc(obligationId);
+}
+
 function ledgerEntryId(params: {
   bookingId: string;
   type: LedgerEntryType;
@@ -359,6 +430,52 @@ function ledgerEntryId(params: {
 
 function payoutLeaseExpiresAt(now: Date): Date {
   return new Date(now.getTime() + PAYOUT_LEASE_MS);
+}
+
+function mapManualSettlementStatus(
+  value: unknown,
+): ManualSettlementObligationStatus {
+  const normalized = asString(value).toUpperCase();
+  if (
+    normalized === "HELD" ||
+    normalized === "READY" ||
+    normalized === "PROCESSING" ||
+    normalized === "COMPLETED" ||
+    normalized === "CANCELLED" ||
+    normalized === "NEEDS_ATTENTION"
+  ) {
+    return normalized;
+  }
+  return "HELD";
+}
+
+function mapDisputeFinancialSettlementStatus(
+  value: unknown,
+): DisputeFinancialSettlementStatus {
+  const normalized = asString(value).toUpperCase();
+  if (
+    normalized === "NONE" ||
+    normalized === "PENDING" ||
+    normalized === "PARTIALLY_COMPLETED" ||
+    normalized === "COMPLETED"
+  ) {
+    return normalized;
+  }
+  return "NONE";
+}
+
+function computeDisputeFinancialSettlementStatus(params: {
+  obligations: ManualSettlementObligationDocumentV3[];
+}): DisputeFinancialSettlementStatus {
+  const actionable = params.obligations.filter((entry) => entry.amountPaise > 0);
+  if (actionable.length === 0) return "COMPLETED";
+  const completedCount = actionable.filter((entry) => entry.status === "COMPLETED").length;
+  const terminalCount = actionable.filter((entry) =>
+    entry.status === "COMPLETED" || entry.status === "CANCELLED",
+  ).length;
+  if (completedCount === 0) return "PENDING";
+  if (terminalCount >= actionable.length) return "COMPLETED";
+  return "PARTIALLY_COMPLETED";
 }
 
 function parseCanonicalBookingForFinancials(
@@ -640,9 +757,26 @@ function buildPayoutProfileSnapshot(
     return {isValid: false, maskedDestination: ""};
   }
   const status = asString(providerBankDetails.status).toLowerCase();
+  const schemaVersion = asInt(providerBankDetails.schemaVersion, 0);
+  const hasBankAccount = providerBankDetails.hasBankAccount === true;
+  const hasUpi = providerBankDetails.hasUpi === true;
+  const preferredPayoutMethod = asString(providerBankDetails.preferredPayoutMethod).toUpperCase();
   const maskedAccount = asString(providerBankDetails.accountNumberMasked);
+  const maskedUpi = asString(providerBankDetails.upiId);
+  if (schemaVersion >= 2) {
+    const bankConfigured = hasBankAccount && maskedAccount.length >= 4;
+    const upiConfigured = hasUpi && maskedUpi.includes("@");
+    const preferredIsConfigured =
+      (preferredPayoutMethod === "BANK_ACCOUNT" && bankConfigured) ||
+      (preferredPayoutMethod === "UPI" && upiConfigured);
+    return {
+      isValid: status === "submitted" && preferredIsConfigured,
+      maskedDestination:
+        preferredPayoutMethod === "UPI" && upiConfigured ? maskedUpi : maskedAccount,
+    };
+  }
   return {
-    isValid: status === "submitted" && maskedAccount.length >= 4,
+    isValid: false,
     maskedDestination: maskedAccount,
   };
 }
@@ -751,6 +885,10 @@ export function evaluateCanonicalProviderPayoutEligibilityV3(params: {
       fallbackNow: params.authoritativeNow,
     });
   const refundState = asString(params.existingRefund?.state).toLowerCase();
+  const refundExecutionMode = asString(
+    params.existingRefund?.executionMode,
+  ).toUpperCase();
+  const refundOrigin = asString(params.existingRefund?.origin).toUpperCase();
   const payoutProfile = buildPayoutProfileSnapshot(params.providerBankDetails);
 
   if (
@@ -800,6 +938,18 @@ export function evaluateCanonicalProviderPayoutEligibilityV3(params: {
     refundState === "submitted" ||
     refundState === "pending"
   ) {
+    if (
+      refundExecutionMode === "MANUAL" &&
+      refundOrigin === "DISPUTE_RESOLUTION"
+    ) {
+      return {
+        status: "READY",
+        holdReason: "",
+        providerEntitlementPaise,
+        remainingPayablePaise,
+        readyAt: params.authoritativeNow,
+      };
+    }
     return {
       status: "HELD",
       holdReason: "Payout remains held while a refund is pending.",
@@ -835,6 +985,383 @@ export function evaluateCanonicalProviderPayoutEligibilityV3(params: {
     providerEntitlementPaise,
     remainingPayablePaise,
     readyAt: params.authoritativeNow,
+  };
+}
+
+function buildManualSettlementObligationDocument(params: {
+  obligationId: string;
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  disputeId?: string;
+  disputeResolutionId?: string;
+  recipientType: ManualSettlementRecipientType;
+  obligationType: ManualSettlementObligationType;
+  recipientUserId: string;
+  amountPaise: number;
+  currency: string;
+  source: ManualSettlementObligationSource;
+  status: ManualSettlementObligationStatus;
+  reasonCode: string;
+  holdReason?: string;
+  relatedPayoutId?: string;
+  relatedRefundId?: string;
+  readyAt?: Date | null;
+  completedAt?: Date | null;
+  completedByAdminUid?: string;
+  cancelledAt?: Date | null;
+  metadata?: Record<string, unknown>;
+  createdAt?: Date;
+  updatedAt: Date;
+}): ManualSettlementObligationDocumentV3 {
+  return {
+    obligationId: params.obligationId,
+    bookingId: params.bookingId,
+    disputeId: params.disputeId ?? "",
+    disputeResolutionId: params.disputeResolutionId ?? "",
+    recipientType: params.recipientType,
+    obligationType: params.obligationType,
+    recipientUserId: params.recipientUserId,
+    amountPaise: Math.max(params.amountPaise, 0),
+    currency: params.currency || "INR",
+    source: params.source,
+    status: params.status,
+    financialSettlementStatus:
+      params.amountPaise > 0 && params.status !== "COMPLETED" ?
+        "PENDING" :
+        "COMPLETED",
+    reasonCode: params.reasonCode,
+    holdReason: params.holdReason ?? "",
+    relatedPayoutId: params.relatedPayoutId ?? "",
+    relatedRefundId: params.relatedRefundId ?? "",
+    paymentAttemptId: params.booking.payment.paymentAttemptId,
+    razorpayOrderId: params.booking.payment.razorpayOrderId,
+    razorpayPaymentId: params.booking.payment.razorpayPaymentId,
+    createdAt: params.createdAt ?? params.updatedAt,
+    updatedAt: params.updatedAt,
+    readyAt: params.readyAt ?? null,
+    completedAt: params.completedAt ?? null,
+    completedByAdminUid: params.completedByAdminUid ?? "",
+    cancelledAt: params.cancelledAt ?? null,
+    metadata: params.metadata ?? {},
+    policyVersion: CANONICAL_FINANCIAL_POLICY_VERSION,
+  };
+}
+
+function serializeManualSettlementObligation(
+  obligation: ManualSettlementObligationDocumentV3,
+): Record<string, unknown> {
+  return {
+    obligationId: obligation.obligationId,
+    bookingId: obligation.bookingId,
+    disputeId: obligation.disputeId,
+    disputeResolutionId: obligation.disputeResolutionId,
+    recipientType: obligation.recipientType,
+    obligationType: obligation.obligationType,
+    recipientUserId: obligation.recipientUserId,
+    amountPaise: obligation.amountPaise,
+    currency: obligation.currency,
+    source: obligation.source,
+    status: obligation.status,
+    financialSettlementStatus: obligation.financialSettlementStatus,
+    reasonCode: obligation.reasonCode,
+    holdReason: obligation.holdReason,
+    relatedPayoutId: obligation.relatedPayoutId,
+    relatedRefundId: obligation.relatedRefundId,
+    paymentAttemptId: obligation.paymentAttemptId,
+    razorpayOrderId: obligation.razorpayOrderId,
+    razorpayPaymentId: obligation.razorpayPaymentId,
+    createdAt: Timestamp.fromDate(obligation.createdAt),
+    updatedAt: Timestamp.fromDate(obligation.updatedAt),
+    readyAt:
+      obligation.readyAt == null ? null : Timestamp.fromDate(obligation.readyAt),
+    completedAt:
+      obligation.completedAt == null ?
+        null :
+        Timestamp.fromDate(obligation.completedAt),
+    completedByAdminUid: obligation.completedByAdminUid,
+    cancelledAt:
+      obligation.cancelledAt == null ?
+        null :
+        Timestamp.fromDate(obligation.cancelledAt),
+    metadata: obligation.metadata,
+    policyVersion: obligation.policyVersion,
+  };
+}
+
+function parseManualSettlementObligation(
+  data: Record<string, unknown>,
+): ManualSettlementObligationDocumentV3 {
+  return {
+    obligationId: asString(data.obligationId),
+    bookingId: asString(data.bookingId),
+    disputeId: asString(data.disputeId),
+    disputeResolutionId: asString(data.disputeResolutionId),
+    recipientType:
+      asString(data.recipientType).toUpperCase() === "CUSTOMER" ?
+        "CUSTOMER" :
+        "PROVIDER",
+    obligationType:
+      asString(data.obligationType).toUpperCase() === "CUSTOMER_REFUND" ?
+        "CUSTOMER_REFUND" :
+        "PROVIDER_PAYOUT",
+    recipientUserId: asString(data.recipientUserId),
+    amountPaise: asInt(data.amountPaise, 0),
+    currency: asString(data.currency) || "INR",
+    source:
+      asString(data.source).toUpperCase() === "DISPUTE_RESOLUTION" ?
+        "DISPUTE_RESOLUTION" :
+        "NORMAL_COMPLETION",
+    status: mapManualSettlementStatus(data.status),
+    financialSettlementStatus: mapDisputeFinancialSettlementStatus(
+      data.financialSettlementStatus,
+    ),
+    reasonCode: asString(data.reasonCode),
+    holdReason: asString(data.holdReason),
+    relatedPayoutId: asString(data.relatedPayoutId),
+    relatedRefundId: asString(data.relatedRefundId),
+    paymentAttemptId: asString(data.paymentAttemptId),
+    razorpayOrderId: asString(data.razorpayOrderId),
+    razorpayPaymentId: asString(data.razorpayPaymentId),
+    createdAt: asDate(data.createdAt) ?? new Date(0),
+    updatedAt: asDate(data.updatedAt) ?? new Date(0),
+    readyAt: asDate(data.readyAt),
+    completedAt: asDate(data.completedAt),
+    completedByAdminUid: asString(data.completedByAdminUid),
+    cancelledAt: asDate(data.cancelledAt),
+    metadata: asRecord(data.metadata),
+    policyVersion: asString(data.policyVersion) || CANONICAL_FINANCIAL_POLICY_VERSION,
+  };
+}
+
+export function buildProviderPayoutManualSettlementObligationV3(params: {
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  payout: {
+    payoutId: string;
+    providerEntitlementPaise: number;
+    remainingPayablePaise: number;
+    status: ProviderPayoutStatus;
+    holdReason: string;
+    readyAt: Date | null;
+    paidAt?: Date | null;
+  };
+  source: ManualSettlementObligationSource;
+  disputeId?: string;
+  disputeResolutionId?: string;
+  existing?: Record<string, unknown> | null;
+  now: Date;
+}): ManualSettlementObligationDocumentV3 | null {
+  const amountPaise = Math.max(params.payout.remainingPayablePaise, 0);
+  const existing = params.existing ? parseManualSettlementObligation(params.existing) : null;
+  if (amountPaise <= 0 && existing == null) {
+    return null;
+  }
+  if (amountPaise <= 0) {
+    return buildManualSettlementObligationDocument({
+      obligationId: existing?.obligationId ?? providerPayoutObligationIdForBooking(params.bookingId),
+      bookingId: params.bookingId,
+      booking: params.booking,
+      disputeId: params.disputeId,
+      disputeResolutionId: params.disputeResolutionId,
+      recipientType: "PROVIDER",
+      obligationType: "PROVIDER_PAYOUT",
+      recipientUserId: params.booking.providerId,
+      amountPaise: 0,
+      currency: params.booking.financials?.currency ?? "INR",
+      source: params.source,
+      status: "CANCELLED",
+      reasonCode: "NO_PROVIDER_PAYOUT_DUE",
+      holdReason: "",
+      relatedPayoutId: params.payout.payoutId,
+      readyAt: null,
+      cancelledAt: params.now,
+      createdAt: existing?.createdAt ?? params.now,
+      updatedAt: params.now,
+      metadata: {
+        providerEntitlementPaise: params.payout.providerEntitlementPaise,
+      },
+    });
+  }
+  const status =
+    params.payout.status === "PAID" ? "COMPLETED" :
+    params.payout.status === "CANCELLED" ? "CANCELLED" :
+    params.payout.status === "READY" ? "READY" :
+    params.payout.status === "FAILED" ? "NEEDS_ATTENTION" :
+    "HELD";
+  return buildManualSettlementObligationDocument({
+    obligationId: existing?.obligationId ?? providerPayoutObligationIdForBooking(params.bookingId),
+    bookingId: params.bookingId,
+    booking: params.booking,
+    disputeId: params.disputeId,
+    disputeResolutionId: params.disputeResolutionId,
+    recipientType: "PROVIDER",
+    obligationType: "PROVIDER_PAYOUT",
+    recipientUserId: params.booking.providerId,
+    amountPaise,
+    currency: params.booking.financials?.currency ?? "INR",
+    source: params.source,
+    status,
+    reasonCode:
+      params.source === "DISPUTE_RESOLUTION" ?
+        "DISPUTE_PROVIDER_PAYOUT" :
+        "NORMAL_PROVIDER_PAYOUT",
+    holdReason: params.payout.holdReason,
+    relatedPayoutId: params.payout.payoutId,
+    readyAt: status === "READY" ? (params.payout.readyAt ?? params.now) : null,
+    completedAt: status === "COMPLETED" ? (params.payout.paidAt ?? params.now) : null,
+    createdAt: existing?.createdAt ?? params.now,
+    updatedAt: params.now,
+    metadata: {
+      providerEntitlementPaise: params.payout.providerEntitlementPaise,
+      providerRemainingPayablePaise: params.payout.remainingPayablePaise,
+    },
+  });
+}
+
+export function buildCustomerRefundManualSettlementObligationV3(params: {
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  disputeId: string;
+  disputeResolutionId: string;
+  refundAmountPaise: number;
+  relatedRefundId: string;
+  existing?: Record<string, unknown> | null;
+  now: Date;
+}): ManualSettlementObligationDocumentV3 | null {
+  const amountPaise = Math.max(params.refundAmountPaise, 0);
+  const existing = params.existing ? parseManualSettlementObligation(params.existing) : null;
+  if (amountPaise <= 0 && existing == null) {
+    return null;
+  }
+  if (amountPaise <= 0) {
+    return buildManualSettlementObligationDocument({
+      obligationId: existing?.obligationId ??
+        customerRefundObligationIdForResolution(params.disputeResolutionId),
+      bookingId: params.bookingId,
+      booking: params.booking,
+      disputeId: params.disputeId,
+      disputeResolutionId: params.disputeResolutionId,
+      recipientType: "CUSTOMER",
+      obligationType: "CUSTOMER_REFUND",
+      recipientUserId: params.booking.parentId,
+      amountPaise: 0,
+      currency: params.booking.financials?.currency ?? "INR",
+      source: "DISPUTE_RESOLUTION",
+      status: "CANCELLED",
+      reasonCode: "NO_CUSTOMER_REFUND_DUE",
+      holdReason: "",
+      relatedRefundId: params.relatedRefundId,
+      cancelledAt: params.now,
+      createdAt: existing?.createdAt ?? params.now,
+      updatedAt: params.now,
+      metadata: {},
+    });
+  }
+  return buildManualSettlementObligationDocument({
+    obligationId: existing?.obligationId ??
+      customerRefundObligationIdForResolution(params.disputeResolutionId),
+    bookingId: params.bookingId,
+    booking: params.booking,
+    disputeId: params.disputeId,
+    disputeResolutionId: params.disputeResolutionId,
+    recipientType: "CUSTOMER",
+    obligationType: "CUSTOMER_REFUND",
+    recipientUserId: params.booking.parentId,
+    amountPaise,
+    currency: params.booking.financials?.currency ?? "INR",
+    source: "DISPUTE_RESOLUTION",
+    status: "READY",
+    reasonCode: "DISPUTE_CUSTOMER_REFUND",
+    holdReason: "",
+    relatedRefundId: params.relatedRefundId,
+    readyAt: params.now,
+    createdAt: existing?.createdAt ?? params.now,
+    updatedAt: params.now,
+    metadata: {
+      razorpayPaymentId: params.booking.payment.razorpayPaymentId,
+      razorpayOrderId: params.booking.payment.razorpayOrderId,
+    },
+  });
+}
+
+export function syncManualSettlementObligationsV3(params: {
+  transaction: FirebaseFirestore.Transaction;
+  firestore: Firestore;
+  bookingId: string;
+  booking: CanonicalBookingDocumentV3;
+  now: Date;
+  providerPayout: {
+    payoutId: string;
+    providerEntitlementPaise: number;
+    remainingPayablePaise: number;
+    status: ProviderPayoutStatus;
+    holdReason: string;
+    readyAt: Date | null;
+    paidAt?: Date | null;
+  };
+  source: ManualSettlementObligationSource;
+  disputeId?: string;
+  disputeResolutionId?: string;
+  customerRefundAmountPaise?: number;
+  relatedRefundId?: string;
+  existingProviderObligation?: Record<string, unknown> | null;
+  existingCustomerObligation?: Record<string, unknown> | null;
+}): {
+  providerObligation: ManualSettlementObligationDocumentV3 | null;
+  customerObligation: ManualSettlementObligationDocumentV3 | null;
+  financialSettlementStatus: DisputeFinancialSettlementStatus;
+} {
+  const providerObligation = buildProviderPayoutManualSettlementObligationV3({
+    bookingId: params.bookingId,
+    booking: params.booking,
+    payout: params.providerPayout,
+    source: params.source,
+    disputeId: params.disputeId,
+    disputeResolutionId: params.disputeResolutionId,
+    existing: params.existingProviderObligation,
+    now: params.now,
+  });
+  const customerObligation =
+    params.source === "DISPUTE_RESOLUTION" &&
+        params.disputeId &&
+        params.disputeResolutionId &&
+        params.customerRefundAmountPaise != null ?
+      buildCustomerRefundManualSettlementObligationV3({
+        bookingId: params.bookingId,
+        booking: params.booking,
+        disputeId: params.disputeId,
+        disputeResolutionId: params.disputeResolutionId,
+        refundAmountPaise: params.customerRefundAmountPaise,
+        relatedRefundId: params.relatedRefundId ?? params.bookingId,
+        existing: params.existingCustomerObligation,
+        now: params.now,
+      }) :
+      null;
+
+  if (providerObligation != null) {
+    params.transaction.set(
+      manualSettlementObligationRef(params.firestore, providerObligation.obligationId),
+      serializeManualSettlementObligation(providerObligation),
+      {merge: true},
+    );
+  }
+  if (customerObligation != null) {
+    params.transaction.set(
+      manualSettlementObligationRef(params.firestore, customerObligation.obligationId),
+      serializeManualSettlementObligation(customerObligation),
+      {merge: true},
+    );
+  }
+  const financialSettlementStatus = computeDisputeFinancialSettlementStatus({
+    obligations: [
+      ...(providerObligation ? [providerObligation] : []),
+      ...(customerObligation ? [customerObligation] : []),
+    ],
+  });
+  return {
+    providerObligation,
+    customerObligation,
+    financialSettlementStatus,
   };
 }
 
@@ -1556,6 +2083,16 @@ export async function resolveBookingDisputeV3(params: {
     const adjustmentRef = params.firestore
       .collection("bookingFinancialAdjustments")
       .doc(financialAdjustmentIdForDispute(bookingId, disputeRef.id));
+    const providerObligationRef = manualSettlementObligationRef(
+      params.firestore,
+      providerPayoutObligationIdForBooking(bookingId),
+    );
+    const customerObligationRef = manualSettlementObligationRef(
+      params.firestore,
+      customerRefundObligationIdForResolution(
+        disputeResolutionIdForBooking(bookingId),
+      ),
+    );
 
     const [
       bookingSnapshot,
@@ -1567,6 +2104,8 @@ export async function resolveBookingDisputeV3(params: {
       payoutSnapshot,
       resolutionSnapshot,
       adjustmentSnapshot,
+      providerObligationSnapshot,
+      customerObligationSnapshot,
     ] = await Promise.all([
       transaction.get(bookingRef),
       transaction.get(bookingFinancialRef),
@@ -1577,6 +2116,8 @@ export async function resolveBookingDisputeV3(params: {
       transaction.get(payoutRef),
       transaction.get(resolutionRef),
       transaction.get(adjustmentRef),
+      transaction.get(providerObligationRef),
+      transaction.get(customerObligationRef),
     ]);
 
     if (!bookingSnapshot.exists) {
@@ -1714,7 +2255,11 @@ export async function resolveBookingDisputeV3(params: {
         priorPaidPaise: asInt(payoutSnapshot.data()?.priorPaidPaise, 0),
       },
       existingRefund: outcome.refundToIssuePaise > 0 ?
-        {state: "required"} :
+        {
+          state: "pending",
+          executionMode: "MANUAL",
+          origin: "DISPUTE_RESOLUTION",
+        } :
         (refundSnapshot.data() ?? null),
       providerBankDetails:
         providerBankDetailsSnapshot.exists ?
@@ -1779,7 +2324,6 @@ export async function resolveBookingDisputeV3(params: {
       createdAt: Timestamp.fromDate(now),
       updatedAt: Timestamp.fromDate(now),
     };
-    transaction.set(resolutionRef, resolutionRecord, {merge: false});
     if (!adjustmentSnapshot.exists) {
       transaction.set(
         adjustmentRef,
@@ -1822,7 +2366,9 @@ export async function resolveBookingDisputeV3(params: {
           refundAmountPaise: outcome.customerRefundPaise,
           refundInstructionId: refundInstructionIdForDispute(disputeRef.id),
           reasonCode: `dispute_${params.input.resolutionType.toLowerCase()}`,
-          state: "required",
+          state: "pending",
+          origin: "DISPUTE_RESOLUTION",
+          executionMode: "MANUAL",
           createdAt:
             refundSnapshot.data()?.createdAt ??
             Timestamp.fromDate(now),
@@ -1839,6 +2385,58 @@ export async function resolveBookingDisputeV3(params: {
         {merge: true},
       );
     }
+
+    const obligationSync = syncManualSettlementObligationsV3({
+      transaction,
+      firestore: params.firestore,
+      bookingId,
+      booking,
+      now,
+      providerPayout: {
+        payoutId: payoutRef.id,
+        providerEntitlementPaise: outcome.providerFinalEntitlementPaise,
+        remainingPayablePaise: Math.max(
+          outcome.providerFinalEntitlementPaise -
+            asInt(payoutDoc.priorPaidPaise, 0),
+          0,
+        ),
+        status: payoutEligibility.status,
+        holdReason: payoutEligibility.holdReason,
+        readyAt: payoutEligibility.readyAt,
+        paidAt: asDate(payoutDoc.paidAt),
+      },
+      source: "DISPUTE_RESOLUTION",
+      disputeId: disputeRef.id,
+      disputeResolutionId: resolutionRef.id,
+      customerRefundAmountPaise: outcome.refundToIssuePaise,
+      relatedRefundId: refundRef.id,
+      existingProviderObligation:
+        providerObligationSnapshot.exists ?
+          providerObligationSnapshot.data() ?? {} :
+          null,
+      existingCustomerObligation:
+        customerObligationSnapshot.exists ?
+          customerObligationSnapshot.data() ?? {} :
+          null,
+    });
+    transaction.set(
+      resolutionRef,
+      {
+        ...resolutionRecord,
+        financialSettlementStatus: obligationSync.financialSettlementStatus,
+        manualSettlementObligationIds: [
+          ...(obligationSync.providerObligation != null &&
+                  obligationSync.providerObligation.amountPaise > 0 ?
+              [obligationSync.providerObligation.obligationId] :
+              []),
+          ...(obligationSync.customerObligation != null &&
+                  obligationSync.customerObligation.amountPaise > 0 ?
+              [obligationSync.customerObligation.obligationId] :
+              []),
+        ],
+      },
+      {merge: false},
+    );
 
     const payoutWrite = {
       payoutId: payoutRef.id,
@@ -1920,8 +2518,20 @@ export async function resolveBookingDisputeV3(params: {
           providerCouponSubsidyPaise: outcome.providerCouponSubsidyPaise,
           pettxoFinalRetainedPaise: outcome.pettxoFinalRetainedPaise,
           refundToIssuePaise: outcome.refundToIssuePaise,
+          financialSettlementStatus: obligationSync.financialSettlementStatus,
+          manualSettlementObligationIds: [
+            ...(obligationSync.providerObligation != null &&
+                    obligationSync.providerObligation.amountPaise > 0 ?
+                [obligationSync.providerObligation.obligationId] :
+                []),
+            ...(obligationSync.customerObligation != null &&
+                    obligationSync.customerObligation.amountPaise > 0 ?
+                [obligationSync.customerObligation.obligationId] :
+                []),
+          ],
         },
         resolutionVersion: 1,
+        financialSettlementStatus: obligationSync.financialSettlementStatus,
         resolvedAt: Timestamp.fromDate(now),
         resolvedByAdminId: adminUid,
         publicResolutionMessage:
@@ -2000,6 +2610,10 @@ export async function resolveBookingDisputeV3(params: {
       {
         status: payoutEligibility.status,
         payoutStatus: payoutEligibility.status,
+        manualSettlementStatus:
+          obligationSync.providerObligation?.status ??
+          obligationSync.customerObligation?.status ??
+          "CANCELLED",
         providerAmount: outcome.providerFinalEntitlementPaise,
         providerAmountPaise: outcome.providerFinalEntitlementPaise,
         pettxoAmount: outcome.pettxoFinalRetainedPaise,
@@ -2066,6 +2680,68 @@ export async function resolveBookingDisputeV3(params: {
           occurredAt: now,
           createdAt: now,
           metadata: {},
+        }] :
+        []),
+      ...(obligationSync.providerObligation != null &&
+          obligationSync.providerObligation.amountPaise > 0 ?
+        [{
+          entryId: ledgerEntryId({
+            bookingId,
+            type: "MANUAL_SETTLEMENT_OBLIGATION",
+            sourceId: obligationSync.providerObligation.obligationId,
+          }),
+          bookingId,
+          providerId: booking.providerId,
+          disputeId: disputeRef.id,
+          payoutId: payoutRef.id,
+          refundId: refundRef.id,
+          type: "MANUAL_SETTLEMENT_OBLIGATION" as const,
+          direction: "memo" as const,
+          amountPaise: obligationSync.providerObligation.amountPaise,
+          currency: booking.financials.currency,
+          account: "manual_settlement_obligation",
+          sourceType: "manual_settlement",
+          sourceId: obligationSync.providerObligation.obligationId,
+          policyVersion: CANONICAL_FINANCIAL_POLICY_VERSION,
+          occurredAt: now,
+          createdAt: now,
+          metadata: {
+            recipientType: obligationSync.providerObligation.recipientType,
+            obligationType: obligationSync.providerObligation.obligationType,
+            obligationStatus: obligationSync.providerObligation.status,
+            source: obligationSync.providerObligation.source,
+          },
+        }] :
+        []),
+      ...(obligationSync.customerObligation != null &&
+          obligationSync.customerObligation.amountPaise > 0 ?
+        [{
+          entryId: ledgerEntryId({
+            bookingId,
+            type: "MANUAL_SETTLEMENT_OBLIGATION",
+            sourceId: obligationSync.customerObligation.obligationId,
+          }),
+          bookingId,
+          providerId: booking.providerId,
+          disputeId: disputeRef.id,
+          payoutId: payoutRef.id,
+          refundId: refundRef.id,
+          type: "MANUAL_SETTLEMENT_OBLIGATION" as const,
+          direction: "memo" as const,
+          amountPaise: obligationSync.customerObligation.amountPaise,
+          currency: booking.financials.currency,
+          account: "manual_settlement_obligation",
+          sourceType: "manual_settlement",
+          sourceId: obligationSync.customerObligation.obligationId,
+          policyVersion: CANONICAL_FINANCIAL_POLICY_VERSION,
+          occurredAt: now,
+          createdAt: now,
+          metadata: {
+            recipientType: obligationSync.customerObligation.recipientType,
+            obligationType: obligationSync.customerObligation.obligationType,
+            obligationStatus: obligationSync.customerObligation.status,
+            source: obligationSync.customerObligation.source,
+          },
         }] :
         []),
     ];
