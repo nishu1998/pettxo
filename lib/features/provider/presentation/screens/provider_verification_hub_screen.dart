@@ -102,7 +102,7 @@ class _ProviderVerificationHubScreenState
       appBar: AppBar(
         backgroundColor: AppColors.background,
         elevation: 0,
-        title: const Text('Provider Verification & Bank Details'),
+        title: const Text('Provider Verification & Payout Details'),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -147,16 +147,12 @@ class _ProviderVerificationHubScreenState
                 ),
                 const SizedBox(height: 16),
                 _HubCard(
-                  title: 'Bank details',
-                  body: snapshot.bankDetails.isSubmitted
-                      ? 'Current payout account: ${snapshot.bankDetails.accountNumberMasked}'
-                      : 'Add or update the bank account used for provider payouts.',
-                  footer: snapshot.bankDetails.ifscCode.isEmpty
-                      ? ''
-                      : 'IFSC: ${snapshot.bankDetails.ifscCode}',
+                  title: 'Payout details',
+                  body: _payoutBody(snapshot.bankDetails),
+                  footer: _payoutFooter(snapshot.bankDetails),
                   actionLabel: snapshot.bankDetails.isSubmitted
-                      ? 'Update Bank Details'
-                      : 'Add Bank Details',
+                      ? 'Manage Payout Details'
+                      : 'Set Up Payout Details',
                   onTap: _openBankDetails,
                 ),
               ],
@@ -202,6 +198,44 @@ class _ProviderVerificationHubScreenState
       TimeOfDay.fromDateTime(localDate),
     );
     return '$date at $time';
+  }
+
+  String _payoutBody(ProviderBankDetailsRecord bankDetails) {
+    if (bankDetails.isSubmitted) {
+      final methods = <String>[
+        if (bankDetails.hasBankAccount) 'Bank account',
+        if (bankDetails.hasUpi) 'UPI',
+      ];
+      final preferred = bankDetails.prefersBankAccount
+          ? 'Bank account'
+          : bankDetails.prefersUpi
+          ? 'UPI'
+          : 'Not selected';
+      return 'Configured: ${methods.join(' + ')}. Preferred: $preferred.';
+    }
+    if (bankDetails.needsUpdate || bankDetails.hasLegacyDataNeedingMigration) {
+      return 'Your older payout setup needs a secure update before future settlements.';
+    }
+    return 'Add your bank account or UPI details for future provider payouts.';
+  }
+
+  String _payoutFooter(ProviderBankDetailsRecord bankDetails) {
+    final lines = <String>[];
+    if (bankDetails.accountNumberMasked.isNotEmpty) {
+      lines.add('Bank: ${bankDetails.accountNumberMasked}');
+    }
+    if (bankDetails.upiId.isNotEmpty) {
+      lines.add('UPI: ${bankDetails.upiId}');
+    }
+    if (bankDetails.ifscCode.isNotEmpty) {
+      lines.add('IFSC: ${bankDetails.ifscCode}');
+    }
+    if (bankDetails.hasLegacyDataNeedingMigration) {
+      lines.add(
+        'Re-enter the full bank account number to finish securing this setup.',
+      );
+    }
+    return lines.join('\n');
   }
 }
 

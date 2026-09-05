@@ -188,9 +188,15 @@ class ProviderVerificationRecord {
 
 class ProviderBankDetailsRecord {
   final String userId;
+  final int schemaVersion;
+  final bool hasBankAccount;
+  final bool hasUpi;
+  final String preferredPayoutMethod;
   final String accountHolderName;
   final String bankName;
+  final String accountType;
   final String accountNumberMasked;
+  final String accountNumberLast4;
   final String ifscCode;
   final String upiId;
   final String status;
@@ -199,9 +205,15 @@ class ProviderBankDetailsRecord {
 
   const ProviderBankDetailsRecord({
     required this.userId,
+    required this.schemaVersion,
+    required this.hasBankAccount,
+    required this.hasUpi,
+    required this.preferredPayoutMethod,
     required this.accountHolderName,
     required this.bankName,
+    required this.accountType,
     required this.accountNumberMasked,
+    required this.accountNumberLast4,
     required this.ifscCode,
     required this.upiId,
     required this.status,
@@ -212,9 +224,15 @@ class ProviderBankDetailsRecord {
   factory ProviderBankDetailsRecord.empty(String userId) {
     return ProviderBankDetailsRecord(
       userId: userId,
+      schemaVersion: 0,
+      hasBankAccount: false,
+      hasUpi: false,
+      preferredPayoutMethod: '',
       accountHolderName: '',
       bankName: '',
+      accountType: '',
       accountNumberMasked: '',
+      accountNumberLast4: '',
       ifscCode: '',
       upiId: '',
       status: providerBankDetailsNotSubmitted,
@@ -227,23 +245,65 @@ class ProviderBankDetailsRecord {
     String userId,
     Map<String, dynamic> data,
   ) {
+    final normalizedSchemaVersion =
+        (data['schemaVersion'] as num?)?.round() ?? 0;
+    final legacyMaskedAccount = (data['accountNumberMasked'] as String? ?? '')
+        .trim();
+    final legacyMaskedUpi = (data['upiId'] as String? ?? '').trim();
+    final hasBankAccount =
+        data['hasBankAccount'] as bool? ??
+        (normalizedSchemaVersion >= 2 && legacyMaskedAccount.isNotEmpty);
+    final hasUpi =
+        data['hasUpi'] as bool? ??
+        (normalizedSchemaVersion >= 2 && legacyMaskedUpi.isNotEmpty);
+    final preferredPayoutMethod =
+        (data['preferredPayoutMethod'] as String? ?? '').trim();
+    final normalizedStatus =
+        (data['status'] as String? ??
+                (legacyMaskedAccount.isNotEmpty || legacyMaskedUpi.isNotEmpty
+                    ? providerBankDetailsNeedsUpdate
+                    : providerBankDetailsNotSubmitted))
+            .trim();
     return ProviderBankDetailsRecord(
       userId: (data['userId'] as String? ?? userId).trim(),
+      schemaVersion: normalizedSchemaVersion,
+      hasBankAccount: hasBankAccount,
+      hasUpi: hasUpi,
+      preferredPayoutMethod: preferredPayoutMethod,
       accountHolderName: (data['accountHolderName'] as String? ?? '').trim(),
       bankName: (data['bankName'] as String? ?? '').trim(),
-      accountNumberMasked: (data['accountNumberMasked'] as String? ?? '')
-          .trim(),
+      accountType: (data['accountType'] as String? ?? '').trim(),
+      accountNumberMasked: legacyMaskedAccount,
+      accountNumberLast4: (data['accountNumberLast4'] as String? ?? '').trim(),
       ifscCode: (data['ifscCode'] as String? ?? '').trim(),
-      upiId: (data['upiId'] as String? ?? '').trim(),
-      status: (data['status'] as String? ?? providerBankDetailsNotSubmitted)
-          .trim(),
+      upiId: legacyMaskedUpi,
+      status: normalizedStatus,
       createdAt: _readDate(data['createdAt']),
       updatedAt: _readDate(data['updatedAt']),
     );
   }
 
   bool get isSubmitted =>
-      status == providerBankDetailsSubmitted && accountNumberMasked.isNotEmpty;
+      status == providerBankDetailsSubmitted &&
+      (hasBankAccount || hasUpi) &&
+      preferredPayoutMethod.isNotEmpty;
+
+  bool get needsUpdate => status == providerBankDetailsNeedsUpdate;
+
+  bool get hasSecurePayoutMethod => hasBankAccount || hasUpi;
+
+  bool get hasLegacyDataNeedingMigration =>
+      schemaVersion < 2 && (accountNumberMasked.isNotEmpty || upiId.isNotEmpty);
+
+  bool get prefersBankAccount => preferredPayoutMethod == 'BANK_ACCOUNT';
+
+  bool get prefersUpi => preferredPayoutMethod == 'UPI';
+
+  String get configurationLabel {
+    if (isSubmitted) return 'Configured';
+    if (needsUpdate || hasLegacyDataNeedingMigration) return 'Needs update';
+    return 'Not configured';
+  }
 }
 
 class ProviderOnboardingSnapshot {
@@ -258,7 +318,7 @@ class ProviderOnboardingSnapshot {
   });
 
   bool get needsVerificationSubmission => !verification.isSubmitted;
-  bool get needsBankDetails => !bankDetails.isSubmitted;
+  bool get needsBankDetails => !bankDetails.hasSecurePayoutMethod;
 
   bool get canCreateServiceNow {
     if (verification.isApproved) return true;
@@ -281,5 +341,8 @@ class ProviderOnboardingSnapshot {
 DateTime? _readDate(Object? value) {
   if (value is Timestamp) return value.toDate();
   if (value is DateTime) return value;
+  if (value is String && value.trim().isNotEmpty) {
+    return DateTime.tryParse(value.trim());
+  }
   return null;
 }

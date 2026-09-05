@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
@@ -36,14 +37,18 @@ class _UploadedVerificationDocument {
 
 class ProviderOnboardingRepository {
   final FirebaseFirestore _firestore;
+  final FirebaseFunctions _functions;
   final FirebaseAuth _auth;
   final FirebaseStorage _storage;
 
   ProviderOnboardingRepository({
     FirebaseFirestore? firestore,
+    FirebaseFunctions? functions,
     FirebaseAuth? auth,
     FirebaseStorage? storage,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1'),
        _auth = auth ?? FirebaseAuth.instance,
        _storage = storage ?? FirebaseStorage.instance;
 
@@ -60,14 +65,6 @@ class ProviderOnboardingRepository {
         .collection('users')
         .doc(userId)
         .collection('providerVerification')
-        .doc('main');
-  }
-
-  DocumentReference<Map<String, dynamic>> _bankDetailsDoc(String userId) {
-    return _firestore
-        .collection('users')
-        .doc(userId)
-        .collection('providerBankDetails')
         .doc('main');
   }
 
@@ -109,11 +106,19 @@ class ProviderOnboardingRepository {
     bool forceServer = false,
   }) async {
     final uid = _currentUid;
-    final snapshot = await _bankDetailsDoc(
+    final callable = _functions.httpsCallable('getProviderPayoutSummary');
+    final result = await callable.call<Map<String, dynamic>>(<String, dynamic>{
+      'forceServer': forceServer,
+    });
+    final data = result.data;
+    final summary = data['summary'];
+    if (summary is! Map) {
+      return ProviderBankDetailsRecord.empty(uid);
+    }
+    return ProviderBankDetailsRecord.fromMap(
       uid,
-    ).get(forceServer ? const GetOptions(source: Source.server) : null);
-    if (!snapshot.exists) return ProviderBankDetailsRecord.empty(uid);
-    return ProviderBankDetailsRecord.fromMap(uid, snapshot.data() ?? {});
+      Map<String, dynamic>.from(summary.cast<String, dynamic>()),
+    );
   }
 
   Future<ProviderOnboardingSnapshot> fetchCurrentOnboarding({
@@ -124,9 +129,7 @@ class ProviderOnboardingRepository {
       _verificationDoc(
         uid,
       ).get(forceServer ? const GetOptions(source: Source.server) : null),
-      _bankDetailsDoc(
-        uid,
-      ).get(forceServer ? const GetOptions(source: Source.server) : null),
+      fetchCurrentBankDetails(forceServer: forceServer),
       _services
           .where('ownerUserId', isEqualTo: uid)
           .where('isDeleted', isEqualTo: false)
@@ -136,7 +139,7 @@ class ProviderOnboardingRepository {
 
     final verificationSnapshot =
         results[0] as DocumentSnapshot<Map<String, dynamic>>;
-    final bankSnapshot = results[1] as DocumentSnapshot<Map<String, dynamic>>;
+    final bankDetails = results[1] as ProviderBankDetailsRecord;
     final servicesSnapshot = results[2] as QuerySnapshot<Map<String, dynamic>>;
 
     final verification = verificationSnapshot.exists
@@ -145,10 +148,6 @@ class ProviderOnboardingRepository {
             verificationSnapshot.data() ?? {},
           )
         : ProviderVerificationRecord.empty(uid);
-    final bankDetails = bankSnapshot.exists
-        ? ProviderBankDetailsRecord.fromMap(uid, bankSnapshot.data() ?? {})
-        : ProviderBankDetailsRecord.empty(uid);
-
     return ProviderOnboardingSnapshot(
       verification: verification,
       bankDetails: bankDetails,
@@ -289,31 +288,32 @@ class ProviderOnboardingRepository {
     required String bankName,
     required String accountNumber,
     required String ifscCode,
-    String? upiId,
+    required String accountType,
   }) async {
-    final uid = _currentUid;
-    final docRef = _bankDetailsDoc(uid);
-    final sanitizedAccountNumber = accountNumber.replaceAll(' ', '').trim();
-    await _firestore.runTransaction((transaction) async {
-      final snapshot = await transaction.get(docRef);
-      final payload = <String, dynamic>{
-        'userId': uid,
-        'accountHolderName': accountHolderName.trim(),
-        'bankName': bankName.trim(),
-        'accountNumberMasked': _maskAccountNumber(sanitizedAccountNumber),
-        'ifscCode': ifscCode.trim().toUpperCase(),
-        'upiId': (upiId ?? '').trim(),
-        'status': providerBankDetailsSubmitted,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-      if (!snapshot.exists) {
-        payload['createdAt'] = FieldValue.serverTimestamp();
-      }
-      transaction.set(docRef, payload, SetOptions(merge: true));
+    final callable = _functions.httpsCallable('saveProviderBankPayoutDetails');
+    await callable.call<Map<String, dynamic>>(<String, dynamic>{
+      'accountHolderName': accountHolderName,
+      'bankName': bankName,
+      'accountNumber': accountNumber,
+      'ifscCode': ifscCode,
+      'accountType': accountType,
     });
-    // TODO: Move bank detail encryption/tokenization to a Cloud Function before
-    // production payouts so the client never handles or writes full account
-    // numbers beyond the immediate submission flow.
+  }
+
+  Future<void> saveUpiDetails({required String upiId}) async {
+    final callable = _functions.httpsCallable('saveProviderUpiPayoutDetails');
+    await callable.call<Map<String, dynamic>>(<String, dynamic>{
+      'upiId': upiId,
+    });
+  }
+
+  Future<void> setPreferredPayoutMethod(String preferredPayoutMethod) async {
+    final callable = _functions.httpsCallable(
+      'setPreferredProviderPayoutMethod',
+    );
+    await callable.call<Map<String, dynamic>>(<String, dynamic>{
+      'preferredPayoutMethod': preferredPayoutMethod,
+    });
   }
 
   Future<void> markFirstServiceListedIfNeeded({
@@ -472,12 +472,6 @@ class ProviderOnboardingRepository {
       }
     }
     return 'jpg';
-  }
-
-  String _maskAccountNumber(String accountNumber) {
-    if (accountNumber.length <= 4) return accountNumber;
-    final visiblePart = accountNumber.substring(accountNumber.length - 4);
-    return 'XXXX$visiblePart';
   }
 
   bool _isPermissionDenied(FirebaseException error) {

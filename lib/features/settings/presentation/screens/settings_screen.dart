@@ -505,17 +505,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _bankDetailsSubtitle(ProviderOnboardingSnapshot? onboarding) {
     final bankDetails = onboarding?.bankDetails;
     if (bankDetails == null) {
-      return 'Add payout account';
+      return 'Set up payout details';
     }
     if (bankDetails.isSubmitted) {
-      final bankName = bankDetails.bankName.isEmpty
-          ? 'Bank account on file'
-          : bankDetails.bankName;
-      final maskedAccount = bankDetails.accountNumberMasked;
-      final suffix = maskedAccount.isEmpty ? '' : ' • $maskedAccount';
-      return '$bankName$suffix';
+      final preferred = bankDetails.prefersBankAccount
+          ? bankDetails.accountNumberMasked
+          : bankDetails.prefersUpi
+          ? bankDetails.upiId
+          : '';
+      final methodLabel = bankDetails.prefersBankAccount
+          ? 'Bank account'
+          : bankDetails.prefersUpi
+          ? 'UPI'
+          : 'Payout details';
+      return preferred.isEmpty ? methodLabel : '$methodLabel • $preferred';
     }
-    return 'Add payout account';
+    if (bankDetails.needsUpdate || bankDetails.hasLegacyDataNeedingMigration) {
+      return 'Payout details need a secure update';
+    }
+    return 'Set up payout details';
   }
 }
 
