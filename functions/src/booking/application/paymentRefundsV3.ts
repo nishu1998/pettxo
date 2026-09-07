@@ -1,3 +1,4 @@
+import {canonicalRefundEarningsHoldV3} from "./providerEarningsV3";
 import {createHash} from "node:crypto";
 import {Timestamp, type Firestore} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
@@ -43,9 +44,10 @@ export async function applyPaymentRefundEventV3(params: {
   const eventKey = createHash("sha256").update(`${params.paymentId}:${params.refundId}`).digest("hex");
   const eventRef = params.firestore.collection("paymentRefunds").doc(eventKey);
   return params.firestore.runTransaction(async (tx) => {
-    const [bookingSnap, attemptSnap, eventSnap, canonicalRefundSnap] = await Promise.all([
+    const [bookingSnap, attemptSnap, eventSnap, canonicalRefundSnap, earningSnap] = await Promise.all([
       tx.get(bookingRef), tx.get(attemptRef), tx.get(eventRef),
       tx.get(params.firestore.collection("refunds").doc(params.bookingId)),
+      tx.get(params.firestore.collection("providerEarnings").doc(params.bookingId)),
     ]);
     const booking = bookingSnap.data() as Data | undefined;
     const attempt = attemptSnap.data() as Data | undefined;
@@ -142,6 +144,7 @@ export async function applyPaymentRefundEventV3(params: {
       }, {merge: true});
     }
     tx.set(params.firestore.collection("providerEarnings").doc(params.bookingId), {
+      ...canonicalRefundEarningsHoldV3(earningSnap.data() ?? {}),
       refundStatus: refundStatus.toLowerCase(), eligibleForPayout: false, updatedAt: now,
     }, {merge: true});
     tx.set(params.firestore.collection("payoutReadiness").doc(params.bookingId), {

@@ -1,3 +1,4 @@
+import {buildCompletionEarningsProjectionV3, buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {Timestamp, type Firestore} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
 
@@ -128,7 +129,7 @@ function asDate(value: unknown): Date | null {
 }
 
 function hasOpenDisputeV3(booking: CanonicalBookingDocumentV3): boolean {
-  return booking.dispute.status.trim().toLowerCase() === "open";
+  return ["open", "under_review"].includes(booking.dispute.status.trim().toLowerCase());
 }
 
 function hasReviewAlreadyV3(bookingData: Record<string, unknown>): {reviewId: string; submitted: boolean} {
@@ -277,7 +278,7 @@ function buildCompletionPayoutDocuments(params: {
       providerId: params.booking.providerId,
       userId: params.booking.parentId,
       serviceId: params.booking.serviceId,
-      amountPaise: financials.providerPayoutPaise,
+      ...buildCompletionEarningsProjectionV3(params.booking, false),
       pettxoCommissionAmountPaise: financials.platformCommissionPaise,
       totalAmountPaise: financials.customerPaidPaise,
       source: "canonical_v3_completion",
@@ -1150,6 +1151,10 @@ export async function createBookingDisputeV3(params: {
       updatedAt: Timestamp.fromDate(authoritativeNow),
     }, {merge: true});
     transaction.set(providerEarningRef, {
+      ...buildProviderEarningsProjectionV3({
+        entitlementPaise: booking.financials?.providerPayoutPaise ?? 0,
+        phase: "HELD", outcome: "OPEN_DISPUTE",
+      }),
       status: "HELD",
       updatedAt: Timestamp.fromDate(authoritativeNow),
     }, {merge: true});
@@ -1226,7 +1231,7 @@ export function evaluateCompletionFinalizationV3(params: {
   if (hasOpenDisputeV3(params.booking)) {
     return {code: "DISPUTE_OPEN", reviewWindowEndsAt: params.booking.lifecycle.reviewWindowEndsAt};
   }
-  const reviewWindowEndsAt = params.booking.lifecycle.reviewWindowEndsAt;
+  const reviewWindowEndsAt = asDate(params.booking.lifecycle.reviewWindowEndsAt);
   if (reviewWindowEndsAt == null) {
     return {code: "INVALID_BOOKING_DATA", reviewWindowEndsAt: null};
   }
@@ -1397,6 +1402,7 @@ export async function finalizeCompletedBookingV3(params: {
       policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
     }, {merge: true});
     transaction.set(providerEarningRef, {
+      ...buildCompletionEarningsProjectionV3(booking, true),
       status: payoutEligibility.status === "READY" ? "READY" : "HELD",
       eligibleAt:
         payoutEligibility.readyAt == null ?

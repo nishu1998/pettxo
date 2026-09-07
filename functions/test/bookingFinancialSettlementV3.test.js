@@ -683,6 +683,8 @@ test("successful payout processing is exactly once across replay and writes one 
 
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
+    [`providerEarnings/${bookingId}`]: {amountPaise: booking.financials.providerPayoutPaise,
+      providerFinalEntitlementPaise: booking.financials.providerPayoutPaise, earningsStatus: "FINALIZED"},
     [`users/${booking.providerId}/providerBankDetails/main`]:
       validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
   });
@@ -707,6 +709,8 @@ test("successful payout processing is exactly once across replay and writes one 
   assert.equal(replay.ok, true);
   assert.equal(replay.code, "IDEMPOTENT_REPLAY");
   assert.equal(gatewayCalls, 1);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).amountPaise, booking.financials.providerPayoutPaise);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).earningsStatus, "FINALIZED");
   assert.equal(firestore.store.get(`providerPayouts/${bookingId}`).status, "PAID");
   assert.equal(
     firestore.store.get(`bookingFinancialLedger/${bookingId}_PROVIDER_PAYOUT_${bookingId}`).amountPaise,
@@ -1790,4 +1794,38 @@ test("resolve dispute rejects malformed ledger source timestamps before any fina
     false,
   );
   assert.equal(firestore.store.get(`disputes/${bookingId}`).status, "OPEN");
+});
+
+for (const [name, input, expected] of [
+  ['customer wins', {resolutionType: 'CUSTOMER_WINS'}, 0],
+  ['provider wins', {resolutionType: 'PROVIDER_WINS'}, 85000],
+  ['custom percentage', {resolutionType: 'CUSTOM_ALLOCATION', customerAllocationBasisPoints: 4000,
+    providerAllocationBasisPoints: 5000, pettxoAllocationBasisPoints: 1000}, 50000],
+  ['zero provider', {resolutionType: 'CUSTOM_ADJUSTMENT', customerRefundPaise: 80000, providerFinalEntitlementPaise: 0}, 0],
+  ['custom amount', {resolutionType: 'CUSTOM_ADJUSTMENT', customerRefundPaise: 40000, providerFinalEntitlementPaise: 50000}, 50000],
+  ['full provider allocation', {resolutionType: 'CUSTOM_ADJUSTMENT', customerRefundPaise: 0, providerFinalEntitlementPaise: 100000}, 100000],
+]) test(`dispute ${name} assigns the final earned amount once`, async () => {
+  const bookingId = `earned-dispute-${name.replaceAll(' ', '-')}`;
+  const booking = buildOpenDisputeBooking();
+  booking.financials = {...booking.financials, serviceSubtotalPaise: 100000, customerPaidPaise: 100000,
+    providerPayoutPaise: 85000, platformCommissionPaise: 15000, couponDiscountPaise: 0, pettxoCouponFundingPaise: 0};
+  const firestore = new FakeFirestore({
+    'users/admin-1': {adminRole: 'financeAdmin'}, [`bookings/${bookingId}`]: booking,
+    [`disputes/${bookingId}`]: {disputeId: bookingId, bookingId, providerId: booking.providerId,
+      parentId: booking.parentId, customerId: booking.parentId, status: 'OPEN', source: 'canonical_v3'},
+    [`providerEarnings/${bookingId}`]: {amountPaise: 0, providerProvisionalEntitlementPaise: 85000,
+      providerFinalEntitlementPaise: null, earningsStatus: 'HELD'},
+  });
+  const args = {firestore, auth: {uid: 'admin-1'}, input: {disputeId: bookingId,
+    policyReason: name, resolutionAttemptId: 'earned-attempt', ...input},
+    authoritativeNow: new Date('2026-07-23T08:00:00Z')};
+  const first = await resolveBookingDisputeV3(args);
+  assert.equal(first.ok, true);
+  const earning = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(earning.amountPaise, expected);
+  assert.equal(earning.providerFinalEntitlementPaise, expected);
+  assert.equal(earning.earningsStatus, 'ADJUSTED');
+  const second = await resolveBookingDisputeV3(args);
+  assert.equal(second.idempotentReplay, true);
+  assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
 });

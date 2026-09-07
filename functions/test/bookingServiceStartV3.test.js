@@ -335,6 +335,12 @@ test("overdue confirmed booking finalizes to NO_SHOW exactly once", async () => 
   });
 
   assert.equal(result.code, "FINALIZED_NO_SHOW");
+  const earning = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(earning.amountPaise, booking.financials.providerPayoutPaise);
+  assert.equal(earning.providerFinalEntitlementPaise, booking.financials.providerPayoutPaise);
+  assert.equal(earning.earningsStatus, "FINALIZED");
+  await finalizeCanonicalNoShowV3({firestore, bookingId, authoritativeNow});
+  assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "NO_SHOW");
   assert.equal(firestore.store.has(`bookingNoShows/${bookingId}`), true);
   assert.equal(
@@ -376,6 +382,12 @@ test("multi-day confirmed booking finalizes to NO_SHOW from the first segment en
   });
 
   assert.equal(result.code, "FINALIZED_NO_SHOW");
+  const earning = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(earning.amountPaise, booking.financials.providerPayoutPaise);
+  assert.equal(earning.providerFinalEntitlementPaise, booking.financials.providerPayoutPaise);
+  assert.equal(earning.earningsStatus, "FINALIZED");
+  await finalizeCanonicalNoShowV3({firestore, bookingId, authoritativeNow});
+  assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "NO_SHOW");
   assert.equal(
     firestore.store.get(`bookings/${bookingId}`).lifecycle.noShowAt.toDate().getTime(),

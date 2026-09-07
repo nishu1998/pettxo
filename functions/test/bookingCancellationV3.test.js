@@ -176,6 +176,8 @@ test("provider cancellation refunds the full customer-paid amount and records pr
   );
   assert.equal(result.payoutReadinessWrite.status, "cancelled");
   assert.equal(result.providerEarningWrite.status, "cancelled");
+  assert.equal(result.providerEarningWrite.amountPaise, 0);
+  assert.equal(result.providerEarningWrite.providerFinalEntitlementPaise, 0);
 });
 
 test("otp-entered bookings are blocked from normal cancellation", () => {
@@ -231,3 +233,23 @@ test("existing canonical cancellation replays without a second refund instructio
   assert.equal(result.refundInstruction, null);
   assert.equal(result.notifications.length, 0);
 });
+
+for (const [hoursBefore, share] of [[25,0], [24,1500], [12,1500], [11,3500], [6,3500], [5,6000], [2,6000], [1,8500]]) {
+  test(`cancellation ${hoursBefore}h before start replaces original earning with policy compensation`, async () => {
+    const bookingId = `earned-cancel-${hoursBefore}`;
+    const booking = buildConfirmedBooking();
+    const attempt = buildConfirmedAttempt({bookingId, booking});
+    const result = applyConfirmedBookingCancellationV3({bookingId, booking, paymentAttempt: attempt,
+      actorType: 'CUSTOMER', actorId: booking.parentId, reasonCode: 'customer_requested',
+      authoritativeNow: new Date(booking.serviceAnchorAt.getTime() - hoursBefore * 3600000)});
+    const expected = Math.floor(booking.financials.serviceSubtotalPaise * share / 10000);
+    assert.equal(result.providerEarningWrite.amountPaise, expected);
+    assert.equal(result.providerEarningWrite.providerFinalEntitlementPaise, expected);
+    assert.equal(result.providerEarningWrite.earningsStatus, 'FINALIZED');
+    const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking,
+      [`providerEarnings/${bookingId}`]: {amountPaise: booking.financials.providerPayoutPaise}});
+    await persistConfirmedBookingCancellationV3({firestore, bookingId, result});
+    await persistConfirmedBookingCancellationV3({firestore, bookingId, result});
+    assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).amountPaise, expected);
+  });
+}

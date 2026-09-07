@@ -1,3 +1,4 @@
+import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {createHash} from "node:crypto";
 
 import {FieldValue, Timestamp, type Firestore} from "firebase-admin/firestore";
@@ -2594,7 +2595,10 @@ export async function resolveBookingDisputeV3(params: {
     transaction.set(
       providerEarningRef,
       {
-        amountPaise: outcome.providerFinalEntitlementPaise,
+        ...buildProviderEarningsProjectionV3({
+          entitlementPaise: outcome.providerFinalEntitlementPaise,
+          phase: "ADJUSTED", outcome: "DISPUTE_RESOLUTION",
+        }),
         status:
           payoutEligibility.status === "READY" ? "READY" : "HELD",
         eligibleAt:

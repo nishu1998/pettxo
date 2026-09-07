@@ -585,6 +585,9 @@ test("provider destination reveal derives the provider from the obligation and r
 
 test("manual provider payout recording is idempotent and writes canonical paid state", async () => {
   const firestore = buildSeed();
+  firestore.store.set("providerEarnings/booking-1", {
+    amountPaise: 85000, providerFinalEntitlementPaise: 85000, earningsStatus: "FINALIZED",
+  });
   const first = await recordManualProviderPayoutDataV3({
     firestore,
     auth: {uid: "super-1"},
@@ -618,6 +621,9 @@ test("manual provider payout recording is idempotent and writes canonical paid s
   });
   assert.equal(replay.code, "ALREADY_COMPLETED");
   assert.equal(replay.idempotentReplay, true);
+  assert.equal(firestore.store.get("providerEarnings/booking-1").amountPaise, 85000);
+  assert.equal(firestore.store.get("providerEarnings/booking-1").providerFinalEntitlementPaise, 85000);
+  assert.equal(firestore.store.get("providerEarnings/booking-1").earningsStatus, "FINALIZED");
 
   await assert.rejects(
     () =>

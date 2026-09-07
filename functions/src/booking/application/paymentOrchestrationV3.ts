@@ -1,3 +1,4 @@
+import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {applyPaymentRefundEventV3, authoritativePaymentIdV3, hasRefundEvidenceV3, refundInstructionIdV3} from "./paymentRefundsV3";
 import {createHash, randomInt} from "node:crypto";
 
@@ -957,7 +958,10 @@ function buildBookingFinancialWrite(params: {
       providerId: params.booking.providerId,
       userId: params.booking.parentId,
       serviceId: params.booking.serviceId,
-      amountPaise: financials.providerPayoutPaise,
+      ...buildProviderEarningsProjectionV3({
+        entitlementPaise: financials.providerPayoutPaise,
+        phase: "PROVISIONAL", outcome: "PAYMENT_CONFIRMED",
+      }),
       pettxoCommissionAmountPaise: financials.platformCommissionPaise,
       totalAmountPaise: financials.customerPaidPaise,
       source: "paidBookingCanonical",

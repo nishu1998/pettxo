@@ -1,3 +1,4 @@
+import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {createHash, timingSafeEqual} from "node:crypto";
 
 import {FieldValue, Timestamp, type Firestore} from "firebase-admin/firestore";
@@ -1148,6 +1149,10 @@ export async function finalizeCanonicalNoShowV3(params: {
       updatedAt: FieldValue.serverTimestamp(),
     }, {merge: true});
     transaction.set(providerEarningRef, {
+      ...buildProviderEarningsProjectionV3({
+        entitlementPaise: allocation.providerCompensationPaise,
+        phase: "FINALIZED", outcome: "NO_SHOW",
+      }),
       bookingId: params.bookingId,
       providerId: booking.providerId,
       status: "hold",

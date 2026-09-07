@@ -214,6 +214,10 @@ test("provider completion moves IN_PROGRESS booking into COMPLETED_PENDING_REVIE
   assert.equal(result.code, "COMPLETED_PENDING_REVIEW");
   const storedBooking = firestore.store.get(`bookings/${bookingId}`);
   assert.equal(storedBooking.state, "COMPLETED_PENDING_REVIEW");
+  const earning = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(earning.amountPaise, 0);
+  assert.equal(earning.providerFinalEntitlementPaise, null);
+  assert.equal(earning.providerProvisionalEntitlementPaise, booking.financials.providerPayoutPaise);
   assert.ok(storedBooking.lifecycle.completedAt);
   assert.ok(storedBooking.lifecycle.serviceEndedAt);
   assert.ok(storedBooking.lifecycle.reviewWindowEndsAt);
@@ -677,6 +681,8 @@ test("customer dispute creation marks payout hold and stays in COMPLETED_PENDING
   });
 
   assert.equal(result.code, "DISPUTE_CREATED");
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).amountPaise, 0);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).earningsStatus, "HELD");
   const storedBooking = firestore.store.get(`bookings/${bookingId}`);
   assert.equal(storedBooking.state, "COMPLETED_PENDING_REVIEW");
   assert.equal(storedBooking.dispute.status, "OPEN");
@@ -743,6 +749,8 @@ test("customer dispute creation accepts historical dotted dispute deadline data"
   });
 
   assert.equal(result.code, "DISPUTE_CREATED");
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).amountPaise, 0);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).earningsStatus, "HELD");
   const storedBooking = firestore.store.get(`bookings/${bookingId}`);
   assert.equal(storedBooking.dispute.status, "OPEN");
   assert.equal(storedBooking.payout.status, "HELD");
@@ -777,6 +785,8 @@ test("customer dispute creation falls back to review window when dispute deadlin
   });
 
   assert.equal(result.code, "DISPUTE_CREATED");
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).amountPaise, 0);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).earningsStatus, "HELD");
   const storedBooking = firestore.store.get(`bookings/${bookingId}`);
   assert.equal(storedBooking.dispute.status, "OPEN");
   assertNoDottedBookingMutationFields(storedBooking);
@@ -816,4 +826,88 @@ test("customer dispute creation returns ALREADY_DISPUTED when an active dispute 
   });
 
   assert.equal(result.code, "ALREADY_DISPUTED");
+});
+
+for (const kind of ['single-slot', 'multi-slot', 'range']) {
+  for (const discount of [0, 20000, 100000]) {
+    test(`final earned amount is 85000 for ${kind} completion with ${discount} Pettxo discount`, async () => {
+      const bookingId = `earned-${kind}-${discount}`;
+      const booking = kind === 'range' ?
+        require('../lib/booking/schema/bookingFixtures.js').buildConfirmedRangeBookingFixture() :
+        kind === 'multi-slot' ? buildMultiSegmentInProgressBooking() : buildInProgressBooking();
+      booking.state = 'COMPLETED_PENDING_REVIEW';
+      booking.payment.status = 'CONFIRMED';
+      booking.financials = {...booking.financials, serviceSubtotalPaise: 100000,
+        platformCommissionPaise: 15000, providerPayoutPaise: 85000,
+        couponDiscountPaise: discount, pettxoCouponFundingPaise: discount,
+        customerPaidPaise: 100000 - discount};
+      booking.lifecycle.reviewWindowEndsAt = new Date('2026-08-01T00:00:00Z');
+      const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking,
+        [`providerEarnings/${bookingId}`]: {amountPaise: 0, providerFinalEntitlementPaise: null}});
+      const args = {firestore, bookingId, authoritativeNow: new Date('2026-08-02T00:00:00Z')};
+      const first = await finalizeCompletedBookingV3(args);
+      assert.equal(first.code, 'FINALIZED');
+      const earned = firestore.store.get(`providerEarnings/${bookingId}`);
+      assert.equal(earned.amountPaise, 85000);
+      assert.equal(earned.providerFinalEntitlementPaise, 85000);
+      assert.equal(earned.earningsStatus, 'FINALIZED');
+      // Missing bank details hold payment without changing the earned amount.
+      assert.equal(earned.status, 'HELD');
+      await finalizeCompletedBookingV3(args);
+      assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earned);
+    });
+  }
+}
+test('canonical refund without an allocation cannot silently finalize normal earnings', async () => {
+  const bookingId = 'earned-canonical-refund';
+  const booking = buildRefundShadowedInProgressBooking();
+  booking.state = 'COMPLETED_PENDING_REVIEW';
+  booking.lifecycle.reviewWindowEndsAt = new Date('2026-08-01T00:00:00Z');
+  const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking});
+  await finalizeCompletedBookingV3({firestore, bookingId, authoritativeNow: new Date('2026-08-02T00:00:00Z')});
+  const earning = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(earning.amountPaise, 0);
+  assert.equal(earning.providerFinalEntitlementPaise, null);
+  assert.equal(earning.earningsStatus, 'HELD');
+  assert.equal(earning.earningsOutcome, 'CANONICAL_REFUND_REVIEW');
+  assert.equal(earning.providerProvisionalEntitlementPaise, booking.financials.providerPayoutPaise);
+});
+test('completion reconciliation followed by finalization produces one earned amount', async () => {
+  const bookingId = 'earned-reconciled-completion';
+  const booking = buildInProgressBooking();
+  const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking});
+  const now = new Date(booking.schedule.scheduledEndAt.getTime() + 48 * 3600000);
+  await reconcileCanonicalCompletionStateV3({firestore, bookingId, authoritativeNow: now});
+  const provisional = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(provisional.amountPaise, 0);
+  await finalizeCompletedBookingV3({firestore, bookingId, authoritativeNow: new Date(now.getTime() + 48 * 3600000)});
+  const earning = firestore.store.get(`providerEarnings/${bookingId}`);
+  assert.equal(earning.amountPaise, booking.financials.providerPayoutPaise);
+  await reconcileCanonicalCompletionStateV3({firestore, bookingId, authoritativeNow: now});
+  await finalizeCompletedBookingV3({firestore, bookingId, authoritativeNow: now});
+  assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
+});
+test('partial canonical refund still holds earnings when payment status remains CONFIRMED', async () => {
+  const bookingId = 'earned-partial-refund';
+  const booking = buildInProgressBooking();
+  booking.state = 'COMPLETED_PENDING_REVIEW';
+  booking.payment.status = 'CONFIRMED';
+  booking.payment.razorpayRefundId = 'partial_refund';
+  booking.lifecycle.reviewWindowEndsAt = new Date('2026-08-01T00:00:00Z');
+  const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking});
+  await finalizeCompletedBookingV3({firestore, bookingId, authoritativeNow: new Date('2026-08-02T00:00:00Z')});
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).amountPaise, 0);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).earningsStatus, 'HELD');
+});
+test('under-review dispute prevents completion earnings finalization', async () => {
+  const bookingId = 'earned-under-review';
+  const booking = buildInProgressBooking();
+  booking.state = 'COMPLETED_PENDING_REVIEW';
+  booking.dispute.status = 'UNDER_REVIEW';
+  booking.lifecycle.reviewWindowEndsAt = new Date('2026-08-01T00:00:00Z');
+  const earning = {amountPaise: 0, providerFinalEntitlementPaise: null, earningsStatus: 'HELD'};
+  const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking, [`providerEarnings/${bookingId}`]: earning});
+  const result = await finalizeCompletedBookingV3({firestore, bookingId, authoritativeNow: new Date('2026-08-02T00:00:00Z')});
+  assert.equal(result.code, 'DISPUTE_OPEN');
+  assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
 });

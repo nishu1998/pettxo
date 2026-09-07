@@ -1,3 +1,4 @@
+import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {FieldValue, Timestamp, type Firestore, type Transaction} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
 
@@ -1267,6 +1268,11 @@ export function applyConfirmedBookingCancellationV3(params: {
       updatedAt: FieldValue.serverTimestamp(),
     },
     providerEarningWrite: {
+      ...buildProviderEarningsProjectionV3({
+        entitlementPaise: decision.providerCompensationPaise,
+        phase: "FINALIZED",
+        outcome: params.actorType === "CUSTOMER" ? "CUSTOMER_CANCELLATION" : "PROVIDER_CANCELLATION",
+      }),
       bookingId: params.bookingId,
       providerId: params.booking.providerId,
       status: "cancelled",
