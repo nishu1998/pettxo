@@ -61,6 +61,7 @@ type DisputeFinancialSettlementStatus =
   | "PARTIALLY_COMPLETED"
   | "COMPLETED";
 type LedgerEntryType =
+  | "EXCESS_PAYMENT_REFUND"
   | "PAYMENT_CAPTURED"
   | "CUSTOMER_REFUND"
   | "PROVIDER_PAYOUT"

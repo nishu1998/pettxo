@@ -518,6 +518,7 @@ export async function processRazorpayRefundV3(params: {
   razorpayPaymentId: string;
   refundAmountPaise: number;
   reason: string;
+  idempotencyKey?: string;
 }): Promise<{
   status: "pending" | "processed" | "failed";
   razorpayRefundId: string;
@@ -549,6 +550,7 @@ export async function processRazorpayRefundV3(params: {
         headers: {
           Authorization: encodeBasicAuth(params.keyId, params.keySecret),
           "Content-Type": "application/json",
+          ...(params.idempotencyKey ? {"X-Refund-Idempotency": params.idempotencyKey} : {}),
         },
         body: JSON.stringify({
           amount: Math.max(params.refundAmountPaise, 0),
@@ -567,11 +569,13 @@ export async function processRazorpayRefundV3(params: {
         processedAt: null,
       };
     }
+    const status = data.status === "processed" ? "processed" :
+      data.status === "failed" ? "failed" : "pending";
     return {
-      status: "processed",
+      status,
       razorpayRefundId: asString(data.id),
-      error: "",
-      processedAt: new Date(),
+      error: status === "failed" ? "Razorpay refund failed." : "",
+      processedAt: status === "processed" ? new Date() : null,
     };
   } catch (error) {
     return {

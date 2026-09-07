@@ -1,3 +1,4 @@
+import {applyPaymentRefundEventV3, authoritativePaymentIdV3, hasRefundEvidenceV3, refundInstructionIdV3} from "./paymentRefundsV3";
 import {createHash, randomInt} from "node:crypto";
 
 import {FieldValue, Timestamp, type Firestore, type Transaction} from "firebase-admin/firestore";
@@ -1176,14 +1177,17 @@ export function finalizeCapturedBookingPaymentV3(params: {
   authoritativeNow: Date;
   verificationSource: CanonicalPaymentFinalizeSource;
 }): FinalizePaymentResult {
+  if (hasRefundEvidenceV3(params.paymentAttempt)) {
+    return {ok: false, code: "REFUND_REQUIRED", booking: cloneBooking(params.booking),
+      paymentAttempt: cloneAttempt(params.paymentAttempt), refundInstruction: null,
+      notifications: [], events: [], message: "Capture already has refund history; confirmation is blocked."};
+  }
   const providerPrivate = params.providerPrivate ?? null;
   const incomingPaymentId = params.razorpayPayment?.id ?? "";
-  const canonicalConfirmedPaymentId =
-    params.booking.payment.razorpayPaymentId ||
-    params.paymentAttempt.razorpayPaymentId;
+  const canonicalConfirmedPaymentId = authoritativePaymentIdV3(params.booking);
 
   if (
-    params.booking.state === "CONFIRMED" &&
+    (params.booking.state === "CONFIRMED" || params.booking.lifecycle.paidAt != null) &&
     (!incomingPaymentId ||
       !canonicalConfirmedPaymentId ||
       incomingPaymentId === canonicalConfirmedPaymentId)
@@ -1246,7 +1250,7 @@ export function finalizeCapturedBookingPaymentV3(params: {
   }
 
   if (
-    params.booking.state === "CONFIRMED" &&
+    (params.booking.state === "CONFIRMED" || params.booking.lifecycle.paidAt != null) &&
     params.razorpayPayment != null &&
     canonicalConfirmedPaymentId &&
     incomingPaymentId !== canonicalConfirmedPaymentId
@@ -1254,6 +1258,10 @@ export function finalizeCapturedBookingPaymentV3(params: {
     const attempt = cloneAttempt(params.paymentAttempt);
     attempt.state = "REFUND_REQUIRED";
     attempt.razorpayPaymentId = params.razorpayPayment.id;
+    attempt.capturedAmountPaise = params.razorpayPayment.amountPaise;
+    attempt.refundedAmountPaise = 0;
+    attempt.netCapturedAmountPaise = params.razorpayPayment.amountPaise;
+    attempt.refundStatus = "NONE";
     if (attempt.paymentMethod !== "qr") {
       attempt.razorpayOrderId = params.razorpayPayment.orderId;
     }
@@ -1469,6 +1477,10 @@ export function finalizeCapturedBookingPaymentV3(params: {
       throw new HttpsError("failed-precondition", "Razorpay currency does not match the payment attempt.");
     }
     attempt.razorpayPaymentId = params.razorpayPayment.id;
+    attempt.capturedAmountPaise = params.razorpayPayment.amountPaise;
+    attempt.refundedAmountPaise = 0;
+    attempt.netCapturedAmountPaise = params.razorpayPayment.amountPaise;
+    attempt.refundStatus = "NONE";
     if (attempt.paymentMethod === "qr") {
       attempt.qrState = "PAYMENT_CAPTURED";
     }
@@ -1812,6 +1824,35 @@ export async function persistFinalizePaymentResultV3(params: {
   bookingId: string;
 }): Promise<void> {
   await params.firestore.runTransaction(async (transaction) => {
+    const currentBookingRef = params.firestore.collection("bookings").doc(params.bookingId);
+    const currentAttemptRef = currentBookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId);
+    const [currentBookingSnapshot, currentAttemptSnapshot] = await Promise.all([
+      transaction.get(currentBookingRef), transaction.get(currentAttemptRef),
+    ]);
+    const currentBooking = currentBookingSnapshot.data() ?? {};
+    const currentAttempt = currentAttemptSnapshot.data() ?? {};
+    // Revalidate at commit: a late capture/reconciliation may race a refund.
+    if (hasRefundEvidenceV3(currentAttempt)) {
+      if (params.result.ok) throw new HttpsError("aborted", "Payment acquired refund history; retry finalization.");
+      return;
+    }
+    const currentWinner = authoritativePaymentIdV3(currentBooking);
+    if (params.result.ok && currentWinner && currentBooking.lifecycle?.paidAt != null) {
+      if (currentWinner !== params.result.paymentAttempt.razorpayPaymentId) {
+        throw new HttpsError("aborted", "Another payment won; retry finalization against current state.");
+      }
+      if (currentBooking.state !== "CONFIRMED") return;
+    }
+    if (!params.result.ok && currentWinner === params.result.paymentAttempt.razorpayPaymentId &&
+      currentBooking.lifecycle?.paidAt != null && params.result.booking.lifecycle.paidAt == null) {
+      throw new HttpsError("aborted", "Payment was confirmed while compensation was being calculated.");
+    }
+    const instructionRef = !params.result.ok && params.result.refundInstruction ?
+      params.firestore.collection("refunds").doc(refundInstructionIdV3(
+        params.bookingId, currentWinner ? currentBooking : params.result.booking,
+        params.result.paymentAttempt.razorpayPaymentId,
+      )) : null;
+    const existingInstruction = instructionRef ? await transaction.get(instructionRef) : null;
     if (params.result.ok) {
       if (params.result.couponWrite) {
         await consumeOfferUsageInTransaction({
@@ -1878,16 +1919,20 @@ export async function persistFinalizePaymentResultV3(params: {
       }
     } else {
       const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
-      transaction.set(bookingRef, serializeBookingForFirestore(params.result.booking), {merge: true});
+      const excess = currentWinner && currentWinner !== params.result.paymentAttempt.razorpayPaymentId;
+      if (!excess) transaction.set(bookingRef, serializeBookingForFirestore(params.result.booking), {merge: true});
       transaction.set(
         bookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId),
         serializePaymentAttemptForFirestore(params.result.paymentAttempt),
         {merge: true},
       );
-      if (params.result.refundInstruction) {
+      if (params.result.refundInstruction && !existingInstruction?.exists) {
         transaction.set(
-          params.firestore.collection("refunds").doc(params.bookingId),
-          params.result.refundInstruction,
+          params.firestore.collection("refunds").doc(refundInstructionIdV3(
+            params.bookingId, currentWinner ? currentBooking : params.result.booking,
+            params.result.paymentAttempt.razorpayPaymentId,
+          )),
+          {...params.result.refundInstruction, razorpayPaymentId: params.result.paymentAttempt.razorpayPaymentId},
           {merge: true},
         );
       }
@@ -2110,81 +2155,94 @@ export async function submitRefundInstructionV3(params: {
   const authoritativeNow = params.authoritativeNow ?? new Date();
   const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
   const attemptRef = bookingRef.collection("paymentAttempts").doc(params.paymentAttemptId);
-  const refundRef = params.firestore.collection("refunds").doc(params.bookingId);
   const loaded = await params.firestore.runTransaction(async (transaction) => {
-    const [attemptSnapshot, refundSnapshot] = await Promise.all([
-      transaction.get(attemptRef),
-      transaction.get(refundRef),
+    const [attemptSnapshot, bookingSnapshot, legacySnapshot] = await Promise.all([
+      transaction.get(attemptRef), transaction.get(bookingRef),
+      transaction.get(params.firestore.collection("refunds").doc(params.bookingId)),
     ]);
-    if (!attemptSnapshot.exists || !refundSnapshot.exists) {
-      return null;
+    if (!attemptSnapshot.exists) return null;
+    const attempt = attemptSnapshot.data() as CanonicalPaymentAttemptDocumentV3;
+    if (!["REFUND_REQUIRED", "REFUND_PENDING"].includes(attempt.state) || !attempt.razorpayPaymentId) return null;
+    const booking = bookingSnapshot.data();
+    const id = booking ? refundInstructionIdV3(params.bookingId, booking, attempt.razorpayPaymentId) : params.bookingId;
+    const refundRef = params.firestore.collection("refunds").doc(id);
+    const scopedSnapshot = id === params.bookingId ? legacySnapshot : await transaction.get(refundRef);
+    const legacy = legacySnapshot.data();
+    const legacyMatches = legacy && legacy.paymentAttemptId === params.paymentAttemptId &&
+      (!legacy.razorpayPaymentId || legacy.razorpayPaymentId === attempt.razorpayPaymentId);
+    const refund = scopedSnapshot.exists ? scopedSnapshot.data()! : legacyMatches ? legacy! : null;
+    if (!refund || (refund.paymentAttemptId && refund.paymentAttemptId !== params.paymentAttemptId) ||
+      (refund.razorpayPaymentId && refund.razorpayPaymentId !== attempt.razorpayPaymentId) ||
+      String(refund.executionMode).toUpperCase() === "MANUAL" ||
+      String(refund.origin).toUpperCase() === "DISPUTE_RESOLUTION") return null;
+    // Retry ambiguous submissions with an immutable body and processor idempotency key.
+    // A submitted refund is completed by processor events.
+    if (["processed", "submitted"].includes(String(refund.state)) ||
+      (refund.state === "failed" && refund.razorpayRefundId)) return null;
+    if (id !== params.bookingId && !scopedSnapshot.exists && legacyMatches) {
+      transaction.set(params.firestore.collection("refunds").doc(params.bookingId), {
+        state: "isolated_excess", refundAmountPaise: 0, isolatedRefundId: id,
+      }, {merge: true});
     }
-    return {
-      attempt: attemptSnapshot.data() as CanonicalPaymentAttemptDocumentV3,
-      refund: refundSnapshot.data() as Record<string, unknown>,
-    };
+    const requestAmountPaise = refund.requestAmountPaise ?? Math.max(0,
+      asInt(refund.refundAmountPaise, attempt.amountPaise) - (attempt.refundedAmountPaise ?? 0));
+    if (requestAmountPaise === 0) return null;
+    const idempotencyKey = refund.idempotencyKey ?? `refund_${createHash("sha256").update(`${attempt.razorpayPaymentId}:${params.paymentAttemptId}`).digest("hex")}`;
+    const requestReason = refund.requestReason ?? (asString(refund.reasonCode) || "canonical_refund_required");
+    transaction.set(attemptRef, {state: "REFUND_PENDING", updatedAt: FieldValue.serverTimestamp()}, {merge: true});
+    transaction.set(refundRef, {...refund, state: "submitting", requestAmountPaise, idempotencyKey,
+      requestReason, razorpayPaymentId: attempt.razorpayPaymentId}, {merge: true});
+    return {attempt, refund, refundRef, booking, requestAmountPaise, idempotencyKey, requestReason};
   });
   if (!loaded) return "SKIPPED";
-  if (loaded.attempt.state !== "REFUND_REQUIRED" && loaded.attempt.state !== "REFUND_PENDING") {
-    return "SKIPPED";
-  }
-  const refundExecutionMode = asString(loaded.refund.executionMode).toUpperCase();
-  const refundOrigin = asString(loaded.refund.origin).toUpperCase();
-  if (
-    refundExecutionMode === "MANUAL" ||
-    refundOrigin === "DISPUTE_RESOLUTION"
-  ) {
-    return "SKIPPED";
-  }
-  if (!loaded.attempt.razorpayPaymentId) return "SKIPPED";
-
+  const amount = loaded.requestAmountPaise;
+  if (amount === 0) return "SKIPPED";
   try {
     const refund = await processRazorpayRefundV3({
-      keyId: params.keyId,
-      keySecret: params.keySecret,
-      razorpayPaymentId: loaded.attempt.razorpayPaymentId,
-      refundAmountPaise: asInt(loaded.refund.refundAmountPaise, loaded.attempt.amountPaise),
-      reason: asString(loaded.refund.reasonCode) || loaded.attempt.failureCode || "canonical_refund_required",
+      keyId: params.keyId, keySecret: params.keySecret,
+      razorpayPaymentId: loaded.attempt.razorpayPaymentId, refundAmountPaise: amount,
+      reason: loaded.requestReason, idempotencyKey: loaded.idempotencyKey,
     });
-    await Promise.all([
-      attemptRef.set({
-        state: "REFUND_PENDING",
-        nextReconciliationAt: null,
-        lastReconciledAt: FieldValue.serverTimestamp(),
-        reconciliationAttemptCount: FieldValue.increment(1),
-        lastReconciliationCode: "REFUND_SUBMITTED",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      refundRef.set({
-        state: refund.status === "processed" ? "processed" : "submitted",
-        submittedAt: FieldValue.serverTimestamp(),
-        razorpayRefundId: refund.razorpayRefundId,
-        attemptCount: FieldValue.increment(1),
-        lastErrorCode: "",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-    ]);
-    return refund.status === "processed" ? "REFUNDED" : "REFUND_PENDING";
+    if (refund.status === "failed" && (!refund.razorpayRefundId || !loaded.booking)) {
+      throw new HttpsError("unavailable", refund.error || "Refund submission failed.");
+    }
+    if (!refund.razorpayRefundId) throw new HttpsError("unavailable", "Refund response has no processor identity.");
+    if (loaded.booking) {
+      await applyPaymentRefundEventV3({
+        firestore: params.firestore, bookingId: params.bookingId, paymentAttemptId: params.paymentAttemptId,
+        paymentId: loaded.attempt.razorpayPaymentId, refundId: refund.razorpayRefundId,
+        amountPaise: amount, eventName: refund.status === "processed" ? "refund.processed" :
+          refund.status === "failed" ? "refund.failed" : "refund.created",
+        now: authoritativeNow,
+      });
+    } else {
+      // Legacy orphan instructions have no booking-wide state to mutate.
+      await params.firestore.runTransaction(async (transaction) => {
+        const latest = await transaction.get(attemptRef);
+        if (latest.data()?.state === "REFUNDED") return;
+        const refundedAmountPaise = refund.status === "processed" ?
+          (latest.data()?.refundedAmountPaise ?? 0) + amount : (latest.data()?.refundedAmountPaise ?? 0);
+        const full = refundedAmountPaise === loaded.attempt.amountPaise;
+        transaction.set(attemptRef, {
+          state: full ? "REFUNDED" : "REFUND_PENDING", capturedAmountPaise: loaded.attempt.amountPaise,
+          refundedAmountPaise, netCapturedAmountPaise: loaded.attempt.amountPaise - refundedAmountPaise,
+          refundStatus: full ? "REFUNDED" : refundedAmountPaise > 0 ? "PARTIALLY_REFUNDED" : "REFUND_PENDING",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        transaction.set(loaded.refundRef, {state: refund.status === "processed" ? "processed" : "submitted",
+          refundedAmountPaise, razorpayRefundId: refund.razorpayRefundId}, {merge: true});
+      });
+    }
+    return refund.status === "processed" ? "REFUNDED" : refund.status === "failed" ? "RETRY_LATER" : "REFUND_PENDING";
   } catch (error) {
-    const code = error instanceof HttpsError ? error.code : "unknown";
-    await Promise.all([
-      attemptRef.set({
-        nextReconciliationAt: Timestamp.fromDate(nextReconciliationAtForAttempt({
-          now: authoritativeNow,
-          attemptCount: loaded.attempt.reconciliationAttemptCount + 1,
-        })),
-        lastReconciledAt: FieldValue.serverTimestamp(),
-        reconciliationAttemptCount: FieldValue.increment(1),
-        lastReconciliationCode: `REFUND_${code.toUpperCase()}`,
+    await params.firestore.runTransaction(async (transaction) => {
+      const latest = await transaction.get(loaded.refundRef);
+      if (latest.data()?.state !== "submitting") return;
+      transaction.set(loaded.refundRef, {
+        state: "submission_unknown", lastErrorCode: error instanceof Error ? error.message : "unknown",
         updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      refundRef.set({
-        state: "required",
-        attemptCount: FieldValue.increment(1),
-        lastErrorCode: code,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-    ]);
+      }, {merge: true});
+    });
     return "RETRY_LATER";
   }
 }

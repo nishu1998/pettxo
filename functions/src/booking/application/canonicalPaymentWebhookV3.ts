@@ -1,3 +1,4 @@
+import {applyPaymentRefundEventV3, authoritativePaymentIdV3} from "./paymentRefundsV3";
 import {FieldValue, Timestamp, type Firestore} from "firebase-admin/firestore";
 import * as logger from "firebase-functions/logger";
 
@@ -7,7 +8,6 @@ import {
   type BookingNotificationPlan,
 } from "./bookingNotificationsV3";
 import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
-import {BOOKING_CANCELLATION_COLLECTION} from "./cancellationOrchestrationV3";
 import {
   canonicalPaymentOrderMappingRef,
   canonicalQrPaymentMappingRef,
@@ -184,6 +184,7 @@ async function handleManualDisputeRefundWebhook(params: {
       resolutionSnapshot,
       disputeSnapshot,
       payoutReadinessSnapshot,
+      bookingSnapshot,
     ] = await Promise.all([
       transaction.get(refundRef),
       transaction.get(customerObligationRef),
@@ -191,7 +192,11 @@ async function handleManualDisputeRefundWebhook(params: {
       transaction.get(resolutionRef),
       transaction.get(disputeRef),
       transaction.get(payoutReadinessRef),
+      transaction.get(bookingRef),
     ]);
+    if (authoritativePaymentIdV3(bookingSnapshot.data() ?? {}) !== params.paymentId) {
+      throw new Error("Refund funding identity changed during manual reconciliation.");
+    }
     const refund = refundSnapshot.exists ? asRecord(refundSnapshot.data()) : {};
     if (!isManualDisputeRefund(refund)) {
       return null;
@@ -610,8 +615,8 @@ export async function routeCanonicalWebhookEventV3(params: {
   const persistNotificationsFn =
     params.deps?.persistNotifications ?? persistNotifications;
   const orderId = asString(params.paymentEntity.order_id);
-  const paymentId = asString(params.paymentEntity.id) ||
-    asString(params.refundEntity.payment_id);
+  const paymentId = params.eventName.startsWith("refund.") ?
+    asString(params.refundEntity.payment_id) : asString(params.paymentEntity.id);
   const refundId = asString(params.refundEntity.id);
   const qrCodeId = asString(params.qrCodeEntity?.id);
 
@@ -1181,12 +1186,12 @@ export async function routeCanonicalWebhookEventV3(params: {
       razorpayPaymentId: paymentId,
     });
     if (!mapping) {
-  return {
-    outcome: "IGNORED_UNMAPPED",
-    bookingId: "",
-    paymentAttemptId: "",
-    retryable: false,
-        failureCode: "",
+      return {
+        outcome: "IGNORED_UNMAPPED",
+        bookingId: "",
+        paymentAttemptId: "",
+        retryable: true,
+        failureCode: "REFUND_PAYMENT_MAPPING_PENDING",
         notifications: [],
       };
     }
@@ -1206,128 +1211,24 @@ export async function routeCanonicalWebhookEventV3(params: {
       };
     }
 
-    const refundRef = params.firestore.collection("refunds").doc(mapping.bookingId);
-    const cancellationRef = params.firestore
-      .collection(BOOKING_CANCELLATION_COLLECTION)
-      .doc(mapping.bookingId);
-    const bookingRef = params.firestore.collection("bookings").doc(mapping.bookingId);
-    const attemptRef = params.firestore.collection("bookings")
-      .doc(mapping.bookingId)
-      .collection("paymentAttempts")
-      .doc(mapping.paymentAttemptId);
-    const refundAmountPaise = asInt(params.refundEntity.amount, loaded.attempt.amountPaise);
-    const manualDisputeResult = await handleManualDisputeRefundWebhook({
-      firestore: params.firestore,
-      eventId: params.eventId,
-      eventName: params.eventName,
-      bookingId: mapping.bookingId,
-      paymentAttemptId: mapping.paymentAttemptId,
-      refundId,
-      paymentId,
-      refundAmountPaise,
-      authoritativeNow,
+    const refundAmountPaise = typeof params.refundEntity.amount === "number" ? params.refundEntity.amount : NaN;
+    const applied = await applyPaymentRefundEventV3({
+      firestore: params.firestore, bookingId: mapping.bookingId,
+      paymentAttemptId: mapping.paymentAttemptId, paymentId, refundId,
+      amountPaise: refundAmountPaise, eventName: params.eventName, now: authoritativeNow,
     });
-    if (manualDisputeResult != null) {
-      return manualDisputeResult;
+    if (applied.manual) {
+      const result = await handleManualDisputeRefundWebhook({
+        firestore: params.firestore, eventId: params.eventId, eventName: params.eventName,
+        bookingId: mapping.bookingId, paymentAttemptId: mapping.paymentAttemptId,
+        refundId, paymentId, refundAmountPaise, authoritativeNow,
+      });
+      if (result != null) return result;
     }
-    const state = params.eventName === "refund.processed" ?
-      "processed" :
-      (params.eventName === "refund.created" ? "submitted" : "failed");
-    await Promise.all([
-      refundRef.set({
-        bookingId: mapping.bookingId,
-        paymentAttemptId: mapping.paymentAttemptId,
-        razorpayPaymentId: paymentId,
-        razorpayRefundId: refundId,
-        refundAmountPaise,
-        state,
-        submittedAt: params.eventName === "refund.created" ?
-          FieldValue.serverTimestamp() :
-          null,
-        confirmedAt: params.eventName === "refund.processed" ?
-          FieldValue.serverTimestamp() :
-          null,
-        lastErrorCode: params.eventName === "refund.failed" ?
-          asString(params.refundEntity.status) || "refund_failed" :
-          "",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      cancellationRef.set({
-        bookingId: mapping.bookingId,
-        refundAmountPaise,
-        refundStatus:
-          params.eventName === "refund.processed" ?
-            "REFUNDED" :
-            (params.eventName === "refund.created" ? "REFUND_PENDING" : "REFUND_FAILED"),
-        status:
-          params.eventName === "refund.processed" ? "REFUNDED" : "CANCELLED",
-        refundInstructionId: `refund-${mapping.bookingId}`,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      bookingRef.set({
-        payment: {
-          status:
-            params.eventName === "refund.processed" ?
-              "refunded" :
-              (params.eventName === "refund.created" ? "refund_pending" : "refund_failed"),
-          razorpayRefundId: refundId || "",
-        },
-        financials: {
-          refundAmountPaise,
-        },
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      params.firestore.collection("payments").doc(mapping.bookingId).set({
-        refundStatus:
-          params.eventName === "refund.processed" ?
-            "refunded" :
-            (params.eventName === "refund.created" ? "refund_pending" : "refund_failed"),
-        refundAmountPaise,
-        razorpayRefundId: refundId || "",
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      params.firestore.collection("invoices").doc(mapping.bookingId).set({
-        refundStatus:
-          params.eventName === "refund.processed" ?
-            "refunded" :
-            (params.eventName === "refund.created" ? "refund_pending" : "refund_failed"),
-        refundAmountPaise,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      params.firestore.collection("bookingFinancials").doc(mapping.bookingId).set({
-        paymentStatus:
-          params.eventName === "refund.processed" ?
-            "refunded" :
-            (params.eventName === "refund.created" ? "refund_pending" : "refund_failed"),
-        refundAmountPaise,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      params.firestore.collection("providerEarnings").doc(mapping.bookingId).set({
-        refundStatus:
-          params.eventName === "refund.processed" ?
-            "refunded" :
-            (params.eventName === "refund.created" ? "refund_pending" : "refund_failed"),
-        eligibleForPayout: false,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      params.firestore.collection("payoutReadiness").doc(mapping.bookingId).set({
-        status: "cancelled",
-        providerPayoutPaise: 0,
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-      attemptRef.set({
-        state: params.eventName === "refund.processed" ? "REFUNDED" : "REFUND_PENDING",
-        refundedAt: params.eventName === "refund.processed" ?
-          FieldValue.serverTimestamp() :
-          null,
-        lastReconciledAt: FieldValue.serverTimestamp(),
-        lastReconciliationCode: params.eventName.toUpperCase().replaceAll(".", "_"),
-        updatedAt: FieldValue.serverTimestamp(),
-      }, {merge: true}),
-    ]);
 
     const notifications =
-      params.eventName === "refund.processed" || params.eventName === "refund.failed" ?
+      applied.authoritative && applied.changed &&
+      (params.eventName === "refund.processed" || params.eventName === "refund.failed") ?
         buildCancellationRefundNotification({
           bookingId: mapping.bookingId,
           parentId: loaded.booking.parentId,

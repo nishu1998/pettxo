@@ -2563,7 +2563,7 @@ test("submitRefundInstructionV3 keeps one deterministic refund document across r
     assert.equal(callCount, 2);
     assert.equal(
       firestore.store.get(`bookings/${bookingId}/paymentAttempts/attempt-1`).state,
-      "REFUND_PENDING",
+      "REFUNDED",
     );
     assert.equal(
       firestore.store.get(`refunds/${bookingId}`).razorpayRefundId,

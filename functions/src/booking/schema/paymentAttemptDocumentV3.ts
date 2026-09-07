@@ -56,6 +56,11 @@ export type CanonicalPaymentAttemptDocumentV3 = {
   failedAt: Date | null;
   refundRequiredAt: Date | null;
   refundedAt: Date | null;
+  capturedAmountPaise?: number;
+  refundedAmountPaise?: number;
+  netCapturedAmountPaise?: number;
+  refundStatus?: string;
+  refundEvents?: Record<string, {amountPaise: number; state: string}>;
   nextReconciliationAt: Date | null;
   lastReconciledAt: Date | null;
   reconciliationAttemptCount: number;
@@ -222,6 +227,11 @@ export function parseCanonicalPaymentAttemptDocumentV3(
       failedAt: asNullableDate(raw.failedAt),
       refundRequiredAt: asNullableDate(raw.refundRequiredAt),
       refundedAt: asNullableDate(raw.refundedAt),
+      ...(asInteger(raw.capturedAmountPaise) != null ? {capturedAmountPaise: asInteger(raw.capturedAmountPaise)!} : {}),
+      refundedAmountPaise: asInteger(raw.refundedAmountPaise) ?? 0,
+      ...(asInteger(raw.netCapturedAmountPaise) != null ? {netCapturedAmountPaise: asInteger(raw.netCapturedAmountPaise)!} : {}),
+      refundStatus: asString(raw.refundStatus) || "NONE",
+      refundEvents: asRecord(raw.refundEvents) as Record<string, {amountPaise: number; state: string}>,
       nextReconciliationAt: asNullableDate(raw.nextReconciliationAt),
       lastReconciledAt: asNullableDate(raw.lastReconciledAt),
       reconciliationAttemptCount: asInteger(raw.reconciliationAttemptCount) ?? 0,

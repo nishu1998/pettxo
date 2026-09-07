@@ -276,6 +276,9 @@ export async function processRazorpayWebhookEnvelopeV3(params: {
         keySecret: params.keySecret,
         authoritativeNow,
       });
+      if (canonicalResult.failureCode === "REFUND_PAYMENT_MAPPING_PENDING") {
+        throw new Error("Refund payment mapping is not available yet; retry delivery.");
+      }
       if (canonicalResult.outcome !== "NON_CAPTURE_EVENT") {
         await markPaymentWebhookEventProcessedV3({
           firestore: params.firestore,
