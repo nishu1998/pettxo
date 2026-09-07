@@ -9,10 +9,12 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   doc,
+  deleteField,
   getDoc,
   serverTimestamp,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 
 const projectId = 'demo-pettexo';
@@ -140,6 +142,238 @@ after(async () => {
 
 beforeEach(async () => {
   await testEnv.clearFirestore();
+});
+
+// Exercise real client writes, including added/removed keys and the alternate
+// profile-bootstrap allow branch. Trusted fixtures never use client rules.
+const adminRoles = ['superAdmin', 'financeAdmin', 'customerSupportAdmin'];
+const protectedUserFields = {
+  adminRole: 'superAdmin',
+  canModerateReports: true,
+  isAdmin: true,
+  permissions: {manageFinance: true},
+  claims: {admin: true},
+  accountStatus: 'active',
+  restrictions: {hard: {isBanned: false}},
+  verificationStatus: 'approved',
+  emailVerified: true,
+  phoneVerified: true,
+  providers: ['password'],
+  accountType: 'admin',
+  unexpectedPrivilege: true,
+};
+
+function publicProfile(uid, overrides = {}) {
+  return {
+    uid, role: 'petParent', displayName: 'Test Person', name: 'Test Person',
+    username: uid, usernameLowercase: uid, photoUrl: '', profileImage: '',
+    state: 'Maharashtra', city: 'Mumbai', bio: '',
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(), ...overrides,
+  };
+}
+
+function createProfile(db, uid, overrides = {}) {
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'users', uid), publicProfile(uid, overrides));
+  batch.set(doc(db, 'usernames', uid), {
+    uid, username: uid, usernameLowercase: uid,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+  return batch.commit();
+}
+
+async function seedFinancialAccessFixtures() {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'providerEarnings', 'other-earning'), {
+      providerId: 'other-provider', amountPaise: 85000,
+    });
+    await setDoc(doc(db, 'bookingFinancialLedger', 'protected-entry'), {amountPaise: 85000});
+    await setDoc(doc(db, 'manualSettlementObligations', 'protected-obligation'), {status: 'READY'});
+    await setDoc(doc(db, 'reports', 'admin-action'), {
+      reporterId: 'other-provider', reportedBy: 'other-provider', status: 'pending',
+    });
+  });
+}
+
+for (const role of ['petParent', 'serviceProvider', 'petLover']) {
+  test(`authorization: legitimate create and profile role selection ${role}`, async () => {
+    const uid = 'profile_owner';
+    const db = authedDb(uid);
+    await assertSucceeds(createProfile(db, uid, {role}));
+    await assertSucceeds(getDoc(doc(db, 'users', uid)));
+    await assertSucceeds(updateDoc(doc(db, 'users', uid), {
+      role: role === 'serviceProvider' ? 'petParent' : 'serviceProvider',
+      updatedAt: serverTimestamp(),
+    }));
+  });
+}
+
+for (const role of adminRoles) {
+  test(`authorization: create rejects adminRole ${role}`, async () => {
+    await assertFails(createProfile(authedDb('new_owner'), 'new_owner', {adminRole: role}));
+  });
+  test(`authorization: escalation to ${role} cannot unlock financial reads or admin actions`, async () => {
+    const uid = 'ordinary_owner';
+    await seedUser(uid);
+    await seedFinancialAccessFixtures();
+    const db = authedDb(uid);
+    await assertFails(updateDoc(doc(db, 'users', uid), {
+      displayName: 'Changed', name: 'Changed', adminRole: role,
+      updatedAt: serverTimestamp(),
+    }));
+    assert.equal((await getDoc(doc(db, 'users', uid))).data().displayName, uid);
+    await assertFails(getDoc(doc(db, 'providerEarnings', 'other-earning')));
+    await assertFails(getDoc(doc(db, 'bookingFinancialLedger', 'protected-entry')));
+    await assertFails(getDoc(doc(db, 'manualSettlementObligations', 'protected-obligation')));
+    await assertFails(updateDoc(doc(db, 'reports', 'admin-action'), {status: 'resolved'}));
+    await assertFails(updateDoc(doc(db, 'manualSettlementObligations', 'protected-obligation'), {status: 'COMPLETED'}));
+  });
+  test(`authorization: trusted ${role} retains access but cannot self-edit admin metadata`, async () => {
+    const uid = 'trusted_admin';
+    await seedUser(uid, {adminRole: role});
+    await seedFinancialAccessFixtures();
+    const db = authedDb(uid);
+    await assertSucceeds(getDoc(doc(db, 'providerEarnings', 'other-earning')));
+    await assertSucceeds(getDoc(doc(db, 'bookingFinancialLedger', 'protected-entry')));
+    await assertSucceeds(getDoc(doc(db, 'manualSettlementObligations', 'protected-obligation')));
+    await assertSucceeds(updateDoc(doc(db, 'reports', 'admin-action'), {status: 'resolved'}));
+    await assertSucceeds(updateDoc(doc(db, 'users', uid), {bio: 'Updated', updatedAt: serverTimestamp()}));
+    await assertFails(updateDoc(doc(db, 'users', uid), {adminRole: role === 'superAdmin' ? 'financeAdmin' : 'superAdmin', updatedAt: serverTimestamp()}));
+    await assertFails(updateDoc(doc(db, 'users', uid), {adminRole: deleteField(), updatedAt: serverTimestamp()}));
+    await assertFails(setDoc(doc(db, 'users', uid), publicProfile(uid)));
+    await assertFails(updateDoc(doc(db, 'bookingFinancialLedger', 'protected-entry'), {amountPaise: 1}));
+  });
+}
+
+for (const [field, value] of Object.entries(protectedUserFields)) {
+  test(`authorization: create rejects protected/unknown field ${field}`, async () => {
+    await assertFails(createProfile(authedDb('new_owner'), 'new_owner', {[field]: value}));
+  });
+  test(`authorization: update rejects adding, changing, and removing ${field}`, async () => {
+    const uid = 'ordinary_owner';
+    const db = authedDb(uid);
+    await seedUser(uid);
+    await assertFails(updateDoc(doc(db, 'users', uid), {[field]: value, updatedAt: serverTimestamp()}));
+    await seedUser(uid, {[field]: value});
+    await assertFails(updateDoc(doc(db, 'users', uid), {[field]: null, updatedAt: serverTimestamp()}));
+    await assertFails(updateDoc(doc(db, 'users', uid), {[field]: deleteField(), updatedAt: serverTimestamp()}));
+  });
+}
+
+test('authorization: bootstrap preserves trusted fields and rejects privilege additions/removals', async () => {
+  const uid = 'bootstrap_owner';
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'users', uid), {uid, accountStatus: 'active'});
+    await setDoc(doc(db, 'usernames', uid), {uid, username: uid, usernameLowercase: uid});
+  });
+  const db = authedDb(uid);
+  const {uid: ignoredUid, ...payload} = publicProfile(uid);
+  await assertFails(updateDoc(doc(db, 'users', uid), {...payload, adminRole: 'superAdmin'}));
+  await assertFails(updateDoc(doc(db, 'users', uid), {...payload, canModerateReports: true}));
+  await assertFails(updateDoc(doc(db, 'users', uid), {...payload, accountStatus: deleteField()}));
+  await assertSucceeds(updateDoc(doc(db, 'users', uid), payload));
+  assert.equal((await getDoc(doc(db, 'users', uid))).data().accountStatus, 'active');
+});
+
+test('authorization: Edit Profile can add optional fields and delete legacy location fields', async () => {
+  const uid = 'edit_owner';
+  await seedUser(uid, {address: 'Old address', country: 'India', accountStatus: 'active', canModerateReports: false});
+  const db = authedDb(uid);
+  await assertSucceeds(setDoc(doc(db, 'users', uid), {
+    displayName: 'New Name', name: 'New Name', bio: 'Provider bio',
+    photoUrl: 'https://example.com/avatar.png', profileImage: 'https://example.com/avatar.png',
+    state: 'Maharashtra', city: 'Pune', location: 'Pune, Maharashtra',
+    address: deleteField(), country: deleteField(), profileType: 'serviceProvider',
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+  const data = (await getDoc(doc(db, 'users', uid))).data();
+  assert.equal(data.location, 'Pune, Maharashtra');
+  assert.equal(data.canModerateReports, false);
+  assert.equal(data.address, undefined);
+});
+
+test('authorization: cross-user and unauthenticated profile writes are denied', async () => {
+  await seedUser('victim_owner');
+  await assertFails(updateDoc(doc(authedDb('attacker'), 'users', 'victim_owner'), {adminRole: 'superAdmin'}));
+  await assertFails(createProfile(authedDb('attacker'), 'new_victim'));
+  await assertFails(createProfile(testEnv.unauthenticatedContext().firestore(), 'new_owner'));
+  await assertFails(updateDoc(doc(testEnv.unauthenticatedContext().firestore(), 'users', 'victim_owner'), {bio: 'Changed'}));
+});
+
+for (const role of [undefined, null, '', 'admin', 'SUPERADMIN', 'superAdmin ', true, ['superAdmin'], {role: 'superAdmin'}]) {
+  test(`authorization: malformed/missing admin role ${JSON.stringify(role)} grants no financial access`, async () => {
+    const uid = 'invalid_admin';
+    await seedUser(uid, role === undefined ? {} : {adminRole: role});
+    await seedFinancialAccessFixtures();
+    const db = authedDb(uid);
+    await assertFails(getDoc(doc(db, 'providerEarnings', 'other-earning')));
+    await assertFails(getDoc(doc(db, 'bookingFinancialLedger', 'protected-entry')));
+    await assertFails(updateDoc(doc(db, 'reports', 'admin-action'), {status: 'resolved'}));
+  });
+}
+
+test('authorization: profile role cannot substitute for adminRole', async () => {
+  await assertFails(createProfile(authedDb('new_owner'), 'new_owner', {role: 'superAdmin'}));
+  await seedUser('ordinary_owner');
+  await assertFails(updateDoc(doc(authedDb('ordinary_owner'), 'users', 'ordinary_owner'), {role: 'financeAdmin', updatedAt: serverTimestamp()}));
+  await seedUser('ordinary_owner', {role: 'superAdmin'});
+  await seedFinancialAccessFixtures();
+  await assertFails(getDoc(doc(authedDb('ordinary_owner'), 'bookingFinancialLedger', 'protected-entry')));
+});
+
+test('authorization: provider own earnings remain readable and immutable', async () => {
+  await seedUser('other-provider');
+  await seedFinancialAccessFixtures();
+  const db = authedDb('other-provider');
+  await assertSucceeds(getDoc(doc(db, 'providerEarnings', 'other-earning')));
+  await assertFails(updateDoc(doc(db, 'providerEarnings', 'other-earning'), {amountPaise: 1, status: 'PAID'}));
+});
+
+test('authorization: bootstrap rejects privileged profile role values', async () => {
+  const uid = 'bootstrap_owner';
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'users', uid), {uid});
+    await setDoc(doc(context.firestore(), 'usernames', uid), {uid, username: uid, usernameLowercase: uid});
+  });
+  const {uid: ignoredUid, ...payload} = publicProfile(uid, {role: 'superAdmin'});
+  await assertFails(updateDoc(doc(authedDb(uid), 'users', uid), payload));
+});
+
+test('authorization: legal acceptance remains private and profile edits preserve trusted identity', async () => {
+  const uid = 'legal_owner';
+  await seedUser(uid, {providers: ['phone'], emailVerified: true, accountStatus: 'active'});
+  const db = authedDb(uid);
+  await assertSucceeds(setDoc(doc(db, 'userPrivate', uid), {
+    uid, acceptedTermsAt: serverTimestamp(), acceptedPrivacyAt: serverTimestamp(),
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  }));
+  await assertSucceeds(setDoc(doc(db, 'userPrivate', uid), {
+    uid, acceptedProviderAgreementAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  }, {merge: true}));
+  await assertSucceeds(updateDoc(doc(db, 'users', uid), {
+    role: 'petParent', bio: 'New bio', updatedAt: serverTimestamp(),
+  }));
+  const data = (await getDoc(doc(db, 'users', uid))).data();
+  assert.deepEqual(data.providers, ['phone']);
+  assert.equal(data.emailVerified, true);
+});
+
+test('authorization: username changes stay server-owned after profile completion', async () => {
+  const uid = 'username_owner';
+  await seedUser(uid);
+  await assertFails(updateDoc(doc(authedDb(uid), 'users', uid), {
+    username: 'new_username', usernameLowercase: 'new_username', updatedAt: serverTimestamp(),
+  }));
+  // The existing changeUsername callable uses the Admin SDK, which bypasses
+  // these client rules. Simulate its trusted write boundary, not its business logic.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'users', uid), {
+      username: 'new_username', usernameLowercase: 'new_username', updatedAt: serverTimestamp(),
+    });
+  });
+  await assertSucceeds(updateDoc(doc(authedDb(uid), 'users', uid), {bio: 'Updated', updatedAt: serverTimestamp()}));
 });
 
 async function seedCanonicalConfirmedBooking({

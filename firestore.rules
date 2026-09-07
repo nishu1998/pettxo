@@ -271,7 +271,9 @@ service cloud.firestore {
     }
 
     function safeUserOwnerCreate() {
-      return request.resource.data.diff({}).changedKeys().hasOnly([
+      // Validate every supplied key: changedKeys() excludes newly added fields.
+      // Admin roles, moderation capabilities and account state are server-owned.
+      return request.resource.data.keys().hasOnly([
         'uid',
         'role',
         'displayName',
@@ -286,6 +288,10 @@ service cloud.firestore {
         'createdAt',
         'updatedAt'
       ]) &&
+      (
+        !request.resource.data.keys().hasAny(['role']) ||
+        request.resource.data.role in ['petParent', 'serviceProvider', 'petLover']
+      ) &&
       request.resource.data.uid == request.auth.uid &&
       request.resource.data.displayName is string &&
       request.resource.data.name == request.resource.data.displayName &&
@@ -301,7 +307,8 @@ service cloud.firestore {
     }
 
     function safeUserOwnerProfileBootstrapUpdate() {
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+      // Preserve existing server fields while blocking their addition/removal.
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
         'role',
         'displayName',
         'name',
@@ -315,6 +322,10 @@ service cloud.firestore {
         'createdAt',
         'updatedAt'
       ]) &&
+      (
+        !request.resource.data.keys().hasAny(['role']) ||
+        request.resource.data.role in ['petParent', 'serviceProvider', 'petLover']
+      ) &&
       request.resource.data.uid == resource.data.uid &&
       request.resource.data.uid == request.auth.uid &&
       request.resource.data.displayName is string &&
@@ -466,7 +477,8 @@ service cloud.firestore {
     }
 
     function safeUserOwnerUpdate() {
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+      // Check additions and deletions as well as changes to existing fields.
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
         'displayName',
         'name',
         'bio',
