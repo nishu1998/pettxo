@@ -73,6 +73,7 @@ const expectedExportNames = [
   "recordManualCustomerRefundV3",
   "recordManualProviderPayoutV3",
   "reconcileBookingPaymentsV3",
+  "reconcileProviderEarningsBatchV3",
   "refreshSocialPostDiscoverScores",
   "removeNotificationToken",
   "removeUserRestriction",

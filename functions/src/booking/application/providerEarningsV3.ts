@@ -3,7 +3,7 @@ import type {CanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 
 export type ProviderEarningsPhaseV3 = "PROVISIONAL" | "HELD" | "FINALIZED" | "ADJUSTED";
 export type ProviderEarningsOutcomeV3 = "PAYMENT_CONFIRMED" | "COMPLETION_REVIEW" |
-  "NORMAL_COMPLETION" | "CUSTOMER_CANCELLATION" | "PROVIDER_CANCELLATION" |
+  "NO_EARNING_RECORD_REQUIRED" | "NORMAL_COMPLETION" | "CUSTOMER_CANCELLATION" | "PROVIDER_CANCELLATION" |
   "NO_SHOW" | "OPEN_DISPUTE" | "DISPUTE_RESOLUTION" | "CANONICAL_REFUND_REVIEW";
 
 /** Outcome entitlement, independent of payout readiness or money transferred.

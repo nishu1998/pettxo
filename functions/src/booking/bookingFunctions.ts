@@ -55,3 +55,4 @@ export {
   recordManualCustomerRefundV3,
   materializeManualSettlementObligationsForBookingV3,
 } from "./bookingManualSettlementOperationsV3";
+export {reconcileProviderEarningsBatchV3} from "./providerEarningsBackfillFunctions";
