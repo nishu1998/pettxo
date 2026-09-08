@@ -21,6 +21,7 @@ import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/provider_earning_record.dart';
+import '../../domain/models/provider_earnings_summary.dart';
 import '../../domain/models/service_slot_model.dart';
 
 enum CanonicalPrivateDataLoadFailureKind {
@@ -1178,6 +1179,15 @@ class BookingRepository {
             ? fallback!.trim()
             : 'We could not continue this payment right now.';
     }
+  }
+
+  /// Fetches a server snapshot for the signed-in provider's full history.
+  /// Network/reconciliation errors propagate; never fall back to loaded rows.
+  Future<ProviderEarningsSummary> getProviderEarningsSummary() async {
+    final result = await _functions
+        .httpsCallable('getProviderLifetimeEarningsV3')
+        .call<Map<String, dynamic>>();
+    return ProviderEarningsSummary.fromMap(result.data);
   }
 
   Stream<List<ProviderEarningRecord>> watchProviderEarnings(

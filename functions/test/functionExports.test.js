@@ -48,6 +48,7 @@ const expectedExportNames = [
   "getProviderPayoutCredentialsForSuperAdmin",
   "getProviderPayoutSummary",
   "getProviderPayoutV3",
+  "getProviderLifetimeEarningsV3",
   "listCanonicalBookingsForAdminV3",
   "listCanonicalDisputesForAdminV3",
   "listCanonicalDisputesV3",
