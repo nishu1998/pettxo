@@ -527,6 +527,14 @@
       "collectionGroup": "providerEarnings",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "providerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "providerEarnings",
+      "queryScope": "COLLECTION",
+      "fields": [
         {
           "fieldPath": "providerId",
           "order": "ASCENDING"
