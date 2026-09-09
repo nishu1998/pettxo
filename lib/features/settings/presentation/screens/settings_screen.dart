@@ -335,10 +335,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: Column(
                       children: [
                         _NavTile(
-                          icon: Icons.account_balance_wallet_outlined,
+                          icon: Icons.receipt_long_outlined,
                           title: 'Provider earnings',
                           subtitle: const Text(
-                            'Pending, payout-eligible, paid',
+                            'Lifetime earnings and recent bookings',
                             style: TextStyle(
                               color: AppColors.textGrey,
                               height: 1.4,
