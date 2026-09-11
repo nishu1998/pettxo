@@ -10,12 +10,22 @@ String formatEarningsPaise(int paise) {
 }
 
 String earningsStatusLabel(ProviderEarningRecord record) {
-  if (record.earningsStatus == 'HELD' || record.status == 'HELD') {
-    return 'On Hold';
-  }
-  if (record.isProvisional) return 'Not final yet';
-  if (record.status == 'PAID') return 'Paid';
+  if (record.isProvisional) return 'Earning pending finalization';
   return 'Earned';
+}
+
+/// Payout metadata never determines whether the entitlement is final.
+String? earningsPayoutLabel(ProviderEarningRecord record) {
+  if (record.isProvisional || record.finalEntitlementPaise == 0) return null;
+  return switch (record.status) {
+    'HELD' => 'Payout: On hold',
+    'READY' => 'Payout: Eligible',
+    'PAID' => 'Payout: Paid',
+    'PROCESSING' => 'Payout: Processing',
+    'FAILED' => 'Payout: Failed',
+    'CANCELLED' => 'Payout: Cancelled',
+    _ => null,
+  };
 }
 
 String earningsOutcomeLabel(ProviderEarningRecord record) =>
@@ -28,7 +38,7 @@ String earningsOutcomeLabel(ProviderEarningRecord record) =>
       'CANONICAL_REFUND_REVIEW' => 'Under review',
       'PAYMENT_CONFIRMED' => 'Booking confirmed',
       'COMPLETION_REVIEW' => 'Completion under review',
-      _ => 'Service earning',
+      _ => 'Booking earning',
     };
 
 String formatEarningsDate(DateTime date) {

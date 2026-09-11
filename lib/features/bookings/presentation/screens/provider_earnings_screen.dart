@@ -286,6 +286,7 @@ class _EarningsContentState extends State<_EarningsContent> {
 
   Widget _record(BuildContext context, ProviderEarningRecord row) {
     final theme = Theme.of(context);
+    final payoutLabel = earningsPayoutLabel(row);
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       clipBehavior: Clip.antiAlias,
@@ -305,11 +306,9 @@ class _EarningsContentState extends State<_EarningsContent> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Booking ${row.bookingId}',
+                earningsOutcomeLabel(row),
                 style: theme.textTheme.titleSmall,
               ),
-              const SizedBox(height: 8),
-              Text(earningsOutcomeLabel(row)),
               const SizedBox(height: 8),
               Text(
                 row.isProvisional
@@ -321,6 +320,7 @@ class _EarningsContentState extends State<_EarningsContent> {
               ),
               const SizedBox(height: 4),
               Text(earningsStatusLabel(row)),
+              if (payoutLabel != null) Text(payoutLabel),
               if (row.isProvisional)
                 const Text('Not included in Total Earned yet.'),
               const SizedBox(height: 8),

@@ -235,7 +235,8 @@ void main() {
         record(amount: null, phase: 'HELD', outcome: 'OPEN_DISPUTE'),
       ]);
       await tester.pump();
-      expect(find.text('On Hold'), findsOneWidget);
+      expect(find.text('Earning pending finalization'), findsOneWidget);
+      expect(find.textContaining('Payout:'), findsNothing);
       expect(find.text('Amount not final yet'), findsOneWidget);
       expect(find.text('Not included in Total Earned yet.'), findsOneWidget);
     },
@@ -244,9 +245,10 @@ void main() {
     tester,
   ) async {
     await mount(tester);
-    repo.history.add([record(phase: 'HELD')]);
+    repo.history.add([record(phase: 'HELD', status: 'HELD')]);
     await tester.pump();
-    expect(find.text('On Hold'), findsOneWidget);
+    expect(find.text('Earned'), findsOneWidget);
+    expect(find.text('Payout: On hold'), findsOneWidget);
     expect(find.text('₹850.00'), findsOneWidget);
     expect(find.text('Amount not final yet'), findsNothing);
   });
@@ -256,7 +258,8 @@ void main() {
     await mount(tester);
     repo.history.add([record(status: 'PAID')]);
     await tester.pump();
-    expect(find.text('Paid'), findsOneWidget);
+    expect(find.text('Earned'), findsOneWidget);
+    expect(find.text('Payout: Paid'), findsOneWidget);
     expect(find.text('₹850.00'), findsOneWidget);
     expect(find.text('₹10,000.00'), findsOneWidget);
   });
@@ -391,6 +394,90 @@ void main() {
     expect(find.text('Dispute resolved'), findsOneWidget);
     expect(find.text('₹500.00'), findsOneWidget);
   });
+  testWidgets('current canonical records form an earnings statement', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    repo.load = () async => summary(170);
+    await mount(tester);
+    repo.history.add([
+      record(id: 'DGKy', amount: 170, outcome: 'NO_SHOW', status: 'HELD'),
+      record(
+        id: 'FCxs',
+        amount: null,
+        phase: 'PROVISIONAL',
+        outcome: 'PAYMENT_CONFIRMED',
+        status: 'HELD',
+      ),
+      record(
+        id: 'MrvT',
+        amount: null,
+        phase: 'PROVISIONAL',
+        outcome: 'PAYMENT_CONFIRMED',
+        status: 'HELD',
+      ),
+      record(
+        id: 'YMId',
+        amount: 0,
+        outcome: 'PROVIDER_CANCELLATION',
+        status: 'CANCELLED',
+      ),
+    ]);
+    await tester.pump();
+    expect(find.text('₹1.70'), findsNWidgets(2));
+    expect(find.text('No-show earning'), findsOneWidget);
+    expect(find.text('Earned'), findsOneWidget);
+    expect(find.text('Payout: On hold'), findsOneWidget);
+    expect(find.text('Earning pending finalization'), findsNWidgets(2));
+    expect(find.text('Amount not final yet'), findsNWidgets(2));
+    expect(find.text('₹0.00'), findsNothing);
+    expect(find.text('Cancelled'), findsNothing);
+    expect(find.textContaining('Source:'), findsNothing);
+    expect(find.textContaining('paidBookingCanonical'), findsNothing);
+    expect(find.textContaining('Booking DGKy'), findsNothing);
+    for (final label in ['Pending', 'Eligible', 'Paid', 'On Hold']) {
+      expect(find.text(label), findsNothing);
+    }
+  });
+  test(
+    'payout mapping cannot replace earnings status or expose provisional payouts',
+    () {
+      const labels = {
+        'HELD': 'Payout: On hold',
+        'READY': 'Payout: Eligible',
+        'PAID': 'Payout: Paid',
+        'PROCESSING': 'Payout: Processing',
+        'FAILED': 'Payout: Failed',
+        'CANCELLED': 'Payout: Cancelled',
+      };
+      for (final entry in labels.entries) {
+        expect(earningsStatusLabel(record(status: entry.key)), 'Earned');
+        expect(earningsPayoutLabel(record(status: entry.key)), entry.value);
+        final provisional = record(
+          amount: null,
+          phase: 'PROVISIONAL',
+          status: entry.key,
+        );
+        expect(
+          earningsStatusLabel(provisional),
+          'Earning pending finalization',
+        );
+        expect(earningsPayoutLabel(provisional), isNull);
+      }
+      expect(earningsPayoutLabel(record(status: 'unknown')), isNull);
+      expect(
+        earningsPayoutLabel(record(amount: 0, status: 'CANCELLED')),
+        isNull,
+      );
+      expect(
+        earningsOutcomeLabel(record(outcome: 'unknown')),
+        'Booking earning',
+      );
+    },
+  );
   test('paise formatter uses grouping and exactly two decimals', () {
     expect(formatEarningsPaise(85000), '₹850.00');
     expect(formatEarningsPaise(123456789), '₹1,234,567.89');
