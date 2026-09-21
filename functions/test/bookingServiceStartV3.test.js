@@ -1,3 +1,5 @@
+const mergeFirestoreSet = require("./helpers/mergeFirestoreSet");
+const assertCanonicalEarning = require('./helpers/assertCanonicalEarning');
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {createHash} = require("node:crypto");
@@ -90,7 +92,7 @@ class FakeFirestore {
 
   _set(path, data, options = {}) {
     const existing = this.store.get(path) ?? {};
-    this.store.set(path, options.merge ? {...existing, ...data} : {...data});
+    this.store.set(path, options.merge ? mergeFirestoreSet(existing, data) : {...data});
   }
 }
 
@@ -135,8 +137,8 @@ function buildMultiSegmentConfirmedBookingSeed() {
   const booking = buildConfirmedSlotBookingFixture();
   const firstStart = new Date("2026-07-23T06:00:00.000Z");
   const firstEnd = new Date("2026-07-23T07:00:00.000Z");
-  const secondStart = new Date("2026-07-24T08:00:00.000Z");
-  const secondEnd = new Date("2026-07-24T09:00:00.000Z");
+  const secondStart = new Date("2026-07-23T07:00:00.000Z");
+  const secondEnd = new Date("2026-07-23T08:00:00.000Z");
   booking.schedule.slots = [
     {
       ...booking.schedule.slots[0],
@@ -150,8 +152,8 @@ function buildMultiSegmentConfirmedBookingSeed() {
     {
       ...booking.schedule.slots[0],
       slotId: "slot-2",
-      dateKey: "2026-07-24",
-      serviceDateKey: "2026-07-24",
+      dateKey: "2026-07-23",
+      serviceDateKey: "2026-07-23",
       startAt: secondStart,
       endAt: secondEnd,
       schedulingMode: "fixedDuration",
@@ -171,7 +173,7 @@ function buildMultiSegmentConfirmedBookingSeed() {
       schedulingMode: "fixedDuration",
     },
     {
-      serviceDateKey: "2026-07-24",
+      serviceDateKey: "2026-07-23",
       startAt: secondStart,
       endAt: secondEnd,
       slotIds: ["slot-2"],
@@ -181,7 +183,7 @@ function buildMultiSegmentConfirmedBookingSeed() {
   ];
   booking.schedule.firstSegmentEndAt = firstEnd;
   booking.schedule.finalEndAt = secondEnd;
-  booking.schedule.serviceDayCount = 2;
+  booking.schedule.serviceDayCount = 1;
   booking.schedule.segmentCount = 2;
   booking.service.selectedSlotCount = 2;
   booking.service.totalDurationMinutes = 120;
@@ -254,7 +256,7 @@ test("correct OTP is still allowed at the exact authoritative service end", asyn
   assert.equal(result.code, "VERIFIED_STARTED");
 });
 
-test("correct OTP is still allowed at the first segment end for a multi-day slot booking", async () => {
+test("correct OTP is still allowed at the first segment end for a continuous multi-slot slot booking", async () => {
   const {bookingId, booking, privateDoc} = buildMultiSegmentConfirmedBookingSeed();
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
@@ -338,6 +340,7 @@ test("overdue confirmed booking finalizes to NO_SHOW exactly once", async () => 
   const earning = firestore.store.get(`providerEarnings/${bookingId}`);
   assert.equal(earning.amountPaise, booking.financials.providerPayoutPaise);
   assert.equal(earning.providerFinalEntitlementPaise, booking.financials.providerPayoutPaise);
+  assertCanonicalEarning(earning, bookingId);
   assert.equal(earning.earningsStatus, "FINALIZED");
   await finalizeCanonicalNoShowV3({firestore, bookingId, authoritativeNow});
   assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
@@ -365,12 +368,16 @@ test("overdue confirmed booking finalizes to NO_SHOW exactly once", async () => 
   );
 });
 
-test("multi-day confirmed booking finalizes to NO_SHOW from the first segment end", async () => {
+test("continuous multi-slot confirmed booking finalizes to NO_SHOW from the final segment end", async () => {
   const {bookingId, booking, privateDoc} = buildMultiSegmentConfirmedBookingSeed();
   const firestore = new FakeFirestore({
     [`bookings/${bookingId}`]: booking,
     [`bookingPrivate/${bookingId}`]: privateDoc,
   });
+  const notDue = await finalizeCanonicalNoShowV3({firestore, bookingId,
+    authoritativeNow: new Date(booking.schedule.firstSegmentEndAt.getTime() + 1)});
+  assert.equal(notDue.code, "NOT_DUE");
+  assert.equal(firestore.store.has(`bookingNoShows/${bookingId}`), false);
   const authoritativeNow = new Date(
     booking.schedule.firstSegmentEndAt.getTime() + 2 * 60 * 60 * 1000,
   );
@@ -381,24 +388,27 @@ test("multi-day confirmed booking finalizes to NO_SHOW from the first segment en
     authoritativeNow,
   });
 
+  assert.equal(firestore.store.get(`manualSettlementObligations/provider_payout_${bookingId}`).source, "NO_SHOW");
+  assert.equal([...firestore.store.keys()].filter(path => path.startsWith("manualSettlementObligations/")).length, 1);
   assert.equal(result.code, "FINALIZED_NO_SHOW");
   const earning = firestore.store.get(`providerEarnings/${bookingId}`);
   assert.equal(earning.amountPaise, booking.financials.providerPayoutPaise);
   assert.equal(earning.providerFinalEntitlementPaise, booking.financials.providerPayoutPaise);
+  assertCanonicalEarning(earning, bookingId);
   assert.equal(earning.earningsStatus, "FINALIZED");
   await finalizeCanonicalNoShowV3({firestore, bookingId, authoritativeNow});
   assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "NO_SHOW");
   assert.equal(
     firestore.store.get(`bookings/${bookingId}`).lifecycle.noShowAt.toDate().getTime(),
-    booking.schedule.firstSegmentEndAt.getTime(),
+    booking.schedule.finalEndAt.getTime(),
   );
   assert.equal(
     firestore.store
       .get(`bookings/${bookingId}`)
       .lifecycle.disputeDeadlineAt.toDate()
       .getTime(),
-    booking.schedule.firstSegmentEndAt.getTime() + 24 * 60 * 60 * 1000,
+    booking.schedule.finalEndAt.getTime() + 24 * 60 * 60 * 1000,
   );
 });
 
@@ -498,4 +508,124 @@ test("no-show allocation keeps provider entitlement intact across coupon scenari
   assert.equal(fullCoupon.providerCompensationPaise, 85000);
   assert.equal(fullCoupon.pettxoRetainedPaise, 15000);
   assert.equal(fullCoupon.pettxoCouponCostPaise, 100000);
+});
+
+const {reconcileCanonicalServiceStartArtifactsV3, resolveAuthoritativeServiceEndV3,
+  resolveCanonicalCompletionAvailableAtV3, SERVICE_START_POLICY_VERSION} = require('../lib/booking/application/serviceStartOrchestrationV3');
+const {reconcileCanonicalCompletionStateV3} = require('../lib/booking/application/serviceCompletionOrchestrationV3');
+function recoverySeed() {
+  const {bookingId, booking} = buildConfirmedBookingSeed();
+  const at = new Date('2026-07-23T05:55:00Z');
+  booking.state = booking.stateQueryValue = 'IN_PROGRESS';
+  booking['lifecycle.otpEnteredAt'] = Timestamp.fromDate(at);
+  const artifact = {bookingId, providerId:booking.providerId, parentId:booking.parentId,
+    verifiedAt:Timestamp.fromDate(at), otpVerifiedAt:Timestamp.fromDate(at),
+    stateBefore:'CONFIRMED', stateAfter:'IN_PROGRESS', policyVersion:SERVICE_START_POLICY_VERSION,
+    serviceAnchorAt:Timestamp.fromDate(booking.schedule.scheduledStartAt)};
+  return {bookingId,booking,artifact};
+}
+test('OTP writes a nested start, preserves lifecycle and permits completion reconciliation', async()=>{
+  const {bookingId,booking,privateDoc}=buildConfirmedBookingSeed();
+  const firestore=new FakeFirestore({[`bookings/${bookingId}`]:booking,[`bookingPrivate/${bookingId}`]:privateDoc,
+    [`providerEarnings/${bookingId}`]:{earningsSchemaVersion:1,earningsStatus:'PROVISIONAL',providerFinalEntitlementPaise:null}});
+  const at=new Date('2026-07-23T05:55:00Z');
+  assert.equal((await verifyBookingStartOtpV3({firestore,bookingId,providerId:booking.providerId,otpCandidate:'482913',requestAttemptId:'phase1',authoritativeNow:at})).code,'VERIFIED_STARTED');
+  const stored=firestore.store.get(`bookings/${bookingId}`);
+  assert.equal(stored.lifecycle.otpEnteredAt.toDate().getTime(),at.getTime());
+  assert.deepEqual(stored.lifecycle.paidAt,booking.lifecycle.paidAt);
+  assert.deepEqual(stored.lifecycle.requestedAt,booking.lifecycle.requestedAt);
+  assert.equal(Object.hasOwn(stored,'lifecycle.otpEnteredAt'),false);
+  assert.equal(firestore.store.get(`providerEarnings/${bookingId}`).earningsStatus,'PROVISIONAL');
+  assert.equal(await reconcileCanonicalCompletionStateV3({firestore,bookingId,authoritativeNow:new Date(booking.schedule.scheduledEndAt.getTime()+1)}),'AUTO_COMPLETED_PENDING_REVIEW');
+});
+test('corroborated start recovery is idempotent and never changes earnings',async()=>{
+  const {bookingId,booking,artifact}=recoverySeed();
+  const firestore=new FakeFirestore({[`bookings/${bookingId}`]:booking,[`bookingServiceStarts/${bookingId}`]:artifact});
+  const args={firestore,bookingId,allowHistoricalRecovery:true,authoritativeNow:new Date('2026-07-24T12:00:00Z')};
+  assert.equal(await reconcileCanonicalServiceStartArtifactsV3(args),'REPAIRED');
+  assert.deepEqual(firestore.store.get(`bookings/${bookingId}`).lifecycle.paidAt,booking.lifecycle.paidAt);
+  assert.equal(firestore.store.get(`bookings/${bookingId}`).lifecycle.otpEnteredAt.toMillis(),artifact.verifiedAt.toMillis());
+  const after=[...firestore.store];
+  assert.equal(await reconcileCanonicalServiceStartArtifactsV3(args),'NOOP');
+  assert.deepEqual([...firestore.store],after);
+  assert.equal(firestore.store.has(`providerEarnings/${bookingId}`),false);
+  assert.equal((await finalizeCanonicalNoShowV3(args)).code,'STARTED');
+});
+for(const mode of ['missing','provider','customer','booking','timestamps','literal','terminal','artifact-terminal','policy','anchor','future']) {
+ test(`start recovery refuses ${mode} evidence without writes`,async()=>{
+  const {bookingId,booking,artifact}=recoverySeed();
+  if(mode==='provider')artifact.providerId='wrong';
+  if(mode==='customer')artifact.parentId='wrong';
+  if(mode==='booking')artifact.bookingId='wrong';
+  if(mode==='timestamps')artifact.otpVerifiedAt=Timestamp.fromMillis(1);
+  if(mode==='literal')booking['lifecycle.otpEnteredAt']=Timestamp.fromMillis(1);
+  if(mode==='terminal')booking.lifecycle.cancelledAt=new Date();
+  if(mode==='policy')artifact.policyVersion='unknown';
+  if(mode==='anchor')artifact.serviceAnchorAt=Timestamp.fromMillis(1);
+  if(mode==='future')artifact.verifiedAt=artifact.otpVerifiedAt=booking['lifecycle.otpEnteredAt']=Timestamp.fromDate(new Date('2030-01-01'));
+  const seed={[`bookings/${bookingId}`]:booking};
+  if(mode!=='missing')seed[`bookingServiceStarts/${bookingId}`]=artifact;
+  if(mode==='artifact-terminal')seed[`bookingNoShows/${bookingId}`]={bookingId};
+  const firestore=new FakeFirestore(seed);const before=[...firestore.store];
+  await assert.rejects(reconcileCanonicalServiceStartArtifactsV3({firestore,bookingId,allowHistoricalRecovery:true,authoritativeNow:new Date('2026-07-24T12:00:00Z')}),/SERVICE_START_EVIDENCE_CONFLICT/);
+  assert.deepEqual([...firestore.store],before);
+ });
+}
+test('combined consecutive slots resolve the full deadline; gaps and malformed boundaries fail closed',()=>{
+ const {booking}=buildMultiSegmentConfirmedBookingSeed();
+ booking.schedule.segments=[{...booking.schedule.segments[0],endAt:booking.schedule.finalEndAt,
+   durationMinutes:120,slotIds:['slot-1','slot-2']}];
+ booking.schedule.firstSegmentEndAt=booking.schedule.finalEndAt;booking.schedule.segmentCount=1;
+ for(const resolve of [resolveAuthoritativeServiceEndV3,resolveCanonicalCompletionAvailableAtV3]){
+  assert.equal(resolve({booking}).expectedServiceEndAt.getTime(),booking.schedule.finalEndAt.getTime());
+  for(const mode of ['gap','overlap','invalid-date','segment','duration']){
+   const bad=structuredClone(booking);
+   if(mode==='gap')bad.schedule.slots[1].startAt=new Date(bad.schedule.slots[1].startAt.getTime()+60000);
+   if(mode==='overlap')bad.schedule.slots[1].startAt=new Date(bad.schedule.slots[1].startAt.getTime()-60000);
+   if(mode==='invalid-date')bad.schedule.slots[1].endAt=null;
+   if(mode==='segment')bad.schedule.segments[0].endAt=new Date('2026-07-23T07:30:00Z');
+   if(mode==='duration')bad.schedule.totalDurationMinutes=119;
+   assert.equal(resolve({booking:bad}).code,'INVALID_BOOKING_DATA',mode);
+  }
+ }
+});
+
+test('default rollout never recovers a historical missing nested start, while Phase 2 opt-in retains evidence checks',async()=>{
+ const {bookingId,booking,artifact}=recoverySeed();
+ const firestore=new FakeFirestore({[`bookings/${bookingId}`]:booking,[`bookingServiceStarts/${bookingId}`]:artifact});
+ const before=[...firestore.store];
+ const args={firestore,bookingId,authoritativeNow:new Date('2026-09-17')};
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3(args),'NOOP');
+ assert.deepEqual([...firestore.store],before);
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3({...args,allowHistoricalRecovery:true}),'REPAIRED');
+});
+
+test('unversioned combined-segment multi-slot no-show is deferred, while a release-marked booking processes normally',async()=>{
+ const {bookingId,booking,privateDoc}=buildMultiSegmentConfirmedBookingSeed();
+ booking.schedule.segments=[{...booking.schedule.segments[0],endAt:booking.schedule.finalEndAt,durationMinutes:120,slotIds:['slot-1','slot-2']}];
+ booking.schedule.segmentCount=1;booking.schedule.firstSegmentEndAt=booking.schedule.finalEndAt;
+ const firestore=new FakeFirestore({[`bookings/${bookingId}`]:booking,[`bookingPrivate/${bookingId}`]:privateDoc});
+ const args={firestore,bookingId,authoritativeNow:new Date('2026-09-17')};
+ const before=[...firestore.store];
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3(args),'NOOP');
+ assert.deepEqual([...firestore.store],before);
+ firestore.store.set(`bookingLifecycleReleaseBoundaries/${bookingId}`,{bookingId,providerId:booking.providerId,parentId:booking.parentId,policyVersion:'continuous_v1'});
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3(args),'NO_SHOW_FINALIZED');
+});
+
+test('unversioned canonical multi-slot schedule accepted by the old deadline still processes',async()=>{
+ const {bookingId,booking,privateDoc}=buildMultiSegmentConfirmedBookingSeed();
+ const firestore=new FakeFirestore({[`bookings/${bookingId}`]:booking,[`bookingPrivate/${bookingId}`]:privateDoc});
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3({firestore,bookingId,authoritativeNow:new Date('2026-09-17')}),'NO_SHOW_FINALIZED');
+});
+
+test('historical combined-segment no-show requires valid boundary identity or explicit Phase 2',async()=>{
+ const {bookingId,booking,privateDoc}=buildMultiSegmentConfirmedBookingSeed();
+ booking.schedule.segments=[{...booking.schedule.segments[0],endAt:booking.schedule.finalEndAt,durationMinutes:120,slotIds:['slot-1','slot-2']}];
+ booking.schedule.segmentCount=1;booking.schedule.firstSegmentEndAt=booking.schedule.finalEndAt;
+ const firestore=new FakeFirestore({[`bookings/${bookingId}`]:booking,[`bookingPrivate/${bookingId}`]:privateDoc,
+  [`bookingLifecycleReleaseBoundaries/${bookingId}`]:{bookingId,providerId:'wrong',parentId:booking.parentId,policyVersion:'continuous_v1'}});
+ const args={firestore,bookingId,authoritativeNow:new Date('2026-09-17')};
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3(args),'NOOP');
+ assert.equal(await reconcileCanonicalServiceStartArtifactsV3({...args,allowHistoricalRecovery:true}),'NO_SHOW_FINALIZED');
 });

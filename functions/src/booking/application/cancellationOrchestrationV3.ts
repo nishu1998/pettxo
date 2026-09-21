@@ -1,3 +1,6 @@
+import {providerEarningsIdentityV3} from "./providerEarningsV3";
+import {prepareManualSettlementSyncV3} from "./manualSettlementSyncV3";
+import {completedRefundPaiseV3} from "./manualSettlementTypesV3";
 import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {FieldValue, Timestamp, type Firestore, type Transaction} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
@@ -299,6 +302,7 @@ export function calculateCanonicalCancellationDecisionV3(params: {
   actorType: CancellationActorType;
   requestedAt: Date;
   existingRefund?: Record<string, unknown> | null;
+  completedRefundEvidencePaise?: number;
 }): CanonicalCancellationDecision {
   const financials = params.booking.financials;
   const customerPaidPaise = asInt(financials?.customerPaidPaise, 0);
@@ -307,7 +311,7 @@ export function calculateCanonicalCancellationDecisionV3(params: {
   const providerPayoutPaise = asInt(financials?.providerPayoutPaise, 0);
   const commissionPaise = asInt(financials?.platformCommissionPaise, 0);
   const gatewayFeeSunkPaise = asInt(financials?.gatewayFeeSunkPaise, 0);
-  const alreadyRefundedPaise = asInt(params.existingRefund?.refundAmountPaise, 0);
+  const alreadyRefundedPaise = Math.max(completedRefundPaiseV3(params.existingRefund), params.completedRefundEvidencePaise ?? 0);
   assertNonNegativeInteger(customerPaidPaise, "customerPaidPaise");
   assertNonNegativeInteger(serviceSubtotalPaise, "serviceSubtotalPaise");
   assertNonNegativeInteger(couponDiscountPaise, "couponDiscountPaise");
@@ -562,12 +566,14 @@ export function buildCanonicalCancellationPreviewV3(params: {
   actorType: CancellationActorType;
   requestedAt: Date;
   existingRefund?: Record<string, unknown> | null;
+  completedRefundEvidencePaise?: number;
 }): CancellationPreviewResult {
   const decision = calculateCanonicalCancellationDecisionV3({
     booking: params.booking,
     actorType: params.actorType,
     requestedAt: params.requestedAt,
     existingRefund: params.existingRefund ?? null,
+    completedRefundEvidencePaise: params.completedRefundEvidencePaise,
   });
   return {
     bookingId: params.bookingId,
@@ -756,6 +762,9 @@ function buildCancellationRefundInstruction(params: {
     providerId: params.booking.providerId,
     razorpayPaymentId: params.paymentAttempt.razorpayPaymentId,
     refundAmountPaise: params.refundAmountPaise,
+    refundEntitlementPaise: params.refundAmountPaise,
+    executionMode: "MANUAL",
+    origin: params.reasonCode === "PROVIDER_CANCELLATION" ? "PROVIDER_CANCELLATION" : "CUSTOMER_CANCELLATION",
     reasonCode: params.reasonCode,
     refundInstructionId: refundInstructionIdForBooking(params.bookingId),
     state: "required",
@@ -1029,6 +1038,7 @@ export function applyConfirmedBookingCancellationV3(params: {
     actorType: params.actorType,
     requestedAt: params.authoritativeNow,
     existingRefund: params.existingRefund ?? null,
+    completedRefundEvidencePaise: params.paymentAttempt.refundedAmountPaise ?? 0,
   });
   if (!decision.allowed) {
     throw new HttpsError(
@@ -1043,6 +1053,10 @@ export function applyConfirmedBookingCancellationV3(params: {
     );
   }
 
+  if (params.existingRefund && !["processed", "refunded"].includes(String(params.existingRefund.state).toLowerCase()) &&
+      (Number(params.existingRefund.refundAmountPaise ?? 0) > 0 || params.existingRefund.razorpayRefundId)) {
+    throw new HttpsError("failed-precondition", "Existing refund execution must be reconciled before cancellation.");
+  }
   const nextBooking = buildCancellationAwareBooking({
     booking: params.booking,
     actorType: params.actorType,
@@ -1076,6 +1090,10 @@ export function applyConfirmedBookingCancellationV3(params: {
           now: params.authoritativeNow,
         })
       : null;
+  if (refundInstruction) {
+    refundInstruction.refundedBeforeCancellationPaise = decision.alreadyRefundedPaise;
+    refundInstruction.refundedAmountPaise = decision.alreadyRefundedPaise;
+  }
   const cancellationRecord = buildCancellationRecord({
     bookingId: params.bookingId,
     actorType: params.actorType,
@@ -1268,6 +1286,7 @@ export function applyConfirmedBookingCancellationV3(params: {
       updatedAt: FieldValue.serverTimestamp(),
     },
     providerEarningWrite: {
+      ...providerEarningsIdentityV3(params.bookingId, params.booking, params.authoritativeNow),
       ...buildProviderEarningsProjectionV3({
         entitlementPaise: decision.providerCompensationPaise,
         phase: "FINALIZED",
@@ -1294,12 +1313,22 @@ export function applyConfirmedBookingCancellationV3(params: {
   };
 }
 
-export function writeConfirmedBookingCancellationTransactionV3(params: {
+export async function writeConfirmedBookingCancellationTransactionV3(params: {
   firestore: Firestore;
   transaction: Transaction;
   bookingId: string;
   result: ApplyConfirmedBookingCancellationResult;
-}): void {
+}): Promise<void> {
+  if (params.result.idempotentReplay) return;
+  const plan = await prepareManualSettlementSyncV3({
+    ...params, booking: params.result.booking, cancellation: params.result.cancellationRecord,
+    refund: params.result.refundInstruction ?? {}, earning: params.result.providerEarningWrite, now: new Date(),
+  });
+  const slotProjectionReads = params.result.booking.bookingType === "SLOT" ?
+    await Promise.all((params.result.booking.schedule as {slots: Array<{slotId: string}>}).slots.map((slot) =>
+      params.transaction.get(params.firestore.doc(
+        `services/${params.result.booking.serviceId}/slots/${slot.slotId}`,
+      )))) : [];
   const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
   params.transaction.set(bookingRef, structuredClone(params.result.booking), {merge: false});
   params.transaction.set(
@@ -1330,6 +1359,16 @@ export function writeConfirmedBookingCancellationTransactionV3(params: {
   );
   for (const [path, data] of Object.entries(params.result.capacityRelease.writes)) {
     params.transaction.set(pathToDoc(params.firestore, path), data, {merge: true});
+  }
+  for (const snapshot of slotProjectionReads) {
+    if (!snapshot.exists) continue;
+    const released = params.result.capacityRelease.writes[slotOccupancyPath(
+      params.result.booking.serviceId, snapshot.id)];
+    if (!released) continue;
+    params.transaction.set(snapshot.ref, {
+      acceptedCount: released.confirmedUnits,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
   }
   if (params.result.refundInstruction) {
     params.transaction.set(
@@ -1409,6 +1448,7 @@ export function writeConfirmedBookingCancellationTransactionV3(params: {
       {merge: true},
     );
   }
+  plan.write();
 }
 
 export async function persistConfirmedBookingCancellationV3(params: {
@@ -1417,7 +1457,7 @@ export async function persistConfirmedBookingCancellationV3(params: {
   result: ApplyConfirmedBookingCancellationResult;
 }): Promise<void> {
   await params.firestore.runTransaction(async (transaction) => {
-    writeConfirmedBookingCancellationTransactionV3({
+    await writeConfirmedBookingCancellationTransactionV3({
       firestore: params.firestore,
       transaction,
       bookingId: params.bookingId,

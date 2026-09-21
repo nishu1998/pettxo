@@ -1,3 +1,4 @@
+import {continuousSlotDeadlineV3} from "./continuousSlotScheduleV3";
 import {isBookingType, type BookingType} from "./bookingContracts";
 
 export type SlotBookingValidationCode =
@@ -379,6 +380,10 @@ export function validateSlotBookingSelection(
         }
       }
     }
+  }
+
+  if (continuousSlotDeadlineV3(selection) == null) {
+    issues.push(issue("INVALID_SCHEDULE_BOUNDS", "Selected slots must form one continuous canonical booking."));
   }
 
   if (issues.length > 0) {

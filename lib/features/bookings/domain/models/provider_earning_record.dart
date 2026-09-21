@@ -1,5 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+/// Identifies invalid field names without retaining their values or documents.
+class ProviderEarningFormatException extends FormatException {
+  ProviderEarningFormatException(this.documentId, List<String> fields)
+    : invalidFields = List.unmodifiable(fields),
+      super('Earnings record requires reconciliation');
+  final String documentId;
+  final List<String> invalidFields;
+}
+
 /// Canonical earned entitlement, independent of payment to the provider.
 class ProviderEarningRecord {
   const ProviderEarningRecord({
@@ -46,32 +55,35 @@ class ProviderEarningRecord {
     final phase = data['earningsStatus'];
     final bookingId = data['bookingId'];
     final providerId = data['providerId'];
-    if (data['earningsSchemaVersion'] != 1 ||
-        !data.containsKey('providerFinalEntitlementPaise') ||
-        !const {
-          'PROVISIONAL',
-          'HELD',
-          'FINALIZED',
-          'ADJUSTED',
-        }.contains(phase) ||
-        (amount != null &&
-            (amount is! num ||
-                !amount.isFinite ||
-                amount < 0 ||
-                amount > 9007199254740991 ||
-                amount != amount.truncateToDouble())) ||
-        (const {'FINALIZED', 'ADJUSTED'}.contains(phase) && amount == null) ||
-        bookingId is! String ||
-        bookingId.trim().isEmpty ||
-        bookingId.contains('/') ||
-        providerId is! String ||
-        providerId.trim().isEmpty) {
-      throw const FormatException('Earnings record requires reconciliation');
-    }
+    final invalid = <String>[
+      if (data['earningsSchemaVersion'] != 1) 'earningsSchemaVersion',
+      if (!const {
+        'PROVISIONAL',
+        'HELD',
+        'FINALIZED',
+        'ADJUSTED',
+      }.contains(phase))
+        'earningsStatus',
+      if (!data.containsKey('providerFinalEntitlementPaise') ||
+          (amount != null &&
+              (amount is! num ||
+                  !amount.isFinite ||
+                  amount < 0 ||
+                  amount > 9007199254740991 ||
+                  amount != amount.truncateToDouble())) ||
+          (const {'FINALIZED', 'ADJUSTED'}.contains(phase) && amount == null))
+        'providerFinalEntitlementPaise',
+      if (bookingId is! String ||
+          bookingId.trim().isEmpty ||
+          bookingId.contains('/'))
+        'bookingId',
+      if (providerId is! String || providerId.trim().isEmpty) 'providerId',
+    ];
+    if (invalid.isNotEmpty) throw ProviderEarningFormatException(id, invalid);
     return ProviderEarningRecord(
       id: id,
-      bookingId: bookingId.trim(),
-      providerId: providerId.trim(),
+      bookingId: (bookingId as String).trim(),
+      providerId: (providerId as String).trim(),
       finalEntitlementPaise: (amount as num?)?.toInt(),
       earningsStatus: phase as String,
       earningsOutcome: data['earningsOutcome'] is String

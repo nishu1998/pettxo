@@ -33,8 +33,8 @@ class Query {
   }
 }
 const at = Timestamp.fromDate(new Date('2026-07-24T12:00:00Z'));
-function booking(overrides = {}) { return {providerId:'provider', parentId:'parent', serviceId:'service', state:'COMPLETED_FINAL',
-  financials:{providerPayoutPaise:85000, currency:'INR'}, lifecycle:{paidAt:at, finalizedAt:at},
+function booking(overrides = {}) { return {schemaVersion:3,bookingModelVersion:'3.2',documentFormat:'canonical_v3',providerId:'provider', parentId:'parent', serviceId:'service', state:'COMPLETED_FINAL',
+  financials:{providerPayoutPaise:85000, currency:'INR'}, lifecycle:{paidAt:at, finalizedAt:at, cancelledAt:at},
   payment:{razorpayPaymentId:'winner',status:'CONFIRMED'}, dispute:{status:'none'}, payout:{status:'READY'}, ...overrides}; }
 const run = (db, input = {}) => reconcile({firestore:db, auth:{uid:'admin'}, input:{dryRun:false, ids:['b'], ...input}});
 const seed = (b = booking(), extra = {}) => new DB({'bookings/b':b, ...extra});
@@ -76,7 +76,7 @@ test('resolved dispute restores final allocation independently of PAID payout ba
   assert.equal(p.earningsStatus,'ADJUSTED');
 });
 test('embedded dispute final allocation is supported without a separate resolution document',async()=>{
-  const db=seed(booking({dispute:{status:'RESOLVED'}}),{'disputes/b':{bookingId:'b',status:'RESOLVED',resolution:{providerFinalEntitlementPaise:0}}});
+  const db=seed(booking({dispute:{status:'RESOLVED',resolvedAt:at}}),{'disputes/b':{bookingId:'b',status:'RESOLVED',resolution:{providerFinalEntitlementPaise:0}}});
   await run(db); assert.equal(db.store.get('providerEarnings/b').amountPaise,0);
 });
 for (const state of ['CONFIRMED','IN_PROGRESS','COMPLETED_PENDING_REVIEW']) test(`${state} is provisional`,async()=>{
@@ -110,10 +110,11 @@ test('legacy rupees are preserved but never used as earnings truth',async()=>{
   const p=db.store.get('providerEarnings/b'); assert.equal(p.amountPaise,85000); assert.equal(p.amount,999999);
   assert.equal(p.legacyAmountDeprecated,true); assert.equal(p.bankReference,'retain'); assert.equal(p.status,'READY');
 });
-test('wrong provider identity is corrected and reported as high severity',async()=>{
+test('wrong provider identity is reported and never reassigned',async()=>{
   const db=seed(booking(),{'providerEarnings/b':{providerId:'wrong',amountPaise:1}});
-  const r=await run(db); assert.equal(r.items[0].severity,'HIGH'); assert.deepEqual(r.items[0].anomalies,['WRONG_PROVIDER_ID']);
-  assert.equal(db.store.get('providerEarnings/b').providerId,'provider');
+  const before=[...db.store]; const r=await run(db);
+  assert.equal(r.items[0].errorCategory,'PROVIDER_MISMATCH');
+  assert.equal(r.summary.providerMismatch,1); assert.deepEqual([...db.store],before);
 });
 test('missing booking leaves orphan projection untouched',async()=>{
   const db=new DB({'providerEarnings/orphan':{amountPaise:50000}}); const before=[...db.store];
@@ -124,10 +125,10 @@ test('alternate-key duplicate is reported and missing canonical projection is no
   assert.equal((await run(db)).items[0].errorCategory,'DUPLICATE_PROJECTION'); assert.equal(db.store.has('providerEarnings/b'),false);
   assert.equal((await run(db,{scan:'providerEarnings',ids:['duplicate']})).counts.skipped,1);
 });
-for(const state of ['REQUESTED','DECLINED','PAYMENT_EXPIRED','ACCEPTED_AWAITING_PAYMENT']) test(`${state} does not materialize fake earnings`,async()=>{
+for(const state of ['REQUESTED','DECLINED','PAYMENT_EXPIRED','ACCEPTED_AWAITING_PAYMENT','EXPIRED','REQUEST_EXPIRED','CANCELLED']) test(`${state} does not materialize fake earnings`,async()=>{
   const db=seed(booking({state,lifecycle:{}})); assert.equal((await run(db)).counts.skipped,1); assert.equal(db.store.has('providerEarnings/b'),false);
-  db.store.set('providerEarnings/b',{amountPaise:85000}); assert.equal((await run(db)).counts.zeroed,1);
-  assert.equal(db.store.get('providerEarnings/b').amountPaise,0);
+  db.store.set('providerEarnings/b',{amountPaise:85000}); assert.equal((await run(db)).counts.skipped,1);
+  assert.equal(db.store.get('providerEarnings/b').amountPaise,85000);
 });
 test('dry run is default and writes neither projections nor audits',async()=>{
   const db=seed(); const before=[...db.store]; const result=await reconcile({firestore:db,auth:{uid:'admin'},input:{ids:['b']}});
@@ -143,7 +144,7 @@ test('pagination and retry IDs support restart after a per-record commit failure
   assert.equal(last.nextCursor,null); assert.equal(last.counts.created,1);
   const rerun=await run(db,{ids:['a','b','c']}); assert.equal(rerun.counts.unchanged,3);
 });
-for(const role of [null,'financeAdmin','customerSupportAdmin','petParent']) test(`unauthorized role ${role} cannot dry-run or apply`,async()=>{
+for(const role of [null,'financeAdmin','customerSupportAdmin','petParent','provider','customer']) test(`unauthorized role ${role} cannot dry-run or apply`,async()=>{
   const db=seed(); db.store.set('users/admin',{adminRole:role});
   for(const dryRun of [true,false]) await assert.rejects(run(db,{dryRun}),e=>e.code==='permission-denied');
 });
@@ -165,10 +166,10 @@ test('reconstruction uses the same live final entitlement projection',()=>{
 for(const state of ['PENDING_PROVIDER','CANCELLED_BY_PARENT']) test(`${state} requires no projection`,async()=>{
   const db=seed(booking({state,lifecycle:{}})); assert.equal((await run(db)).counts.skipped,1); assert.equal(db.store.has('providerEarnings/b'),false);
 });
-test('missing nonessential timestamp is reported and deterministic on rerun',async()=>{
+test('missing outcome timestamp requires review without invented time',async()=>{
   const db=seed(booking({state:'NO_SHOW'}),{'bookingNoShows/b':{providerCompensationPaise:85000}});
-  const r=await run(db); assert.deepEqual(r.items[0].anomalies,['MISSING_OUTCOME_TIMESTAMP']);
-  assert.equal(db.store.get('providerEarnings/b').earningsOutcomeAt,null); assert.equal((await run(db)).counts.unchanged,1);
+  const before=[...db.store]; const r=await run(db);
+  assert.equal(r.items[0].errorCategory,'MISSING_OUTCOME_TIMESTAMP'); assert.deepEqual([...db.store],before);
 });
 test('projection scan uses cursor continuation to cover orphan and canonical keys',async()=>{
   const db=seed(booking(),{'providerEarnings/a':{bookingId:'missing'},'providerEarnings/b':{amountPaise:1}});
@@ -191,4 +192,79 @@ test('status normalization preserves old payout evidence without driving earned 
   assert.equal(p.amountPaise,85000); assert.equal(p.status,'HELD'); assert.equal(p.legacyPayoutStatus,'paid');
   assert.equal(p.paidAt,at); assert.equal(p.transactionReference,'historical-reference');
   assert.equal((await run(db)).counts.unchanged,1);
+});
+
+for (const fields of [['earningsSchemaVersion'], ['earningsStatus'], ['providerFinalEntitlementPaise'],
+  ['earningsSchemaVersion','earningsStatus','providerFinalEntitlementPaise']]) {
+  test(`global scan reconstructs missing ${fields.join(',')}`, async()=>{
+    const db=seed(); const expected=(await run(db,{dryRun:true})).items[0].expected;
+    const legacy={...expected}; for(const field of fields) delete legacy[field];
+    db.store.set('providerEarnings/b',legacy);
+    const before=[...db.store]; const preview=await run(db,{dryRun:true,scan:'providerEarnings'});
+    assert.equal(preview.summary.wouldUpdate,1); assert.deepEqual([...db.store],before);
+    assert.equal((await run(db,{scan:'providerEarnings'})).summary.applied,1);
+    const repaired=db.store.get('providerEarnings/b');
+    assert.equal(repaired.providerFinalEntitlementPaise,85000);
+    assert.deepEqual(require('../lib/booking/application/providerEarningsSchemaV3').providerEarningsSchemaIssuesV3(repaired),[]);
+    const after=[...db.store]; assert.equal((await run(db)).summary.canonicalValid,1);
+    assert.deepEqual([...db.store],after);
+  });
+}
+test('known missing-field failure repairs from source, not legacy amount',async()=>{
+  const id='A4z2ypododCBhp1GGH8Q', providerId='sSI3muWZg4Ma1z5VNsHaTcFzksF2';
+  // Identities/missing fields are reported evidence; source amounts/state are synthetic.
+  const db=new DB({[`bookings/${id}`]:booking({providerId,state:'NO_SHOW'}),
+    [`bookingNoShows/${id}`]:{bookingId:id,providerId,providerCompensationPaise:43210,noShowAt:at},
+    [`providerPayouts/${id}`]:{bookingId:id,providerId,providerEntitlementPaise:777,status:'PAID'},
+    [`refunds/${id}`]:{refundAmountPaise:1234},
+    [`providerEarnings/${id}`]:{bookingId:id,providerId,amount:1.9,amountPaise:999,createdAt:at}});
+  const r=await run(db,{scan:'providerEarnings',ids:[id]});
+  assert.equal(r.summary.applied,1); assert.equal(db.store.get(`providerEarnings/${id}`).providerFinalEntitlementPaise,43210);
+  assert.equal(db.store.get(`providerEarnings/${id}`).earningsOutcome,'NO_SHOW');
+});
+test('fully valid projection is never normalized from changed sources',async()=>{
+  const db=seed(); await run(db);
+  const p=db.store.get('providerEarnings/b'); p.status='COMPLETED'; p.providerFinalEntitlementPaise=123;
+  const before=[...db.store]; const r=await run(db);
+  assert.equal(r.items[0].classification,'CANONICAL_VALID'); assert.deepEqual([...db.store],before);
+});
+test('canonical provisional is unchanged',async()=>{
+  const db=seed(booking({state:'CONFIRMED'})); await run(db);
+  const before=[...db.store]; assert.equal((await run(db)).summary.canonicalValid,1); assert.deepEqual([...db.store],before);
+});
+test('future schema is never downgraded',async()=>{
+  const db=seed(booking(),{'providerEarnings/b':{earningsSchemaVersion:2}});
+  const before=[...db.store]; assert.equal((await run(db)).items[0].errorCategory,'UNKNOWN_SCHEMA'); assert.deepEqual([...db.store],before);
+});
+test('global projection pages visit each document once and resume',async()=>{
+  const db=new DB(Object.fromEntries(['a','b','c','d','e'].flatMap(id=>[
+    [`bookings/${id}`,booking()], [`providerEarnings/${id}`,{bookingId:id,providerId:'provider'}]])));
+  let cursor, seen=[];
+  do { const page=await reconcile({firestore:db,auth:{uid:'admin'},input:{scan:'providerEarnings',limit:2,cursor}});
+    seen.push(...page.items.map(i=>i.id)); assert.ok(page.items.length<=2);
+    assert.equal(page.hasMore,page.nextCursor!==null); cursor=page.nextCursor;
+  } while(cursor);
+  assert.deepEqual(seen,['a','b','c','d','e']); assert.equal(new Set(seen).size,5);
+});
+test('unknown booking schema is never promoted to canonical earnings',async()=>{
+  const db=seed(booking({schemaVersion:2}),{'providerEarnings/b':{amount:500}});
+  const before=[...db.store]; assert.equal((await run(db)).items[0].errorCategory,'UNKNOWN_BOOKING_SCHEMA');
+  assert.deepEqual([...db.store],before);
+});
+test('dry-run repair projection matches shared Flutter parser fixture',async()=>{
+  const fixture=require('./fixtures/reconciled_provider_earning.json');
+  const result=await run(seed(),{dryRun:true});
+  for(const [key,value] of Object.entries(fixture)) {
+    const actual=result.items[0].expected[key];
+    assert.equal(actual instanceof Timestamp ? actual.toDate().toISOString() : actual, value, key);
+  }
+});
+test('missing timestamp does not authorize replacing a newer canonical allocation',async()=>{
+  const db=seed(); const expected=(await run(db,{dryRun:true})).items[0].expected;
+  delete expected.createdAt;
+  expected.providerFinalEntitlementPaise=123;
+  db.store.set('providerEarnings/b',expected);
+  const before=[...db.store]; const result=await run(db);
+  assert.equal(result.items[0].errorCategory,'CANONICAL_FINANCIAL_CONFLICT');
+  assert.deepEqual([...db.store],before);
 });

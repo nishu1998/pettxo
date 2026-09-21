@@ -1,3 +1,5 @@
+const mergeFirestoreSet = require("./helpers/mergeFirestoreSet");
+const assertCanonicalEarning = require('./helpers/assertCanonicalEarning');
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {Timestamp} = require("firebase-admin/firestore");
@@ -152,7 +154,7 @@ class FakeFirestore {
 
   _set(path, data, options = {}) {
     const existing = this.store.get(path) ?? {};
-    this.store.set(path, options.merge ? {...existing, ...data} : {...data});
+    this.store.set(path, options.merge ? mergeFirestoreSet(existing, data) : {...data});
   }
 }
 
@@ -1824,8 +1826,75 @@ for (const [name, input, expected] of [
   const earning = firestore.store.get(`providerEarnings/${bookingId}`);
   assert.equal(earning.amountPaise, expected);
   assert.equal(earning.providerFinalEntitlementPaise, expected);
+  assertCanonicalEarning(earning, bookingId);
   assert.equal(earning.earningsStatus, 'ADJUSTED');
   const second = await resolveBookingDisputeV3(args);
   assert.equal(second.idempotentReplay, true);
   assert.deepEqual(firestore.store.get(`providerEarnings/${bookingId}`), earning);
+});
+
+test("successful payout with absent earnings still pays exactly once without creating a projection", async () => {
+  const bookingId = "booking-payout-success-1";
+  const booking = buildCompletedFinalBookingFixture();
+  booking.state = "COMPLETED_FINAL";
+  booking.stateQueryValue = "COMPLETED_FINAL";
+  booking.payment.status = "paid";
+  booking.lifecycle.paidAt = new Date("2026-07-23T05:10:00.000Z");
+  booking.payout.status = "READY";
+  booking.payout.eligibleAt = new Date("2026-07-23T04:10:00.000Z");
+  booking.payout.releasedAt = null;
+  booking.payout.priorPaidPaise = 0;
+  booking.payout.remainingPayablePaise = booking.financials.providerPayoutPaise;
+
+  let gatewayCalls = 0;
+  const gateway = {
+    async executePayout() {
+      gatewayCalls += 1;
+      return {
+        ok: true,
+        status: "PAID",
+        externalPayoutId: "payout_ext_1",
+        externalTransactionId: "txn_ext_1",
+      };
+    },
+  };
+
+  const firestore = new FakeFirestore({
+    [`bookings/${bookingId}`]: booking,
+    [`users/${booking.providerId}/providerBankDetails/main`]:
+      validProviderBankDetails({accountNumberMasked: "XXXX4321"}),
+  });
+
+  const first = await processProviderPayoutV3({
+    firestore,
+    bookingId,
+    gateway,
+    processorLeaseOwner: "worker-1",
+    authoritativeNow: new Date("2026-07-23T09:00:00.000Z"),
+  });
+  const replay = await processProviderPayoutV3({
+    firestore,
+    bookingId,
+    gateway,
+    processorLeaseOwner: "worker-2",
+    authoritativeNow: new Date("2026-07-23T09:01:00.000Z"),
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(first.code, "PAID");
+  assert.equal(replay.ok, true);
+  assert.equal(replay.code, "IDEMPOTENT_REPLAY");
+  assert.equal(gatewayCalls, 1);
+  assert.equal(firestore.store.has(`providerEarnings/${bookingId}`), false);
+  assert.equal(firestore.store.get(`providerPayouts/${bookingId}`).status, "PAID");
+  assert.equal(
+    firestore.store.get(`bookingFinancialLedger/${bookingId}_PROVIDER_PAYOUT_${bookingId}`).amountPaise,
+    booking.financials.providerPayoutPaise,
+  );
+  assert.equal(
+    firestore.store.get(
+      `notifications/booking_payout_completed:${bookingId}:${booking.providerId}`,
+    ).type,
+    "booking_payout_completed",
+  );
 });

@@ -102,6 +102,98 @@ void main() {
     expect(_textFinder('Retry'), findsOneWidget);
   });
 
+  testWidgets('shows the slot conflict when capacity fills before preview', (
+    tester,
+  ) async {
+    bookingRepository
+        .previewErrorByOfferId[''] = const CanonicalPaymentException(
+      code: CanonicalPaymentFailureCode.capacityUnavailable,
+      message:
+          'One or more selected slots are no longer available. Please review your booking.',
+    );
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      _textFinder(
+        'One or more selected slots are no longer available. Please review your booking.',
+      ),
+      findsOneWidget,
+    );
+    expect(_textFinder('We couldn’t load the payment total.'), findsNothing);
+  });
+
+  testWidgets('order conflict is shown before Razorpay checkout opens', (
+    tester,
+  ) async {
+    useTallViewport(tester);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    bookingRepository.previewResultsByOfferId[''] = _previewResult(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 25000,
+    );
+    bookingRepository.orderError = const CanonicalPaymentException(
+      code: CanonicalPaymentFailureCode.capacityUnavailable,
+      message:
+          'One or more selected slots are no longer available. Please review your booking.',
+    );
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Checkbox), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    await tester.tap(_gradientButtonFinder('Pay with Razorpay'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(bookingRepository.orderRequests, 1);
+    expect(
+      find.text(
+        'One or more selected slots are no longer available. Please review your booking.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('QR conflict is shown before a payment QR opens', (tester) async {
+    useTallViewport(tester);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    bookingRepository.previewResultsByOfferId[''] = _previewResult(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 25000,
+    );
+    bookingRepository.qrError = const CanonicalPaymentException(
+      code: CanonicalPaymentFailureCode.capacityUnavailable,
+      message: 'This slot is no longer available. Please review your booking.',
+    );
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Checkbox), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    await tester.tap(_secondaryButtonFinder('Pay using QR'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(bookingRepository.qrRequests, ['']);
+    expect(
+      find.text(
+        'This slot is no longer available. Please review your booking.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Use another payment method'), findsNothing);
+  });
+
   testWidgets(
     'payment stays disabled until cancellation policy consent is checked',
     (tester) async {
@@ -388,6 +480,9 @@ class _FakeBookingRepository extends BookingRepository {
   final Map<String, Object> previewErrorByOfferId = <String, Object>{};
   final List<String> previewRequests = <String>[];
   final List<String> qrRequests = <String>[];
+  int orderRequests = 0;
+  Object? orderError;
+  Object? qrError;
   Completer<CanonicalQrPaymentResult>? pendingQrResult;
 
   void emitBooking(CanonicalBookingDocumentV3 booking) {
@@ -438,11 +533,22 @@ class _FakeBookingRepository extends BookingRepository {
   }
 
   @override
+  Future<CanonicalPaymentOrderResult> createPaymentOrderV3({
+    required String bookingId,
+    String? paymentAttemptId,
+    String? offerCampaignId,
+  }) async {
+    orderRequests += 1;
+    throw orderError ?? StateError('Unexpected payment order request');
+  }
+
+  @override
   Future<CanonicalQrPaymentResult> createQrPaymentV3({
     required String bookingId,
     String? offerCampaignId,
   }) {
     qrRequests.add(offerCampaignId?.trim() ?? '');
+    if (qrError case final error?) return Future.error(error);
     final completer = pendingQrResult;
     if (completer != null) {
       return completer.future;

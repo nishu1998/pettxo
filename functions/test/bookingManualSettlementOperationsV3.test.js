@@ -1,3 +1,4 @@
+const mergeFirestoreSet = require("./helpers/mergeFirestoreSet");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {Timestamp} = require("firebase-admin/firestore");
@@ -209,7 +210,7 @@ class FakeFirestore {
 
   _set(path, data, options = {}) {
     const existing = this.store.get(path) ?? {};
-    this.store.set(path, options.merge ? {...existing, ...data} : {...data});
+    this.store.set(path, options.merge ? mergeFirestoreSet(existing, data) : {...data});
   }
 }
 
@@ -742,7 +743,7 @@ test("manual customer refund recording keeps single-obligation disputes pending 
   );
 });
 
-test("historical materialization is idempotent and skips already-paid or dispute-blocked bookings", async () => {
+test("materialization preserves conflicting completed money and represents dispute holds", async () => {
   const firestore = buildSeed();
   firestore.store.delete("manualSettlementObligations/provider_payout_booking-1");
   const materialized = await materializeManualSettlementObligationsForBookingDataV3({
@@ -756,12 +757,12 @@ test("historical materialization is idempotent and skips already-paid or dispute
     "PROVIDER_PAYOUT",
   );
 
-  const noActionPaid = await materializeManualSettlementObligationsForBookingDataV3({
-    firestore,
-    auth: {uid: "super-1"},
-    bookingId: "booking-3",
-  });
-  assert.equal(noActionPaid.code, "ALREADY_EXISTS");
+  const completedBefore = firestore.store.get("manualSettlementObligations/provider_payout_booking-3");
+  await assert.rejects(materializeManualSettlementObligationsForBookingDataV3({
+    firestore, auth: {uid: "super-1"}, bookingId: "booking-3",
+  }), /Completed payout conflicts/);
+  assert.deepEqual(firestore.store.get("manualSettlementObligations/provider_payout_booking-3"), completedBefore);
+
 
   const blockedFirestore = buildSeed();
   const blockedBooking = blockedFirestore.store.get("bookings/booking-1");
@@ -773,5 +774,21 @@ test("historical materialization is idempotent and skips already-paid or dispute
     auth: {uid: "super-1"},
     bookingId: "booking-1",
   });
-  assert.equal(blocked.code, "BLOCKED_BY_DISPUTE");
+  assert.equal(blocked.code, "MATERIALIZED");
+  assert.equal(blockedFirestore.store.get("manualSettlementObligations/provider_payout_booking-1").status, "HELD");
+});
+
+
+test("manual provider payout with absent earnings completes without creating a projection", async () => {
+  const firestore = buildSeed();
+  firestore.store.delete("providerEarnings/booking-1");
+  const params = {firestore, auth: {uid: "super-1"}, input: {
+    obligationId: "provider_payout_booking-1", transactionReference: "utr-absent",
+    paymentMethod: "BANK_ACCOUNT",
+  }};
+  assert.equal((await recordManualProviderPayoutDataV3(params)).code, "RECORDED");
+  assert.equal(firestore.store.has("providerEarnings/booking-1"), false);
+  assert.equal(firestore.store.get("providerPayouts/booking-1").status, "PAID");
+  assert.equal((await recordManualProviderPayoutDataV3(params)).code, "ALREADY_COMPLETED");
+  assert.equal(firestore.store.has("providerEarnings/booking-1"), false);
 });

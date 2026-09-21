@@ -189,6 +189,24 @@ void main() {
     expect(find.byKey(const Key('lifetime-total')), findsOneWidget);
     expect(repo.watches, 1);
   });
+  testWidgets('retry total leaves failing history independent', (tester) async {
+    repo.load = () async => throw Exception('private total error');
+    await mount(tester);
+    repo.history.addError(Exception('private history error'));
+    await tester.pump();
+    repo.load = () async => summary(85000);
+    await tester.tap(find.text('Retry total'));
+    await tester.pump();
+    await tester.pump();
+    expect(repo.calls, 2);
+    expect(repo.watches, 1);
+    expect(
+      find.text('We couldn’t load your earnings history.'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('lifetime-total')), findsOneWidget);
+  });
+
   testWidgets('history errors are not empty and retry replaces subscription', (
     tester,
   ) async {
@@ -206,7 +224,7 @@ void main() {
     // The controller is created by setUp outside the widget fake-async zone.
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
-    expect(repo.calls, 2);
+    expect(repo.calls, 1);
     expect(repo.watches, 2);
     repo.history.add([record()]);
     await tester.pump();

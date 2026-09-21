@@ -466,7 +466,7 @@ function canonicalBookingCompletionAvailableAtFromRaw(
   return schedule.scheduledEndAt;
 }
 
-function effectiveCanonicalBookingStateForAdmin(
+export function effectiveCanonicalBookingStateForAdmin(
   booking: CanonicalBookingDocumentV3,
   disputeStatus?: string,
   now = new Date(),

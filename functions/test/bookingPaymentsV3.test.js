@@ -1656,7 +1656,9 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
     result.financialWrites.bookingChat.safetyNotice,
     LEGACY_BOOKING_CHAT_SAFETY_NOTICE,
   );
-  const firestore = new FakeFirestore();
+  const slotId = booking.schedule.slots[0].slotId;
+  const slotPath = `services/${booking.serviceId}/slots/${slotId}`;
+  const firestore = new FakeFirestore({[slotPath]: {capacity: 1, acceptedCount: 0, status: "open", isBookable: true}});
 
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
@@ -1670,6 +1672,7 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
   assert.equal(firestore.store.has(`invoices/${bookingId}`), true);
   assert.equal(firestore.store.has(`providerEarnings/${bookingId}`), true);
   assert.equal(firestore.store.has(`payoutReadiness/${bookingId}`), true);
+  assert.equal(firestore.store.get(slotPath).acceptedCount, 1);
   assertChatCompatibilityExactlyOnce(firestore, bookingId, {
     expectedParticipants: ["parent-1", "provider-1"],
     expectedProviderId: "provider-1",
@@ -1745,6 +1748,38 @@ test("persistFinalizePaymentResultV3 keeps paid-only unlock docs absent for refu
     assert.equal(firestore.store.has(path), true);
   }
   assertNoPaidUnlocks(firestore, bookingId);
+});
+
+test("a captured losing race cannot overwrite a confirmed slot claim and remains refundable", async () => {
+  const first = buildCanonicalPaymentRaceFixture({ids: {
+    bookingId: "slot-race-a", paymentAttemptId: "attempt-slot-race-a",
+    razorpayOrderId: "order_slot_race_a", razorpayPaymentId: "pay_slot_race_a",
+  }});
+  const second = buildCanonicalPaymentRaceFixture({ids: {
+    bookingId: "slot-race-b", paymentAttemptId: "attempt-slot-race-b",
+    razorpayOrderId: "order_slot_race_b", razorpayPaymentId: "pay_slot_race_b",
+  }});
+  const slotId = first.booking.schedule.slots[0].slotId;
+  const slotPath = `services/${first.booking.serviceId}/slots/${slotId}`;
+  const occupancyPath = `services/${first.booking.serviceId}/slotOccupancy/${slotId}`;
+  const firestore = new FakeFirestore({[slotPath]: {capacity: 1, acceptedCount: 0, status: "open"}});
+  const firstResult = finalizeCapturedBookingPaymentV3({...first, bookingId: first.ids.bookingId,
+    verificationSource: "webhook"});
+  const staleSecondResult = finalizeCapturedBookingPaymentV3({...second, bookingId: second.ids.bookingId,
+    verificationSource: "webhook"});
+  assert.equal(firstResult.ok, true);
+  assert.equal(staleSecondResult.ok, true);
+  await persistFinalizePaymentResultV3({firestore, result: firstResult, bookingId: first.ids.bookingId});
+  await assert.rejects(persistFinalizePaymentResultV3({firestore, result: staleSecondResult,
+    bookingId: second.ids.bookingId}), /Capacity changed during payment confirmation/);
+  assert.equal(firestore.store.get(occupancyPath).confirmedUnits, 1);
+  assert.equal(firestore.store.get(slotPath).acceptedCount, 1);
+  assert.equal(firestore.store.has(`providerEarnings/${second.ids.bookingId}`), false);
+  const recovered = finalizeCapturedBookingPaymentV3({...second, bookingId: second.ids.bookingId,
+    slotOccupancy: {[slotId]: firestore.store.get(occupancyPath)}, verificationSource: "reconciliation"});
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.code, "CAPACITY_EXHAUSTED");
+  assert.ok(recovered.refundInstruction);
 });
 
 test("persistFinalizePaymentResultV3 consumes coupon usage exactly once for the same booking", async () => {
@@ -1944,6 +1979,8 @@ test("persistFinalizePaymentResultV3 prevents concurrent cross-booking over-cons
     paymentId,
   }) => {
     const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+    // Coupon contention is independent of slot contention in this test.
+    booking.serviceId = `service-${bookingId}`;
     const pricing = resolveCanonicalPricingV3({
       booking,
       claimedOffer: {
@@ -2032,6 +2069,7 @@ test("persistFinalizePaymentResultV3 respects multiple remaining uses during con
     paymentId,
   }) => {
     const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+    booking.serviceId = `service-${bookingId}`;
     const pricing = resolveCanonicalPricingV3({
       booking,
       claimedOffer: {

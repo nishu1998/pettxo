@@ -1,3 +1,6 @@
+import {recordManualCancellationRefundV3} from "./application/manualCancellationRefundV3";
+import {synchronizeManualSettlementBookingV3, loadSettlementContextV3, payoutEligibilityForOutcomeV3, settlementOutcomeV3, outstandingProviderV3} from "./application/manualSettlementSyncV3";
+import {parseManualSettlementSourceV3, type ManualSettlementSourceV3, isCancellationSourceV3} from "./application/manualSettlementTypesV3";
 import {Timestamp, type Firestore} from "firebase-admin/firestore";
 import {HttpsError, onCall, type CallableRequest} from "firebase-functions/v2/https";
 
@@ -10,8 +13,6 @@ import {
   CANONICAL_FINANCIAL_POLICY_VERSION,
   CANONICAL_MANUAL_SETTLEMENT_OBLIGATIONS_COLLECTION,
   CANONICAL_PROVIDER_PAYOUTS_COLLECTION,
-  evaluateCanonicalProviderPayoutEligibilityV3,
-  syncManualSettlementObligationsV3,
 } from "./application/financialSettlementV3";
 import {parseCanonicalBookingDocumentV3, type CanonicalBookingDocumentV3} from "./schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "./schema/timestampNormalization";
@@ -20,7 +21,7 @@ import {getProviderPayoutCredentialsForSuperAdminData} from "../providerVerifica
 type AdminRole = "superAdmin" | "financeAdmin" | "customerSupportAdmin";
 type ManualSettlementRecipientType = "PROVIDER" | "CUSTOMER";
 type ManualSettlementObligationType = "PROVIDER_PAYOUT" | "CUSTOMER_REFUND";
-type ManualSettlementObligationSource = "NORMAL_COMPLETION" | "DISPUTE_RESOLUTION";
+type ManualSettlementObligationSource = ManualSettlementSourceV3;
 type ManualSettlementObligationStatus =
   | "HELD"
   | "READY"
@@ -65,6 +66,7 @@ type ManualSettlementObligationRecord = {
   completedAt: Date | null;
   completedByAdminUid: string;
   metadata: Record<string, unknown>;
+  executionMode: "MANUAL";
 };
 
 const DEFAULT_LIMIT = 20;
@@ -113,9 +115,7 @@ function mapObligationType(value: unknown): ManualSettlementObligationType {
 }
 
 function mapSource(value: unknown): ManualSettlementObligationSource {
-  return asString(value).toUpperCase() === "DISPUTE_RESOLUTION" ?
-    "DISPUTE_RESOLUTION" :
-    "NORMAL_COMPLETION";
+  return parseManualSettlementSourceV3(value);
 }
 
 function mapFinancialSettlementStatus(value: unknown): DisputeFinancialSettlementStatus {
@@ -133,6 +133,7 @@ function mapFinancialSettlementStatus(value: unknown): DisputeFinancialSettlemen
 
 function parseObligation(data: Record<string, unknown>, obligationId: string): ManualSettlementObligationRecord {
   return {
+    executionMode: "MANUAL",
     obligationId: asString(data.obligationId) || obligationId,
     bookingId: asString(data.bookingId),
     disputeId: asString(data.disputeId),
@@ -329,6 +330,7 @@ async function buildListItem(
     amountPaise: obligation.amountPaise,
     currency: obligation.currency,
     source: obligation.source,
+    executionMode: obligation.executionMode,
     status: obligation.status,
     createdAt: obligation.createdAt?.toISOString() ?? null,
     readyAt: obligation.readyAt?.toISOString() ?? null,
@@ -379,6 +381,7 @@ async function resolveSearchItems(
   } else {
     exactIds.add(providerObligationIdForBooking(normalized));
     exactIds.add(customerObligationIdForBooking(normalized));
+    exactIds.add(`customer_refund_cancellation_${normalized}`);
   }
 
   const candidates: ManualSettlementObligationRecord[] = [];
@@ -558,6 +561,8 @@ export async function getManualSettlementObligationDetailDataV3(params: {
       bookingType: booking.bookingType,
       state: booking.state,
       serviceTitle: booking.service.serviceTitle,
+      cancellation: booking.state === "CANCELLED" ? {...booking.cancellation,
+        cancelledAt: booking.cancellation.cancelledAt?.toISOString() ?? null} : null,
     },
     recipient: {
       userId: obligation.recipientUserId,
@@ -705,37 +710,6 @@ async function computeDisputeSettlementUpdate(params: {
   };
 }
 
-function validateProviderManualSettlementEligibility(params: {
-  obligation: ManualSettlementObligationRecord;
-  booking: CanonicalBookingDocumentV3;
-  payout: Record<string, unknown> | null;
-  refund: Record<string, unknown> | null;
-  providerBankSummary: Record<string, unknown> | null;
-  now: Date;
-}) {
-  if (params.obligation.obligationType !== "PROVIDER_PAYOUT") {
-    throw new HttpsError("failed-precondition", "This obligation is not a provider payout.");
-  }
-  if (params.obligation.amountPaise <= 0) {
-    throw new HttpsError("failed-precondition", "No provider payout is due for this obligation.");
-  }
-  const payoutEligibility = evaluateCanonicalProviderPayoutEligibilityV3({
-    booking: params.booking,
-    existingPayout: params.payout,
-    existingRefund: params.refund,
-    providerBankDetails: params.providerBankSummary,
-    authoritativeNow: params.now,
-  });
-  if (payoutEligibility.status !== "READY") {
-    throw new HttpsError("failed-precondition", payoutEligibility.holdReason || "Provider payout is not ready.");
-  }
-  if (params.booking.dispute.status.trim().toUpperCase() === "OPEN" &&
-      params.obligation.source !== "DISPUTE_RESOLUTION") {
-    throw new HttpsError("failed-precondition", "A new dispute is blocking this provider payout.");
-  }
-  return payoutEligibility;
-}
-
 export async function recordManualProviderPayoutDataV3(params: {
   firestore: Firestore;
   auth: CallableRequest["auth"];
@@ -763,16 +737,16 @@ export async function recordManualProviderPayoutDataV3(params: {
       throw new HttpsError("not-found", "Manual settlement obligation not found.");
     }
     const obligation = parseObligation(asRecord(obligationSnapshot.data()), obligationSnapshot.id);
-    const booking = await loadCanonicalBooking(params.firestore, obligation.bookingId);
+    if (obligation.obligationType !== "PROVIDER_PAYOUT" || obligation.recipientType !== "PROVIDER" ||
+      obligation.obligationId !== providerObligationIdForBooking(obligation.bookingId) || obligation.amountPaise <= 0) {
+      throw new HttpsError("failed-precondition", "This is not a canonical positive provider payout obligation.");
+    }
+    const context = await loadSettlementContextV3({firestore: params.firestore, transaction, bookingId: obligation.bookingId});
+    const booking = context.booking;
     const payoutRef = params.firestore
       .collection(CANONICAL_PROVIDER_PAYOUTS_COLLECTION)
       .doc(obligation.bookingId);
-    const [payoutSnapshot, refundSnapshot, providerBankSummary] =
-      await Promise.all([
-        transaction.get(payoutRef),
-        transaction.get(params.firestore.collection("refunds").doc(obligation.bookingId)),
-        loadProviderPayoutSummary(params.firestore, booking.providerId),
-      ]);
+    const payoutSnapshot = await transaction.get(payoutRef);
 
     if (obligation.status === "COMPLETED") {
       const existingReference = asString(obligation.metadata.manualTransactionReference);
@@ -811,14 +785,16 @@ export async function recordManualProviderPayoutDataV3(params: {
       throw new HttpsError("failed-precondition", "Provider payout was cancelled.");
     }
 
-    validateProviderManualSettlementEligibility({
-      obligation,
-      booking,
-      payout,
-      refund: refundSnapshot.exists ? asRecord(refundSnapshot.data()) : null,
-      providerBankSummary,
-      now,
-    });
+    const outcome = settlementOutcomeV3(context);
+    if (outcome.source !== obligation.source || obligation.recipientUserId !== booking.providerId ||
+      obligation.currency !== booking.financials?.currency) {
+      throw new HttpsError("failed-precondition", "Payout obligation does not match the current outcome.");
+    }
+    if (outstandingProviderV3(context, outcome.entitlement) !== obligation.amountPaise) {
+      throw new HttpsError("failed-precondition", "Stale payout amount; synchronize before recording.");
+    }
+    const eligibility = payoutEligibilityForOutcomeV3(context, now);
+    if (eligibility.status !== "READY") throw new HttpsError("failed-precondition", eligibility.holdReason);
 
     const amountPaise = obligation.amountPaise;
     const priorPaidPaise = asInt(payout.priorPaidPaise, 0);
@@ -851,6 +827,7 @@ export async function recordManualProviderPayoutDataV3(params: {
     transaction.set(payoutRef, {
       status: "PAID",
       paidAt: Timestamp.fromDate(paidAt),
+      providerEntitlementPaise: outcome.entitlement,
       priorPaidPaise: priorPaidPaise + amountPaise,
       remainingPayablePaise: 0,
       externalTransactionId: transactionReference,
@@ -865,7 +842,7 @@ export async function recordManualProviderPayoutDataV3(params: {
       manualSettlementNote: adminNote || null,
       manualSettlementProofStoragePath: proofStoragePath || null,
     }, {merge: true});
-    transaction.set(
+    if (Object.keys(context.earning).length > 0) transaction.set(
       params.firestore.collection("providerEarnings").doc(obligation.bookingId),
       {
         status: "PAID",
@@ -888,11 +865,15 @@ export async function recordManualProviderPayoutDataV3(params: {
       params.firestore.collection("bookings").doc(obligation.bookingId),
       {
         updatedAt: Timestamp.fromDate(paidAt),
-        "audit.lastUpdatedBy": "admin",
-        "payout.status": "PAID",
-        "payout.releasedAt": Timestamp.fromDate(paidAt),
-        "payout.payoutReference": transactionReference,
-        "payout.failureCode": "",
+        audit: {
+          lastUpdatedBy: "admin"
+        },
+        payout: {
+          status: "PAID",
+          releasedAt: Timestamp.fromDate(paidAt),
+          payoutReference: transactionReference,
+          failureCode: ""
+        }
       },
       {merge: true},
     );
@@ -923,17 +904,21 @@ export async function recordManualProviderPayoutDataV3(params: {
         params.firestore.collection("disputes").doc(obligation.disputeId),
         {
           financialSettlementStatus: aggregate.financialSettlementStatus,
-          "resolution.financialSettlementStatus": aggregate.financialSettlementStatus,
-          "resolution.manualSettlementObligationIds": aggregate.obligationIds,
-          updatedAt: Timestamp.fromDate(paidAt),
+          resolution: {
+            financialSettlementStatus: aggregate.financialSettlementStatus,
+            manualSettlementObligationIds: aggregate.obligationIds
+          },
+          updatedAt: Timestamp.fromDate(paidAt)
         },
         {merge: true},
       );
       transaction.set(
         params.firestore.collection("bookings").doc(obligation.bookingId),
         {
-          "dispute.financialSettlementStatus": aggregate.financialSettlementStatus,
-          "dispute.manualSettlementObligationIds": aggregate.obligationIds,
+          dispute: {
+            financialSettlementStatus: aggregate.financialSettlementStatus,
+            manualSettlementObligationIds: aggregate.obligationIds
+          }
         },
         {merge: true},
       );
@@ -1048,6 +1033,10 @@ export async function recordManualCustomerRefundDataV3(params: {
     const obligation = parseObligation(asRecord(obligationSnapshot.data()), obligationSnapshot.id);
     if (obligation.obligationType !== "CUSTOMER_REFUND") {
       throw new HttpsError("failed-precondition", "This obligation is not a customer refund.");
+    }
+    if (isCancellationSourceV3(obligation.source)) {
+      return recordManualCancellationRefundV3({firestore: params.firestore, transaction,
+        obligation, input: params.input, adminUid: admin.uid, now});
     }
     if (obligation.source !== "DISPUTE_RESOLUTION") {
       throw new HttpsError("failed-precondition", "Only dispute manual refunds can be recorded here.");
@@ -1177,9 +1166,11 @@ export async function recordManualCustomerRefundDataV3(params: {
       params.firestore.collection("disputes").doc(obligation.disputeId),
       {
         financialSettlementStatus: aggregate.financialSettlementStatus,
-        "resolution.financialSettlementStatus": aggregate.financialSettlementStatus,
-        "resolution.manualSettlementObligationIds": aggregate.obligationIds,
-        updatedAt: Timestamp.fromDate(now),
+        resolution: {
+          financialSettlementStatus: aggregate.financialSettlementStatus,
+          manualSettlementObligationIds: aggregate.obligationIds
+        },
+        updatedAt: Timestamp.fromDate(now)
       },
       {merge: true},
     );
@@ -1187,9 +1178,13 @@ export async function recordManualCustomerRefundDataV3(params: {
       params.firestore.collection("bookings").doc(obligation.bookingId),
       {
         updatedAt: Timestamp.fromDate(now),
-        "audit.lastUpdatedBy": "admin",
-        "dispute.financialSettlementStatus": aggregate.financialSettlementStatus,
-        "dispute.manualSettlementObligationIds": aggregate.obligationIds,
+        audit: {
+          lastUpdatedBy: "admin"
+        },
+        dispute: {
+          financialSettlementStatus: aggregate.financialSettlementStatus,
+          manualSettlementObligationIds: aggregate.obligationIds
+        }
       },
       {merge: true},
     );
@@ -1255,111 +1250,7 @@ export async function materializeManualSettlementObligationsForBookingDataV3(par
   if (!params.bookingId) {
     throw new HttpsError("invalid-argument", "bookingId is required.");
   }
-  const booking = await loadCanonicalBooking(params.firestore, params.bookingId);
-  if (booking.financials == null) {
-    throw new HttpsError("failed-precondition", "Canonical financial snapshot is missing.");
-  }
-  if (booking.dispute.status.trim().toUpperCase() === "OPEN" ||
-      booking.dispute.status.trim().toUpperCase() === "UNDER_REVIEW") {
-    return {
-      ok: true,
-      code: "BLOCKED_BY_DISPUTE",
-      bookingId: params.bookingId,
-      obligationId: null,
-    };
-  }
-  return await params.firestore.runTransaction(async (transaction) => {
-    const providerObligationRef = params.firestore
-      .collection(CANONICAL_MANUAL_SETTLEMENT_OBLIGATIONS_COLLECTION)
-      .doc(providerObligationIdForBooking(params.bookingId));
-    const payoutRef = params.firestore
-      .collection(CANONICAL_PROVIDER_PAYOUTS_COLLECTION)
-      .doc(params.bookingId);
-    const [providerObligationSnapshot, payoutSnapshot, refundSnapshot, providerBankSummary] =
-      await Promise.all([
-        transaction.get(providerObligationRef),
-        transaction.get(payoutRef),
-        transaction.get(params.firestore.collection("refunds").doc(params.bookingId)),
-        loadProviderPayoutSummary(params.firestore, booking.providerId),
-      ]);
-    if (providerObligationSnapshot.exists) {
-      return {
-        ok: true,
-        code: "ALREADY_EXISTS",
-        bookingId: params.bookingId,
-        obligationId: providerObligationSnapshot.id,
-      };
-    }
-    const payout = payoutSnapshot.exists ?
-      asRecord(payoutSnapshot.data()) :
-      null;
-    if (asString(payout?.status).toUpperCase() === "PAID") {
-      return {
-        ok: true,
-        code: "NO_ACTION_ALREADY_PAID",
-        bookingId: params.bookingId,
-        obligationId: null,
-      };
-    }
-    const eligibility = evaluateCanonicalProviderPayoutEligibilityV3({
-      booking,
-      existingPayout: payout,
-      existingRefund: refundSnapshot.exists ? asRecord(refundSnapshot.data()) : null,
-      providerBankDetails: providerBankSummary,
-      authoritativeNow: new Date(),
-    });
-    const payoutDocument = payout ?? buildCanonicalProviderPayoutDocumentV3({
-      bookingId: params.bookingId,
-      booking,
-      priorPaidPaise: 0,
-      status: eligibility.status,
-      holdReason: eligibility.holdReason,
-      eligibleAt: booking.payout.eligibleAt,
-      readyAt: eligibility.readyAt,
-      now: new Date(),
-    });
-    if (asInt(payoutDocument.remainingPayablePaise, 0) <= 0) {
-      return {
-        ok: true,
-        code: "NO_ACTION_ZERO_AMOUNT",
-        bookingId: params.bookingId,
-        obligationId: null,
-      };
-    }
-    if (!payoutSnapshot.exists) {
-      transaction.set(payoutRef, payoutDocument, {merge: true});
-    }
-    const sync = syncManualSettlementObligationsV3({
-      transaction,
-      firestore: params.firestore,
-      bookingId: params.bookingId,
-      booking,
-      now: new Date(),
-      providerPayout: {
-        payoutId: asString(payoutDocument.payoutId) || params.bookingId,
-        providerEntitlementPaise:
-          asInt(payoutDocument.providerEntitlementPaise, booking.financials?.providerPayoutPaise ?? 0),
-        remainingPayablePaise:
-          asInt(payoutDocument.remainingPayablePaise, booking.financials?.providerPayoutPaise ?? 0),
-        status: mapStatus(payoutDocument.status) === "COMPLETED" ? "PAID" :
-          mapStatus(payoutDocument.status) === "CANCELLED" ? "CANCELLED" :
-          mapStatus(payoutDocument.status) === "READY" ? "READY" :
-          mapStatus(payoutDocument.status) === "NEEDS_ATTENTION" ? "FAILED" :
-          "HELD",
-        holdReason: asString(payoutDocument.holdReason),
-        readyAt: asDate(payoutDocument.readyAt),
-        paidAt: asDate(payoutDocument.paidAt),
-      },
-      source: "NORMAL_COMPLETION",
-      existingProviderObligation: null,
-    });
-    return {
-      ok: true,
-      code: sync.providerObligation == null ? "NO_ACTION_ZERO_AMOUNT" : "MATERIALIZED",
-      bookingId: params.bookingId,
-      obligationId: sync.providerObligation?.obligationId ?? null,
-    };
-  });
+  return synchronizeManualSettlementBookingV3({firestore: params.firestore, bookingId: params.bookingId});
 }
 
 export const listManualSettlementObligationsV3 = onCall(

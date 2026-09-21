@@ -592,7 +592,7 @@ test("createBookingRequestV3 normalizes legacy services without stored schedulin
   assert.equal(result.booking.schedule.segments[0].schedulingMode, "fixedDuration");
 });
 
-test("createBookingRequestV3 stores additive multi-day slot segments and snapshot summaries", () => {
+test("createBookingRequestV3 rejects gapped consecutive-day packages before creating a booking", () => {
   const result = createBookingRequestV3({
     parent: parent(),
     service: baseService({schedulingMode: undefined}),
@@ -606,20 +606,8 @@ test("createBookingRequestV3 stores additive multi-day slot segments and snapsho
     generatedBookingId: "booking-2b",
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(result.booking.service.selectedServiceDayCount, 3);
-  assert.equal(result.booking.service.scheduleSegmentCount, 3);
-  assert.equal(result.booking.schedule.serviceDayCount, 3);
-  assert.equal(result.booking.schedule.segmentCount, 3);
-  assert.equal(result.booking.schedule.firstSegmentEndAt.toISOString(), "2026-08-07T04:30:00.000Z");
-  assert.equal(result.booking.schedule.finalEndAt.toISOString(), "2026-08-09T06:30:00.000Z");
-  assert.equal(result.booking.schedule.segments.length, 3);
-  assert.equal(result.booking.schedule.slots.length, 3);
-  assert.equal(result.booking.service.schedulingMode, "fixedDuration");
-  assert.deepEqual(
-    result.booking.schedule.segments.map((segment) => segment.schedulingMode),
-    ["fixedDuration", "fixedDuration", "fixedDuration"],
-  );
+  assert.equal(result.ok, false);
+  assert.equal(result.booking, undefined);
 });
 
 test("createBookingRequestV3 creates canonical RANGE request", () => {
@@ -1367,4 +1355,23 @@ test("notification channels normalize deterministically across booking flows", (
   assert.deepEqual(paymentRequired.channels, ["in_app", "push"]);
   assert.deepEqual(paymentConfirmed.channels, ["in_app", "push"]);
   assert.deepEqual(inAppOnly.channels, ["in_app"]);
+});
+
+test('continuous multi-slot creation matches lifecycle validation',()=>{
+ const schedule=slotSchedule();
+ const first=schedule.slots[0];
+ const duration=first.endAt.getTime()-first.startAt.getTime();
+ schedule.slots=[first,{...first,slotId:'continuous-second',startAt:new Date(first.endAt),endAt:new Date(first.endAt.getTime()+duration)}];
+ schedule.slotCount=2; schedule.totalDurationMinutes=duration/60000*2; schedule.scheduledEndAt=schedule.slots[1].endAt;
+ const args={parent:parent(),service:baseService(),input:{requestAttemptId:'continuous',serviceId:'service-1',bookingType:'SLOT',schedule},authoritativeNow:new Date('2026-07-22T04:00:00Z'),generatedBookingId:'continuous'};
+ const result=createBookingRequestV3(args);
+ assert.equal(result.ok,true,JSON.stringify(result));
+ const {resolveCanonicalCompletionAvailableAtV3}=require('../lib/booking/application/serviceStartOrchestrationV3');
+ assert.equal(resolveCanonicalCompletionAvailableAtV3({booking:result.booking}).expectedServiceEndAt.getTime(),schedule.scheduledEndAt.getTime());
+ for(const offset of [-60000,60000]){
+  const invalid=structuredClone(schedule);invalid.slots[1].startAt=new Date(invalid.slots[1].startAt.getTime()+offset);
+  const rejected=createBookingRequestV3({...args,input:{...args.input,schedule:invalid}});
+  assert.equal(rejected.ok,false);assert.equal(rejected.booking,undefined);
+  assert.equal(resolveCanonicalCompletionAvailableAtV3({booking:{...result.booking,schedule:invalid}}).code,'INVALID_BOOKING_DATA');
+ }
 });

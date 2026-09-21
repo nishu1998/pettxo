@@ -1,3 +1,5 @@
+import '../widgets/cancellation_financial_summary.dart';
+import '../../domain/models/canonical_booking_cancellation_models.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -100,6 +102,36 @@ class _CanonicalBookingRequestStatusScreenState
                   SafeArea(
                     child: CanonicalBookingStatusDetailTemplate(
                       model: terminalPresentation,
+                      showImportantInformation:
+                          !_isCustomerCancelledAfterPayment(canonicalBooking!),
+                      financialSummary:
+                          _isCustomerCancelledAfterPayment(canonicalBooking)
+                          ? StreamBuilder<CanonicalBookingCancellationRecord?>(
+                              stream: _bookingRepository
+                                  .watchCanonicalBookingCancellation(
+                                    widget.bookingId,
+                                  ),
+                              builder: (context, snapshot) {
+                                final record = snapshot.data;
+                                if (record == null) {
+                                  return Text(
+                                    snapshot.hasError
+                                        ? 'Refund details unavailable'
+                                        : 'Awaiting cancellation settlement',
+                                  );
+                                }
+                                final presentation =
+                                    CustomerCancellationFinancialPresentation(
+                                      paidPaise: record.customerPaidPaise,
+                                      refundPaise: record.refundAmountPaise,
+                                      refundStatus: record.refundStatus,
+                                    );
+                                return FinancialSummaryCard(
+                                  rows: presentation.rows,
+                                );
+                              },
+                            )
+                          : null,
                     ),
                   )
                 else
@@ -961,6 +993,7 @@ class _CanonicalBookingRequestStatusScreenState
     CanonicalBookingDocumentV3 booking,
     CanonicalBookingStateV3 displayState,
   ) {
+    if (_isCustomerCancelledAfterPayment(booking)) return const [];
     final financials = booking.financials;
     final servicePrice = _moneyFromPaise(
       financials?.serviceSubtotalPaise ??
@@ -1269,6 +1302,14 @@ class _CanonicalBookingRequestStatusScreenState
         return 'Booking cancelled';
     }
   }
+
+  bool _isCustomerCancelledAfterPayment(CanonicalBookingDocumentV3 booking) =>
+      booking.state == CanonicalBookingStateV3.cancelled &&
+      booking.lifecycle.paidAt != null &&
+      const {
+        'parent',
+        'customer',
+      }.contains(booking.cancellation.cancelledBy?.trim().toLowerCase());
 
   bool _isProviderCancelledAfterPayment(CanonicalBookingDocumentV3 booking) {
     return booking.state == CanonicalBookingStateV3.cancelled &&

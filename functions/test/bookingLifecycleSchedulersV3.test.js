@@ -663,6 +663,8 @@ test("no-show reconciliation repairs missing start artifacts for in-progress boo
     [`bookings/${bookingId}`]: booking,
     [`bookingPrivate/${bookingId}`]: {
       bookingId,
+      parentId: booking.parentId,
+      providerId: booking.providerId,
       parentOtpCode: "123456",
       providerOtpHash: "hash",
       otpState: "ACTIVE",
@@ -697,6 +699,8 @@ test("no-show reconciliation repair normalizes Firestore Timestamp values from l
     [`bookings/${bookingId}`]: deepConvertDatesToTimestamps(booking),
     [`bookingPrivate/${bookingId}`]: {
       bookingId,
+      parentId: booking.parentId,
+      providerId: booking.providerId,
       parentOtpCode: "123456",
       providerOtpHash: "hash",
       otpState: "ACTIVE",
@@ -791,7 +795,7 @@ test("completed finalization scheduler auto-completes stale started bookings and
   );
 });
 
-test("scheduler normalizes non-Error failures without masking the original booking failure", async () => {
+test("scheduler propagates non-Error failures without exposing arbitrary payloads", async () => {
   const infoLogs = [];
   const errorLogs = [];
 
@@ -813,7 +817,7 @@ test("scheduler normalizes non-Error failures without masking the original booki
         return {scanned: 0, noShowFinalized: 0, repairedStarts: 0};
       },
     }),
-    /timestamp_like/i,
+    error => error.failure === "timestamp_like",
   );
 
   assert.equal(
@@ -824,10 +828,8 @@ test("scheduler normalizes non-Error failures without masking the original booki
     errorLogs.some((entry) => entry.message === "bookingV3.scheduler.noShowFinalization.failed"),
     true,
   );
-  assert.equal(
-    String(errorLogs[0].payload.message).includes("timestamp_like"),
-    true,
-  );
+  assert.equal(errorLogs[0].payload.errorCode, "unknown");
+  assert.equal(JSON.stringify(errorLogs).includes("timestamp_like"), false);
 });
 
 test("scheduler scan paginates across multiple pages of eligible bookings", async () => {
@@ -923,4 +925,49 @@ test("direct no-show finalization does not run before service window end or afte
     authoritativeNow: new Date(booking.schedule.scheduledEndAt.getTime() + 1),
   });
   assert.equal(completed.code, "STARTED");
+});
+
+test('no-show candidate failure is isolated and later candidates still run with safe diagnostics',async()=>{
+ const booking=buildConfirmedSlotBookingFixture();
+ const firestore=new FakeFirestore({'bookings/a-bad':booking,'bookings/b-good':booking});
+ const seen=[],errors=[];
+ const result=await scanCanonicalNoShowCandidatesByStateV3({firestore,stateQueryValue:'CONFIRMED',authoritativeNow:new Date('2026-07-30'),
+   schedulerLogger:{info(){},error:(message,payload)=>errors.push({message,payload})},
+   reconcileBooking:async({bookingId})=>{seen.push(bookingId);if(bookingId==='a-bad')throw new (require('firebase-functions/https').HttpsError)('failed-precondition','SERVICE_START_EVIDENCE_CONFLICT');return 'NO_SHOW_FINALIZED';}});
+ assert.deepEqual(seen,['a-bad','b-good']);assert.equal(result.noShowFinalized,1);assert.equal(errors.length,1);
+ assert.equal(errors[0].payload.bookingId,'a-bad');assert.equal(errors[0].payload.errorCode,'service-start-evidence-conflict');
+ assert.equal(JSON.stringify(errors).includes('SECRET'),false);
+});
+
+for (const code of [14,4,8,10,13,'UNAVAILABLE','DEADLINE_EXCEEDED','RESOURCE_EXHAUSTED','ABORTED','INTERNAL','firestore/unavailable','functions/deadline-exceeded','resource-exhausted','aborted','internal']) {
+ test(`scheduler propagates candidate infrastructure failure ${code} without successful completion`, async()=>{
+  const error=Object.assign(new Error('PRIVATE PAYLOAD'),{code});
+  const logs=[];
+  const schedulerLogger={info:(message,payload)=>logs.push({message,payload}),error:(message,payload)=>logs.push({message,payload})};
+  const firestore=new FakeFirestore({'bookings/transport':buildConfirmedSlotBookingFixture()});
+  await assert.rejects(runFinalizeCanonicalNoShowsSchedulerV3({schedulerLogger,
+   scanStateBucket:args=>scanCanonicalNoShowCandidatesByStateV3({...args,firestore,reconcileBooking:async()=>{throw error;}})}),e=>e===error);
+  assert.equal(logs.some(x=>x.message==='bookingV3.scheduler.noShowFinalization.completed'),false);
+  assert.equal(JSON.stringify(logs).includes('PRIVATE PAYLOAD'),false);
+  assert.equal(JSON.stringify(logs).includes('stack'),false);
+ });
+}
+
+test('a structurally malformed persisted booking is isolated before the next canonical candidate',async()=>{
+ const malformed=buildConfirmedSlotBookingFixture();delete malformed.lifecycle;
+ const good=buildConfirmedSlotBookingFixture();
+ const firestore=new FakeFirestore({'bookings/a-malformed':malformed,'bookings/b-valid':good});
+ const errors=[];
+ const result=await scanCanonicalNoShowCandidatesByStateV3({firestore,stateQueryValue:'CONFIRMED',authoritativeNow:new Date('2026-07-30'),schedulerLogger:{info(){},error:(_,payload)=>errors.push(payload)}});
+ assert.equal(result.scanned,2);assert.equal(result.noShowFinalized,1);
+ assert.equal(errors[0].errorCode,'service-start-evidence-conflict');
+});
+
+test('application validation is isolated but native Firestore failed-precondition propagates',async()=>{
+ const {classifyLifecycleSchedulerErrorV3}=require('../lib/booking/application/lifecycleSchedulerErrorsV3');
+ const {HttpsError}=require('firebase-functions/https');
+ assert.equal(classifyLifecycleSchedulerErrorV3(new HttpsError('failed-precondition','Missing canonical financial snapshot.')).deterministic,true);
+ assert.equal(classifyLifecycleSchedulerErrorV3(new HttpsError('invalid-argument','PRIVATE DATA')).deterministic,true);
+ for(const code of [9,'FAILED_PRECONDITION','firestore/failed-precondition'])assert.equal(classifyLifecycleSchedulerErrorV3({code}).deterministic,false);
+ for(const code of ['aborted','internal','unavailable','deadline-exceeded','resource-exhausted'])assert.equal(classifyLifecycleSchedulerErrorV3(new HttpsError(code,'PRIVATE DATA')).deterministic,false);
 });

@@ -188,9 +188,16 @@ class CanonicalBookingStatusDetailTopBar extends StatelessWidget
 }
 
 class CanonicalBookingStatusDetailTemplate extends StatelessWidget {
-  const CanonicalBookingStatusDetailTemplate({super.key, required this.model});
+  const CanonicalBookingStatusDetailTemplate({
+    super.key,
+    required this.model,
+    this.financialSummary,
+    this.showImportantInformation = true,
+  });
 
   final StatusPresentationModel model;
+  final Widget? financialSummary;
+  final bool showImportantInformation;
 
   @override
   Widget build(BuildContext context) {
@@ -211,11 +218,13 @@ class CanonicalBookingStatusDetailTemplate extends StatelessWidget {
         const SizedBox(height: 16),
         const BookingDetailsSectionLabel('Financial summary'),
         const SizedBox(height: 10),
-        FinancialSummaryCard(rows: model.financialRows),
-        const SizedBox(height: 16),
-        const BookingDetailsSectionLabel('Important information'),
-        const SizedBox(height: 10),
-        ImportantInformationCard(model: model.importantInformation),
+        financialSummary ?? FinancialSummaryCard(rows: model.financialRows),
+        if (showImportantInformation) ...[
+          const SizedBox(height: 16),
+          const BookingDetailsSectionLabel('Important information'),
+          const SizedBox(height: 10),
+          ImportantInformationCard(model: model.importantInformation),
+        ],
         const SizedBox(height: 16),
         const BookingDetailsSectionLabel('Primary actions'),
         const SizedBox(height: 10),

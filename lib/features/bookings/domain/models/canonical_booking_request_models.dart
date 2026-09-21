@@ -9,6 +9,7 @@ enum CanonicalBookingRequestFailureCode {
   providerUnavailable,
   invalidBookingType,
   invalidSchedule,
+  slotCapacityUnavailable,
   runwayNotSatisfied,
   invalidTimezone,
   idempotencyConflict,

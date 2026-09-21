@@ -1,3 +1,5 @@
+import {providerEarningsIdentityV3} from "./providerEarningsV3";
+import {parseManualSettlementSourceV3, isCancellationSourceV3, completedRefundPaiseV3, type ManualSettlementSourceV3} from "./manualSettlementTypesV3";
 import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {createHash} from "node:crypto";
 
@@ -46,9 +48,7 @@ type ManualSettlementRecipientType = "PROVIDER" | "CUSTOMER";
 type ManualSettlementObligationType =
   | "PROVIDER_PAYOUT"
   | "CUSTOMER_REFUND";
-type ManualSettlementObligationSource =
-  | "NORMAL_COMPLETION"
-  | "DISPUTE_RESOLUTION";
+type ManualSettlementObligationSource = ManualSettlementSourceV3;
 type ManualSettlementObligationStatus =
   | "HELD"
   | "READY"
@@ -191,6 +191,8 @@ export type ProviderPayoutDocumentV3 = {
 };
 
 export type ManualSettlementObligationDocumentV3 = {
+  executionMode?: "MANUAL";
+  settlementSyncVersion?: number;
   obligationId: string;
   bookingId: string;
   disputeId: string;
@@ -940,25 +942,17 @@ export function evaluateCanonicalProviderPayoutEligibilityV3(params: {
     refundState === "submitted" ||
     refundState === "pending"
   ) {
-    if (
-      refundExecutionMode === "MANUAL" &&
-      refundOrigin === "DISPUTE_RESOLUTION"
-    ) {
+    if (!(refundExecutionMode === "MANUAL" && refundOrigin === "DISPUTE_RESOLUTION")) {
       return {
-        status: "READY",
-        holdReason: "",
+        status: "HELD",
+        holdReason: "Payout remains held while a refund is pending.",
         providerEntitlementPaise,
         remainingPayablePaise,
-        readyAt: params.authoritativeNow,
+        readyAt: null,
       };
     }
-    return {
-      status: "HELD",
-      holdReason: "Payout remains held while a refund is pending.",
-      providerEntitlementPaise,
-      remainingPayablePaise,
-      readyAt: null,
-    };
+    // A resolved manual refund does not block its independent provider
+    // allocation, but it must not bypass destination or time eligibility.
   }
   if (!payoutProfile.isValid) {
     return {
@@ -1016,6 +1010,8 @@ function buildManualSettlementObligationDocument(params: {
   updatedAt: Date;
 }): ManualSettlementObligationDocumentV3 {
   return {
+    executionMode: "MANUAL",
+    settlementSyncVersion: 1,
     obligationId: params.obligationId,
     bookingId: params.bookingId,
     disputeId: params.disputeId ?? "",
@@ -1053,6 +1049,8 @@ function serializeManualSettlementObligation(
   obligation: ManualSettlementObligationDocumentV3,
 ): Record<string, unknown> {
   return {
+    executionMode: obligation.executionMode ?? "MANUAL",
+    settlementSyncVersion: obligation.settlementSyncVersion ?? 1,
     obligationId: obligation.obligationId,
     bookingId: obligation.bookingId,
     disputeId: obligation.disputeId,
@@ -1109,10 +1107,7 @@ function parseManualSettlementObligation(
     recipientUserId: asString(data.recipientUserId),
     amountPaise: asInt(data.amountPaise, 0),
     currency: asString(data.currency) || "INR",
-    source:
-      asString(data.source).toUpperCase() === "DISPUTE_RESOLUTION" ?
-        "DISPUTE_RESOLUTION" :
-        "NORMAL_COMPLETION",
+    source: parseManualSettlementSourceV3(data.source),
     status: mapManualSettlementStatus(data.status),
     financialSettlementStatus: mapDisputeFinancialSettlementStatus(
       data.financialSettlementStatus,
@@ -1155,6 +1150,7 @@ export function buildProviderPayoutManualSettlementObligationV3(params: {
 }): ManualSettlementObligationDocumentV3 | null {
   const amountPaise = Math.max(params.payout.remainingPayablePaise, 0);
   const existing = params.existing ? parseManualSettlementObligation(params.existing) : null;
+  if (existing && ["COMPLETED", "PROCESSING", "NEEDS_ATTENTION"].includes(existing.status)) return existing;
   if (amountPaise <= 0 && existing == null) {
     return null;
   }
@@ -1232,6 +1228,7 @@ export function buildCustomerRefundManualSettlementObligationV3(params: {
 }): ManualSettlementObligationDocumentV3 | null {
   const amountPaise = Math.max(params.refundAmountPaise, 0);
   const existing = params.existing ? parseManualSettlementObligation(params.existing) : null;
+  if (existing && ["COMPLETED", "PROCESSING", "NEEDS_ATTENTION"].includes(existing.status)) return existing;
   if (amountPaise <= 0 && existing == null) {
     return null;
   }
@@ -1964,7 +1961,7 @@ export async function previewBookingDisputeResolutionV3(params: {
   const outcome = buildDisputeResolutionOutcome({
     resolutionType: params.input.resolutionType,
     customerPaidPaise: financialContext.customerPaidPaise,
-    alreadyRefundedPaise: asInt(context.refundData?.refundAmountPaise, 0),
+    alreadyRefundedPaise: (isCancellationSourceV3(context.refundData?.origin) ? completedRefundPaiseV3(context.refundData) : asInt(context.refundData?.refundAmountPaise, 0)),
     providerBaseEntitlementPaise:
       financialContext.providerBaseEntitlementPaise,
     providerAlreadyPaidPaise: financialContext.providerAlreadyPaidPaise,
@@ -1987,7 +1984,7 @@ export async function previewBookingDisputeResolutionV3(params: {
     currency: financialContext.currency,
     customerPaidPaise: financialContext.customerPaidPaise,
     authoritativeAmountPaidPaise: financialContext.customerPaidPaise,
-    alreadyRefundedPaise: asInt(context.refundData?.refundAmountPaise, 0),
+    alreadyRefundedPaise: (isCancellationSourceV3(context.refundData?.origin) ? completedRefundPaiseV3(context.refundData) : asInt(context.refundData?.refundAmountPaise, 0)),
     providerBaseEntitlementPaise:
       financialContext.providerBaseEntitlementPaise,
     providerAlreadyPaidPaise: financialContext.providerAlreadyPaidPaise,
@@ -2205,7 +2202,16 @@ export async function resolveBookingDisputeV3(params: {
       );
     }
 
-    const alreadyRefundedPaise = asInt(refundSnapshot.data()?.refundAmountPaise, 0);
+    if (["PROCESSING", "FAILED"].includes(String(payoutSnapshot.data()?.status).toUpperCase()) ||
+      ["PROCESSING", "NEEDS_ATTENTION"].includes(String(providerObligationSnapshot.data()?.status))) {
+      throw new HttpsError("failed-precondition", "Provider execution must be reconciled before changing its allocation.");
+    }
+    if (isCancellationSourceV3(refundSnapshot.data()?.origin) &&
+      !["processed", "refunded"].includes(String(refundSnapshot.data()?.state).toLowerCase())) {
+      throw new HttpsError("failed-precondition", "Cancellation refund must be reconciled before dispute resolution.");
+    }
+    const alreadyRefundedPaise = isCancellationSourceV3(refundSnapshot.data()?.origin) ?
+      completedRefundPaiseV3(refundSnapshot.data()) : asInt(refundSnapshot.data()?.refundAmountPaise, 0);
     const outcome = buildDisputeResolutionOutcome({
       resolutionType: params.input.resolutionType,
       customerPaidPaise: financialContext.customerPaidPaise,
@@ -2550,27 +2556,29 @@ export async function resolveBookingDisputeV3(params: {
       bookingRef,
       {
         updatedAt: Timestamp.fromDate(now),
-        "audit.lastUpdatedBy": "admin",
-        "dispute.status": "RESOLVED",
-        "dispute.resolvedAt": Timestamp.fromDate(now),
-        "dispute.resolvedBy": "admin",
-        "dispute.resolution": params.input.resolutionType,
-        "dispute.customerRefundPaise": outcome.customerRefundPaise,
-        "dispute.providerReleasePaise":
-          outcome.providerFinalEntitlementPaise,
-        "dispute.publicResolutionMessage":
-          params.input.publicResolutionMessage?.trim() ?? "",
-        "payout.status": payoutEligibility.status,
-        "payout.eligibleAt":
-          payoutEligibility.readyAt == null ?
+        audit: {
+          lastUpdatedBy: "admin"
+        },
+        dispute: {
+          status: "RESOLVED",
+          resolvedAt: Timestamp.fromDate(now),
+          resolvedBy: "admin",
+          resolution: params.input.resolutionType,
+          customerRefundPaise: outcome.customerRefundPaise,
+          providerReleasePaise: outcome.providerFinalEntitlementPaise,
+          publicResolutionMessage: params.input.publicResolutionMessage?.trim() ?? ""
+        },
+        payout: {
+          status: payoutEligibility.status,
+          eligibleAt: payoutEligibility.readyAt == null ?
             booking.payout.eligibleAt == null ?
               null :
               Timestamp.fromDate(payoutEligibleAt) :
             Timestamp.fromDate(payoutEligibility.readyAt),
-        "payout.providerPayoutPaise":
-          outcome.providerFinalEntitlementPaise,
-        "payout.failureCode": "",
-        "payout.retryCount": 0,
+          providerPayoutPaise: outcome.providerFinalEntitlementPaise,
+          failureCode: "",
+          retryCount: 0
+        }
       },
       {merge: true},
     );
@@ -2595,6 +2603,7 @@ export async function resolveBookingDisputeV3(params: {
     transaction.set(
       providerEarningRef,
       {
+        ...providerEarningsIdentityV3(bookingId, booking, now),
         ...buildProviderEarningsProjectionV3({
           entitlementPaise: outcome.providerFinalEntitlementPaise,
           phase: "ADJUSTED", outcome: "DISPUTE_RESOLUTION",
@@ -3081,8 +3090,12 @@ export async function processProviderPayoutV3(params: {
       bookingRef,
       {
         updatedAt: Timestamp.fromDate(now),
-        "audit.lastUpdatedBy": "system",
-        "payout.status": "PROCESSING",
+        audit: {
+          lastUpdatedBy: "system"
+        },
+        payout: {
+          status: "PROCESSING"
+        }
       },
       {merge: true},
     );
@@ -3125,9 +3138,11 @@ export async function processProviderPayoutV3(params: {
     }, {merge: true});
     await bookingRef.set({
       updatedAt: Timestamp.fromDate(now),
-      "payout.status": "FAILED",
-      "payout.failureCode": "LIVE_PAYOUT_DISABLED",
-      "payout.retryCount": FieldValue.increment(1),
+      payout: {
+        status: "FAILED",
+        failureCode: "LIVE_PAYOUT_DISABLED",
+        retryCount: FieldValue.increment(1)
+      }
     }, {merge: true});
     return {
       ok: false,
@@ -3140,6 +3155,7 @@ export async function processProviderPayoutV3(params: {
   }
 
   await params.firestore.runTransaction(async (transaction) => {
+    const earningExists = (await transaction.get(params.firestore.collection("providerEarnings").doc(params.bookingId))).exists;
     const [latestPayoutSnapshot, latestBookingSnapshot] = await Promise.all([
       transaction.get(payoutRef),
       transaction.get(bookingRef),
@@ -3177,7 +3193,7 @@ export async function processProviderPayoutV3(params: {
         },
         {merge: true},
       );
-      transaction.set(
+      if (earningExists) transaction.set(
         params.firestore.collection("providerEarnings").doc(params.bookingId),
         {
           status: "PAID",
@@ -3199,11 +3215,15 @@ export async function processProviderPayoutV3(params: {
         bookingRef,
         {
           updatedAt: Timestamp.fromDate(now),
-          "audit.lastUpdatedBy": "system",
-          "payout.status": "PAID",
-          "payout.releasedAt": Timestamp.fromDate(now),
-          "payout.payoutReference": gatewayResult.externalTransactionId,
-          "payout.failureCode": "",
+          audit: {
+            lastUpdatedBy: "system"
+          },
+          payout: {
+            status: "PAID",
+            releasedAt: Timestamp.fromDate(now),
+            payoutReference: gatewayResult.externalTransactionId,
+            failureCode: ""
+          }
         },
         {merge: true},
       );
@@ -3286,9 +3306,11 @@ export async function processProviderPayoutV3(params: {
         bookingRef,
         {
           updatedAt: Timestamp.fromDate(now),
-          "payout.status": "FAILED",
-          "payout.failureCode": gatewayResult.failureCode,
-          "payout.retryCount": FieldValue.increment(1),
+          payout: {
+            status: "FAILED",
+            failureCode: gatewayResult.failureCode,
+            retryCount: FieldValue.increment(1)
+          }
         },
         {merge: true},
       );

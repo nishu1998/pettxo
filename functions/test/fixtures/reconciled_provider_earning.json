@@ -1,0 +1,12 @@
+{
+  "bookingId": "b",
+  "providerId": "provider",
+  "earningsSchemaVersion": 1,
+  "earningsStatus": "FINALIZED",
+  "earningsOutcome": "NORMAL_COMPLETION",
+  "providerFinalEntitlementPaise": 85000,
+  "providerProvisionalEntitlementPaise": 85000,
+  "amountPaise": 85000,
+  "createdAt": "2026-07-24T12:00:00.000Z",
+  "updatedAt": "2026-07-24T12:00:00.000Z"
+}

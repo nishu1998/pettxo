@@ -1,3 +1,5 @@
+const mergeFirestoreSet = require("./helpers/mergeFirestoreSet");
+const assertCanonicalEarning = require('./helpers/assertCanonicalEarning');
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -89,7 +91,7 @@ class FakeFirestore {
 
   _set(path, data, options = {}) {
     const existing = this.store.get(path) ?? {};
-    this.store.set(path, options.merge ? {...existing, ...data} : {...data});
+    this.store.set(path, options.merge ? mergeFirestoreSet(existing, data) : {...data});
   }
 }
 
@@ -115,8 +117,8 @@ function buildMultiSegmentInProgressBooking() {
   const booking = buildInProgressBooking();
   const firstStart = new Date("2026-07-23T06:00:00.000Z");
   const firstEnd = new Date("2026-07-23T07:00:00.000Z");
-  const secondStart = new Date("2026-07-24T08:00:00.000Z");
-  const secondEnd = new Date("2026-07-24T09:00:00.000Z");
+  const secondStart = new Date("2026-07-23T07:00:00.000Z");
+  const secondEnd = new Date("2026-07-23T08:00:00.000Z");
   booking.schedule.slots = [
     {
       ...booking.schedule.slots[0],
@@ -130,8 +132,8 @@ function buildMultiSegmentInProgressBooking() {
     {
       ...booking.schedule.slots[0],
       slotId: "slot-2",
-      dateKey: "2026-07-24",
-      serviceDateKey: "2026-07-24",
+      dateKey: "2026-07-23",
+      serviceDateKey: "2026-07-23",
       startAt: secondStart,
       endAt: secondEnd,
       schedulingMode: "fixedDuration",
@@ -151,7 +153,7 @@ function buildMultiSegmentInProgressBooking() {
       schedulingMode: "fixedDuration",
     },
     {
-      serviceDateKey: "2026-07-24",
+      serviceDateKey: "2026-07-23",
       startAt: secondStart,
       endAt: secondEnd,
       slotIds: ["slot-2"],
@@ -161,7 +163,7 @@ function buildMultiSegmentInProgressBooking() {
   ];
   booking.schedule.firstSegmentEndAt = firstEnd;
   booking.schedule.finalEndAt = secondEnd;
-  booking.schedule.serviceDayCount = 2;
+  booking.schedule.serviceDayCount = 1;
   booking.schedule.segmentCount = 2;
   booking.service.selectedSlotCount = 2;
   booking.service.totalDurationMinutes = 120;
@@ -303,7 +305,7 @@ test("provider completion is rejected after the first segment but before the fin
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
 });
 
-test("provider completion succeeds once the final segment ends for a multi-day booking", async () => {
+test("provider completion succeeds once the final segment ends for a continuous multi-slot booking", async () => {
   const bookingId = "booking-complete-multiday-success";
   const booking = buildMultiSegmentInProgressBooking();
   const firestore = new FakeFirestore({
@@ -366,7 +368,7 @@ test("completion reconciliation leaves in-progress booking unchanged before serv
   assert.equal(firestore.store.get(`bookings/${bookingId}`).state, "IN_PROGRESS");
 });
 
-test("completion reconciliation leaves multi-day in-progress booking active until the final segment ends", async () => {
+test("completion reconciliation leaves continuous multi-slot in-progress booking active until the final segment ends", async () => {
   const bookingId = "booking-complete-reconcile-multiday-1";
   const booking = buildMultiSegmentInProgressBooking();
   const firestore = new FakeFirestore({
@@ -850,6 +852,7 @@ for (const kind of ['single-slot', 'multi-slot', 'range']) {
       const earned = firestore.store.get(`providerEarnings/${bookingId}`);
       assert.equal(earned.amountPaise, 85000);
       assert.equal(earned.providerFinalEntitlementPaise, 85000);
+      assertCanonicalEarning(earned, bookingId);
       assert.equal(earned.earningsStatus, 'FINALIZED');
       // Missing bank details hold payment without changing the earned amount.
       assert.equal(earned.status, 'HELD');

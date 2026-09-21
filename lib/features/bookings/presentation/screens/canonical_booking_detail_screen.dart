@@ -21,6 +21,8 @@ import '../../domain/models/canonical_booking_dispute_models.dart';
 import '../../domain/models/canonical_booking_private.dart';
 import '../../domain/models/canonical_booking_payout_models.dart';
 import '../../domain/models/canonical_booking_refund_models.dart';
+import '../../domain/models/provider_earning_record.dart';
+import '../utils/provider_earnings_presentation.dart';
 import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
@@ -251,9 +253,12 @@ class _CanonicalBookingDetailScreenState
                           disputeSnapshot.data,
                         );
                         return StreamBuilder<CanonicalBookingRefundRecord?>(
-                          stream: _repository.watchCanonicalBookingRefund(
-                            widget.bookingId,
-                          ),
+                          stream:
+                              effectiveState == CanonicalBookingStateV3.noShow
+                              ? Stream.value(null)
+                              : _repository.watchCanonicalBookingRefund(
+                                  widget.bookingId,
+                                ),
                           builder: (context, refundSnapshot) {
                             return _buildCustomerBookingDetailsExperience(
                               booking: displayBooking,
@@ -298,9 +303,13 @@ class _CanonicalBookingDetailScreenState
                                   payoutSnapshot.data,
                                 );
                             return StreamBuilder<CanonicalBookingRefundRecord?>(
-                              stream: _repository.watchCanonicalBookingRefund(
-                                widget.bookingId,
-                              ),
+                              stream:
+                                  effectiveState ==
+                                      CanonicalBookingStateV3.noShow
+                                  ? Stream.value(null)
+                                  : _repository.watchCanonicalBookingRefund(
+                                      widget.bookingId,
+                                    ),
                               builder: (context, refundSnapshot) {
                                 return _buildProviderBookingDetailsExperience(
                                   booking: displayBooking,
@@ -759,6 +768,8 @@ class _CanonicalBookingDetailScreenState
           if (effectiveState == CanonicalBookingStateV3.noShow) ...[
             const SizedBox(height: 16),
             _NoShowStatusSection(booking: booking),
+            const SizedBox(height: 16),
+            _buildCustomerNoShowFinancialSummary(),
           ],
           if (effectiveState != CanonicalBookingStateV3.noShow) ...[
             const SizedBox(height: 16),
@@ -827,23 +838,25 @@ class _CanonicalBookingDetailScreenState
                   )
                 : null,
           ),
-          const SizedBox(height: 16),
-          const BookingDetailsSectionLabel('Important information'),
-          const SizedBox(height: 10),
-          ImportantInformationCard(
-            model: StatusImportantInformationModel(
-              title: effectiveState == CanonicalBookingStateV3.inProgress
-                  ? 'Service in progress'
-                  : effectiveState == CanonicalBookingStateV3.noShow
-                  ? 'OTP no longer available'
-                  : 'OTP verification required',
-              body: effectiveState == CanonicalBookingStateV3.inProgress
-                  ? 'The service clock started after successful OTP verification.'
-                  : effectiveState == CanonicalBookingStateV3.noShow
-                  ? 'The service window ended before OTP verification, so the booking was marked as no-show.'
-                  : 'OTP verification is required to start the service. The service clock starts only after successful OTP verification.',
+          if (effectiveState != CanonicalBookingStateV3.noShow) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Important information'),
+            const SizedBox(height: 10),
+            ImportantInformationCard(
+              model: StatusImportantInformationModel(
+                title: effectiveState == CanonicalBookingStateV3.inProgress
+                    ? 'Service in progress'
+                    : effectiveState == CanonicalBookingStateV3.noShow
+                    ? 'OTP no longer available'
+                    : 'OTP verification required',
+                body: effectiveState == CanonicalBookingStateV3.inProgress
+                    ? 'The service clock started after successful OTP verification.'
+                    : effectiveState == CanonicalBookingStateV3.noShow
+                    ? 'The service window ended before OTP verification, so the booking was marked as no-show.'
+                    : 'OTP verification is required to start the service. The service clock starts only after successful OTP verification.',
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -1009,6 +1022,10 @@ class _CanonicalBookingDetailScreenState
           const BookingDetailsSectionLabel('Booking status'),
           const SizedBox(height: 10),
           BookingStatusCard(model: _buildProviderStatusCard(booking)),
+          if (effectiveState == CanonicalBookingStateV3.noShow) ...[
+            const SizedBox(height: 16),
+            _buildProviderNoShowFinancialSummary(),
+          ],
           const SizedBox(height: 16),
           const BookingDetailsSectionLabel('Booking summary'),
           const SizedBox(height: 10),
@@ -1066,6 +1083,7 @@ class _CanonicalBookingDetailScreenState
           const BookingDetailsSectionLabel('Cancellation'),
           const SizedBox(height: 10),
           _ProviderCancellationCard(
+            isNoShow: effectiveState == CanonicalBookingStateV3.noShow,
             canCancel: canCancel,
             isBusy: _isCancelling || _isLoadingPreview || _isStartingService,
             onCancel: canCancel
@@ -1076,19 +1094,25 @@ class _CanonicalBookingDetailScreenState
                   )
                 : null,
           ),
-          const SizedBox(height: 16),
-          const BookingDetailsSectionLabel('Important information'),
-          const SizedBox(height: 10),
-          ImportantInformationCard(
-            model: StatusImportantInformationModel(
-              title: booking.state == CanonicalBookingStateV3.inProgress
-                  ? 'Service already started'
-                  : 'OTP verification required',
-              body: booking.state == CanonicalBookingStateV3.inProgress
-                  ? 'This booking officially started after successful OTP verification. Complete the service only after the scheduled work is finished.'
-                  : 'The booking officially begins only after successful OTP verification. Verify the customer\'s OTP only when the service is ready to start.',
+          if (effectiveState != CanonicalBookingStateV3.noShow) ...[
+            const SizedBox(height: 16),
+            const BookingDetailsSectionLabel('Important information'),
+            const SizedBox(height: 10),
+            ImportantInformationCard(
+              model: StatusImportantInformationModel(
+                title: effectiveState == CanonicalBookingStateV3.noShow
+                    ? 'Booking marked as no-show'
+                    : effectiveState == CanonicalBookingStateV3.inProgress
+                    ? 'Service already started'
+                    : 'OTP verification required',
+                body: effectiveState == CanonicalBookingStateV3.noShow
+                    ? 'The service window ended without the required OTP verification.'
+                    : effectiveState == CanonicalBookingStateV3.inProgress
+                    ? 'This booking officially started after successful OTP verification. Complete the service only after the scheduled work is finished.'
+                    : 'The booking officially begins only after successful OTP verification. Verify the customer\'s OTP only when the service is ready to start.',
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -1286,11 +1310,96 @@ class _CanonicalBookingDetailScreenState
     return rows;
   }
 
+  Widget _buildCustomerNoShowFinancialSummary() => StreamBuilder<int?>(
+    stream: _repository.watchCanonicalCustomerRefundAmount(widget.bookingId),
+    builder: (context, snapshot) {
+      // A processor refund is not a no-show settlement allocation.
+      final amount = snapshot.data;
+      final status = amount == null
+          ? 'Awaiting settlement'
+          : amount == 0
+          ? 'No refund'
+          : 'Refund approved';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const BookingDetailsSectionLabel('Financial summary'),
+          const SizedBox(height: 10),
+          FinancialSummaryCard(
+            rows: [
+              StatusFinancialRowModel(
+                label: 'Refund',
+                value: amount == null
+                    ? 'Unavailable'
+                    : formatEarningsPaise(amount),
+              ),
+              StatusFinancialRowModel(label: 'Refund status', value: status),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            snapshot.hasError
+                ? 'Refund details could not be loaded. Please try again later.'
+                : amount == 0
+                ? 'No refund is applicable because the required service OTP was not verified before the service window ended.'
+                : 'Refund information reflects the finalized settlement.',
+          ),
+        ],
+      );
+    },
+  );
+
+  Widget
+  _buildProviderNoShowFinancialSummary() => StreamBuilder<ProviderEarningRecord?>(
+    stream: _repository.watchCanonicalProviderEarning(widget.bookingId),
+    builder: (context, snapshot) {
+      final record = snapshot.data;
+      final amount = record?.finalEntitlementPaise;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const BookingDetailsSectionLabel('Earnings'),
+          const SizedBox(height: 10),
+          FinancialSummaryCard(
+            rows: [
+              StatusFinancialRowModel(
+                label: 'Your earnings',
+                value: snapshot.hasError
+                    ? 'Unavailable'
+                    : amount == null
+                    ? 'Awaiting finalization'
+                    : formatEarningsPaise(amount),
+              ),
+              if (record != null)
+                StatusFinancialRowModel(
+                  label: 'Earning status',
+                  value: earningsStatusLabel(record),
+                ),
+              if (record != null && earningsPayoutLabel(record) != null)
+                StatusFinancialRowModel(
+                  label: 'Payout status',
+                  value: earningsPayoutLabel(
+                    record,
+                  )!.replaceFirst('Payout: ', ''),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            snapshot.hasError
+                ? 'Earnings could not be loaded. Please try again later.'
+                : 'The booking was marked as a customer no-show. Your earning is based on Pettxo’s finalized settlement.',
+          ),
+        ],
+      );
+    },
+  );
+
   StatusCardPresentationModel _buildCustomerStatusCard(
     CanonicalBookingDocumentV3 booking,
   ) {
     final effectiveState = effectiveCanonicalBookingPresentationState(booking);
-    if (booking.state == CanonicalBookingStateV3.inProgress) {
+    if (effectiveState == CanonicalBookingStateV3.inProgress) {
       return const StatusCardPresentationModel(
         icon: Icons.play_circle_outline_rounded,
         title: 'Service Started',
@@ -1303,11 +1412,11 @@ class _CanonicalBookingDetailScreenState
     if (effectiveState == CanonicalBookingStateV3.noShow) {
       return const StatusCardPresentationModel(
         icon: Icons.event_busy_outlined,
-        title: 'No Show',
+        title: 'Booking marked as no-show',
         explanation:
-            'The service window ended before OTP verification, so this booking was marked as no-show.',
+            'The service window ended without the required OTP verification.',
         accentColor: Color(0xFFE07A2D),
-        badgeLabel: 'Closed',
+        badgeLabel: 'No-show',
       );
     }
     return const StatusCardPresentationModel(
@@ -1324,7 +1433,7 @@ class _CanonicalBookingDetailScreenState
     CanonicalBookingDocumentV3 booking,
   ) {
     final effectiveState = effectiveCanonicalBookingPresentationState(booking);
-    if (booking.state == CanonicalBookingStateV3.inProgress) {
+    if (effectiveState == CanonicalBookingStateV3.inProgress) {
       return const StatusCardPresentationModel(
         icon: Icons.play_circle_outline_rounded,
         title: 'Service In Progress',
@@ -1337,11 +1446,11 @@ class _CanonicalBookingDetailScreenState
     if (effectiveState == CanonicalBookingStateV3.noShow) {
       return const StatusCardPresentationModel(
         icon: Icons.event_busy_outlined,
-        title: 'No Show',
+        title: 'Booking marked as no-show',
         explanation:
-            'The service window ended before OTP verification, so this booking was marked as no-show.',
+            'The service window ended without the required OTP verification.',
         accentColor: Color(0xFFE07A2D),
-        badgeLabel: 'Closed',
+        badgeLabel: 'No-show',
       );
     }
     return const StatusCardPresentationModel(
@@ -4116,11 +4225,13 @@ class _ProviderBookingChatCard extends StatelessWidget {
 
 class _ProviderCancellationCard extends StatelessWidget {
   const _ProviderCancellationCard({
+    this.isNoShow = false,
     required this.canCancel,
     required this.isBusy,
     required this.onCancel,
   });
 
+  final bool isNoShow;
   final bool canCancel;
   final bool isBusy;
   final VoidCallback? onCancel;
@@ -4146,6 +4257,8 @@ class _ProviderCancellationCard extends StatelessWidget {
                 child: Text(
                   canCancel
                       ? 'Provider cancellation is still available before the service starts. Refunds and payout handling will follow the active cancellation policy.'
+                      : isNoShow
+                      ? 'Cancellation is unavailable because this booking was marked as no-show.'
                       : 'Provider cancellation is no longer available because the service has already started.',
                   style: const TextStyle(
                     color: AppColors.textGrey,
@@ -4612,10 +4725,6 @@ class _NoShowStatusSection extends StatelessWidget {
         const _InfoRow(
           'Status',
           'The service OTP was not entered before the service window ended.',
-        ),
-        const _InfoRow(
-          'Refund',
-          'No automatic refund was issued under the default no-show policy.',
         ),
         _InfoRow(
           'Dispute',

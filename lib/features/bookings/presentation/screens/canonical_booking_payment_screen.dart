@@ -81,6 +81,7 @@ class _CanonicalBookingPaymentScreenState
   String _selectedOfferCampaignId = '';
   String _selectedOfferMessage = '';
   String _pricingPreviewError = '';
+  String? _capacityPricingPreviewMessage;
   String _lastPreviewKey = '';
   String _lastAvailableOffersKey = '';
   String _availableOffersError = '';
@@ -255,6 +256,7 @@ class _CanonicalBookingPaymentScreenState
                       pricingSummary: pricingSummary,
                       isLoading: _isLoadingPricingPreview,
                       errorMessage: _pricingPreviewError,
+                      capacityErrorMessage: _capacityPricingPreviewMessage,
                       selectedOffer: selectedOffer,
                       selectionMessage: _selectedOfferMessage,
                       isRefreshingOffer: _isRefreshingOfferPreview,
@@ -806,6 +808,7 @@ class _CanonicalBookingPaymentScreenState
       _isLoadingPricingPreview = true;
       _pricingPreview = null;
       _pricingPreviewError = '';
+      _capacityPricingPreviewMessage = null;
       _lastPreviewKey = previewKey;
     });
     try {
@@ -833,6 +836,10 @@ class _CanonicalBookingPaymentScreenState
       setState(() {
         _pricingPreview = null;
         _pricingPreviewError = _friendlyPricingPreviewError(error);
+        _capacityPricingPreviewMessage =
+            error.code == CanonicalPaymentFailureCode.capacityUnavailable
+            ? error.message
+            : null;
       });
       _logPricingPreview(
         'business_error',
@@ -1716,6 +1723,7 @@ class _PricingCard extends StatelessWidget {
   final CanonicalPaymentPricingSummary? pricingSummary;
   final bool isLoading;
   final String errorMessage;
+  final String? capacityErrorMessage;
   final AvailableOffer? selectedOffer;
   final String selectionMessage;
   final bool isRefreshingOffer;
@@ -1731,6 +1739,7 @@ class _PricingCard extends StatelessWidget {
     required this.pricingSummary,
     required this.isLoading,
     required this.errorMessage,
+    required this.capacityErrorMessage,
     required this.selectedOffer,
     required this.selectionMessage,
     required this.isRefreshingOffer,
@@ -1785,8 +1794,8 @@ class _PricingCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'We couldn’t load the payment total.',
+                Text(
+                  capacityErrorMessage ?? 'We couldn’t load the payment total.',
                   style: TextStyle(
                     color: AppColors.textGrey,
                     height: 1.45,

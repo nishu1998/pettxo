@@ -1,3 +1,4 @@
+import 'package:pettexo/features/bookings/domain/models/provider_earning_record.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/bookings/data/repositories/booking_repository.dart';
@@ -250,33 +251,34 @@ void main() {
   );
 
   testWidgets(
-    'customer cancelled after payment shows authoritative refund and settlement rows only when available',
+    'customer cancelled after payment with coupon shows only canonical provider earnings and payout',
     (tester) async {
       final cancelledAt = DateTime.utc(2026, 7, 29, 11, 15);
       final booking = _buildCanonicalBooking(
-        state: CanonicalBookingStateV3.cancelledByParent,
+        state: CanonicalBookingStateV3.cancelled,
         respondedAt: DateTime.utc(2026, 7, 29, 9, 30),
         paidAt: DateTime.utc(2026, 7, 29, 10),
         cancelledAt: cancelledAt,
         cancelledBy: 'CUSTOMER',
         cancelReasonText: 'Changed plans',
-        customerPaidPaise: 89900,
-        refundAmountPaise: 89900,
+        customerPaidPaise: 100,
+        couponDiscountPaise: 20,
+        refundAmountPaise: 25,
         payoutStatus: 'processing',
       );
       final cancellationRecord = _buildCancellationRecord(
         actorType: 'CUSTOMER',
         cancelledAt: cancelledAt,
         reasonText: 'Changed plans',
-        customerPaidPaise: 89900,
-        refundAmountPaise: 89900,
-        refundStatus: 'processing',
-        providerCompensationPaise: 0,
+        customerPaidPaise: 100,
+        refundAmountPaise: 25,
+        refundStatus: 'REFUND_REQUIRED',
+        providerCompensationPaise: 60,
       );
 
       await pumpScreen(
         tester,
-        request: buildRequest(state: CanonicalBookingStateV3.cancelledByParent),
+        request: buildRequest(state: CanonicalBookingStateV3.cancelled),
         bookingRepository: _FakeBookingRepository(
           booking: booking,
           cancellationRecord: cancellationRecord,
@@ -285,12 +287,16 @@ void main() {
 
       await _scrollUntilTextVisible(tester, 'Cancelled by Customer');
       expect(find.text('Cancelled by Customer'), findsWidgets);
-      await _scrollUntilTextVisible(tester, 'Customer paid');
-      expect(find.text('Customer paid'), findsOneWidget);
-      expect(find.text('₹899'), findsWidgets);
-      expect(find.text('Refund status'), findsOneWidget);
-      expect(find.text('Processing'), findsWidgets);
-      expect(find.text('Provider settlement status'), findsOneWidget);
+      await _scrollUntilTextVisible(tester, 'Your earnings');
+      expect(find.text('₹0.60'), findsOneWidget);
+      expect(find.text('Earned'), findsOneWidget);
+      expect(find.text('On hold'), findsOneWidget);
+      expect(find.text('Customer paid'), findsNothing);
+      expect(find.text('₹1.00'), findsNothing);
+      expect(find.text('₹0.25'), findsNothing);
+      expect(find.text('Refund status'), findsNothing);
+      expect(find.text('Refund initiated'), findsNothing);
+      expect(find.text('IMPORTANT INFORMATION'), findsNothing);
       expect(find.text('Accept'), findsNothing);
       expect(find.text('Decline'), findsNothing);
       expect(find.text('Cancel request'), findsNothing);
@@ -381,6 +387,7 @@ CanonicalBookingDocumentV3 _buildCanonicalBooking({
   String? cancelledBy,
   String cancelReasonText = '',
   int customerPaidPaise = 0,
+  int couponDiscountPaise = 0,
   int refundAmountPaise = 0,
   int providerCompensationPaise = 0,
   String payoutStatus = '',
@@ -501,13 +508,13 @@ CanonicalBookingDocumentV3 _buildCanonicalBooking({
     financials: customerPaidPaise > 0
         ? BookingFinancialSnapshotV3(
             currency: 'INR',
-            serviceSubtotalPaise: customerPaidPaise,
-            couponDiscountPaise: 0,
+            serviceSubtotalPaise: customerPaidPaise + couponDiscountPaise,
+            couponDiscountPaise: couponDiscountPaise,
             customerPaidPaise: customerPaidPaise,
             platformCommissionRateBasisPoints: 1500,
             platformCommissionPaise: 0,
             providerPayoutPaise: providerCompensationPaise,
-            pettxoCouponFundingPaise: 0,
+            pettxoCouponFundingPaise: couponDiscountPaise,
             gatewayFeeSunkPaise: 0,
             providerFaultCostPaise: 0,
             refundAmountPaise: refundAmountPaise,
@@ -650,6 +657,21 @@ class _FakeBookingRepository extends BookingRepository {
 
   final CanonicalBookingDocumentV3? booking;
   final CanonicalBookingCancellationRecord? cancellationRecord;
+
+  @override
+  Stream<ProviderEarningRecord?> watchCanonicalProviderEarning(
+    String bookingId,
+  ) => Stream.value(
+    ProviderEarningRecord.fromMap(bookingId, {
+      'bookingId': bookingId,
+      'providerId': 'provider-1',
+      'earningsSchemaVersion': 1,
+      'earningsStatus': 'FINALIZED',
+      'earningsOutcome': 'CUSTOMER_CANCELLATION',
+      'providerFinalEntitlementPaise': 60,
+      'status': 'HELD',
+    }),
+  );
 
   @override
   Stream<BookingReadModel?> watchCanonicalBooking(String bookingId) {

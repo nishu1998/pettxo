@@ -9,7 +9,7 @@ async function fixture(fn) {
   const app=initializeApp({projectId:'demo-earnings-backfill'},randomUUID());
   const db=getFirestore(app); const id=randomUUID(); const at=Timestamp.now();
   await db.doc('users/admin').set({adminRole:'superAdmin'});
-  await db.doc(`bookings/${id}`).set({providerId:'provider',parentId:'parent',serviceId:'service',state:'COMPLETED_FINAL',
+  await db.doc(`bookings/${id}`).set({schemaVersion:3,bookingModelVersion:'3.2',documentFormat:'canonical_v3',providerId:'provider',parentId:'parent',serviceId:'service',state:'COMPLETED_FINAL',
     lifecycle:{paidAt:at,finalizedAt:at},financials:{providerPayoutPaise:85000,currency:'INR'},
     payment:{status:'CONFIRMED',razorpayPaymentId:'winner'},dispute:{status:'none'},payout:{status:'READY'}});
   const run=(options={})=>reconcile({firestore:db,auth:{uid:'admin'},input:{ids:[id],dryRun:false,...options}});
@@ -47,5 +47,30 @@ test('backfill emulator: audit failure rolls projection back and retry succeeds'
     assert.equal((await db.doc(`providerEarnings/${id}`).get()).exists,false);
     assert.equal((await db.collection('providerEarningsReconciliationAudit').where('bookingId','==',id).get()).size,0);
     assert.equal((await run()).counts.created,1);
+  });
+});
+
+test('backfill emulator: current writer wins before stale migration commits', {skip:!enabled}, async()=>{
+  await fixture(async({db,id})=>{
+    await db.doc(`providerEarnings/${id}`).set({bookingId:id,providerId:'provider',amount:1});
+    const at=Timestamp.now();
+    const current={bookingId:id,providerId:'provider',earningsSchemaVersion:1,
+      earningsStatus:'FINALIZED',earningsOutcome:'NORMAL_COMPLETION',providerFinalEntitlementPaise:85000,
+      providerProvisionalEntitlementPaise:85000,amountPaise:85000,createdAt:at,updatedAt:at,status:'READY'};
+    // Stage an obsolete read, then simulate the transaction retry after a
+    // canonical writer commits. The retried real Firestore transaction must
+    // observe the valid projection and perform zero writes.
+    const wrapped={collection:name=>db.collection(name)};
+    wrapped.runTransaction=async fn=>{
+      await db.runTransaction(async tx=>{
+        await fn({get:ref=>tx.get(ref),set:()=>{}});
+      }, {readOnly:true});
+      await db.doc(`providerEarnings/${id}`).set(current);
+      return db.runTransaction(fn);
+    };
+    const result=await reconcile({firestore:wrapped,auth:{uid:'admin'},input:{ids:[id],dryRun:false}});
+    assert.equal(result.summary.canonicalValid,1);
+    assert.deepEqual((await db.doc(`providerEarnings/${id}`).get()).data(),current);
+    assert.equal((await db.collection('providerEarningsReconciliationAudit').where('bookingId','==',id).get()).size,0);
   });
 });

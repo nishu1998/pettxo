@@ -1030,3 +1030,30 @@ test('participants can read canonical cancellation artifacts but unrelated users
     getDoc(capacityReleaseDoc(authedDb(otherUid), bookingId)),
   );
 });
+
+test('customers and providers cannot rewrite slot capacity or occupancy', async () => {
+  await seedUser('slotCustomer');
+  await seedUser('slotProvider');
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'services', 'capacityService'), {
+      ownerUserId: 'slotProvider', isVisibleToMarketplace: true, isDeleted: false,
+    });
+    await setDoc(doc(db, 'services', 'capacityService', 'slots', 'slotOne'), {
+      capacity: 1, acceptedCount: 1, status: 'open', isBookable: true,
+    });
+    await setDoc(doc(db, 'services', 'capacityService', 'slotOccupancy', 'slotOne'), {
+      confirmedUnits: 1, capacitySnapshot: 1, bookingClaims: {bookingA: 1},
+    });
+  });
+  for (const uid of ['slotCustomer', 'slotProvider']) {
+    const db = authedDb(uid);
+    const slot = doc(db, 'services', 'capacityService', 'slots', 'slotOne');
+    const occupancy = doc(db, 'services', 'capacityService', 'slotOccupancy', 'slotOne');
+    await assertSucceeds(getDoc(slot));
+    await assertFails(updateDoc(slot, {acceptedCount: 0}));
+    await assertFails(setDoc(slot, {capacity: 99, acceptedCount: 0}));
+    await assertFails(getDoc(occupancy));
+    await assertFails(updateDoc(occupancy, {confirmedUnits: 0}));
+  }
+});

@@ -1,3 +1,5 @@
+import {confirmManualCancellationRefundTransactionV3} from "./manualCancellationRefundV3";
+import {isCancellationSourceV3} from "./manualSettlementTypesV3";
 import {canonicalRefundEarningsHoldV3} from "./providerEarningsV3";
 import {createHash} from "node:crypto";
 import {Timestamp, type Firestore} from "firebase-admin/firestore";
@@ -56,6 +58,11 @@ export async function applyPaymentRefundEventV3(params: {
     }
     const authoritative = authoritativePaymentIdV3(booking) === params.paymentId;
     const canonicalRefund = canonicalRefundSnap.data() ?? {};
+    if (authoritative && isCancellationSourceV3(canonicalRefund.origin) && canonicalRefund.executionMode === "MANUAL") {
+      const changed = await confirmManualCancellationRefundTransactionV3({...params,
+        transaction: tx, booking, attempt, refund: canonicalRefund});
+      return {authoritative, changed, manual: false};
+    }
     if (authoritative && (
       String(canonicalRefund.executionMode).toUpperCase() === "MANUAL" ||
       String(canonicalRefund.origin).toUpperCase() === "DISPUTE_RESOLUTION"
@@ -143,7 +150,7 @@ export async function applyPaymentRefundEventV3(params: {
         ...(collection === "bookingFinancials" ? {paymentStatus} : {}), updatedAt: now,
       }, {merge: true});
     }
-    tx.set(params.firestore.collection("providerEarnings").doc(params.bookingId), {
+    if (earningSnap.exists) tx.set(params.firestore.collection("providerEarnings").doc(params.bookingId), {
       ...canonicalRefundEarningsHoldV3(earningSnap.data() ?? {}),
       refundStatus: refundStatus.toLowerCase(), eligibleForPayout: false, updatedAt: now,
     }, {merge: true});

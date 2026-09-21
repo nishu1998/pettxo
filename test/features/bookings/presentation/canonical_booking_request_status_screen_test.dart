@@ -1,3 +1,6 @@
+import 'package:pettexo/features/services/data/repositories/services_repository.dart';
+import 'package:pettexo/features/services/domain/models/service_model.dart';
+import 'package:pettexo/features/bookings/domain/models/canonical_booking_cancellation_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/bookings/data/repositories/booking_repository.dart';
@@ -43,6 +46,7 @@ void main() {
             providerName: 'Nishant Gautam',
             serviceImageUrl: '',
             bookingRepository: repository,
+            servicesRepository: _FakeServicesRepository(),
           ),
         ),
       );
@@ -83,6 +87,55 @@ void main() {
   );
 
   testWidgets(
+    'customer cancellation shows only canonical customer financial outcome',
+    (tester) async {
+      final repository = _FakeBookingRepository(
+        _buildProviderCancelledAfterPaymentBooking(actor: 'parent'),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          routes: {'/settings': (_) => const Scaffold(body: Text('Settings'))},
+          home: CanonicalBookingRequestStatusScreen(
+            bookingId: 'booking-2',
+            initialResult: CanonicalBookingRequestResult(
+              bookingId: 'booking-2',
+              source: 'canonical_v3',
+              schemaVersion: canonicalBookingSchemaVersion,
+              bookingModelVersion: canonicalBookingModelVersion,
+              state: CanonicalBookingStateV3.cancelled,
+              bookingType: BookingV3Type.slot,
+              requestedAt: DateTime.utc(2026, 7, 28, 8),
+              timerStartsAt: DateTime.utc(2026, 7, 28, 8),
+              acceptDeadlineAt: DateTime.utc(2026, 7, 28, 9),
+              wasQueuedOutsideWorkingHours: false,
+              idempotentReplay: false,
+            ),
+            serviceName: 'Daily Dog Walk',
+            providerName: 'Nishant Gautam',
+            serviceImageUrl: '',
+            bookingRepository: repository,
+            servicesRepository: _FakeServicesRepository(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('You paid'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('₹1.00'), findsOneWidget);
+      expect(find.text('₹0.25'), findsOneWidget);
+      expect(find.text('Refund required'), findsOneWidget);
+      expect(find.text('₹0.60'), findsNothing);
+      expect(find.text('Payout status'), findsNothing);
+      expect(find.text('IMPORTANT INFORMATION'), findsNothing);
+    },
+  );
+
+  testWidgets(
     'provider-cancelled-after-payment terminal screen shows refund-aware actions and no payment controls',
     (tester) async {
       final repository = _FakeBookingRepository(
@@ -111,6 +164,7 @@ void main() {
             providerName: 'Nishant Gautam',
             serviceImageUrl: '',
             bookingRepository: repository,
+            servicesRepository: _FakeServicesRepository(),
           ),
         ),
       );
@@ -156,6 +210,7 @@ void main() {
             providerName: 'Nishant Gautam',
             serviceImageUrl: '',
             bookingRepository: repository,
+            servicesRepository: _FakeServicesRepository(),
           ),
         ),
       );
@@ -199,6 +254,20 @@ class _FakeBookingRepository extends BookingRepository {
   _FakeBookingRepository(this.booking);
 
   final CanonicalBookingDocumentV3 booking;
+
+  @override
+  Stream<CanonicalBookingCancellationRecord?> watchCanonicalBookingCancellation(
+    String bookingId,
+  ) => Stream.value(
+    CanonicalBookingCancellationRecord.fromMap({
+      'bookingId': bookingId,
+      'actorType': 'CUSTOMER',
+      'customerPaidPaise': 100,
+      'refundAmountPaise': 25,
+      'refundStatus': 'REFUND_REQUIRED',
+      'providerCompensationPaise': 60,
+    }),
+  );
 
   @override
   Stream<BookingReadModel?> watchCanonicalBooking(String bookingId) {
@@ -625,7 +694,9 @@ CanonicalBookingDocumentV3 _buildPendingProviderBooking() {
   );
 }
 
-CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking() {
+CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking({
+  String actor = 'provider',
+}) {
   final now = DateTime.now().toUtc();
   final requestedAt = now.subtract(const Duration(days: 1, hours: 3));
   final respondedAt = requestedAt.add(const Duration(minutes: 10));
@@ -765,7 +836,7 @@ CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking() {
     },
     'cancellation': {
       'cancelledAt': cancelledAt,
-      'cancelledBy': 'provider',
+      'cancelledBy': actor,
       'cancelReasonCode': 'provider_unavailable',
       'cancelReasonText': 'Provider unavailable.',
       'hoursBeforeServiceAtCancel': 12,
@@ -827,4 +898,11 @@ CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking() {
 
   expect(result.isValid, isTrue);
   return result.booking!;
+}
+
+class _FakeServicesRepository implements ServicesRepository {
+  @override
+  Future<ServiceModel?> fetchServiceById(String serviceId) async => null;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

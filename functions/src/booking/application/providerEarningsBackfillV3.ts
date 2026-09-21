@@ -5,8 +5,10 @@ import * as logger from "firebase-functions/logger";
 import {loadAdminActor} from "../bookingAdminOperationsV3";
 import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 
+import {providerEarningsSchemaIssuesV3} from "./providerEarningsSchemaV3";
+
 type Data = FirebaseFirestore.DocumentData;
-const VERSION = 1;
+const VERSION = 2;
 const MAX_BATCH = 20;
 const safeId = (id: unknown): id is string => typeof id === "string" && id.length > 0 &&
   Buffer.byteLength(id, "utf8") <= 1500 && !id.includes("/") && id !== "." && id !== "..";
@@ -24,7 +26,7 @@ function money(value: unknown): number {
 }
 function status(value: unknown): string {
   const raw = upper(value);
-  if (["READY", "PAID", "PROCESSING", "FAILED", "CANCELLED"].includes(raw)) return raw;
+  if (["READY", "PAID", "COMPLETED", "PROCESSING", "FAILED", "NEEDS_ATTENTION", "CANCELLED", "HELD"].includes(raw)) return raw;
   return raw === "PAYOUTELIGIBLE" ? "READY" : "HELD";
 }
 function stable(value: unknown): string {
@@ -37,9 +39,15 @@ function stable(value: unknown): string {
 const publicFields = ["bookingId", "providerId", "amountPaise", "amount", "earningsSchemaVersion", "earningsStatus",
   "earningsOutcome", "providerFinalEntitlementPaise", "providerProvisionalEntitlementPaise", "status", "paidAt", "createdAt"];
 const safeProjection = (data: Data | undefined) => data ? Object.fromEntries(
-  publicFields.filter(k => data[k] !== undefined).map(k => [k,
-    data[k] instanceof Timestamp ? data[k] :
-      ["string", "number", "boolean"].includes(typeof data[k]) || data[k] == null ? data[k] : null]),
+  publicFields.filter(k => data[k] !== undefined).map(k => {
+    const value = data[k];
+    if (value instanceof Timestamp || value == null) return [k, value];
+    if (["bookingId", "providerId"].includes(k)) return [k, safeId(value) ? value : null];
+    if (["earningsStatus", "earningsOutcome", "status"].includes(k)) {
+      return [k, typeof value === "string" && /^[A-Za-z_]{1,80}$/.test(value) ? value : "INVALID"];
+    }
+    return [k, typeof value === "number" && Number.isFinite(value) ? value : null];
+  }),
 ) : null;
 
 /** No projection amounts or payout balances participate in reconstruction. */
@@ -48,6 +56,9 @@ export function reconstructProviderEarningsV3(params: {
   noShow?: Data; dispute?: Data; resolutions?: Data[]; refund?: Data;
 }) {
   const {booking: b, bookingId} = params;
+  if (b.schemaVersion !== 3 || b.bookingModelVersion !== "3.2" || b.documentFormat !== "canonical_v3") {
+    throw new Error("UNKNOWN_BOOKING_SCHEMA");
+  }
   if (!safeId(b.providerId)) throw new Error("MISSING_CANONICAL_PROVIDER");
   if (b.bookingId && b.bookingId !== bookingId) throw new Error("BOOKING_ID_CONFLICT");
   for (const record of [params.cancellation, params.adjustment, params.noShow, params.dispute, ...(params.resolutions ?? [])]) {
@@ -62,6 +73,7 @@ export function reconstructProviderEarningsV3(params: {
     return {classification: "NO_EARNING_RECORD_REQUIRED", projection: null, timestamp: date(b.createdAt)};
   }
   if (!paid) throw new Error("MISSING_CANONICAL_PAYMENT_EVIDENCE");
+  if (b.financials?.currency != null && b.financials.currency !== "INR") throw new Error("UNSUPPORTED_CURRENCY");
   const base = money(b.financials?.providerPayoutPaise);
   const disputeStatus = upper(b.dispute?.status);
   const separateDisputeStatus = upper(params.dispute?.status);
@@ -77,7 +89,7 @@ export function reconstructProviderEarningsV3(params: {
       params.dispute?.resolution?.providerFinalEntitlementPaise].filter(v => v != null).map(money);
     if (!allocations.length || new Set(allocations).size !== 1) throw new Error("MISSING_OR_CONFLICTING_DISPUTE_ALLOCATION");
     projection = buildProviderEarningsProjectionV3({entitlementPaise: allocations[0], phase: "ADJUSTED", outcome: "DISPUTE_RESOLUTION"});
-    timestamp = date(b.dispute?.resolvedAt) ?? date(params.resolutions?.[0]?.resolvedAt);
+    timestamp = date(b.dispute?.resolvedAt) ?? date(params.resolutions?.[0]?.resolvedAt) ?? date(params.dispute?.resolvedAt);
   } else if ((params.resolutions ?? []).length) {
     throw new Error("DISPUTE_STATE_CONFLICT");
   } else if (open) {
@@ -97,7 +109,7 @@ export function reconstructProviderEarningsV3(params: {
     const compensation = money(params.noShow?.providerCompensationPaise);
     if (compensation > base) throw new Error("INVALID_NO_SHOW_ALLOCATION");
     projection = buildProviderEarningsProjectionV3({entitlementPaise: compensation, phase: "FINALIZED", outcome: "NO_SHOW"});
-    timestamp = date(params.noShow?.noShowAt);
+    timestamp = date(params.noShow?.noShowAt) ?? date(b.lifecycle?.noShowAt);
   } else if (["CONFIRMED", "IN_PROGRESS", "COMPLETED_PENDING_REVIEW", "COMPLETED_FINAL"].includes(state)) {
     const refund = params.refund;
     const mappedRefund = refund && refund.razorpayPaymentId === b.payment?.razorpayPaymentId;
@@ -125,6 +137,7 @@ export async function reconcileProviderEarningsBatchDataV3(params: {
   firestore: Firestore; auth: CallableRequest["auth"];
   input: {dryRun?: boolean; scan?: "bookings" | "providerEarnings"; limit?: number; cursor?: string; ids?: string[]};
 }) {
+  const startedAt = Date.now();
   const actor = await loadAdminActor(params.firestore, params.auth, "financial");
   if (actor.role !== "superAdmin") throw new HttpsError("permission-denied", "Super Admin access required.");
   const {input, firestore} = params;
@@ -145,6 +158,11 @@ export async function reconcileProviderEarningsBatchDataV3(params: {
   const ids = input.ids ? [...new Set(input.ids)] : page!.docs.slice(0, limit).map(d => d.id);
   const counts = {scanned: 0, unchanged: 0, created: 0, updated: 0, zeroed: 0, skipped: 0, failed: 0};
   const items: Data[] = [];
+  const summary = {canonicalValid: 0, needsBackfill: 0, wouldUpdate: 0, applied: 0,
+    alreadyCorrect: 0, unsafeToReconstruct: 0, orphaned: 0, providerMismatch: 0,
+    bookingMissing: 0, financialSourceMissing: 0, errors: 0, notRequired: 0};
+  const breakdown: Record<string, Record<string, number>> = {issues: {}, schema: {}, outcome: {}, reasons: {}};
+  const increment = (group: string, key: string) => { breakdown[group][key] = (breakdown[group][key] ?? 0) + 1; };
   for (const id of ids) {
     let item: Data;
     try {
@@ -155,13 +173,27 @@ export async function reconcileProviderEarningsBatchDataV3(params: {
         const existingSnap = await tx.get(earningRef);
         const old = existingSnap.data();
         const current = safeProjection(old);
+        const issues = old ? providerEarningsSchemaIssuesV3(old) : ["MISSING:document"];
+        const schemaCategory = !old ? "MISSING_DOCUMENT" : old.earningsSchemaVersion == null ? "UNVERSIONED" :
+          old.earningsSchemaVersion === 1 ? "VERSION_1" : "UNKNOWN_SCHEMA";
+        const evidence = {issues, schemaCategory};
         const b = snapshots[0].data();
-        const skip = (category: string) => ({id, bookingId: id, action: "skipped", errorCategory: category, severity: "HIGH", current});
+        const skip = (category: string, missingSourceFields: string[] = []) => ({id,
+          bookingId: safeId(old?.bookingId) ? old!.bookingId : id,
+          providerId: safeId(b?.providerId) ? b!.providerId : safeId(old?.providerId) ? old!.providerId : null,
+          action: "skipped", classification: "UNSAFE_TO_RECONSTRUCT", errorCategory: category,
+          missingSourceFields, severity: "HIGH", current, ...evidence});
         if (scan === "providerEarnings" && !existingSnap.exists) return skip("PROJECTION_DISAPPEARED");
-        if (!b) return skip("ORPHAN_PROJECTION_OR_MISSING_BOOKING");
         if (old?.bookingId && old.bookingId !== id) return skip("PROJECTION_BOOKING_ID_CONFLICT");
+        if (!b) return skip("BOOKING_MISSING", ["bookings/" + id]);
+        if (old?.earningsSchemaVersion != null && old.earningsSchemaVersion !== 1) return skip("UNKNOWN_SCHEMA");
+        if (old?.providerId && old.providerId !== b.providerId) return skip("PROVIDER_MISMATCH");
         const duplicates = await tx.get(firestore.collection("providerEarnings").where("bookingId", "==", id).limit(2));
         if (duplicates.docs.some(d => d.id !== id)) return skip("DUPLICATE_PROJECTION");
+        if (old && issues.length === 0) {
+          return {id, bookingId: id, providerId: b.providerId, action: "unchanged",
+            classification: "CANONICAL_VALID", current, ...evidence};
+        }
         const resolutions = await tx.get(firestore.collection("bookingDisputeResolutions").where("bookingId", "==", id).limit(2));
         if (resolutions.size > 1) return skip("MULTIPLE_DISPUTE_RESOLUTIONS");
         let reconstructed;
@@ -169,20 +201,31 @@ export async function reconcileProviderEarningsBatchDataV3(params: {
           reconstructed = reconstructProviderEarningsV3({bookingId: id, booking: b,
             cancellation: snapshots[1].data(), adjustment: snapshots[2].data(), noShow: snapshots[3].data(),
             dispute: snapshots[4].data(), refund: snapshots[5].data(), resolutions: resolutions.docs.map(d => d.data())});
-        } catch (error) { return skip(error instanceof Error ? error.message : "INVALID_CANONICAL_DATA"); }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "INVALID_CANONICAL_DATA";
+          const fields = reason === "INVALID_CANONICAL_ENTITLEMENT" ?
+            [b.state === "NO_SHOW" ? "bookingNoShows.providerCompensationPaise" : "bookings.financials.providerPayoutPaise"] :
+            reason.includes("CANCELLATION") ? ["bookingCancellations/bookingFinancialAdjustments.providerCompensationPaise,actorType"] :
+            reason.includes("DISPUTE_ALLOCATION") ? ["bookingDisputeResolutions.providerFinalEntitlementPaise"] :
+            reason.includes("PAYMENT_EVIDENCE") ? ["bookings.lifecycle.paidAt"] :
+            reason.includes("FINALIZATION") ? ["bookings.lifecycle.finalizedAt"] :
+            reason === "UNKNOWN_BOOKING_SCHEMA" ? ["bookings.schemaVersion,bookingModelVersion,documentFormat"] : [];
+          return skip(reason, fields);
+        }
         const {projection, classification, timestamp} = reconstructed;
         if (!projection && !old) return {...skip("NO_EARNING_RECORD_REQUIRED"), classification};
+        if (!projection && old) return skip("UNPAID_PROJECTION_REQUIRES_REVIEW");
+        if (!timestamp) return skip("MISSING_OUTCOME_TIMESTAMP", ["canonical outcome timestamp"]);
         const payout = snapshots[6].data();
         if (payout && ((payout.providerId && payout.providerId !== b.providerId) ||
           (payout.bookingId && payout.bookingId !== id))) return skip("PAYOUT_IDENTITY_CONFLICT");
-        const wrongProvider = old?.providerId && old.providerId !== b.providerId;
         const expected: Data = {
-          ...(projection ?? buildProviderEarningsProjectionV3({entitlementPaise: 0,
-            phase: "PROVISIONAL", outcome: "NO_EARNING_RECORD_REQUIRED"})),
-          bookingId: id, providerId: b.providerId, userId: b.parentId ?? "", serviceId: b.serviceId ?? "",
-          currency: b.financials?.currency ?? "INR",
-          status: status(payout?.status ?? b.payout?.status ?? (wrongProvider ? "HELD" : old?.status)),
+          ...projection,
+          bookingId: id, providerId: b.providerId,
+          currency: "INR",
+          status: status(payout?.status ?? b.payout?.status ?? old?.status),
           createdAt: date(b.lifecycle?.paidAt) ?? date(b.createdAt), earningsOutcomeAt: timestamp,
+          updatedAt: date(old?.updatedAt) ?? timestamp,
         };
         const paidAt = date(payout?.paidAt) ?? date(b.payout?.releasedAt);
         if (paidAt) expected.paidAt = paidAt;
@@ -192,11 +235,23 @@ export async function reconcileProviderEarningsBatchDataV3(params: {
         if (typeof old?.status === "string" && old.status !== expected.status) {
           expected.legacyPayoutStatus = old.legacyPayoutStatus ?? old.status;
         }
+        // Missing history metadata must never authorize replacing a valid
+        // financial decision with an older source reconstruction.
+        const financialFields = new Set(["earningsSchemaVersion", "providerId", "bookingId", "earningsStatus", "providerFinalEntitlementPaise"]);
+        const hasValidFinancialCore = old && old.earningsSchemaVersion === 1 &&
+          !issues.some(issue => financialFields.has(issue.split(":")[1]));
+        if (hasValidFinancialCore && ["earningsStatus", "providerFinalEntitlementPaise", "earningsOutcome"]
+          .some(key => old[key] !== undefined && stable(old[key]) !== stable(expected[key]))) {
+          return skip("CANONICAL_FINANCIAL_CONFLICT");
+        }
+        const reconstructedIssues = providerEarningsSchemaIssuesV3(expected);
+        if (reconstructedIssues.length) return skip("INVALID_RECONSTRUCTED_SCHEMA", reconstructedIssues);
         const changed = !old || Object.entries(expected).some(([k, v]) => stable(old[k]) !== stable(v));
         const action = !changed ? "unchanged" : !old ? "created" : expected.amountPaise === 0 && old.amountPaise !== 0 ? "zeroed" : "updated";
-        const anomalies = [...(wrongProvider ? ["WRONG_PROVIDER_ID"] : []), ...(!timestamp ? ["MISSING_OUTCOME_TIMESTAMP"] : [])];
-        const result = {id, bookingId: id, providerId: b.providerId, action, classification, anomalies,
-          severity: wrongProvider ? "HIGH" : anomalies.length ? "WARNING" : "INFO", current, expected};
+        const anomalies: string[] = [];
+        const result = {id, bookingId: id, providerId: b.providerId, action, classification: schemaCategory === "UNVERSIONED" ? "LEGACY_RECONSTRUCTABLE" : "MALFORMED_RECONSTRUCTABLE",
+          outcomeClassification: classification, ...evidence, anomalies,
+          severity: "INFO", current, expected};
         if (changed && !dryRun) {
           const now = Timestamp.now();
           const fingerprint = createHash("sha256").update(stable({bookingId: id, current, expected})).digest("hex");
@@ -215,11 +270,32 @@ export async function reconcileProviderEarningsBatchDataV3(params: {
     counts.scanned++;
     counts[item.action as keyof Omit<typeof counts, "scanned">]++;
     items.push(item);
-    logger.info("providerEarnings.reconciliation", {bookingId: item.bookingId, providerId: item.providerId ?? null,
-      action: item.action, previousAmountPaise: typeof item.current?.amountPaise === "number" ? item.current.amountPaise : null,
-      newAmountPaise: item.expected?.amountPaise ?? null, outcome: item.expected?.earningsOutcome ?? null,
-      dryRun, errorCategory: item.errorCategory ?? null, anomalies: item.anomalies ?? [], severityLevel: item.severity});
+    increment("schema", item.schemaCategory ?? "UNREADABLE");
+    increment("outcome", item.expected?.earningsOutcome ??
+      (["NO_SHOW", "NORMAL_COMPLETION", "CUSTOMER_CANCELLATION", "PROVIDER_CANCELLATION", "DISPUTE_RESOLUTION",
+        "PAYMENT_CONFIRMED", "COMPLETION_REVIEW", "OPEN_DISPUTE", "CANONICAL_REFUND_REVIEW"].includes(item.current?.earningsOutcome) ?
+        item.current.earningsOutcome : "UNKNOWN"));
+    for (const issue of item.issues ?? []) increment("issues", issue);
+    if (item.errorCategory) increment("reasons", item.errorCategory);
+    if (item.action === "unchanged") { summary.canonicalValid++; summary.alreadyCorrect++; }
+    else if (["created", "updated", "zeroed"].includes(item.action)) {
+      summary.needsBackfill++;
+      if (dryRun) summary.wouldUpdate++; else summary.applied++;
+    } else if (item.action === "failed") summary.errors++;
+    else if (item.errorCategory === "NO_EARNING_RECORD_REQUIRED") summary.notRequired++;
+    else {
+      summary.unsafeToReconstruct++;
+      if (item.errorCategory === "BOOKING_MISSING") { summary.bookingMissing++; summary.orphaned++; }
+      if (item.errorCategory === "PROVIDER_MISMATCH") summary.providerMismatch++;
+      if ((item.missingSourceFields ?? []).length && item.errorCategory !== "BOOKING_MISSING") summary.financialSourceMissing++;
+    }
   }
-  return {dryRun, scan, counts, items, nextCursor: !input.ids && page!.docs.length > limit ? ids[ids.length - 1] : null,
+  const hasMore = !input.ids && page!.docs.length > limit;
+  const nextCursor = hasMore ? ids[ids.length - 1] : null;
+  const durationMs = Date.now() - startedAt;
+  logger.info("providerEarnings.reconciliation.batch", {migrationVersion: VERSION, dryRun, scan,
+    cursor: input.cursor ?? null, counts, summary, nextCursor, hasMore, durationMs});
+
+  return {migrationVersion: VERSION, dryRun, scan, counts, summary, breakdown, items, nextCursor, hasMore, durationMs,
     retryIds: items.filter(i => i.action === "failed").map(i => i.id)};
 }

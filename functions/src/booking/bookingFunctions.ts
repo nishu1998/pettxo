@@ -57,3 +57,6 @@ export {
 } from "./bookingManualSettlementOperationsV3";
 export {reconcileProviderEarningsBatchV3} from "./providerEarningsBackfillFunctions";
 export {getProviderLifetimeEarningsV3} from "./providerLifetimeEarningsFunctions";
+export {getAdminDashboardMetricsV3} from "./adminDashboardMetricsV3";
+
+export {synchronizeManualSettlementPayoutsV3} from "./bookingManualSettlementSchedulerV3";

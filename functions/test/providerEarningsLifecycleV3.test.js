@@ -34,6 +34,7 @@ test('payment reconciliation produces one provisional earning and replay cannot 
   }, {merge: true});
   await fixture.runReconciliation();
   const earning = fixture.firestore.store.get(`providerEarnings/${fixture.ids.bookingId}`);
+  require('./helpers/assertCanonicalEarning')(earning, fixture.ids.bookingId);
   assert.equal(earning.amountPaise, 0);
   assert.equal(earning.providerFinalEntitlementPaise, null);
   assert.ok(earning.providerProvisionalEntitlementPaise > 0);
@@ -42,4 +43,14 @@ test('payment reconciliation produces one provisional earning and replay cannot 
 });
 for (const amount of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) test(`invalid final entitlement ${amount} is rejected`, () => {
   assert.throws(() => buildProviderEarningsProjectionV3({entitlementPaise: amount, phase: 'FINALIZED', outcome: 'NORMAL_COMPLETION'}));
+});
+
+test('refund execution never creates a partial earnings projection', async()=>{
+  const db=new FakeFirestore({
+    'bookings/b':{providerId:'provider',lifecycle:{paidAt:new Date()},financials:{},payment:{razorpayPaymentId:'winner',status:'CONFIRMED'}},
+    'bookings/b/paymentAttempts/a':{razorpayPaymentId:'winner',amountPaise:100000,currency:'INR'},
+  });
+  await applyPaymentRefundEventV3({firestore:db,bookingId:'b',paymentAttemptId:'a',paymentId:'winner',
+    refundId:'refund',amountPaise:100,eventName:'refund.processed',now:new Date()});
+  assert.equal(db.store.has('providerEarnings/b'),false);
 });

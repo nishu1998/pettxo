@@ -1,3 +1,4 @@
+import {providerEarningsIdentityV3} from "./providerEarningsV3";
 import {buildCompletionEarningsProjectionV3, buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {Timestamp, type Firestore} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
@@ -1151,6 +1152,7 @@ export async function createBookingDisputeV3(params: {
       updatedAt: Timestamp.fromDate(authoritativeNow),
     }, {merge: true});
     transaction.set(providerEarningRef, {
+      ...providerEarningsIdentityV3(params.bookingId, booking, authoritativeNow),
       ...buildProviderEarningsProjectionV3({
         entitlementPaise: booking.financials?.providerPayoutPaise ?? 0,
         phase: "HELD", outcome: "OPEN_DISPUTE",
@@ -1388,11 +1390,17 @@ export async function finalizeCompletedBookingV3(params: {
       state: "COMPLETED_FINAL",
       stateQueryValue: "COMPLETED_FINAL",
       updatedAt: Timestamp.fromDate(finalizedAt),
-      "lifecycle.finalizedAt": Timestamp.fromDate(finalizedAt),
-      "payout.status": payoutEligibility.status,
-      "payout.eligibleAt": Timestamp.fromDate(finalizedAt),
-      "payout.providerPayoutPaise": booking.financials.providerPayoutPaise,
-      "audit.lastUpdatedBy": "system",
+      lifecycle: {
+        finalizedAt: Timestamp.fromDate(finalizedAt)
+      },
+      payout: {
+        status: payoutEligibility.status,
+        eligibleAt: Timestamp.fromDate(finalizedAt),
+        providerPayoutPaise: booking.financials.providerPayoutPaise
+      },
+      audit: {
+        lastUpdatedBy: "system"
+      }
     }, {merge: true});
     transaction.set(bookingFinancialRef, {
       status: payoutEligibility.status === "READY" ? "READY" : "HELD",
@@ -1402,6 +1410,7 @@ export async function finalizeCompletedBookingV3(params: {
       policyVersion: SERVICE_COMPLETION_POLICY_VERSION,
     }, {merge: true});
     transaction.set(providerEarningRef, {
+      ...providerEarningsIdentityV3(params.bookingId, booking, finalizedAt),
       ...buildCompletionEarningsProjectionV3(booking, true),
       status: payoutEligibility.status === "READY" ? "READY" : "HELD",
       eligibleAt:

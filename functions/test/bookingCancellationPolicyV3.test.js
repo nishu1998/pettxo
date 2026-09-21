@@ -275,7 +275,7 @@ test("prior refunds reduce the remaining refundable basis deterministically", ()
   const decision = decide({
     booking,
     requestedAt: "2026-07-23T11:59:59.999Z",
-    existingRefund: {refundAmountPaise: 20000},
+    existingRefund: {refundAmountPaise: 20000, state: "processed"},
   });
 
   assert.equal(decision.alreadyRefundedPaise, 20000);

@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../../core/services/firebase_resilience_service.dart';
 import '../mappers/booking_document_mapper.dart';
+import '../provider_earnings_diagnostics.dart';
 import '../../domain/models/booking_payment_order.dart';
 import '../../domain/models/canonical_booking_cancellation_models.dart';
 import '../../domain/models/canonical_booking_dispute_models.dart';
@@ -195,6 +196,9 @@ CanonicalBookingRequestException mapCanonicalBookingRequestFunctionsException(
     case 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD':
       code = CanonicalBookingRequestFailureCode.idempotencyConflict;
       break;
+    case 'SLOT_CAPACITY_UNAVAILABLE':
+      code = CanonicalBookingRequestFailureCode.slotCapacityUnavailable;
+      break;
     default:
       switch (error.code) {
         case 'unauthenticated':
@@ -242,6 +246,8 @@ String canonicalBookingRequestMessage(
       return 'This booking type is not available right now.';
     case CanonicalBookingRequestFailureCode.invalidSchedule:
       return 'Please review your selected schedule and try again.';
+    case CanonicalBookingRequestFailureCode.slotCapacityUnavailable:
+      return 'This time slot was just booked. Please choose another available time.';
     case CanonicalBookingRequestFailureCode.runwayNotSatisfied:
       return 'This schedule is too soon for the required booking window.';
     case CanonicalBookingRequestFailureCode.invalidTimezone:
@@ -1184,10 +1190,69 @@ class BookingRepository {
   /// Fetches a server snapshot for the signed-in provider's full history.
   /// Network/reconciliation errors propagate; never fall back to loaded rows.
   Future<ProviderEarningsSummary> getProviderEarningsSummary() async {
-    final result = await _functions
-        .httpsCallable('getProviderLifetimeEarningsV3')
-        .call<Map<String, dynamic>>();
-    return ProviderEarningsSummary.fromMap(result.data);
+    final providerId = Firebase.apps.isEmpty
+        ? null
+        : FirebaseAuth.instance.currentUser?.uid;
+    var responseReceived = false;
+    logProviderEarningsDiagnostic('Total', {
+      'providerId': providerId,
+      'requestType': 'callable',
+      'functionName': 'getProviderLifetimeEarningsV3',
+      'requestStarted': true,
+      'responseReceived': false,
+    });
+    try {
+      final result = await _functions
+          .httpsCallable('getProviderLifetimeEarningsV3')
+          .call<Map<String, dynamic>>();
+      responseReceived = true;
+      logProviderEarningsDiagnostic('Total', {
+        'providerId': providerId,
+        'responseReceived': true,
+      });
+      return ProviderEarningsSummary.fromMap(result.data);
+    } catch (error) {
+      logProviderEarningsDiagnostic('Total', {
+        'providerId': providerId,
+        'responseReceived': responseReceived,
+        ...providerEarningsErrorDiagnostic(error),
+      });
+      rethrow;
+    }
+  }
+
+  /// Customer-only projection; settlement commission and provider amounts are
+  /// deliberately excluded from the Booking Details read model.
+  Stream<int?> watchCanonicalCustomerRefundAmount(String bookingId) {
+    return _firestore
+        .collection('bookingFinancials')
+        .doc(bookingId)
+        .snapshots()
+        .map((snapshot) {
+          final amount = snapshot.data()?['customerRefundPaise'];
+          if (amount == null) return null;
+          if (amount is! num ||
+              !amount.isFinite ||
+              amount < 0 ||
+              amount != amount.truncateToDouble()) {
+            throw const FormatException('Invalid customer refund amount');
+          }
+          return amount.toInt();
+        });
+  }
+
+  Stream<ProviderEarningRecord?> watchCanonicalProviderEarning(
+    String bookingId,
+  ) {
+    return _firestore
+        .collection('providerEarnings')
+        .doc(bookingId)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.exists
+              ? ProviderEarningRecord.fromDocument(snapshot)
+              : null,
+        );
   }
 
   Stream<List<ProviderEarningRecord>> watchProviderEarnings(
@@ -1197,17 +1262,45 @@ class BookingRepository {
     final userId = currentUserId.trim();
     if (userId.isEmpty) return Stream.value(const []);
 
+    var snapshotReceived = false;
+    logProviderEarningsDiagnostic('History', {
+      'providerId': userId,
+      'queryStarted': true,
+      'collection': 'providerEarnings',
+      'filters': 'providerId == authenticatedUid',
+      'orderBy': 'createdAt DESC',
+      'limit': limit,
+      'snapshotReceived': false,
+    });
     return _firestore
         .collection('providerEarnings')
         .where('providerId', isEqualTo: userId)
         .orderBy('createdAt', descending: true)
         .limit(limit)
         .snapshots()
-        .map(
-          (snapshot) => snapshot.docs
+        .map((snapshot) {
+          snapshotReceived = true;
+          logProviderEarningsDiagnostic('History', {
+            'providerId': userId,
+            'snapshotReceived': true,
+            'documentCount': snapshot.docs.length,
+          });
+          return snapshot.docs
               .map(ProviderEarningRecord.fromDocument)
-              .toList(growable: false),
-        );
+              .toList(growable: false);
+        })
+        .handleError((Object error, StackTrace stack) {
+          logProviderEarningsDiagnostic('History', {
+            'providerId': userId,
+            'snapshotReceived': snapshotReceived,
+            ...providerEarningsErrorDiagnostic(error),
+            if (error is ProviderEarningFormatException) ...{
+              'documentId': error.documentId,
+              'invalidFields': error.invalidFields,
+            },
+          });
+          Error.throwWithStackTrace(error, stack);
+        });
   }
 
   Future<void> verifyBookingStartOtpV3({

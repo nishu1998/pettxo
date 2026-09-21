@@ -1,3 +1,7 @@
+import {continuousSlotDeadlineV3} from "../domain/continuousSlotScheduleV3";
+import {CONTINUOUS_LIFECYCLE_POLICY_V3, LIFECYCLE_RELEASE_BOUNDARIES_V3, legacyNoShowDeadlineCompatibleV3} from "../domain/lifecycleRolloutV3";
+import {providerEarningsIdentityV3} from "./providerEarningsV3";
+import {prepareManualSettlementSyncV3} from "./manualSettlementSyncV3";
 import {buildProviderEarningsProjectionV3} from "./providerEarningsV3";
 import {createHash, timingSafeEqual} from "node:crypto";
 
@@ -162,12 +166,6 @@ function asDate(value: unknown): Date | null {
   return null;
 }
 
-function asNonNegativeInteger(value: unknown): number | null {
-  return Number.isInteger(value) && (value as number) >= 0
-    ? value as number
-    : null;
-}
-
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -265,89 +263,8 @@ function resolveCanonicalSlotLifecycleDeadlineV3(params: {
     };
   }
 
-  const segmentEnds = (schedule.segments ?? [])
-    .map((segment) => asDate(segment.endAt))
-    .filter((value): value is Date => value != null);
-  const resolvedSegmentEnd =
-    segmentEnds.length > 0 ?
-      params.kind === "no_show" ?
-        segmentEnds.reduce((earliest, current) =>
-          current.getTime() < earliest.getTime() ? current : earliest) :
-        segmentEnds.reduce((latest, current) =>
-          current.getTime() > latest.getTime() ? current : latest) :
-      null;
-  const slotEnds = schedule.slots
-    .map((slot) => asDate(slot.endAt))
-    .filter((value): value is Date => value != null);
-  const firstValidSlotEnd = slotEnds.length > 0 ?
-    slotEnds.reduce((earliest, current) =>
-      current.getTime() < earliest.getTime() ? current : earliest) :
-    null;
-  const lastValidSlotEnd = slotEnds.length > 0 ?
-    slotEnds.reduce((latest, current) =>
-      current.getTime() > latest.getTime() ? current : latest) :
-    null;
-  const scheduledEndAt = asDate(schedule.scheduledEndAt);
-  const totalDurationMinutes = asNonNegativeInteger(schedule.totalDurationMinutes);
-  const derivedEndAt =
-    totalDurationMinutes != null && totalDurationMinutes > 0
-      ? new Date(scheduledStartAt.getTime() + totalDurationMinutes * 60 * 1000)
-      : null;
-  const additiveEnd =
-    params.kind === "no_show" ?
-      asDate(schedule.firstSegmentEndAt) :
-      asDate(schedule.finalEndAt);
-  const compatibilitySlotEnd =
-    params.kind === "no_show" ? firstValidSlotEnd : lastValidSlotEnd;
-
-  const candidates = [additiveEnd, resolvedSegmentEnd, scheduledEndAt, derivedEndAt]
-    .filter((value): value is Date => value != null);
-  if (candidates.length === 0) {
-    return {
-      code: "POLICY_NOT_CONFIGURED",
-      serviceAnchorAt: anchor,
-      expectedServiceEndAt: null,
-    };
-  }
-
-  const resolved =
-    additiveEnd ??
-    resolvedSegmentEnd ??
-    scheduledEndAt ??
-    derivedEndAt ??
-    null;
-  if (resolved == null) {
-    return {
-      code: "POLICY_NOT_CONFIGURED",
-      serviceAnchorAt: anchor,
-      expectedServiceEndAt: null,
-    };
-  }
-  if (resolved.getTime() <= scheduledStartAt.getTime()) {
-    return {
-      code: "INVALID_BOOKING_DATA",
-      serviceAnchorAt: anchor,
-      expectedServiceEndAt: null,
-    };
-  }
-  if (additiveEnd != null &&
-      resolvedSegmentEnd != null &&
-      additiveEnd.getTime() !== resolvedSegmentEnd.getTime()) {
-    return {
-      code: "INVALID_BOOKING_DATA",
-      serviceAnchorAt: anchor,
-      expectedServiceEndAt: null,
-    };
-  }
-  if (resolvedSegmentEnd != null &&
-      compatibilitySlotEnd != null &&
-      resolvedSegmentEnd.getTime() !== compatibilitySlotEnd.getTime()) {
-    return {
-      code: "INVALID_BOOKING_DATA",
-      serviceAnchorAt: anchor,
-      expectedServiceEndAt: null,
-    };
-  }
+  const resolved = continuousSlotDeadlineV3(schedule);
+  if (!resolved) return {code: "INVALID_BOOKING_DATA", serviceAnchorAt: anchor, expectedServiceEndAt: null};
 
   return {
     code: "RESOLVED",
@@ -881,10 +798,16 @@ export async function verifyBookingStartOtpV3(params: {
       transaction.set(bookingRef, {
         state: "IN_PROGRESS",
         stateQueryValue: "IN_PROGRESS",
-        "lifecycle.otpEnteredAt": Timestamp.fromDate(authoritativeNow),
+        lifecycle: {
+          otpEnteredAt: Timestamp.fromDate(authoritativeNow)
+        },
         updatedAt: FieldValue.serverTimestamp(),
-        "audit.lastUpdatedBy": "provider",
-        "privacy.otpVisibleToParent": false,
+        audit: {
+          lastUpdatedBy: "provider"
+        },
+        privacy: {
+          otpVisibleToParent: false
+        }
       }, {merge: true});
       transaction.set(bookingPrivateRef, {
         parentOtpCode: "",
@@ -974,6 +897,7 @@ export async function finalizeCanonicalNoShowV3(params: {
   firestore: Firestore;
   bookingId: string;
   authoritativeNow?: Date;
+  allowHistoricalRecovery?: boolean;
 }): Promise<NoShowEvaluationResult> {
   const authoritativeNow = params.authoritativeNow ?? new Date();
   const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
@@ -1020,6 +944,21 @@ export async function finalizeCanonicalNoShowV3(params: {
       return evaluation;
     }
 
+    // Unversioned multi-slot packages had different no-show semantics. Phase 2
+    // must explicitly authorize applying the corrected full-package deadline.
+    if (params.allowHistoricalRecovery !== true &&
+        booking.bookingType === "SLOT" && booking.schedule &&
+        (booking.schedule as CanonicalSlotScheduleV3).slots?.length > 1 &&
+        !legacyNoShowDeadlineCompatibleV3(booking.schedule as CanonicalSlotScheduleV3)) {
+      const boundary = (await transaction.get(params.firestore
+        .collection(LIFECYCLE_RELEASE_BOUNDARIES_V3).doc(params.bookingId))).data();
+      if (boundary?.policyVersion !== CONTINUOUS_LIFECYCLE_POLICY_V3 ||
+          boundary.bookingId !== params.bookingId || boundary.providerId !== booking.providerId ||
+          boundary.parentId !== booking.parentId) {
+        return {code: "NOT_DUE", serviceAnchorAt: asDate(serviceAnchorAt(booking)), expectedServiceEndAt: null};
+      }
+    }
+
     const expectedServiceEndAt = evaluation.expectedServiceEndAt;
     if (expectedServiceEndAt == null) {
       return {
@@ -1050,6 +989,11 @@ export async function finalizeCanonicalNoShowV3(params: {
       bookingId: params.bookingId,
     });
 
+    const settlementPlan = await prepareManualSettlementSyncV3({
+      firestore: params.firestore, transaction, bookingId: params.bookingId, now: authoritativeNow,
+      booking: {...booking, state: "NO_SHOW", payout: {...booking.payout,
+        eligibleAt: noShowRecord.disputeDeadlineAt}},
+    });
     transaction.set(bookingRef, {
       state: "NO_SHOW",
       stateQueryValue: "NO_SHOW",
@@ -1064,19 +1008,7 @@ export async function finalizeCanonicalNoShowV3(params: {
       privacy: {
         otpVisibleToParent: false,
       },
-      dispute: {
-        status: "none",
-        raisedAt: null,
-        raisedBy: null,
-        reasonCode: "",
-        description: "",
-        evidenceRefs: [],
-        resolvedAt: null,
-        resolvedBy: null,
-        resolution: "",
-        customerRefundPaise: 0,
-        providerReleasePaise: 0,
-      },
+      dispute: booking.dispute,
       payout: {
         status: "held",
         eligibleAt: Timestamp.fromDate(noShowRecord.disputeDeadlineAt),
@@ -1149,6 +1081,7 @@ export async function finalizeCanonicalNoShowV3(params: {
       updatedAt: FieldValue.serverTimestamp(),
     }, {merge: true});
     transaction.set(providerEarningRef, {
+      ...providerEarningsIdentityV3(params.bookingId, booking, authoritativeNow),
       ...buildProviderEarningsProjectionV3({
         entitlementPaise: allocation.providerCompensationPaise,
         phase: "FINALIZED", outcome: "NO_SHOW",
@@ -1174,6 +1107,7 @@ export async function finalizeCanonicalNoShowV3(params: {
       payoutHoldReason: "NO_SHOW_DISPUTE_WINDOW",
       updatedAt: FieldValue.serverTimestamp(),
     }, {merge: true});
+    settlementPlan.write();
     return {
       code: "FINALIZED_NO_SHOW",
       serviceAnchorAt: evaluation.serviceAnchorAt,
@@ -1186,79 +1120,109 @@ export async function reconcileCanonicalServiceStartArtifactsV3(params: {
   firestore: Firestore;
   bookingId: string;
   authoritativeNow?: Date;
+  allowHistoricalRecovery?: boolean;
 }): Promise<"NOOP" | "REPAIRED" | "NO_SHOW_FINALIZED"> {
   const authoritativeNow = params.authoritativeNow ?? new Date();
   const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
   const bookingPrivateRef = params.firestore.collection("bookingPrivate").doc(params.bookingId);
   const serviceStartRef = params.firestore.collection(BOOKING_SERVICE_STARTS_COLLECTION).doc(params.bookingId);
 
-  const [bookingSnapshot, bookingPrivateSnapshot, serviceStartSnapshot] =
-    await Promise.all([
-      bookingRef.get(),
-      bookingPrivateRef.get(),
-      serviceStartRef.get(),
+  const repair = await params.firestore.runTransaction(async (transaction) => {
+    const [bookingSnapshot, bookingPrivateSnapshot, serviceStartSnapshot] = await Promise.all([
+      transaction.get(bookingRef), transaction.get(bookingPrivateRef), transaction.get(serviceStartRef),
     ]);
-  if (!bookingSnapshot.exists) return "NOOP";
-  const booking = bookingSnapshot.data() as CanonicalBookingDocumentV3;
-
-  const bookingOtpEnteredAt = asDate(booking.lifecycle.otpEnteredAt);
-  if (booking.state === "IN_PROGRESS" && bookingOtpEnteredAt != null) {
-    const updates: Record<string, unknown> = {};
-    const bookingPrivate = bookingPrivateSnapshot.exists
-      ? (bookingPrivateSnapshot.data() as CanonicalBookingPrivateDocumentV3)
-      : null;
-    const normalizedServiceAnchorAt = asDate(serviceAnchorAt(booking));
-    const normalizedOtpGeneratedAt = asDate(booking.lifecycle.otpGeneratedAt);
-    if (bookingPrivate &&
-        (bookingPrivate.otpState !== "USED" ||
-          bookingPrivate.parentOtpCode.trim().length > 0 ||
-          bookingPrivate.providerOtpHash.trim().length > 0)) {
-      updates.bookingPrivate = {
-        parentOtpCode: "",
-        providerOtpHash: "",
-        otpState: "USED",
-        verifiedAt: Timestamp.fromDate(bookingOtpEnteredAt),
-        updatedAt: FieldValue.serverTimestamp(),
-      };
+    if (!bookingSnapshot.exists) return "NOOP" as const;
+    const raw = bookingSnapshot.data()!;
+    const booking = raw as CanonicalBookingDocumentV3;
+    const reject = (): never => {
+      throw new HttpsError("failed-precondition", "SERVICE_START_EVIDENCE_CONFLICT");
+    };
+    if (!booking.lifecycle || !booking.schedule || !booking.privacy ||
+        !booking.payment || typeof booking.payment.status !== "string" ||
+        !booking.dispute || typeof booking.dispute.status !== "string" ||
+        !["SLOT", "RANGE"].includes(booking.bookingType)) return reject();
+    if (booking.state !== "IN_PROGRESS") return "CHECK_NO_SHOW" as const;
+    const nested = booking.lifecycle?.otpEnteredAt;
+    let startedAt = asDate(nested);
+    const artifact = serviceStartSnapshot.data();
+    const literal = raw["lifecycle.otpEnteredAt"];
+    const privateData = bookingPrivateSnapshot.data();
+    if (booking.schemaVersion !== 3 || booking.bookingModelVersion !== "3.2" ||
+      booking.documentFormat !== "canonical_v3" || !hasAuthoritativeConfirmedBookingPaymentV3(booking)) return reject();
+    if (nested != null && startedAt == null) return reject();
+    if (!startedAt && !artifact) {
+      if (literal != null || privateData?.verifiedAt != null) return reject();
+      return "CHECK_NO_SHOW" as const;
     }
-    if (!serviceStartSnapshot.exists && normalizedServiceAnchorAt != null) {
-      updates.serviceStart = {
-        bookingId: params.bookingId,
-        providerId: booking.providerId,
-        parentId: booking.parentId,
-        serviceAnchorAt: Timestamp.fromDate(normalizedServiceAnchorAt),
-        verifiedAt: Timestamp.fromDate(bookingOtpEnteredAt),
-        otpGeneratedAt:
-          normalizedOtpGeneratedAt == null
-            ? null
-            : Timestamp.fromDate(normalizedOtpGeneratedAt),
-        otpVerifiedAt: Timestamp.fromDate(bookingOtpEnteredAt),
-        verificationAttemptId: "",
-        successfulAttemptNumber: 1,
-        priorFailedAttempts: 0,
-        stateBefore: "CONFIRMED",
-        stateAfter: "IN_PROGRESS",
-        policyVersion: SERVICE_START_POLICY_VERSION,
-        createdAt: Timestamp.fromDate(bookingOtpEnteredAt),
-        updatedAt: Timestamp.fromDate(bookingOtpEnteredAt),
-      };
+    if (nested == null && artifact) {
+      if (params.allowHistoricalRecovery !== true) return "NOOP" as const;
+      const conflicts = await Promise.all(["bookingNoShows", "bookingCancellations", "bookingServiceCompletions", "disputes"]
+        .map(collection => transaction.get(params.firestore.collection(collection).doc(params.bookingId))));
+      if (conflicts.some(snapshot => snapshot.exists)) return reject();
+      if (artifact.policyVersion !== SERVICE_START_POLICY_VERSION) return reject();
+      const deadline = resolveCanonicalCompletionAvailableAtV3({booking});
+      const verified = asDate(artifact.verifiedAt);
+      if (deadline.code !== "RESOLVED" || !verified || !deadline.expectedServiceEndAt ||
+        verified.getTime() > deadline.expectedServiceEndAt.getTime()) return reject();
     }
-    if (Object.keys(updates).length === 0) return "NOOP";
-    await params.firestore.runTransaction(async (transaction) => {
-      if (updates.bookingPrivate) {
-        transaction.set(bookingPrivateRef, updates.bookingPrivate, {merge: true});
-      }
-      if (updates.serviceStart) {
-        transaction.set(serviceStartRef, updates.serviceStart, {merge: true});
-      }
-    });
-    return "REPAIRED";
-  }
+    if (artifact) {
+      const verified = asDate(artifact.verifiedAt);
+      const otpVerified = asDate(artifact.otpVerifiedAt);
+      if (artifact.bookingId !== params.bookingId || artifact.providerId !== booking.providerId ||
+        artifact.parentId !== booking.parentId || artifact.stateBefore !== "CONFIRMED" ||
+        artifact.stateAfter !== "IN_PROGRESS" || verified == null || otpVerified == null ||
+        verified.getTime() !== otpVerified.getTime() ||
+        (startedAt != null && startedAt.getTime() !== verified.getTime())) return reject();
+      startedAt = verified;
+    }
+    if (!startedAt) return reject();
+    const paidAt = asDate(booking.lifecycle.paidAt);
+    if (!paidAt || startedAt.getTime() < paidAt.getTime() || startedAt.getTime() > authoritativeNow.getTime()) return reject();
+    if (literal != null && asDate(literal)?.getTime() !== startedAt.getTime()) return reject();
+    for (const field of ["completedAt", "serviceEndedAt", "finalizedAt", "noShowAt", "cancelledAt", "reviewWindowEndsAt"]) {
+      if ((booking.lifecycle as unknown as Record<string, unknown>)[field] != null || raw[`lifecycle.${field}`] != null) return reject();
+    }
+    if (!["", "none"].includes(booking.dispute.status.toLowerCase()) ||
+      (raw["dispute.status"] != null && !["", "none"].includes(String(raw["dispute.status"]).toLowerCase()))) return reject();
+    if (nested == null && privateData?.otpState != null && !["ACTIVE", "USED"].includes(privateData.otpState)) return reject();
+    if (privateData && (privateData.bookingId !== params.bookingId || privateData.providerId !== booking.providerId ||
+      privateData.parentId !== booking.parentId || (privateData.verifiedAt != null &&
+      asDate(privateData.verifiedAt)?.getTime() !== startedAt.getTime()))) return reject();
+    const anchor = asDate(serviceAnchorAt(booking));
+    if (!anchor || (artifact && asDate(artifact.serviceAnchorAt)?.getTime() !== anchor.getTime())) return reject();
+    let changed = false;
+    if (nested == null) {
+      transaction.set(bookingRef, {lifecycle: {otpEnteredAt: Timestamp.fromDate(startedAt)},
+        updatedAt: FieldValue.serverTimestamp()}, {merge: true});
+      changed = true;
+    }
+    if (privateData && (privateData.otpState !== "USED" || privateData.parentOtpCode || privateData.providerOtpHash)) {
+      transaction.set(bookingPrivateRef, {parentOtpCode: "", providerOtpHash: "", otpState: "USED",
+        verifiedAt: Timestamp.fromDate(startedAt), updatedAt: FieldValue.serverTimestamp()}, {merge: true});
+      changed = true;
+    }
+    if (!artifact) {
+      const generatedAt = asDate(booking.lifecycle.otpGeneratedAt);
+      transaction.set(serviceStartRef, {
+        bookingId: params.bookingId, providerId: booking.providerId, parentId: booking.parentId,
+        serviceAnchorAt: Timestamp.fromDate(anchor), verifiedAt: Timestamp.fromDate(startedAt),
+        otpGeneratedAt: generatedAt == null ? null : Timestamp.fromDate(generatedAt),
+        otpVerifiedAt: Timestamp.fromDate(startedAt), verificationAttemptId: "", successfulAttemptNumber: 1,
+        priorFailedAttempts: 0, stateBefore: "CONFIRMED", stateAfter: "IN_PROGRESS",
+        policyVersion: SERVICE_START_POLICY_VERSION, createdAt: Timestamp.fromDate(startedAt),
+        updatedAt: Timestamp.fromDate(startedAt),
+      }, {merge: true});
+      changed = true;
+    }
+    return changed ? "REPAIRED" as const : "NOOP" as const;
+  });
+  if (repair !== "CHECK_NO_SHOW") return repair;
 
   const finalized = await finalizeCanonicalNoShowV3({
     firestore: params.firestore,
     bookingId: params.bookingId,
     authoritativeNow,
+    allowHistoricalRecovery: params.allowHistoricalRecovery,
   });
   return finalized.code === "FINALIZED_NO_SHOW" ? "NO_SHOW_FINALIZED" : "NOOP";
 }

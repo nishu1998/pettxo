@@ -11,6 +11,7 @@ import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
 import '../../domain/models/service_slot_model.dart';
 import '../../domain/utils/booking_runway.dart';
+import '../../domain/utils/service_booking_horizon.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
 import 'canonical_booking_request_review_screen.dart';
 
@@ -24,6 +25,9 @@ class SlotSelectionScreen extends StatefulWidget {
   final DateTime? suggestedSlotStartAt;
   final String providerName;
   final String serviceImageUrl;
+  final BookingRepository? bookingRepository;
+  final DateTime Function()? nowOverride;
+  final bool Function(BuildContext)? bookingAccessCheckOverride;
 
   const SlotSelectionScreen({
     super.key,
@@ -36,6 +40,9 @@ class SlotSelectionScreen extends StatefulWidget {
     this.suggestedSlotStartAt,
     this.providerName = '',
     this.serviceImageUrl = '',
+    this.bookingRepository,
+    this.nowOverride,
+    this.bookingAccessCheckOverride,
   });
 
   @override
@@ -58,13 +65,13 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   @override
   void initState() {
     super.initState();
-    final now = DateTime.now();
-    final suggestedDate = widget.suggestedSlotStartAt?.toLocal();
-    final normalizedToday = DateTime(now.year, now.month, now.day);
+    final now = _authoritativeNow;
+    final suggestedDate = widget.suggestedSlotStartAt;
+    final normalizedToday = serviceBookingDate(now);
     final normalizedSuggested = suggestedDate == null
         ? null
-        : DateTime(suggestedDate.year, suggestedDate.month, suggestedDate.day);
-    final lastSelectableDate = normalizedToday.add(const Duration(days: 30));
+        : serviceBookingDate(suggestedDate);
+    final lastSelectableDate = lastServiceBookingDate(now);
     final canUseSuggestedDate =
         normalizedSuggested != null &&
         !normalizedSuggested.isBefore(normalizedToday) &&
@@ -73,9 +80,10 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!UserRestrictionService.instance.ensureCanUseBookingFeatures(
-        context,
-      )) {
+      final allowed =
+          widget.bookingAccessCheckOverride?.call(context) ??
+          UserRestrictionService.instance.ensureCanUseBookingFeatures(context);
+      if (!allowed) {
         Navigator.maybePop(context);
       }
     });
@@ -85,14 +93,12 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     });
   }
 
-  DateTime get _today {
-    final now = _authoritativeNow;
-    return DateTime(now.year, now.month, now.day);
-  }
+  DateTime get _today => serviceBookingDate(_authoritativeNow);
 
-  DateTime get _authoritativeNow => DateTime.now();
+  DateTime get _authoritativeNow =>
+      widget.nowOverride?.call() ?? DateTime.now();
 
-  DateTime get _lastSelectableDate => _today.add(const Duration(days: 30));
+  DateTime get _lastSelectableDate => lastServiceBookingDate(_authoritativeNow);
 
   String get _effectiveTimezone => 'Asia/Kolkata';
 
@@ -263,10 +269,11 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               ),
               const SizedBox(height: 12),
               StreamBuilder<List<ServiceSlotModel>>(
-                stream: BookingRepository().watchServiceSlotsForDate(
-                  serviceId: widget.serviceId,
-                  date: _selectedDate,
-                ),
+                stream: (widget.bookingRepository ?? BookingRepository())
+                    .watchServiceSlotsForDate(
+                      serviceId: widget.serviceId,
+                      date: _selectedDate,
+                    ),
                 builder: (context, snapshot) =>
                     _buildSlotSelector(context, snapshot),
               ),

@@ -7,6 +7,23 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 void main() {
   group('canonical booking request error mapping', () {
+    test('maps occupied slot rejection to a stable customer message', () {
+      final exception = mapCanonicalBookingRequestFunctionsException(
+        FirebaseFunctionsException(
+          code: 'failed-precondition',
+          message: 'slot unavailable',
+          details: const <String, dynamic>{'code': 'SLOT_CAPACITY_UNAVAILABLE'},
+        ),
+      );
+      expect(
+        exception.code,
+        CanonicalBookingRequestFailureCode.slotCapacityUnavailable,
+      );
+      expect(
+        exception.message,
+        'This time slot was just booked. Please choose another available time.',
+      );
+    });
     test('maps invalid timezone details to schedule verification guidance', () {
       final exception = mapCanonicalBookingRequestFunctionsException(
         FirebaseFunctionsException(
@@ -140,13 +157,27 @@ void main() {
         ),
       );
 
-      expect(
-        exception.code,
-        CanonicalPaymentFailureCode.paymentQrSwitchLocked,
-      );
+      expect(exception.code, CanonicalPaymentFailureCode.paymentQrSwitchLocked);
       expect(exception.lockUntil, isNotNull);
       expect(exception.activeAttemptId, 'attempt-qr-1');
       expect(exception.paymentRail, 'qr');
+    });
+
+    test('maps pre-payment capacity code to a useful fixed message', () {
+      final repository = BookingRepository();
+      final exception = repository.mapCanonicalPaymentFunctionsExceptionForTest(
+        FirebaseFunctionsException(
+          code: 'failed-precondition',
+          message: 'internal',
+          details: const <String, dynamic>{'code': 'CAPACITY_UNAVAILABLE'},
+        ),
+      );
+
+      expect(exception.code, CanonicalPaymentFailureCode.capacityUnavailable);
+      expect(
+        exception.message,
+        'One or more selected slots are no longer available. Please review your booking.',
+      );
     });
   });
 }

@@ -20,7 +20,7 @@ before(async () => {
 after(async () => { if (app) { await db.terminate(); await deleteApp(app); } });
 const read = providerId => summary({firestore: db, auth: {uid: providerId}});
 function booking(providerId) {
-  return {providerId, parentId: 'parent', serviceId: 'service', state: 'COMPLETED_FINAL',
+  return {schemaVersion:3,bookingModelVersion:'3.2',documentFormat:'canonical_v3',providerId, parentId: 'parent', serviceId: 'service', state: 'COMPLETED_FINAL',
     financials: {providerPayoutPaise: 85000, currency: 'INR'},
     lifecycle: {paidAt: at, finalizedAt: at}, payment: {razorpayPaymentId: 'winner', status: 'CONFIRMED'},
     dispute: {status: 'none'}, payout: {status: 'READY'}};
@@ -127,17 +127,16 @@ integration('Step 4 dry-run, apply and repeated historical rebuild feed the tota
   assert.equal((await run(false)).counts.unchanged, 1);
   assert.equal((await read(providerId)).lifetimeEarnedPaise, 85000);
 });
-integration('Step 4 ownership repair moves the amount safely and idempotently', async () => {
+integration('ownership conflict remains quarantined and totals fail closed', async () => {
   const {providerId, earning, ids} = await seed([85000]);
   const wrong = `${providerId}-wrong`;
   await earning.update({providerId: wrong});
   await assert.rejects(read(wrong), {code: 'failed-precondition'});
   await assert.rejects(read(providerId), {code: 'failed-precondition'});
   const run = () => reconcile({firestore: db, auth: {uid: 'admin'}, input: {dryRun: false, ids}});
-  assert.equal((await run()).counts.updated, 1);
-  assert.equal((await read(wrong)).lifetimeEarnedPaise, 0);
-  assert.equal((await read(providerId)).lifetimeEarnedPaise, 85000);
-  assert.equal((await run()).counts.unchanged, 1);
+  assert.equal((await run()).items[0].errorCategory, 'PROVIDER_MISMATCH');
+  assert.equal((await earning.get()).data().providerId, wrong);
+  await assert.rejects(read(providerId), {code:'failed-precondition'});
 });
 integration('authentication, ownership and financial admin authorization', async () => {
   const {providerId} = await seed([85000]);

@@ -62,3 +62,14 @@ export function buildCompletionEarningsProjectionV3(
     outcome: refundNeedsReview ? "CANONICAL_REFUND_REVIEW" : finalized ? "NORMAL_COMPLETION" : "COMPLETION_REVIEW",
   });
 }
+
+/** Complete identity/history metadata even if an older booking has no projection.
+ * Creation time is persisted payment evidence, never the migration/current time. */
+export function providerEarningsIdentityV3(bookingId: string,
+  booking: {providerId: string; lifecycle?: {paidAt?: unknown}}, outcomeAt: unknown) {
+  const paidAt = booking.lifecycle?.paidAt;
+  if (!bookingId || !booking.providerId || !paidAt) {
+    throw new HttpsError("failed-precondition", "Missing canonical earnings identity/payment evidence.");
+  }
+  return {bookingId, providerId: booking.providerId, createdAt: paidAt, earningsOutcomeAt: outcomeAt};
+}

@@ -1,3 +1,4 @@
+import 'package:pettexo/features/bookings/domain/models/provider_earning_record.dart';
 import 'dart:async';
 
 import 'package:cloud_functions/cloud_functions.dart';
@@ -247,10 +248,10 @@ void main() {
           privateController: privateController,
         );
 
-        expect(find.text('No Show'), findsOneWidget);
+        expect(find.text('No-show'), findsOneWidget);
         expect(
           find.text(
-            'The service window ended before OTP verification, so this booking was marked as no-show.',
+            'The service window ended without the required OTP verification.',
           ),
           findsOneWidget,
         );
@@ -287,6 +288,152 @@ void main() {
         );
       },
     );
+
+    for (final provider in [false, true]) {
+      testWidgets(
+        'stale in-progress no-show has role-isolated finances: $provider',
+        (tester) async {
+          bookingRepository.booking = _buildOverdueConfirmedBooking(
+            state: CanonicalBookingStateV3.inProgress,
+          );
+          bookingRepository.earningRecord = ProviderEarningRecord.fromMap(
+            'booking-1',
+            {
+              'bookingId': 'booking-1', 'providerId': 'provider-1',
+              'earningsSchemaVersion': 1, 'earningsStatus': 'FINALIZED',
+              'earningsOutcome': 'NO_SHOW',
+              'providerFinalEntitlementPaise': 85000,
+              'status': 'HELD',
+              // Pricing inputs must never replace the canonical entitlement.
+              'customerPaidPaise': 90000, 'serviceSubtotalPaise': 100000,
+            },
+          );
+          await _pumpScreen(
+            tester,
+            bookingRepository: bookingRepository,
+            privateController: CanonicalBookingPrivateController(
+              privateLoader: (_) => const Stream.empty(),
+            ),
+            currentUserIdOverride: provider ? 'provider-1' : 'parent-1',
+          );
+          expect(find.text('No-show'), findsOneWidget);
+          expect(find.text('Service In Progress'), findsNothing);
+          expect(
+            find.textContaining('OTP has been verified successfully'),
+            findsNothing,
+          );
+          await _scrollUntilTextVisible(
+            tester,
+            provider ? 'Your earnings' : 'Refund status',
+          );
+          if (provider) {
+            expect(find.text('₹850.00'), findsOneWidget);
+            expect(find.text('Earned'), findsOneWidget);
+            expect(find.text('On hold'), findsOneWidget);
+            expect(find.text('Refund'), findsNothing);
+            expect(bookingRepository.customerFinancialReads, 0);
+          } else {
+            expect(find.text('₹0.00'), findsOneWidget);
+            expect(find.text('No refund'), findsOneWidget);
+            expect(find.text('Your earnings'), findsNothing);
+            expect(find.text('Payout status'), findsNothing);
+            expect(bookingRepository.providerEarningReads, 0);
+          }
+          await _scrollUntilTextVisible(tester, 'CANCELLATION');
+          expect(find.text('IMPORTANT INFORMATION'), findsNothing);
+          expect(find.text('Service already started'), findsNothing);
+          expect(
+            find.textContaining('because the service has already started'),
+            findsNothing,
+          );
+          expect(find.text('Complete service'), findsNothing);
+          expect(find.text('Enter customer OTP'), findsNothing);
+        },
+      );
+    }
+
+    for (final scope in ['EXCESS', 'AUTHORITATIVE', 'UNKNOWN']) {
+      testWidgets(
+        'no-show settlement excludes generic 190 paise refund: $scope',
+        (tester) async {
+          bookingRepository.booking = _buildRawNoShowBooking();
+          bookingRepository.customerRefundAmount = 0;
+          bookingRepository.refundRecord =
+              CanonicalBookingRefundRecord.fromMap({
+                'bookingId': 'booking-1',
+                'refundAmountPaise': 190,
+                'state': 'processed',
+                'scope': scope,
+                'razorpayPaymentId': 'unrelated-payment',
+              });
+          await _pumpScreen(
+            tester,
+            bookingRepository: bookingRepository,
+            privateController: CanonicalBookingPrivateController(
+              privateLoader: (_) => const Stream.empty(),
+            ),
+          );
+          await _scrollUntilTextVisible(tester, 'Refund status');
+          expect(find.text('₹0.00'), findsOneWidget);
+          expect(find.text('No refund'), findsOneWidget);
+          expect(find.text('₹1.90'), findsNothing);
+          expect(find.text('Refunded'), findsNothing);
+          expect(find.text('Payout status'), findsNothing);
+        },
+      );
+    }
+
+    testWidgets('no-show reads canonical allocation without inventing zero', (
+      tester,
+    ) async {
+      bookingRepository.booking = _buildRawNoShowBooking();
+      bookingRepository.customerRefundAmount = 190;
+      await _pumpScreen(
+        tester,
+        bookingRepository: bookingRepository,
+        privateController: CanonicalBookingPrivateController(
+          privateLoader: (_) => const Stream.empty(),
+        ),
+      );
+      await _scrollUntilTextVisible(tester, 'Refund status');
+      expect(find.text('₹1.90'), findsOneWidget);
+      expect(find.text('Refund approved'), findsOneWidget);
+      expect(find.text('Refunded'), findsNothing);
+    });
+
+    for (final missing in [true, false]) {
+      testWidgets(
+        'no-show missing or provisional earning remains truthful: $missing',
+        (tester) async {
+          bookingRepository.booking = _buildRawNoShowBooking();
+          bookingRepository.earningRecord = missing
+              ? null
+              : ProviderEarningRecord.fromMap('booking-1', {
+                  'bookingId': 'booking-1',
+                  'providerId': 'provider-1',
+                  'earningsSchemaVersion': 1,
+                  'earningsStatus': 'PROVISIONAL',
+                  'earningsOutcome': 'PAYMENT_CONFIRMED',
+                  'providerFinalEntitlementPaise': null,
+                  'providerProvisionalEntitlementPaise': 85000,
+                  'status': 'HELD',
+                });
+          await _pumpScreen(
+            tester,
+            bookingRepository: bookingRepository,
+            currentUserIdOverride: 'provider-1',
+            privateController: CanonicalBookingPrivateController(
+              privateLoader: (_) => const Stream.empty(),
+            ),
+          );
+          await _scrollUntilTextVisible(tester, 'Your earnings');
+          expect(find.text('Awaiting finalization'), findsOneWidget);
+          expect(find.text('₹850.00'), findsNothing);
+          expect(find.text('Refund status'), findsNothing);
+          expect(bookingRepository.customerFinancialReads, 0);
+        },
+      );
+    }
 
     testWidgets(
       'raw no-show customer booking also hides OTP section and uses persisted no-show time',
@@ -822,60 +969,22 @@ void main() {
     );
 
     testWidgets(
-      'provider completion success stops spinner after booking moves to completed pending review',
+      'elapsed verified service presents completion without stale service controls',
       (tester) async {
-        bookingRepository.booking = _buildInProgressBooking();
-        bookingRepository.bookingStreamController =
-            StreamController<BookingReadModel?>.broadcast();
-        bookingRepository.emitBooking(_buildInProgressBooking());
-        final completionStarted = Completer<void>();
-        final allowCompletion = Completer<void>();
-        bookingRepository.onCompleteBookingService = () async {
-          completionStarted.complete();
-          await allowCompletion.future;
-          bookingRepository.booking = _buildCompletedPendingReviewBooking();
-          bookingRepository.emitBooking(_buildCompletedPendingReviewBooking());
-        };
-        final privateController = CanonicalBookingPrivateController(
-          privateLoader: (_) =>
-              Stream.value(_buildPrivateOtpData(otpState: 'USED')),
-        );
-
+        bookingRepository.booking = _buildInProgressBooking(elapsed: true);
         await _pumpScreen(
           tester,
           bookingRepository: bookingRepository,
-          privateController: privateController,
+          privateController: CanonicalBookingPrivateController(
+            privateLoader: (_) =>
+                Stream.value(_buildPrivateOtpData(otpState: 'USED')),
+          ),
           currentUserIdOverride: 'provider-1',
         );
-
-        await _scrollToProviderStartSection(
-          tester,
-          actionText: 'Complete service',
-        );
-        expect(find.text('Complete service'), findsOneWidget);
-
-        await tester.tap(find.text('Complete service'));
-        await tester.pump();
-        await completionStarted.future;
-        expect(
-          find.byWidgetPredicate(
-            (widget) =>
-                widget is CircularProgressIndicator &&
-                widget.valueColor is AlwaysStoppedAnimation<Color>,
-          ),
-          findsOneWidget,
-        );
+        expect(find.text('Service In Progress'), findsNothing);
         expect(find.text('Complete service'), findsNothing);
-
-        allowCompletion.complete();
-        await tester.pumpAndSettle();
-
-        expect(find.byType(CircularProgressIndicator), findsNothing);
-        expect(find.text('Complete service'), findsNothing);
-        expect(
-          bookingRepository.booking?.state,
-          CanonicalBookingStateV3.completedPendingReview,
-        );
+        expect(find.text('No-show'), findsNothing);
+        expect(bookingRepository.completeBookingServiceCallCount, 0);
       },
     );
 
@@ -1564,6 +1673,25 @@ Future<void> _pumpScreen(
 }
 
 class _FakeBookingRepository extends BookingRepository {
+  int? customerRefundAmount = 0;
+  int customerFinancialReads = 0;
+  int providerEarningReads = 0;
+  ProviderEarningRecord? earningRecord;
+
+  @override
+  Stream<int?> watchCanonicalCustomerRefundAmount(String bookingId) {
+    customerFinancialReads++;
+    return Stream.value(customerRefundAmount);
+  }
+
+  @override
+  Stream<ProviderEarningRecord?> watchCanonicalProviderEarning(
+    String bookingId,
+  ) {
+    providerEarningReads++;
+    return Stream.value(earningRecord);
+  }
+
   CanonicalBookingDocumentV3? booking;
   CanonicalBookingPrivateParticipantsData? participantPrivateData;
   CanonicalBookingDisputeRecord? disputeRecord;
@@ -2085,7 +2213,9 @@ CanonicalBookingDocumentV3 _buildMalformedSlotConfirmedBooking() {
   );
 }
 
-CanonicalBookingDocumentV3 _buildOverdueConfirmedBooking() {
+CanonicalBookingDocumentV3 _buildOverdueConfirmedBooking({
+  CanonicalBookingStateV3 state = CanonicalBookingStateV3.confirmed,
+}) {
   final scheduledStartAt = _futureFixtureUtc(
     daysFromNow: -2,
     hour: 3,
@@ -2093,6 +2223,7 @@ CanonicalBookingDocumentV3 _buildOverdueConfirmedBooking() {
   );
   final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
   return _buildConfirmedBookingDocument(
+    state: state,
     bookingType: BookingV3Type.slot,
     service: const BookingServiceSnapshotV3(
       serviceId: 'service-1',
@@ -2413,12 +2544,17 @@ CanonicalBookingDocumentV3 _buildRawNoShowBooking() {
   );
 }
 
-CanonicalBookingDocumentV3 _buildInProgressBooking({DateTime? otpEnteredAt}) {
-  final scheduledStartAt = DateTime.utc(2026, 7, 28, 3, 30);
-  final scheduledEndAt = DateTime.utc(2026, 7, 28, 4, 30);
+CanonicalBookingDocumentV3 _buildInProgressBooking({
+  DateTime? otpEnteredAt,
+  bool elapsed = false,
+}) {
+  final scheduledStartAt = DateTime.now().toUtc().subtract(
+    Duration(minutes: elapsed ? 90 : 30),
+  );
+  final scheduledEndAt = scheduledStartAt.add(const Duration(hours: 1));
   final paidAt = DateTime.utc(2026, 7, 27, 8, 0);
   final effectiveOtpEnteredAt =
-      otpEnteredAt ?? DateTime.utc(2026, 7, 28, 3, 35);
+      otpEnteredAt ?? scheduledStartAt.add(const Duration(minutes: 5));
 
   return CanonicalBookingDocumentV3(
     schemaVersion: canonicalBookingSchemaVersion,

@@ -1858,6 +1858,32 @@ export async function persistFinalizePaymentResultV3(params: {
       )) : null;
     const existingInstruction = instructionRef ? await transaction.get(instructionRef) : null;
     if (params.result.ok) {
+      // Finalization computes a proposal from an earlier occupancy read. Recheck
+      // the claim inside the write transaction so two captured payments cannot
+      // both commit against the same last unit between those two steps.
+      if (params.result.booking.bookingType === "SLOT") {
+        for (const [path, proposed] of Object.entries(params.result.occupancyWrites)) {
+          const current = (await transaction.get(pathToDoc(params.firestore, path))).data();
+          const currentClaims = asRecord(current?.bookingClaims);
+          const proposedClaims = asRecord(proposed.bookingClaims);
+          const currentOther = {...currentClaims};
+          const proposedOther = {...proposedClaims};
+          delete currentOther[params.bookingId];
+          delete proposedOther[params.bookingId];
+          const currentUnits = asInt(current?.confirmedUnits, 0);
+          const currentOwn = asInt(currentClaims[params.bookingId], 0);
+          if (currentUnits - currentOwn + 1 !== asInt(proposed.confirmedUnits, -1) ||
+            JSON.stringify(currentOther) !== JSON.stringify(proposedOther) ||
+            (current && asInt(current.capacitySnapshot, -1) !== asInt(proposed.capacitySnapshot, -2))) {
+            throw new HttpsError("aborted", "Capacity changed during payment confirmation.",
+              {code: "CAPACITY_CHANGED_DURING_FINALIZATION"});
+          }
+        }
+      }
+      const slotProjectionReads = params.result.booking.bookingType === "SLOT" ?
+        await Promise.all(slotSchedule(params.result.booking).slots.map((slot) => transaction.get(
+          params.firestore.doc(`services/${params.result.booking.serviceId}/slots/${slot.slotId}`),
+        ))) : [];
       if (params.result.couponWrite) {
         await consumeOfferUsageInTransaction({
           firestore: params.firestore,
@@ -1899,6 +1925,18 @@ export async function persistFinalizePaymentResultV3(params: {
       }
       for (const [path, data] of Object.entries(params.result.occupancyWrites)) {
         transaction.set(pathToDoc(params.firestore, path), data, {merge: true});
+      }
+      // Customer listeners read services/.../slots. Keep its acceptedCount
+      // projection in the same commit as the authoritative occupancy claim.
+      for (const snapshot of slotProjectionReads) {
+        if (!snapshot.exists) continue;
+        const occupied = params.result.occupancyWrites[slotOccupancyPath(
+          params.result.booking.serviceId, snapshot.id)];
+        if (!occupied) continue;
+        transaction.set(snapshot.ref, {
+          acceptedCount: occupied.confirmedUnits,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
       }
       transaction.set(params.firestore.collection("bookingFinancials").doc(params.bookingId), params.result.financialWrites.bookingFinancial, {merge: true});
       transaction.set(params.firestore.collection("payments").doc(params.bookingId), params.result.financialWrites.payment, {merge: true});
@@ -2257,6 +2295,7 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
   keyId?: string;
   keySecret?: string;
   authoritativeNow?: Date;
+  capacityRetryCount?: number;
 }): Promise<FinalizePaymentResult> {
   const authoritativeNow = params.authoritativeNow ?? new Date();
   const bookingRef = params.firestore.collection("bookings").doc(params.facts.bookingId);
@@ -2349,11 +2388,20 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     verificationSource: params.facts.verificationSource,
   });
 
-  await persistFinalizePaymentResultV3({
-    firestore: params.firestore,
-    result,
-    bookingId: params.facts.bookingId,
-  });
+  try {
+    await persistFinalizePaymentResultV3({
+      firestore: params.firestore,
+      result,
+      bookingId: params.facts.bookingId,
+    });
+  } catch (error) {
+    if (error instanceof HttpsError && error.code === "aborted" &&
+      (error.details as {code?: string} | undefined)?.code === "CAPACITY_CHANGED_DURING_FINALIZATION" &&
+      (params.capacityRetryCount ?? 0) < 3) {
+      return finalizeCapturedCanonicalPaymentV3({...params, capacityRetryCount: (params.capacityRetryCount ?? 0) + 1});
+    }
+    throw error;
+  }
   if (!result.ok &&
     result.refundInstruction &&
     params.facts.razorpayPaymentId &&

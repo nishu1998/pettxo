@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/repositories/booking_repository.dart';
+import '../../data/provider_earnings_diagnostics.dart';
 import '../../domain/models/provider_earning_record.dart';
 import '../../domain/models/provider_earnings_summary.dart';
 import '../utils/provider_earnings_presentation.dart';
@@ -87,6 +88,11 @@ class _EarningsContentState extends State<_EarningsContent> {
           (rows) {
             if (!mounted) return;
             if (rows.any((row) => row.providerId != widget.uid)) {
+              logProviderEarningsDiagnostic('History', {
+                'providerId': widget.uid,
+                'stage': 'identity-validation',
+                'message': 'Provider identity mismatch',
+              });
               setState(() {
                 _historyError = true;
                 _history = null;
@@ -99,6 +105,11 @@ class _EarningsContentState extends State<_EarningsContent> {
             });
           },
           onError: (Object error) {
+            logProviderEarningsDiagnostic('History', {
+              'providerId': widget.uid,
+              'stage': 'subscription',
+              ...providerEarningsErrorDiagnostic(error),
+            });
             if (mounted) {
               setState(() {
                 _historyError = true;
@@ -110,8 +121,21 @@ class _EarningsContentState extends State<_EarningsContent> {
   }
 
   Future<void> _loadSummary() async {
+    var summaryReceived = false;
+    logProviderEarningsDiagnostic('Total', {
+      'providerId': widget.uid,
+      'requestType': 'callable',
+      'functionName': 'getProviderLifetimeEarningsV3',
+      'requestStarted': true,
+      'summaryReceived': false,
+    });
     try {
       final result = await widget.repository.getProviderEarningsSummary();
+      summaryReceived = true;
+      logProviderEarningsDiagnostic('Total', {
+        'providerId': widget.uid,
+        'summaryReceived': true,
+      });
       if (result.providerId != widget.uid) {
         throw const FormatException('Account changed');
       }
@@ -121,7 +145,12 @@ class _EarningsContentState extends State<_EarningsContent> {
           _summaryError = false;
         });
       }
-    } catch (_) {
+    } catch (error) {
+      logProviderEarningsDiagnostic('Total', {
+        'providerId': widget.uid,
+        'summaryReceived': summaryReceived,
+        ...providerEarningsErrorDiagnostic(error),
+      });
       if (mounted) {
         setState(() {
           _summary = null;
@@ -141,16 +170,25 @@ class _EarningsContentState extends State<_EarningsContent> {
       _summaryLoading = true;
       _summaryError = false;
     });
-    if (_historyError) {
-      await _historySubscription?.cancel();
-      if (!mounted) return;
-      setState(() {
-        _historyError = false;
-        _history = null;
-      });
-      _listenToHistory();
-    }
     await _loadSummary();
+  }
+
+  Future<void>? _historyRetry;
+  Future<void> _retryHistory() => _historyRetry ??= _restartHistory()
+      .whenComplete(() => _historyRetry = null);
+
+  Future<void> _restartHistory() async {
+    await _historySubscription?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _historyError = false;
+      _history = null;
+    });
+    _listenToHistory();
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([_refresh(), if (_historyError) _retryHistory()]);
   }
 
   @override
@@ -169,14 +207,14 @@ class _EarningsContentState extends State<_EarningsContent> {
         actions: [
           IconButton(
             tooltip: 'Refresh earnings',
-            onPressed: _refresh,
+            onPressed: _refreshAll,
             icon: const Icon(Icons.refresh),
           ),
         ],
       ),
       body: SafeArea(
         child: RefreshIndicator(
-          onRefresh: _refresh,
+          onRefresh: _refreshAll,
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(18),
@@ -195,6 +233,7 @@ class _EarningsContentState extends State<_EarningsContent> {
                         _retry(
                           'We couldn’t load your lifetime earnings.',
                           'Retry total',
+                          _refresh,
                         )
                       else if (_summary != null) ...[
                         // Wrapping preserves the entire amount at large text scales.
@@ -228,6 +267,7 @@ class _EarningsContentState extends State<_EarningsContent> {
                 _retry(
                   'We couldn’t load your earnings history.',
                   'Retry history',
+                  _retryHistory,
                 )
               else if (rows == null)
                 if (_summaryLoading)
@@ -276,11 +316,11 @@ class _EarningsContentState extends State<_EarningsContent> {
     ),
   );
 
-  Widget _retry(String message, String label) => Column(
+  Widget _retry(String message, String label, VoidCallback onRetry) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text(message),
-      TextButton(onPressed: _refresh, child: Text(label)),
+      TextButton(onPressed: onRetry, child: Text(label)),
     ],
   );
 

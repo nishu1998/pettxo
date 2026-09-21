@@ -43,13 +43,8 @@ import {
   normalizeProviderVerificationDocumentPath,
   providerVerificationDocumentPathBelongsToUser,
 } from "./providerVerificationDocuments";
-import {
-  generateSlotWindows,
-  normalizeServiceSchedulingMode,
-  resolveSessionDurationMinutes,
-  SERVICE_SCHEDULING_MODE_DAY_CARE,
-  SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS,
-} from "./serviceScheduling";
+import {serviceSlotConfigChanged} from "./services/serviceSlotCandidates";
+import {ensureServiceSlotCoverage} from "./services/serviceSlotCoverage";
 import {
   normalizeOfferAudienceInput,
   type OfferAudience,
@@ -58,11 +53,6 @@ import {
   sanitizeOfferCampaignMutationInput,
 } from "./offers/application/offerAdminContract";
 import {db, messaging, storage} from "./shared/firebase";
-const istOffsetMinutes = 330;
-const slotGenerationDays = 30;
-const minuteMs = 60 * 1000;
-const hourMs = 60 * minuteMs;
-const minimumBookingLeadMs = hourMs;
 const defaultPushChannelId = "pettxo_general_notifications";
 const chatPushChannelId = "pettxo_chat_messages";
 const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
@@ -469,171 +459,6 @@ function assertAllowedOfferKeys(
 function toInt(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
-}
-
-function dateKey(year: number, month: number, day: number): string {
-  return `${year.toString().padStart(4, "0")}-${month
-    .toString()
-    .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-}
-
-function localMidnightUtcMs(year: number, month: number, day: number): number {
-  return Date.UTC(year, month - 1, day, 0, 0, 0, 0) - istOffsetMinutes * 60 * 1000;
-}
-
-function localDatePartsFromUtcMs(utcMs: number): {
-  year: number;
-  month: number;
-  day: number;
-  weekday: string;
-} {
-  const local = new Date(utcMs + istOffsetMinutes * 60 * 1000);
-  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  return {
-    year: local.getUTCFullYear(),
-    month: local.getUTCMonth() + 1,
-    day: local.getUTCDate(),
-    weekday: weekdays[local.getUTCDay()],
-  };
-}
-
-function serviceSlotConfigChanged(
-  before: DocumentData | undefined,
-  after: DocumentData,
-): boolean {
-  if (!before) return true;
-  const keys = [
-    "ownerUserId",
-    "schedulingMode",
-    "sessionDurationMinutes",
-    "capacity",
-    "availableDays",
-    "startMinutes",
-    "endMinutes",
-    "status",
-    "isActive",
-    "isDeleted",
-    "isPaused",
-    "isVisibleToMarketplace",
-  ];
-  return keys.some((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
-}
-
-async function commitBatches(
-  batches: WriteBatch[],
-): Promise<void> {
-  for (const batch of batches) {
-    await batch.commit();
-  }
-}
-
-async function regenerateServiceSlots(
-  serviceId: string,
-  service: DocumentData,
-): Promise<void> {
-  const slotsRef = db.collection("services").doc(serviceId).collection("slots");
-  const now = Date.now();
-  const existing = await slotsRef
-    .where("startAt", ">=", Timestamp.fromMillis(now))
-    .get();
-
-  const batches: WriteBatch[] = [];
-  let batch = db.batch();
-  let writes = 0;
-
-  const queue = (
-    action: (targetBatch: WriteBatch) => void,
-  ): void => {
-    action(batch);
-    writes += 1;
-    if (writes >= 450) {
-      batches.push(batch);
-      batch = db.batch();
-      writes = 0;
-    }
-  };
-
-  for (const doc of existing.docs) {
-    const acceptedCount = toInt(doc.data().acceptedCount, 0);
-    if (acceptedCount <= 0) {
-      queue((targetBatch) => targetBatch.delete(doc.ref));
-    }
-  }
-
-  const isServiceBookable =
-    service.status === "active" &&
-    service.isActive === true &&
-    service.isDeleted !== true &&
-    service.isPaused !== true &&
-    service.isVisibleToMarketplace === true;
-
-  if (isServiceBookable) {
-    const schedulingMode = normalizeServiceSchedulingMode(service);
-    const durationMinutes = resolveSessionDurationMinutes(service);
-    const capacity = Math.max(toInt(service.capacity, 1), 1);
-    const selectedDays = new Set(
-      Array.isArray(service.availableDays) ? service.availableDays.map(String) : [],
-    );
-    const startMinutes = Math.max(toInt(service.startMinutes, 0), 0);
-    const endMinutes = Math.min(toInt(service.endMinutes, 24 * 60), 24 * 60);
-    const today = localDatePartsFromUtcMs(now);
-    const todayMidnight = localMidnightUtcMs(today.year, today.month, today.day);
-
-    if (selectedDays.size > 0 && durationMinutes > 0) {
-      for (let dayOffset = 0; dayOffset < slotGenerationDays; dayOffset += 1) {
-        const dayUtcMs = todayMidnight + dayOffset * 24 * 60 * 60 * 1000;
-        const parts = localDatePartsFromUtcMs(dayUtcMs);
-        if (!selectedDays.has(parts.weekday)) continue;
-
-        const key = dateKey(parts.year, parts.month, parts.day);
-        const slotWindows = generateSlotWindows({
-          schedulingMode,
-          sessionDurationMinutes: durationMinutes,
-          startMinutes,
-          endMinutes,
-        });
-        for (const slotWindow of slotWindows) {
-          const slotStartMs = dayUtcMs + slotWindow.startMinutes * 60 * 1000;
-          const slotEndMs = schedulingMode === SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS ?
-            slotStartMs + slotWindow.durationMinutes * 60 * 1000 :
-            slotWindow.endMinutes > slotWindow.startMinutes ?
-              dayUtcMs + slotWindow.endMinutes * 60 * 1000 :
-              slotStartMs + slotWindow.durationMinutes * 60 * 1000;
-          const slotId = schedulingMode === SERVICE_SCHEDULING_MODE_DAY_CARE ?
-            `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.endMinutes.toString().padStart(4, "0")}` :
-            schedulingMode === SERVICE_SCHEDULING_MODE_TWENTY_FOUR_HOURS ?
-              `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.durationMinutes.toString().padStart(4, "0")}` :
-              slotWindow.endMinutes < slotWindow.startMinutes ?
-                `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}_${slotWindow.endMinutes.toString().padStart(4, "0")}` :
-                `${key}_${slotWindow.startMinutes.toString().padStart(4, "0")}`;
-          const slotRef = slotsRef.doc(slotId);
-          queue((targetBatch) =>
-            targetBatch.set(slotRef, {
-              serviceId,
-              serviceOwnerId: service.ownerUserId ?? "",
-              startAt: Timestamp.fromMillis(slotStartMs),
-              endAt: Timestamp.fromMillis(slotEndMs),
-              dateKey: key,
-              serviceDateKey: key,
-              startMinutes: slotWindow.startMinutes,
-              endMinutes: slotWindow.endMinutes,
-              durationMinutes: slotWindow.durationMinutes,
-              capacity,
-              acceptedCount: 0,
-              isBookable: slotStartMs - now >= minimumBookingLeadMs,
-              status: slotStartMs - now >= minimumBookingLeadMs ? "open" : "closed",
-              timezone: "Asia/Kolkata",
-              generatedAt: FieldValue.serverTimestamp(),
-              updatedAt: FieldValue.serverTimestamp(),
-            }),
-          );
-        }
-      }
-    }
-  }
-
-  if (writes > 0) batches.push(batch);
-  await commitBatches(batches);
 }
 
 function safeText(value: unknown, fallback: string): string {
@@ -3227,7 +3052,8 @@ export const enqueueServiceModeration = onDocumentCreated(
 export const syncServiceSlots = onDocumentWritten(
   {
     document: "services/{serviceId}",
-    timeoutSeconds: 120,
+    retry: true,
+    timeoutSeconds: 540,
     memory: "512MiB",
   },
   async (event) => {
@@ -3238,7 +3064,7 @@ export const syncServiceSlots = onDocumentWritten(
     const before = event.data?.before.data();
     if (!serviceSlotConfigChanged(before, after)) return;
 
-    await regenerateServiceSlots(serviceId, after);
+    await ensureServiceSlotCoverage(db, serviceId, {reconcileChangedSchedule: true});
   },
 );
 

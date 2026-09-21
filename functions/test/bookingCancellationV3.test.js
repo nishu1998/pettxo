@@ -1,3 +1,4 @@
+const assertCanonicalEarning = require('./helpers/assertCanonicalEarning');
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -115,7 +116,8 @@ test("customer cancellation at exactly 24h creates one deterministic refund inst
   assert.equal(result.booking.privacy.isPaidContactUnlocked, false);
   assert.equal(result.bookingPrivateWrite.parentOtpCode, "");
 
-  const firestore = new FakeFirestore();
+  const slotPath = `services/${booking.serviceId}/slots/${slotId}`;
+  const firestore = new FakeFirestore({[slotPath]: {capacity: 1, acceptedCount: 1, status: "open"}});
   await persistConfirmedBookingCancellationV3({
     firestore,
     bookingId,
@@ -124,6 +126,7 @@ test("customer cancellation at exactly 24h creates one deterministic refund inst
   assert.equal(firestore.store.has(`bookingCancellations/${bookingId}`), true);
   assert.equal(firestore.store.has(`refunds/${bookingId}`), true);
   assert.equal(firestore.store.has(`capacityReleases/${bookingId}`), true);
+  assert.equal(firestore.store.get(slotPath).acceptedCount, 0);
 });
 
 test("under-2-hours customer cancellation persists without a Razorpay refund instruction", () => {
@@ -245,6 +248,7 @@ for (const [hoursBefore, share] of [[25,0], [24,1500], [12,1500], [11,3500], [6,
     const expected = Math.floor(booking.financials.serviceSubtotalPaise * share / 10000);
     assert.equal(result.providerEarningWrite.amountPaise, expected);
     assert.equal(result.providerEarningWrite.providerFinalEntitlementPaise, expected);
+    assertCanonicalEarning(result.providerEarningWrite, result.providerEarningWrite.bookingId);
     assert.equal(result.providerEarningWrite.earningsStatus, 'FINALIZED');
     const firestore = new FakeFirestore({[`bookings/${bookingId}`]: booking,
       [`providerEarnings/${bookingId}`]: {amountPaise: booking.financials.providerPayoutPaise}});

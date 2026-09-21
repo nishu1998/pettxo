@@ -317,15 +317,19 @@ async function handleManualDisputeRefundWebhook(params: {
     if (disputeSnapshot.exists) {
       transaction.set(disputeRef, {
         financialSettlementStatus: aggregateStatus,
-        "resolution.financialSettlementStatus": aggregateStatus,
-        "resolution.manualSettlementObligationIds": obligationIds,
-        updatedAt: Timestamp.fromDate(params.authoritativeNow),
+        resolution: {
+          financialSettlementStatus: aggregateStatus,
+          manualSettlementObligationIds: obligationIds
+        },
+        updatedAt: Timestamp.fromDate(params.authoritativeNow)
       }, {merge: true});
     }
     transaction.set(bookingRef, {
       updatedAt: Timestamp.fromDate(params.authoritativeNow),
-      "dispute.financialSettlementStatus": aggregateStatus,
-      "dispute.manualSettlementObligationIds": obligationIds,
+      dispute: {
+        financialSettlementStatus: aggregateStatus,
+        manualSettlementObligationIds: obligationIds
+      }
     }, {merge: true});
     if (payoutReadinessSnapshot.exists || providerObligation != null || nextCustomerObligation != null) {
       transaction.set(payoutReadinessRef, {

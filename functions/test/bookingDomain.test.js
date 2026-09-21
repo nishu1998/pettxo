@@ -137,7 +137,7 @@ test("slot validator rejects gap, overlap, duplicate slot, mixed provider, mixed
   assert.ok(overlapResult.issues.some((issue) => issue.code === "MIXED_TIMEZONE"));
 });
 
-test("slot validator normalizes three consecutive service dates into three segments", () => {
+test("slot validator rejects gaps even across consecutive service dates", () => {
   const result = slotBooking.validateSlotBookingSelection({
     bookingType: "SLOT",
     slots: [
@@ -166,10 +166,7 @@ test("slot validator normalizes three consecutive service dates into three segme
     totalDurationMinutes: 180,
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(result.normalizedSelection.serviceDayCount, 3);
-  assert.equal(result.normalizedSelection.segmentCount, 3);
-  assert.equal(result.normalizedSelection.segments[1].serviceDateKey, "2026-08-02");
+  assert.equal(result.ok, false);
 });
 
 test("slot validator rejects missing middle service date", () => {

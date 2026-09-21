@@ -18,10 +18,11 @@ String earningsStatusLabel(ProviderEarningRecord record) {
 String? earningsPayoutLabel(ProviderEarningRecord record) {
   if (record.isProvisional || record.finalEntitlementPaise == 0) return null;
   return switch (record.status) {
-    'HELD' => 'Payout: On hold',
+    'HOLD' || 'HELD' => 'Payout: On hold',
     'READY' => 'Payout: Eligible',
-    'PAID' => 'Payout: Paid',
+    'PAID' || 'COMPLETED' => 'Payout: Paid',
     'PROCESSING' => 'Payout: Processing',
+    'NEEDS_ATTENTION' => 'Payout: Needs attention',
     'FAILED' => 'Payout: Failed',
     'CANCELLED' => 'Payout: Cancelled',
     _ => null,

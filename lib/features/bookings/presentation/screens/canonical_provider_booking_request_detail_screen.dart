@@ -1,3 +1,4 @@
+import '../widgets/cancellation_financial_summary.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -663,16 +664,29 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
                 const SizedBox(height: 10),
                 BookingSummaryCard(rows: outcomeRows),
               ],
+              if (kind ==
+                  _ProviderTerminalKind.customerCancelledAfterPayment) ...[
+                const SizedBox(height: 16),
+                const BookingDetailsSectionLabel('Earnings'),
+                const SizedBox(height: 10),
+                ProviderCancellationEarnings(
+                  repository: repository,
+                  bookingId: bookingId,
+                ),
+              ],
               if (financialRows.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 const BookingDetailsSectionLabel('Financial summary'),
                 const SizedBox(height: 10),
                 FinancialSummaryCard(rows: financialRows),
               ],
-              const SizedBox(height: 16),
-              const BookingDetailsSectionLabel('Important information'),
-              const SizedBox(height: 10),
-              ImportantInformationCard(model: importantInformation),
+              if (kind !=
+                  _ProviderTerminalKind.customerCancelledAfterPayment) ...[
+                const SizedBox(height: 16),
+                const BookingDetailsSectionLabel('Important information'),
+                const SizedBox(height: 10),
+                ImportantInformationCard(model: importantInformation),
+              ],
             ],
           ),
         );
@@ -836,9 +850,8 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
         return StatusCardPresentationModel(
           icon: Icons.person_off_outlined,
           title: 'Cancelled by Customer',
-          explanation: _hasActiveFinancialProcessing(cancellationRecord)
-              ? 'The customer cancelled this confirmed booking. Refund and provider settlement updates will appear here as processing completes.'
-              : 'The customer cancelled this confirmed booking. Any refund and provider settlement are handled according to the cancellation policy.',
+          explanation:
+              'The customer cancelled this confirmed booking. Your earnings reflect the finalized cancellation settlement.',
           accentColor: const Color(0xFFEF4444),
           badgeLabel: 'Cancelled',
         );
@@ -986,7 +999,8 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
         }
     }
 
-    if (_shouldShowRefundInitiated(cancellationRecord)) {
+    if (kind != _ProviderTerminalKind.customerCancelledAfterPayment &&
+        _shouldShowRefundInitiated(cancellationRecord)) {
       steps.add(
         BookingTimelineStepModel(
           label: 'Refund initiated',
@@ -995,7 +1009,8 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
         ),
       );
     }
-    if (_shouldShowRefundCompleted(cancellationRecord)) {
+    if (kind != _ProviderTerminalKind.customerCancelledAfterPayment &&
+        _shouldShowRefundCompleted(cancellationRecord)) {
       steps.add(
         BookingTimelineStepModel(
           label: 'Refund completed',
@@ -1107,6 +1122,9 @@ class _ProviderTerminalBookingDetailsView extends StatelessWidget {
     CanonicalBookingCancellationRecord? cancellationRecord,
   ) {
     final financials = booking.financials;
+    if (kind == _ProviderTerminalKind.customerCancelledAfterPayment) {
+      return const [];
+    }
     switch (kind) {
       case _ProviderTerminalKind.paymentWindowExpired:
         return const [

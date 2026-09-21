@@ -1,3 +1,5 @@
+import {writeLifecycleReleaseBoundaryV3} from "./domain/lifecycleRolloutV3";
+import {classifyLifecycleSchedulerErrorV3} from "./application/lifecycleSchedulerErrorsV3";
 import {FieldPath, FieldValue, Timestamp} from "firebase-admin/firestore";
 import {
   HttpsError,
@@ -13,6 +15,7 @@ import {
   RAZORPAY_KEY_SECRET,
   RAZORPAY_WEBHOOK_SECRET,
 } from "../config/secrets";
+import {assertPreCheckoutSlotCapacity, lockServiceSlotSelection} from "../services/serviceSlotBookingGuard";
 import {normalizeServiceSchedulingMode} from "../serviceScheduling";
 import {auth, db, storage} from "../shared/firebase";
 import {ACCEPT_WINDOW_MS} from "./domain/bookingConstants";
@@ -2311,6 +2314,9 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
     const result = await db.runTransaction(async (transaction) => {
       const existingAttemptSnapshot = await transaction.get(attemptRef);
       const existingAttempt = parseExistingAttempt(existingAttemptSnapshot.data());
+      if (!existingAttempt && parsed.bookingType === "SLOT") {
+        await lockServiceSlotSelection(db, transaction, parsed.serviceId, service, schedule as SlotBookingSelection);
+      }
       const createResult = createBookingRequestApplicationV3({
         parent,
         service: canonicalService,
@@ -2346,6 +2352,8 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
       if (createResult.code === "CREATED") {
         const canonicalBookingRef = db.collection("bookings").doc(createResult.bookingId);
         transaction.set(canonicalBookingRef, createResult.booking, {merge: false});
+        writeLifecycleReleaseBoundaryV3({firestore: db, transaction,
+          bookingId: createResult.bookingId, booking: createResult.booking});
         transaction.set(attemptRef, serializeAttemptRecord(createResult.attemptRecord), {merge: true});
         for (const event of createResult.events) {
           transaction.set(
@@ -2721,6 +2729,7 @@ export const createRazorpayPaymentOrderV3 = onCall(
     booking: authorized.booking,
   });
   const paymentMethod = asString(authorized.paymentAttempt?.paymentMethod) || "checkout";
+  await assertPreCheckoutSlotCapacity(db, authorized.booking, bookingId);
 
   if (authorized.paymentAttempt &&
     paymentMethod !== "qr" &&
@@ -2919,6 +2928,7 @@ export const createBookingQrPaymentV3 = onCall(
     paymentRail: "qr",
     now: authoritativeNow,
   });
+  await assertPreCheckoutSlotCapacity(db, authorized.booking, bookingId);
   const claimedOffer = await loadSelectedCouponForCheckout({
     uid,
     offerCampaignId,
@@ -3164,6 +3174,7 @@ export const previewBookingPaymentPricingV3 = onCall(
     command: "create_order",
     now: authoritativeNow,
   });
+  await assertPreCheckoutSlotCapacity(db, authorized.booking, bookingId);
   const claimedOffer = await loadSelectedCouponForCheckout({
     uid,
     offerCampaignId,
@@ -3435,6 +3446,7 @@ export const previewBookingCancellationV3 = onCall(
       actorType: cancellationActorTypeForExpectedActor(expectedActor),
       requestedAt: authoritativeNow,
       existingRefund: loaded.refund,
+      completedRefundEvidencePaise: loaded.paymentAttempt.refundedAmountPaise ?? 0,
     });
     return buildCancellationPreviewResponse({bookingId, preview});
   },
@@ -3525,7 +3537,7 @@ async function cancelConfirmedBookingInternal(params: {
         ? (bookingChatSnapshot.data() as Record<string, unknown>)
         : null,
     });
-    writeConfirmedBookingCancellationTransactionV3({
+    await writeConfirmedBookingCancellationTransactionV3({
       firestore: db,
       transaction,
       bookingId,
@@ -4619,13 +4631,11 @@ export async function runFinalizeCanonicalNoShowsSchedulerV3(params?: {
       authoritativeAt: authoritativeNow.toISOString(),
     });
   } catch (error) {
-    const normalized = normalizeError(error);
     schedulerLogger.error("bookingV3.scheduler.noShowFinalization.failed", {
-      message: normalized.message,
-      stack: normalized.stack,
+      errorCode: classifyLifecycleSchedulerErrorV3(error).code,
       authoritativeAt: authoritativeNow.toISOString(),
     });
-    throw normalized;
+    throw error;
   }
 }
 
@@ -4693,14 +4703,14 @@ export async function scanCanonicalNoShowCandidatesByStateV3(params: {
           outcome: result,
         });
       } catch (error) {
-        const normalized = normalizeError(error);
+        const classification = classifyLifecycleSchedulerErrorV3(error);
         schedulerLogger.error("bookingV3.scheduler.noShowFinalization.bookingFailed", {
           bookingId: doc.id,
           stateQueryValue: params.stateQueryValue,
-          message: normalized.message,
-          stack: normalized.stack,
+          errorCode: classification.code,
         });
-        throw normalized;
+        if (!classification.deterministic) throw error;
+        // Only known data conflicts are isolated; transport/unknown failures fail the run.
       }
     }
 
