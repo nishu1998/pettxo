@@ -11,6 +11,14 @@ enum AuthOnboardingState {
   authenticated,
 }
 
+/// A selected role is intentionally not persisted until the profile is
+/// completed atomically. Both states therefore represent valid entry points
+/// to the profile-details form.
+bool canContinueSelectedProfileDetails(AuthOnboardingState state) {
+  return state == AuthOnboardingState.roleSelectionRequired ||
+      state == AuthOnboardingState.profileDetailsRequired;
+}
+
 class AuthIdentitySnapshot {
   final String uid;
   final String email;

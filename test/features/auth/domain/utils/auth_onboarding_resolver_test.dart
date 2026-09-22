@@ -1,3 +1,4 @@
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/auth/domain/utils/auth_error_utils.dart';
 import 'package:pettexo/features/auth/domain/utils/auth_onboarding_resolver.dart';
@@ -311,6 +312,60 @@ void main() {
     );
   });
 
+  group('selected-role profile details entry', () {
+    const phoneAuth = AuthIdentitySnapshot(
+      uid: 'phone_uid',
+      email: '',
+      phoneNumber: '+919999999999',
+      emailVerified: false,
+      providerIds: ['phone'],
+    );
+    const linkedEmailAuth = AuthIdentitySnapshot(
+      uid: 'email_uid',
+      email: 'new@example.com',
+      phoneNumber: '+918888888888',
+      emailVerified: true,
+      providerIds: ['password', 'phone'],
+    );
+
+    for (final entry in <String, AuthIdentitySnapshot>{
+      'phone': phoneAuth,
+      'email': linkedEmailAuth,
+    }.entries) {
+      for (final role in <String>['petParent', 'serviceProvider', 'petLover']) {
+        test(
+          '${entry.key} new user can continue $role details before role persistence',
+          () {
+            final resolution = resolveAuthOnboardingState(
+              auth: entry.value,
+              profile: null,
+              hasPendingSignupConsent: true,
+            );
+
+            expect(resolution.state, AuthOnboardingState.roleSelectionRequired);
+            expect(canContinueSelectedProfileDetails(resolution.state), isTrue);
+          },
+        );
+      }
+    }
+
+    test('incomplete persisted profile remains a valid details entry', () {
+      expect(
+        canContinueSelectedProfileDetails(
+          AuthOnboardingState.profileDetailsRequired,
+        ),
+        isTrue,
+      );
+    });
+
+    test('completed returning account does not re-enter profile details', () {
+      expect(
+        canContinueSelectedProfileDetails(AuthOnboardingState.authenticated),
+        isFalse,
+      );
+    });
+  });
+
   group('auth identity helpers', () {
     test('normalizes provider ids uniquely and in sorted order', () {
       expect(
@@ -362,5 +417,21 @@ void main() {
       );
       expect(mapFirebaseAuthErrorCode('user-disabled'), contains('disabled'));
     });
+
+    test(
+      'maps onboarding permission failure without exposing backend text',
+      () {
+        final error = mapFunctionsActionException(
+          FirebaseFunctionsException(
+            code: 'permission-denied',
+            message: 'sensitive backend implementation detail',
+          ),
+        );
+
+        expect(error.code, 'permission-denied');
+        expect(error.message, 'Authentication error. Please try again.');
+        expect(error.message, isNot(contains('sensitive')));
+      },
+    );
   });
 }

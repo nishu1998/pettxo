@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../../core/identity/username_utils.dart';
 import '../../../../core/constants/app_colors.dart';
@@ -14,13 +15,13 @@ import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_onboarding_service.dart';
 import '../../data/services/user_service.dart';
+import '../../domain/models/auth_action_exception.dart';
 import '../../domain/models/profile_type.dart';
 import '../../domain/utils/auth_onboarding_resolver.dart';
 import '../widgets/auth_input_field.dart';
 import '../widgets/auth_shell.dart';
 import '../widgets/searchable_selection_field.dart';
 import 'onboarding_consent_screen.dart';
-import 'profile_type_screen.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
   final ProfileType type;
@@ -50,6 +51,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   bool isLoading = false;
   bool isLocationLoading = true;
   bool _isCheckingAccess = true;
+  String? _accessError;
   bool _acceptedProviderAgreement = false;
   String? usernameError;
   String? stateError;
@@ -119,6 +121,12 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   }
 
   Future<void> _guardScreenAccess() async {
+    if (mounted) {
+      setState(() {
+        _isCheckingAccess = true;
+        _accessError = null;
+      });
+    }
     try {
       final resolution = await _onboardingService.resolveCurrentState();
       if (!mounted) return;
@@ -140,14 +148,29 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             ),
           );
           return;
-        case AuthOnboardingState.roleSelectionRequired:
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
-          );
-          return;
         case AuthOnboardingState.profileDetailsRequired:
+        case AuthOnboardingState.roleSelectionRequired:
+          assert(canContinueSelectedProfileDetails(resolution.state));
+          // The selected role is carried by this screen and is persisted with
+          // the completed profile. Returning to role selection here creates a
+          // redirect loop for every brand-new account.
+          break;
         case AuthOnboardingState.signedOut:
           break;
+      }
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          'ProfileDetailsScreen access resolution failed: '
+          '${error.runtimeType}',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      if (mounted) {
+        setState(() {
+          _accessError =
+              'We could not verify your account setup. Please try again.';
+        });
       }
     } finally {
       if (mounted) {
@@ -170,7 +193,25 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   Future<void> saveProfile() async {
     FocusScope.of(context).unfocus();
 
-    final resolution = await _onboardingService.resolveCurrentState();
+    late final AuthOnboardingResolution resolution;
+    try {
+      resolution = await _onboardingService.resolveCurrentState();
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          'ProfileDetailsScreen pre-save resolution failed: '
+          '${error.runtimeType}',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: 'We could not verify your account setup. Please try again.',
+        tone: AppFeedbackTone.error,
+      );
+      return;
+    }
     if (!mounted) return;
     switch (resolution.state) {
       case AuthOnboardingState.authenticated:
@@ -189,12 +230,12 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
           ),
         );
         return;
-      case AuthOnboardingState.roleSelectionRequired:
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const ProfileTypeScreen()),
-        );
-        return;
       case AuthOnboardingState.profileDetailsRequired:
+      case AuthOnboardingState.roleSelectionRequired:
+        assert(canContinueSelectedProfileDetails(resolution.state));
+        // Valid for a newly selected role; completion persists the role and
+        // profile together through completeOnboardingProfile.
+        break;
       case AuthOnboardingState.signedOut:
         break;
     }
@@ -295,11 +336,19 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         '/auth-gate',
         (route) => false,
       );
-    } catch (e) {
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          'ProfileDetailsScreen profile save failed: ${error.runtimeType}',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
       if (!mounted) return;
       AppFeedback.show(
         context,
-        message: e.toString(),
+        message: error is AuthActionException
+            ? error.message
+            : 'We could not save your profile. Please try again.',
         tone: AppFeedbackTone.error,
       );
     } finally {
@@ -328,6 +377,26 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   Widget build(BuildContext context) {
     if (_isCheckingAccess) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_accessError != null) {
+      return AuthShell(
+        title: getTitle(),
+        subtitle: getSubtitle(),
+        child: Column(
+          children: [
+            Text(
+              _accessError!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            CustomButton(text: 'Try again', onPressed: _guardScreenAccess),
+          ],
+        ),
+      );
     }
     final compact = MediaQuery.sizeOf(context).width < 380;
     final isPetParent = widget.type == ProfileType.petParent;
