@@ -24,6 +24,8 @@ class _ServiceLocationPickerScreenState
   final TextEditingController _searchController = TextEditingController();
   late LatLng _selectedLatLng;
   String _displayAddress = '';
+  String _city = '';
+  String _state = '';
   bool _isResolvingAddress = false;
   bool _isSearching = false;
   GoogleMapController? _mapController;
@@ -36,6 +38,8 @@ class _ServiceLocationPickerScreenState
       widget.initialLocation.longitude,
     );
     _displayAddress = widget.initialLocation.displayAddress;
+    _city = widget.initialLocation.city;
+    _state = widget.initialLocation.state;
   }
 
   @override
@@ -57,8 +61,11 @@ class _ServiceLocationPickerScreenState
       );
       if (!mounted) return;
 
+      final place = placemarks.isEmpty ? null : placemarks.first;
       setState(() {
         _displayAddress = _formatPlacemark(placemarks);
+        _city = (place?.locality ?? '').trim();
+        _state = (place?.administrativeArea ?? '').trim();
       });
     } catch (_) {
       if (!mounted) return;
@@ -126,6 +133,8 @@ class _ServiceLocationPickerScreenState
         latitude: _selectedLatLng.latitude,
         longitude: _selectedLatLng.longitude,
         displayAddress: _displayAddress.trim(),
+        city: _city,
+        state: _state,
       ),
     );
   }

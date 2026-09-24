@@ -69,4 +69,57 @@ void main() {
     expect(location['latitude'], 19.076);
     expect(location['longitude'], 72.8777);
   });
+
+  test(
+    'detail listing uses public service city and state instead of owner location',
+    () {
+      final service = ServiceModel.fromMap('service-pune', {
+        'ownerUserId': 'provider-1',
+        'ownerSnapshot': {
+          'name': 'Provider',
+          'city': 'Nagpur',
+          'state': 'Maharashtra',
+        },
+        'title': 'Dog Walking',
+        'location': {
+          'city': 'Pune',
+          'state': 'Maharashtra',
+          'approximateLatitude': 18.52,
+          'approximateLongitude': 73.86,
+        },
+        'distanceKm': 12.5,
+      });
+
+      final listing = service.toProfileListing();
+
+      expect(service.ownerCity, 'Nagpur');
+      expect(service.city, 'Pune');
+      expect(listing.location, 'Pune, Maharashtra');
+      expect(listing.publicLocationLabel, 'Pune, Maharashtra');
+      expect(listing.location, isNot(contains('Nagpur')));
+      expect(listing.latitude, 18.52);
+      expect(listing.longitude, 73.86);
+      expect(listing.distanceKm, 12.5);
+    },
+  );
+
+  test('detail listing never falls back to owner or exact address', () {
+    final service = ServiceModel.fromMap('service-missing-location', {
+      'ownerSnapshot': {'city': 'Nagpur', 'state': 'Maharashtra'},
+      'location': {
+        'displayAddress': 'Private exact address, Pune',
+        'latitude': 18.5204,
+        'longitude': 73.8567,
+      },
+    });
+
+    final listing = service.toProfileListing();
+
+    expect(listing.publicLocationLabel, 'Location unavailable');
+    expect(listing.location, isEmpty);
+    expect(listing.location, isNot(contains('Nagpur')));
+    expect(listing.location, isNot(contains('Private exact address')));
+    expect(listing.latitude, 18.5204);
+    expect(listing.longitude, 73.8567);
+  });
 }

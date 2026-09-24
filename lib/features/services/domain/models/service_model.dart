@@ -344,6 +344,11 @@ class ServiceModel {
   }
 
   ProfileServiceListing toProfileListing({double? distanceKmOverride}) {
+    final publicCity = city.trim();
+    final publicState = state.trim();
+    final publicLocation = publicCity.isEmpty || publicState.isEmpty
+        ? ''
+        : '$publicCity, $publicState';
     return ProfileServiceListing(
       id: id,
       ownerUserId: ownerUserId,
@@ -362,7 +367,9 @@ class ServiceModel {
       pricePerSession: pricePerSession,
       schedulingMode: schedulingMode,
       durationMinutes: sessionDurationMinutes,
-      location: displayAddress,
+      location: publicLocation,
+      serviceCity: city,
+      serviceState: state,
       availability: formatServiceAvailabilityLabel(
         availableDays: availableDays,
         startMinutes: startMinutes,

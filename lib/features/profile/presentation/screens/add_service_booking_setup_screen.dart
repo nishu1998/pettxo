@@ -119,7 +119,8 @@ class _AddServiceBookingSetupScreenState
         _hasValidTimeWindow &&
         _selectedServiceType != null &&
         location != null &&
-        location.displayAddress.trim().isNotEmpty;
+        location.displayAddress.trim().isNotEmpty &&
+        location.hasPublicArea;
   }
 
   String? get _selectedDurationLabel => _selectedDurationOption?.label;
@@ -268,10 +269,12 @@ class _AddServiceBookingSetupScreenState
       _serviceTypeError = _selectedServiceType == null
           ? 'Service type is required'
           : null;
+      final location = _selectedLocation;
       _locationError =
-          _selectedLocation == null ||
-              _selectedLocation!.displayAddress.trim().isEmpty
+          location == null || location.displayAddress.trim().isEmpty
           ? 'Location is required'
+          : !location.hasPublicArea
+          ? 'Select a location with a recognized city and state'
           : null;
     });
 
@@ -313,18 +316,14 @@ class _AddServiceBookingSetupScreenState
       }
 
       final position = await Geolocator.getCurrentPosition();
-      final address = await _reverseGeocode(
+      final location = await _reverseGeocode(
         position.latitude,
         position.longitude,
       );
 
       if (!mounted) return;
       setState(() {
-        _selectedLocation = ServiceLocation(
-          latitude: position.latitude,
-          longitude: position.longitude,
-          displayAddress: address,
-        );
+        _selectedLocation = location;
         _locationStatusMessage = null;
         _locationError = null;
         _isLoadingLocation = false;
@@ -339,9 +338,18 @@ class _AddServiceBookingSetupScreenState
     }
   }
 
-  Future<String> _reverseGeocode(double latitude, double longitude) async {
+  Future<ServiceLocation> _reverseGeocode(
+    double latitude,
+    double longitude,
+  ) async {
     final placemarks = await placemarkFromCoordinates(latitude, longitude);
-    if (placemarks.isEmpty) return 'Selected location';
+    if (placemarks.isEmpty) {
+      return ServiceLocation(
+        latitude: latitude,
+        longitude: longitude,
+        displayAddress: 'Selected location',
+      );
+    }
 
     final place = placemarks.first;
     final parts = [
@@ -352,7 +360,13 @@ class _AddServiceBookingSetupScreenState
       place.administrativeArea,
     ].where((part) => part != null && part.trim().isNotEmpty).cast<String>();
 
-    return parts.take(4).join(', ');
+    return ServiceLocation(
+      latitude: latitude,
+      longitude: longitude,
+      displayAddress: parts.take(4).join(', '),
+      city: (place.locality ?? '').trim(),
+      state: (place.administrativeArea ?? '').trim(),
+    );
   }
 
   Future<void> _changeLocation() async {
@@ -362,6 +376,8 @@ class _AddServiceBookingSetupScreenState
           latitude: 12.9716,
           longitude: 77.5946,
           displayAddress: 'Bangalore, Karnataka',
+          city: 'Bangalore',
+          state: 'Karnataka',
         );
 
     final selected = await Navigator.push<ServiceLocation>(
@@ -521,6 +537,14 @@ class _AddServiceBookingSetupScreenState
         field: _BookingSetupField.location,
         key: _locationFieldKey,
         message: 'Select a location to continue.',
+      );
+    }
+
+    if (!_selectedLocation!.hasPublicArea) {
+      return _BookingFieldIssue(
+        field: _BookingSetupField.location,
+        key: _locationFieldKey,
+        message: 'Select a location with a recognized city and state.',
       );
     }
 

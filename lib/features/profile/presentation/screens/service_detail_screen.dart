@@ -294,11 +294,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
                     valueBold: true,
                     showBottomDivider: true,
                   ),
-                  _DetailRow(
-                    label: 'Location',
-                    value: service.location,
-                    valueBold: true,
-                  ),
+                  ServiceDetailAboutLocation(service: service),
                   const _CancellationPolicyRow(),
                 ],
               ),
@@ -322,7 +318,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
               const SizedBox(height: 18),
               _ServiceReviewsSection(service: service),
               const SizedBox(height: 18),
-              _ServiceLocationCard(service: service),
+              ServiceDetailLocationCard(service: service),
               const SizedBox(height: 22),
               if (canBook && isVerificationPaused)
                 Container(
@@ -1160,15 +1156,31 @@ class _ProviderAvatar extends StatelessWidget {
   }
 }
 
-class _ServiceLocationCard extends StatelessWidget {
+class ServiceDetailAboutLocation extends StatelessWidget {
   final ProfileServiceListing service;
 
-  const _ServiceLocationCard({required this.service});
+  const ServiceDetailAboutLocation({super.key, required this.service});
+
+  @override
+  Widget build(BuildContext context) {
+    return _DetailRow(
+      label: 'Location',
+      value: service.publicLocationLabel,
+      valueBold: true,
+    );
+  }
+}
+
+class ServiceDetailLocationCard extends StatelessWidget {
+  final ProfileServiceListing service;
+
+  const ServiceDetailLocationCard({super.key, required this.service});
 
   @override
   Widget build(BuildContext context) {
     return _DetailCard(
       title: 'Location',
+      showDisplayTitle: false,
       children: [
         Container(
           padding: const EdgeInsets.all(16),
@@ -1204,7 +1216,7 @@ class _ServiceLocationCard extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      service.location,
+                      service.publicLocationLabel,
                       style: const TextStyle(
                         color: AppColors.textDark,
                         fontSize: 15,

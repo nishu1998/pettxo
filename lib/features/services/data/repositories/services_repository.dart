@@ -340,10 +340,14 @@ class ServicesRepository {
     Map<String, dynamic>? privateData,
   ) {
     if (privateData == null) return publicData;
+    final publicLocation =
+        publicData['location'] as Map<String, dynamic>? ?? const {};
+    final privateLocation =
+        privateData['location'] as Map<String, dynamic>? ?? const {};
     return {
       ...publicData,
       'privateNotes': privateData['privateNotes'] ?? '',
-      'location': privateData['location'] ?? publicData['location'],
+      'location': {...publicLocation, ...privateLocation},
     };
   }
 

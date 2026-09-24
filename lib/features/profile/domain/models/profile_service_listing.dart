@@ -19,6 +19,8 @@ class ProfileServiceListing {
   final String schedulingMode;
   final int durationMinutes;
   final String location;
+  final String serviceCity;
+  final String serviceState;
   final String availability;
   final String duration;
   final String petSize;
@@ -68,6 +70,8 @@ class ProfileServiceListing {
     this.schedulingMode = '',
     this.durationMinutes = 0,
     required this.location,
+    this.serviceCity = '',
+    this.serviceState = '',
     required this.availability,
     required this.duration,
     required this.petSize,
@@ -121,6 +125,8 @@ class ProfileServiceListing {
       schedulingMode: schedulingMode,
       durationMinutes: durationMinutes,
       location: location,
+      serviceCity: serviceCity,
+      serviceState: serviceState,
       availability: availability,
       duration: duration,
       petSize: petSize,
@@ -171,6 +177,13 @@ class ProfileServiceListing {
     final resolvedUsername = ownerUsername.trim().replaceFirst('@', '');
     if (resolvedUsername.isNotEmpty) return resolvedUsername;
     return 'Service provider';
+  }
+
+  String get publicLocationLabel {
+    final city = serviceCity.trim();
+    final state = serviceState.trim();
+    if (city.isEmpty || state.isEmpty) return 'Location unavailable';
+    return '$city, $state';
   }
 
   String get reviewSummary {
@@ -229,6 +242,8 @@ class ProfileServiceListing {
       schedulingMode: (data['schedulingMode'] as String? ?? '').trim(),
       durationMinutes: (data['durationMinutes'] as num?)?.toInt() ?? 0,
       location: (data['location'] as String? ?? '').trim(),
+      serviceCity: (data['serviceCity'] as String? ?? '').trim(),
+      serviceState: (data['serviceState'] as String? ?? '').trim(),
       availability: (data['availability'] as String? ?? '').trim(),
       duration: (data['duration'] as String? ?? '').trim(),
       petSize: (data['petSize'] as String? ?? '').trim(),
@@ -286,6 +301,8 @@ class ProfileServiceListing {
       'schedulingMode': schedulingMode,
       'durationMinutes': durationMinutes,
       'location': location,
+      'serviceCity': serviceCity,
+      'serviceState': serviceState,
       'availability': availability,
       'duration': duration,
       'petSize': petSize,
