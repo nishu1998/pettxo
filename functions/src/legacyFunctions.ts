@@ -46,6 +46,10 @@ import {
 import {serviceSlotConfigChanged} from "./services/serviceSlotCandidates";
 import {ensureServiceSlotCoverage} from "./services/serviceSlotCoverage";
 import {
+  canModerateService,
+  isServiceModerationAction,
+} from "./moderation/serviceModerationAuthorization";
+import {
   normalizeOfferAudienceInput,
   type OfferAudience,
 } from "./offers/domain/offerAudience";
@@ -127,12 +131,6 @@ function requireUid(auth: {uid?: string} | undefined): string {
     throw new HttpsError("unauthenticated", "Sign in required.");
   }
   return uid;
-}
-
-function requireAdmin(auth: {token?: {[key: string]: unknown}} | undefined): void {
-  if (auth?.token?.admin !== true) {
-    throw new HttpsError("permission-denied", "Admin access required.");
-  }
 }
 
 function asTrimmedString(value: unknown): string {
@@ -298,6 +296,11 @@ function assertRestrictionPermission(role: AdminRole, type: RestrictionType): vo
 function assertOfferMutationPermission(role: AdminRole): void {
   if (role === "superAdmin" || role === "financeAdmin") return;
   throw new HttpsError("permission-denied", "You do not have access to manage offer campaigns.");
+}
+
+function assertServiceModerationPermission(role: AdminRole): void {
+  if (canModerateService(role)) return;
+  throw new HttpsError("permission-denied", "You do not have access to moderate services.");
 }
 
 function asOptionalFiniteNumber(value: unknown): number | null {
@@ -3257,8 +3260,9 @@ export const enqueueReportModeration = onDocumentCreated(
 
 
 export const moderateService = onCall(async (request) => {
-  requireAdmin(request.auth);
-  const adminUid = request.auth!.uid;
+  const adminUid = requireUid(request.auth);
+  const admin = await requireAdminActor(adminUid);
+  assertServiceModerationPermission(admin.role);
   const serviceId = String(request.data?.serviceId ?? "");
   const moderationItemId = String(request.data?.moderationItemId ?? "");
   const action = String(request.data?.action ?? "");
@@ -3266,6 +3270,9 @@ export const moderateService = onCall(async (request) => {
 
   if (!serviceId || !action) {
     throw new HttpsError("invalid-argument", "serviceId and action are required.");
+  }
+  if (!isServiceModerationAction(action)) {
+    throw new HttpsError("invalid-argument", "action must be approve or remove.");
   }
 
   const serviceRef = db.collection("services").doc(serviceId);

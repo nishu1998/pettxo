@@ -186,9 +186,21 @@ class ServiceModel {
       sameForAllDays: data['sameForAllDays'] as bool? ?? true,
       serviceRadiusKm: (data['serviceRadiusKm'] as num?)?.toDouble() ?? 0,
       serviceType: (data['serviceType'] as String? ?? '').trim(),
-      displayAddress: (location['displayAddress'] as String? ?? '').trim(),
-      latitude: (location['latitude'] as num?)?.toDouble() ?? 0,
-      longitude: (location['longitude'] as num?)?.toDouble() ?? 0,
+      displayAddress:
+          (location['displayAddress'] as String? ?? '').trim().isNotEmpty
+          ? (location['displayAddress'] as String).trim()
+          : [
+              (location['city'] as String? ?? '').trim(),
+              (location['state'] as String? ?? '').trim(),
+            ].where((part) => part.isNotEmpty).join(', '),
+      latitude:
+          (location['latitude'] as num?)?.toDouble() ??
+          (location['approximateLatitude'] as num?)?.toDouble() ??
+          0,
+      longitude:
+          (location['longitude'] as num?)?.toDouble() ??
+          (location['approximateLongitude'] as num?)?.toDouble() ??
+          0,
       city: (location['city'] as String? ?? '').trim(),
       state: (location['state'] as String? ?? '').trim(),
       photoUrls: (data['photoUrls'] as List<dynamic>? ?? const [])
@@ -248,6 +260,8 @@ class ServiceModel {
   }
 
   Map<String, dynamic> toCreateMap() {
+    final approximateLatitude = _approximateCoordinate(latitude);
+    final approximateLongitude = _approximateCoordinate(longitude);
     return {
       'ownerUserId': ownerUserId,
       'ownerName': ownerName,
@@ -267,7 +281,6 @@ class ServiceModel {
       'category': category.trim(),
       'categoryLowercase': category.trim().toLowerCase(),
       'description': description.trim(),
-      'privateNotes': privateNotes.trim(),
       'pricePerSession': pricePerSession,
       'currency': currency,
       'schedulingMode': schedulingMode,
@@ -279,10 +292,12 @@ class ServiceModel {
       'sameForAllDays': sameForAllDays,
       'serviceType': serviceType,
       'location': {
-        'displayAddress': displayAddress.trim(),
-        'latitude': latitude,
-        'longitude': longitude,
-        'geohash': Geohash.encode(latitude, longitude),
+        'approximateLatitude': approximateLatitude,
+        'approximateLongitude': approximateLongitude,
+        'geohash': Geohash.encode(
+          approximateLatitude,
+          approximateLongitude,
+        ).substring(0, 5),
         'city': city.trim(),
         'state': state.trim(),
         'country': 'IN',
@@ -307,6 +322,25 @@ class ServiceModel {
       'updatedAt': FieldValue.serverTimestamp(),
       'publishedAt': FieldValue.serverTimestamp(),
     };
+  }
+
+  Map<String, dynamic> toPrivateCreateMap(String serviceId) {
+    return {
+      'serviceId': serviceId,
+      'ownerUserId': ownerUserId,
+      'privateNotes': privateNotes.trim(),
+      'location': {
+        'displayAddress': displayAddress.trim(),
+        'latitude': latitude,
+        'longitude': longitude,
+      },
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+  }
+
+  static double _approximateCoordinate(double value) {
+    return (value * 100).roundToDouble() / 100;
   }
 
   ProfileServiceListing toProfileListing({double? distanceKmOverride}) {

@@ -135,6 +135,15 @@ service cloud.firestore {
         ];
     }
 
+    function canModerateServices() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.adminRole in [
+          "superAdmin",
+          "customerSupportAdmin"
+        ];
+    }
+
     function canManageSupportTickets() {
       return request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -355,8 +364,104 @@ service cloud.firestore {
       request.resource.data.updatedAt == request.time;
     }
 
+    function validPublicServiceLocation(location) {
+      return location is map &&
+        location.keys().hasOnly([
+          'approximateLatitude',
+          'approximateLongitude',
+          'geohash',
+          'city',
+          'state',
+          'country'
+        ]) &&
+        location.approximateLatitude is number &&
+        location.approximateLatitude >= -90 &&
+        location.approximateLatitude <= 90 &&
+        location.approximateLongitude is number &&
+        location.approximateLongitude >= -180 &&
+        location.approximateLongitude <= 180 &&
+        location.geohash is string &&
+        location.geohash.size() > 0 &&
+        location.geohash.size() <= 12 &&
+        location.city is string &&
+        location.city.size() > 0 &&
+        location.city.size() <= 120 &&
+        location.state is string &&
+        location.state.size() > 0 &&
+        location.state.size() <= 120 &&
+        location.country is string &&
+        location.country.size() == 2;
+    }
+
+    function validPrivateServiceLocation(location) {
+      return location is map &&
+        location.keys().hasOnly([
+          'displayAddress',
+          'latitude',
+          'longitude'
+        ]) &&
+        location.displayAddress is string &&
+        location.displayAddress.size() > 0 &&
+        location.displayAddress.size() <= 500 &&
+        location.latitude is number &&
+        location.latitude >= -90 &&
+        location.latitude <= 90 &&
+        location.longitude is number &&
+        location.longitude >= -180 &&
+        location.longitude <= 180;
+    }
+
+    function validServiceOwnerSnapshot(snapshot) {
+      return snapshot is map &&
+        snapshot.keys().hasOnly(['name', 'username', 'photoUrl', 'city', 'state']) &&
+        snapshot.name is string &&
+        snapshot.username is string &&
+        snapshot.photoUrl is string &&
+        snapshot.city is string &&
+        snapshot.state is string;
+    }
+
+    function validClientServiceShape(data) {
+      return data.ownerUserId is string &&
+        data.ownerName is string &&
+        data.ownerUsername is string &&
+        data.ownerPhotoUrl is string &&
+        validServiceOwnerSnapshot(data.ownerSnapshot) &&
+        data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
+        data.titleLowercase == data.title.lower() &&
+        data.animalType is string && data.animalType.size() > 0 &&
+        data.animalTypeLowercase == data.animalType.lower() &&
+        data.category is string && data.category.size() > 0 &&
+        data.categoryLowercase == data.category.lower() &&
+        data.description is string && data.description.size() <= 2000 &&
+        data.pricePerSession is int && data.pricePerSession > 0 &&
+        data.currency == 'INR' &&
+        data.schedulingMode in ['fixedDuration', 'dayCare', 'overnight', 'twentyFourHours'] &&
+        data.sessionDurationMinutes is int &&
+        data.sessionDurationMinutes > 0 && data.sessionDurationMinutes <= 1440 &&
+        data.capacity is int && data.capacity > 0 &&
+        data.availableDays is list &&
+        data.availableDays.size() > 0 && data.availableDays.size() <= 7 &&
+        data.startMinutes is int && data.startMinutes >= 0 && data.startMinutes < 1440 &&
+        data.endMinutes is int && data.endMinutes >= 0 && data.endMinutes < 1440 &&
+        data.sameForAllDays is bool &&
+        data.serviceType is string && data.serviceType.size() > 0 &&
+        validPublicServiceLocation(data.location) &&
+        data.photoUrls is list && data.photoUrls.size() <= 10 &&
+        data.primaryPhotoUrl is string &&
+        data.status in ['active', 'paused', 'removed'] &&
+        data.isActive is bool &&
+        data.isDeleted is bool &&
+        data.isPaused is bool &&
+        data.moderationStatus is string &&
+        data.isVisibleToMarketplace is bool &&
+        data.providerVerificationStatus is string &&
+        data.isPausedByVerification is bool &&
+        data.pauseReason is string;
+    }
+
     function safeServiceOwnerUpdate() {
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
         'title',
         'titleLowercase',
         'animalType',
@@ -364,7 +469,6 @@ service cloud.firestore {
         'category',
         'categoryLowercase',
         'description',
-        'privateNotes',
         'pricePerSession',
         'schedulingMode',
         'sessionDurationMinutes',
@@ -373,7 +477,6 @@ service cloud.firestore {
         'startMinutes',
         'endMinutes',
         'sameForAllDays',
-        'serviceRadiusKm',
         'serviceType',
         'location',
         'photoUrls',
@@ -385,11 +488,69 @@ service cloud.firestore {
         'isVisibleToMarketplace',
         'updatedAt',
         'removedAt'
-      ]);
+      ]) &&
+      validClientServiceShape(request.resource.data) &&
+      request.resource.data.ownerUserId == resource.data.ownerUserId &&
+      request.resource.data.moderationStatus == resource.data.moderationStatus &&
+      request.resource.data.providerVerificationStatus == resource.data.providerVerificationStatus &&
+      request.resource.data.providerVerificationGraceEndsAt == resource.data.providerVerificationGraceEndsAt &&
+      request.resource.data.isPausedByVerification == resource.data.isPausedByVerification &&
+      request.resource.data.createdAt == resource.data.createdAt &&
+      request.resource.data.publishedAt == resource.data.publishedAt &&
+      request.resource.data.updatedAt == request.time &&
+      (
+        request.resource.data.isVisibleToMarketplace == resource.data.isVisibleToMarketplace ||
+        (
+          request.resource.data.isVisibleToMarketplace == false &&
+          request.resource.data.isDeleted == true &&
+          request.resource.data.status == 'removed'
+        )
+      ) &&
+      (
+        request.resource.data.isDeleted == resource.data.isDeleted ||
+        request.resource.data.isDeleted == true
+      );
     }
 
-    function safeServiceOwnerCreate() {
-      return request.resource.data.diff({}).changedKeys().hasOnly([
+    function safeLegacyServiceOwnerLifecycleUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'status',
+        'isActive',
+        'isDeleted',
+        'isPaused',
+        'isVisibleToMarketplace',
+        'updatedAt',
+        'removedAt'
+      ]) &&
+      request.resource.data.updatedAt == request.time &&
+      (
+        (
+          request.resource.data.status == 'paused' &&
+          request.resource.data.isActive == false &&
+          request.resource.data.isPaused == true &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'isActive', 'isPaused', 'updatedAt'
+          ])
+        ) ||
+        (
+          request.resource.data.status == 'active' &&
+          request.resource.data.isActive == true &&
+          request.resource.data.isPaused == false &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'isActive', 'isPaused', 'updatedAt'
+          ])
+        ) ||
+        (
+          request.resource.data.status == 'removed' &&
+          request.resource.data.isActive == false &&
+          request.resource.data.isDeleted == true &&
+          request.resource.data.isVisibleToMarketplace == false
+        )
+      );
+    }
+
+    function safeServiceOwnerCreate(userId) {
+      return request.resource.data.keys().hasOnly([
         'ownerUserId',
         'ownerName',
         'ownerUsername',
@@ -402,7 +563,6 @@ service cloud.firestore {
         'category',
         'categoryLowercase',
         'description',
-        'privateNotes',
         'pricePerSession',
         'currency',
         'schedulingMode',
@@ -430,12 +590,14 @@ service cloud.firestore {
         'updatedAt',
         'publishedAt'
       ]) &&
-      request.resource.data.providerVerificationStatus in [
-        'pending',
-        'approved',
-        'rejected',
-        'notSubmitted'
-      ] &&
+      validClientServiceShape(request.resource.data) &&
+      request.resource.data.moderationStatus == 'pending' &&
+      request.resource.data.isVisibleToMarketplace == true &&
+      request.resource.data.status == 'active' &&
+      request.resource.data.isActive == true &&
+      request.resource.data.isDeleted == false &&
+      request.resource.data.isPaused == false &&
+      request.resource.data.providerVerificationStatus == providerVerificationDoc(userId).data.status &&
       (
         !request.resource.data.keys().hasAny(['providerVerificationGraceEndsAt']) ||
         request.resource.data.providerVerificationGraceEndsAt == null ||
@@ -446,6 +608,42 @@ service cloud.firestore {
       request.resource.data.createdAt == request.time &&
       request.resource.data.updatedAt == request.time &&
       request.resource.data.publishedAt == request.time;
+    }
+
+    function safeServicePrivateCreate(serviceId) {
+      return request.resource.data.keys().hasOnly([
+        'serviceId',
+        'ownerUserId',
+        'privateNotes',
+        'location',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      request.resource.data.serviceId == serviceId &&
+      request.resource.data.ownerUserId == request.auth.uid &&
+      request.resource.data.privateNotes is string &&
+      request.resource.data.privateNotes.size() <= 300 &&
+      validPrivateServiceLocation(request.resource.data.location) &&
+      request.resource.data.createdAt == request.time &&
+      request.resource.data.updatedAt == request.time &&
+      existsAfter(/databases/$(database)/documents/services/$(serviceId)) &&
+      getAfter(/databases/$(database)/documents/services/$(serviceId)).data.ownerUserId == request.auth.uid;
+    }
+
+    function safeServicePrivateUpdate(serviceId) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'privateNotes',
+        'location',
+        'updatedAt'
+      ]) &&
+      request.resource.data.serviceId == resource.data.serviceId &&
+      request.resource.data.serviceId == serviceId &&
+      request.resource.data.ownerUserId == resource.data.ownerUserId &&
+      request.resource.data.privateNotes is string &&
+      request.resource.data.privateNotes.size() <= 300 &&
+      validPrivateServiceLocation(request.resource.data.location) &&
+      request.resource.data.createdAt == resource.data.createdAt &&
+      request.resource.data.updatedAt == request.time;
     }
 
     function providerVerificationDoc(userId) {
@@ -1072,6 +1270,7 @@ service cloud.firestore {
       return data.keys().hasOnly([
         'userId',
         'status',
+        'submissionId',
         'documentType',
         'documentFrontPath',
         'documentBackPath',
@@ -1099,7 +1298,7 @@ service cloud.firestore {
       return path is string &&
         path.size() > 0 &&
         path.size() <= 512 &&
-        path.matches('^providerVerification/' + userId + '/identity/[^/]+$');
+        path.matches('^providerVerification/' + userId + '/identity/[^/]+/[^/]+$');
     }
 
     function validOptionalProviderVerificationPath(userId, path) {
@@ -1110,6 +1309,20 @@ service cloud.firestore {
       return validProviderVerificationDocKeys(request.resource.data) &&
         request.resource.data.userId == userId &&
         request.resource.data.status == 'pending' &&
+        request.resource.data.submissionId is string &&
+        request.resource.data.submissionId.size() > 0 &&
+        request.resource.data.submissionId.size() <= 128 &&
+        request.resource.data.documentFrontPath.matches(
+          '^providerVerification/' + userId + '/identity/' +
+          request.resource.data.submissionId + '/[^/]+$'
+        ) &&
+        (
+          request.resource.data.documentBackPath == '' ||
+          request.resource.data.documentBackPath.matches(
+            '^providerVerification/' + userId + '/identity/' +
+            request.resource.data.submissionId + '/[^/]+$'
+          )
+        ) &&
         request.resource.data.documentType in ['aadhaar', 'panCard', 'drivingLicense', 'voterId'] &&
         validProviderVerificationPath(userId, request.resource.data.documentFrontPath) &&
         validOptionalProviderVerificationPath(userId, request.resource.data.documentBackPath) &&
@@ -1195,11 +1408,12 @@ service cloud.firestore {
         safeProviderVerificationOwnerWrite(userId) &&
         request.resource.data.createdAt == resource.data.createdAt &&
         request.resource.data.submittedAt == request.time &&
-        resource.data.status != 'approved'
+        resource.data.status in ['rejected', 'notSubmitted']
       ) || (
         validProviderVerificationDocKeys(request.resource.data) &&
         request.resource.data.userId == resource.data.userId &&
         request.resource.data.status == resource.data.status &&
+        request.resource.data.submissionId == resource.data.submissionId &&
         request.resource.data.documentType == resource.data.documentType &&
         request.resource.data.documentFrontPath == resource.data.documentFrontPath &&
         request.resource.data.documentBackPath == resource.data.documentBackPath &&
@@ -1751,15 +1965,20 @@ service cloud.firestore {
 
       allow create: if requesterAccountIsActive() &&
         request.resource.data.ownerUserId == request.auth.uid &&
-        safeServiceVerificationCreate(request.auth.uid);
+        safeServiceVerificationCreate(request.auth.uid) &&
+        safeServiceOwnerCreate(request.auth.uid) &&
+        existsAfter(/databases/$(database)/documents/servicePrivate/$(serviceId));
 
-      allow update: if isAdmin() ||
-        (
+      // All moderation mutations use the role-checked callable. Direct client
+      // updates are limited to the provider-owned editable contract.
+      allow update: if (
           requesterAccountIsActive() &&
           existingOwnerId() == request.auth.uid &&
           request.resource.data.ownerUserId == resource.data.ownerUserId &&
-          request.resource.data.moderationStatus == resource.data.moderationStatus &&
-          safeServiceOwnerUpdate()
+          (
+            safeLegacyServiceOwnerLifecycleUpdate() ||
+            safeServiceOwnerUpdate()
+          )
         );
 
       allow delete: if false;
@@ -1781,12 +2000,23 @@ service cloud.firestore {
 
         // Slot creation, regeneration, acceptedCount, and capacity transitions
         // are server-owned so customers and providers cannot bypass capacity.
-        allow create, update, delete: if isAdmin();
+        allow create, update, delete: if false;
       }
 
       match /moderationEvents/{eventId} {
         allow read, write: if isAdmin();
       }
+    }
+
+    match /servicePrivate/{serviceId} {
+      allow read: if signedIn() &&
+        (resource.data.ownerUserId == request.auth.uid || isAdmin());
+      allow create: if requesterAccountIsActive() &&
+        safeServicePrivateCreate(serviceId);
+      allow update: if requesterAccountIsActive() &&
+        resource.data.ownerUserId == request.auth.uid &&
+        safeServicePrivateUpdate(serviceId);
+      allow delete: if false;
     }
 
     match /bookings/{bookingId} {
@@ -1800,7 +2030,7 @@ service cloud.firestore {
       // Creation, status transitions, OTP verification, completion, and payout
       // changes are intentionally blocked for clients and handled by Cloud
       // Functions using the Admin SDK.
-      allow create, update, delete: if isAdmin();
+      allow create, update, delete: if false;
 
       match /events/{eventId} {
         allow read: if signedIn() &&
@@ -1809,7 +2039,7 @@ service cloud.firestore {
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
             isAdmin()
           );
-        allow write: if isAdmin();
+        allow write: if false;
       }
 
       match /paymentAttempts/{paymentAttemptId} {
@@ -1829,7 +2059,7 @@ service cloud.firestore {
             get(/databases/$(database)/documents/bookings/$(bookingId)).data.serviceOwnerId == request.auth.uid ||
             isAdmin()
           );
-        allow write: if isAdmin();
+        allow write: if false;
       }
 
       match /messages/{messageId} {
@@ -2107,7 +2337,8 @@ service cloud.firestore {
     }
 
     match /moderationQueue/{moderationItemId} {
-      allow read, write: if isAdmin();
+      allow read: if canModerateServices();
+      allow write: if false;
     }
 
     match /adminAuditLogs/{logId} {

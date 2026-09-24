@@ -28,11 +28,14 @@ export function providerVerificationDocumentPathBelongsToUser(
     return false;
   }
   const segments = normalizedPath.split("/");
-  return segments.length === 4 &&
+  const isLegacyPath = segments.length === 4 && segments[3].trim().length > 0;
+  const isVersionedPath = segments.length === 5 &&
+    segments[3].trim().length > 0 &&
+    segments[4].trim().length > 0;
+  return (isLegacyPath || isVersionedPath) &&
     segments[0] === "providerVerification" &&
     segments[1] === normalizedUserId &&
-    segments[2] === "identity" &&
-    segments[3].trim().length > 0;
+    segments[2] === "identity";
 }
 
 export function collectProviderVerificationDocumentPaths(paths: unknown[]): string[] {

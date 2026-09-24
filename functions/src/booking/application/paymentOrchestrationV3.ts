@@ -2090,17 +2090,24 @@ async function loadProviderPrivateIdentityForPaymentV3(params: {
   }
 }
 
-async function loadLiveServiceSnapshotForPaymentV3(params: {
+export async function loadLiveServiceSnapshotForPaymentV3(params: {
   firestore: Firestore;
   serviceId: string;
 }): Promise<(CanonicalServiceSource & LiveServiceSnapshot) | null> {
-  const snapshot = await params.firestore.collection("services").doc(params.serviceId).get();
+  const [snapshot, privateSnapshot] = await Promise.all([
+    params.firestore.collection("services").doc(params.serviceId).get(),
+    params.firestore.collection("servicePrivate").doc(params.serviceId).get(),
+  ]);
   if (!snapshot.exists) return null;
   const data = snapshot.data() ?? {};
-  const location =
-    typeof data.location === "object" && data.location != null ?
-      data.location as Record<string, unknown> :
-      {};
+  const publicLocation = asRecord(data.location);
+  const privateData = privateSnapshot.exists ? asRecord(privateSnapshot.data()) : {};
+  const privateLocation = asRecord(privateData.location);
+  // Legacy public fields remain a temporary read fallback until the production
+  // migration has copied and verified every servicePrivate document.
+  const exactLocation = Object.keys(privateLocation).length > 0 ?
+    privateLocation :
+    publicLocation;
   return {
     id: asString(data.serviceId) || snapshot.id,
     ownerUserId: asString(data.ownerUserId),
@@ -2120,9 +2127,9 @@ async function loadLiveServiceSnapshotForPaymentV3(params: {
         data.stats as Record<string, unknown> :
         {},
     location: {
-      displayAddress: asString(location.displayAddress) || undefined,
-      latitude: typeof location.latitude === "number" ? location.latitude : null,
-      longitude: typeof location.longitude === "number" ? location.longitude : null,
+      displayAddress: asString(exactLocation.displayAddress) || undefined,
+      latitude: typeof exactLocation.latitude === "number" ? exactLocation.latitude : null,
+      longitude: typeof exactLocation.longitude === "number" ? exactLocation.longitude : null,
     },
     timezone: asString(data.timezone) || "Asia/Kolkata",
     availableDays: data.availableDays,

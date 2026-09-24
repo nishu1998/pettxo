@@ -10,10 +10,14 @@ import {
 import {
   doc,
   deleteField,
+  collection,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 
@@ -104,11 +108,13 @@ function supportTicketMessageDoc(db, ticketId, messageId) {
 }
 
 function ownerPayload(uid, overrides = {}) {
+  const submissionId = 'submission-current';
   return {
     userId: uid,
     status: 'pending',
+    submissionId,
     documentType: 'aadhaar',
-    documentFrontPath: `providerVerification/${uid}/identity/front.png`,
+    documentFrontPath: `providerVerification/${uid}/identity/${submissionId}/front.png`,
     documentBackPath: '',
     documentFrontUrl: '',
     documentBackUrl: '',
@@ -127,6 +133,88 @@ function ownerPayload(uid, overrides = {}) {
     updatedAt: serverTimestamp(),
     ...overrides,
   };
+}
+
+function servicePayload(uid, overrides = {}) {
+  return {
+    ownerUserId: uid,
+    ownerName: 'Provider',
+    ownerUsername: uid,
+    ownerPhotoUrl: '',
+    ownerSnapshot: {name: 'Provider', username: uid, photoUrl: '', city: 'Mumbai', state: 'Maharashtra'},
+    title: 'Dog Walking',
+    titleLowercase: 'dog walking',
+    animalType: 'Dog',
+    animalTypeLowercase: 'dog',
+    category: 'Walking',
+    categoryLowercase: 'walking',
+    description: 'Safe neighbourhood walks',
+    pricePerSession: 500,
+    currency: 'INR',
+    schedulingMode: 'fixedDuration',
+    sessionDurationMinutes: 60,
+    capacity: 2,
+    availableDays: ['monday', 'tuesday'],
+    startMinutes: 540,
+    endMinutes: 1020,
+    sameForAllDays: true,
+    serviceType: 'atProviderLocation',
+    location: {
+      approximateLatitude: 19.08,
+      approximateLongitude: 72.88,
+      geohash: 'te7ud',
+      city: 'Mumbai',
+      state: 'Maharashtra',
+      country: 'IN',
+    },
+    photoUrls: [],
+    primaryPhotoUrl: '',
+    status: 'active',
+    isActive: true,
+    isDeleted: false,
+    isPaused: false,
+    moderationStatus: 'pending',
+    isVisibleToMarketplace: true,
+    providerVerificationStatus: 'pending',
+    providerVerificationGraceEndsAt: null,
+    isPausedByVerification: false,
+    pauseReason: '',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    publishedAt: serverTimestamp(),
+    ...overrides,
+  };
+}
+
+function servicePrivatePayload(uid, serviceId, overrides = {}) {
+  return {
+    serviceId,
+    ownerUserId: uid,
+    privateNotes: 'Ring the bell',
+    location: {displayAddress: 'Exact building, Mumbai', latitude: 19.076, longitude: 72.8777},
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    ...overrides,
+  };
+}
+
+async function seedPendingProvider(uid) {
+  await seedUser(uid);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(verificationDoc(context.firestore(), uid), {
+      userId: uid,
+      status: 'pending',
+      firstServiceListedAt: null,
+      gracePeriodEndsAt: null,
+    });
+  });
+}
+
+async function createServicePair(db, uid, serviceId, publicOverrides = {}, privateOverrides = {}) {
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'services', serviceId), servicePayload(uid, publicOverrides));
+  batch.set(doc(db, 'servicePrivate', serviceId), servicePrivatePayload(uid, serviceId, privateOverrides));
+  return batch.commit();
 }
 
 before(async () => {
@@ -544,6 +632,45 @@ test('owner cannot set reviewedBy or reviewedAt', async () => {
       }),
     ),
   );
+});
+
+test('H-03 owner cannot replace submitted verification metadata while pending', async () => {
+  const uid = 'owner-pending-immutable';
+  await seedUser(uid);
+  const db = authedDb(uid);
+  await assertSucceeds(setDoc(verificationDoc(db, uid), ownerPayload(uid)));
+  await assertFails(setDoc(verificationDoc(db, uid), ownerPayload(uid, {
+    submissionId: 'submission-replacement',
+    documentFrontPath: `providerVerification/${uid}/identity/submission-replacement/front.png`,
+  })));
+});
+
+test('H-03 rejected verification can be resubmitted as a new immutable version', async () => {
+  const uid = 'owner-rejected-resubmit';
+  await seedUser(uid);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(verificationDoc(context.firestore(), uid), {
+      ...ownerPayload(uid),
+      status: 'rejected',
+      rejectionReason: 'Unreadable',
+      reviewedBy: 'reviewer',
+      reviewedAt: new Date(),
+      createdAt: new Date(),
+      submittedAt: new Date(),
+      updatedAt: new Date(),
+    });
+  });
+  const db = authedDb(uid);
+  const resubmission = ownerPayload(uid, {
+    submissionId: 'submission-resubmitted',
+    documentFrontPath: `providerVerification/${uid}/identity/submission-resubmitted/front.png`,
+  });
+  delete resubmission.createdAt;
+  await assertSucceeds(setDoc(
+    verificationDoc(db, uid),
+    resubmission,
+    {merge: true},
+  ));
 });
 
 test('provider payout reads stay provider-or-admin only and clients cannot write', async () => {
@@ -1056,4 +1183,210 @@ test('customers and providers cannot rewrite slot capacity or occupancy', async 
     await assertFails(getDoc(occupancy));
     await assertFails(updateDoc(occupancy, {confirmedUnits: 0}));
   }
+});
+
+test('H-01 canonical booking, slot, occupancy, and financial writes are server-only for every client role', async () => {
+  const actors = [
+    ['customer', {}],
+    ['provider', {}],
+    ['support', {adminRole: 'customerSupportAdmin'}],
+    ['finance', {adminRole: 'financeAdmin'}],
+    ['super', {adminRole: 'superAdmin'}],
+  ];
+  for (const [uid, fields] of actors) await seedUser(uid, fields);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'bookings', 'canonical-h01'), {customerId: 'customer', serviceOwnerId: 'provider', state: 'CONFIRMED'});
+    await setDoc(doc(db, 'services', 'canonical-service'), {ownerUserId: 'provider', isVisibleToMarketplace: true, isDeleted: false});
+    await setDoc(doc(db, 'services', 'canonical-service', 'slots', 'slot-1'), {capacity: 1, acceptedCount: 1});
+    await setDoc(doc(db, 'services', 'canonical-service', 'slotOccupancy', 'slot-1'), {confirmedUnits: 1});
+    await setDoc(doc(db, 'payments', 'payment-h01'), {userId: 'customer', providerId: 'provider', status: 'captured'});
+  });
+  for (const [uid] of actors) {
+    const db = authedDb(uid);
+    await assertFails(setDoc(doc(db, 'bookings', `forged-${uid}`), {state: 'COMPLETED_FINAL'}));
+    await assertFails(updateDoc(doc(db, 'bookings', 'canonical-h01'), {state: 'COMPLETED_FINAL'}));
+    await assertFails(updateDoc(doc(db, 'services', 'canonical-service', 'slots', 'slot-1'), {acceptedCount: 0}));
+    await assertFails(updateDoc(doc(db, 'services', 'canonical-service', 'slotOccupancy', 'slot-1'), {confirmedUnits: 0}));
+    await assertFails(updateDoc(doc(db, 'payments', 'payment-h01'), {status: 'refunded'}));
+  }
+  await assertSucceeds(getDoc(doc(authedDb('customer'), 'bookings', 'canonical-h01')));
+  await assertSucceeds(getDoc(doc(authedDb('provider'), 'bookings', 'canonical-h01')));
+  await assertSucceeds(getDoc(doc(authedDb('support'), 'bookings', 'canonical-h01')));
+  await assertSucceeds(getDoc(doc(authedDb('finance'), 'payments', 'payment-h01')));
+  await assertSucceeds(getDoc(doc(authedDb('super'), 'payments', 'payment-h01')));
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'bookings', 'canonical-h01'), {state: 'IN_PROGRESS'});
+  });
+});
+
+test('H-02 legitimate provider service creation and pause remain allowed', async () => {
+  const uid = 'service-owner-legitimate';
+  const serviceId = 'service-legitimate';
+  await seedPendingProvider(uid);
+  const db = authedDb(uid);
+  await assertSucceeds(createServicePair(db, uid, serviceId));
+  await assertSucceeds(updateDoc(doc(db, 'services', serviceId), {
+    isPaused: true,
+    isActive: false,
+    status: 'paused',
+    updatedAt: serverTimestamp(),
+  }));
+  await assertSucceeds(updateDoc(doc(db, 'servicePrivate', serviceId), {
+    privateNotes: 'Use side entrance',
+    updatedAt: serverTimestamp(),
+  }));
+});
+
+test('H-02 legacy providers can pause and remove without broad schema mutation access', async () => {
+  const uid = 'legacy-lifecycle-owner';
+  const serviceId = 'legacy-lifecycle-service';
+  await seedUser(uid);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'services', serviceId), {
+      ownerUserId: uid,
+      title: 'Legacy service',
+      status: 'active',
+      isActive: true,
+      isDeleted: false,
+      isPaused: false,
+      isVisibleToMarketplace: true,
+      location: {
+        displayAddress: 'Legacy exact address',
+        latitude: 19.076,
+        longitude: 72.8777,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  });
+  const ref = doc(authedDb(uid), 'services', serviceId);
+  await assertSucceeds(updateDoc(ref, {
+    status: 'paused',
+    isActive: false,
+    isPaused: true,
+    updatedAt: serverTimestamp(),
+  }));
+  await assertFails(updateDoc(ref, {
+    pricePerSession: 1,
+    updatedAt: serverTimestamp(),
+  }));
+  await assertSucceeds(updateDoc(ref, {
+    status: 'removed',
+    isActive: false,
+    isDeleted: true,
+    isVisibleToMarketplace: false,
+    removedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+});
+
+const invalidServiceCreates = [
+  ['self-approved moderation', {moderationStatus: 'approved'}],
+  ['negative price', {pricePerSession: -1}],
+  ['zero capacity', {capacity: 0}],
+  ['invalid capacity type', {capacity: 'two'}],
+  ['forged verification state', {providerVerificationStatus: 'approved'}],
+  ['unknown dangerous field', {adminApproved: true}],
+];
+for (const [caseName, overrides] of invalidServiceCreates) {
+  test(`H-02 service create denies ${caseName}`, async () => {
+    const uid = `service-create-${caseName.replaceAll(' ', '-')}`;
+    await seedPendingProvider(uid);
+    await assertFails(createServicePair(authedDb(uid), uid, `service-${uid}`, overrides));
+  });
+}
+
+test('H-02 rejected provider cannot force marketplace-visible creation', async () => {
+  const uid = 'service-owner-rejected';
+  await seedUser(uid);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(verificationDoc(context.firestore(), uid), {userId: uid, status: 'rejected'});
+  });
+  await assertFails(createServicePair(authedDb(uid), uid, 'service-rejected'));
+});
+
+test('H-02 protected additions, deletions, ownership, and type mutations are denied', async () => {
+  const uid = 'service-owner-update';
+  const serviceId = 'service-update';
+  await seedPendingProvider(uid);
+  const db = authedDb(uid);
+  await assertSucceeds(createServicePair(db, uid, serviceId));
+  const ref = doc(db, 'services', serviceId);
+  await assertFails(updateDoc(ref, {moderationReason: 'self approved', updatedAt: serverTimestamp()}));
+  await assertFails(updateDoc(ref, {moderationStatus: deleteField(), updatedAt: serverTimestamp()}));
+  await assertFails(updateDoc(ref, {ownerUserId: 'attacker', updatedAt: serverTimestamp()}));
+  await assertFails(updateDoc(ref, {capacity: 'unlimited', updatedAt: serverTimestamp()}));
+  await assertFails(updateDoc(ref, {providerVerificationStatus: 'approved', updatedAt: serverTimestamp()}));
+});
+
+test('H-02 moderation writes require the callable and finance cannot write moderation directly', async () => {
+  const owner = 'moderated-owner';
+  await seedPendingProvider(owner);
+  await createServicePair(authedDb(owner), owner, 'moderated-service');
+  for (const [uid, role] of [['support-moderator', 'customerSupportAdmin'], ['finance-moderator', 'financeAdmin'], ['super-moderator', 'superAdmin']]) {
+    await seedUser(uid, {adminRole: role});
+    await assertFails(updateDoc(doc(authedDb(uid), 'services', 'moderated-service'), {
+      moderationStatus: 'approved', isVisibleToMarketplace: true, updatedAt: serverTimestamp(),
+    }));
+  }
+});
+
+test('H-04 public marketplace service exposes only coarse location and private data is role-scoped', async () => {
+  const owner = 'private-service-owner';
+  const customer = 'private-service-customer';
+  const support = 'private-service-support';
+  const finance = 'private-service-finance';
+  await seedPendingProvider(owner);
+  await seedUser(customer);
+  await seedUser(support, {adminRole: 'customerSupportAdmin'});
+  await seedUser(finance, {adminRole: 'financeAdmin'});
+  await createServicePair(authedDb(owner), owner, 'private-service');
+  const publicSnapshot = await assertSucceeds(getDoc(doc(authedDb(customer), 'services', 'private-service')));
+  assert.equal(publicSnapshot.data().privateNotes, undefined);
+  assert.equal(publicSnapshot.data().location.latitude, undefined);
+  assert.equal(publicSnapshot.data().location.displayAddress, undefined);
+  await assertFails(getDoc(doc(authedDb(customer), 'servicePrivate', 'private-service')));
+  await assertSucceeds(getDoc(doc(authedDb(owner), 'servicePrivate', 'private-service')));
+  await assertSucceeds(getDoc(doc(authedDb(support), 'servicePrivate', 'private-service')));
+  await assertSucceeds(getDoc(doc(authedDb(finance), 'servicePrivate', 'private-service')));
+});
+
+test('H-04 marketplace query can read sanitized visible services', async () => {
+  const owner = 'marketplace-query-owner';
+  const customer = 'marketplace-query-customer';
+  await seedPendingProvider(owner);
+  await seedUser(customer);
+  await createServicePair(authedDb(owner), owner, 'marketplace-query-service');
+  const servicesQuery = query(
+    collection(authedDb(customer), 'services'),
+    where('status', '==', 'active'),
+    where('isActive', '==', true),
+    where('isDeleted', '==', false),
+    where('isPaused', '==', false),
+    where('isVisibleToMarketplace', '==', true),
+  );
+  const snapshot = await assertSucceeds(getDocs(servicesQuery));
+  assert.equal(snapshot.size, 1);
+});
+
+test('H-04 clients cannot create or restore exact location in public services', async () => {
+  const owner = 'public-location-owner';
+  const serviceId = 'public-location-service';
+  await seedPendingProvider(owner);
+  const db = authedDb(owner);
+  await assertFails(createServicePair(db, owner, 'exact-create-service', {
+    location: {
+      displayAddress: 'Exact address', latitude: 19.076, longitude: 72.8777,
+      geohash: 'te7ud', city: 'Mumbai', state: 'Maharashtra', country: 'IN',
+    },
+  }));
+  await assertSucceeds(createServicePair(db, owner, serviceId));
+  await assertFails(updateDoc(doc(db, 'services', serviceId), {
+    location: {
+      displayAddress: 'Exact address', latitude: 19.076, longitude: 72.8777,
+      geohash: 'te7ud', city: 'Mumbai', state: 'Maharashtra', country: 'IN',
+    },
+    updatedAt: serverTimestamp(),
+  }));
 });

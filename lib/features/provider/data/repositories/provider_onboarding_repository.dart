@@ -212,6 +212,10 @@ class ProviderOnboardingRepository {
     final effectiveBackDocument = normalizedDocumentType == 'panCard'
         ? null
         : backDocument;
+    final submissionId = _firestore
+        .collection('providerVerificationSubmissions')
+        .doc()
+        .id;
 
     final uploadedRefs = <Reference>[];
 
@@ -219,6 +223,7 @@ class ProviderOnboardingRepository {
       final frontUpload = await _uploadIdentityDocument(
         userId: uid,
         document: frontDocument,
+        submissionId: submissionId,
         suffix: 'front',
       );
       uploadedRefs.add(frontUpload.ref);
@@ -228,6 +233,7 @@ class ProviderOnboardingRepository {
         backUpload = await _uploadIdentityDocument(
           userId: uid,
           document: effectiveBackDocument,
+          submissionId: submissionId,
           suffix: 'back',
         );
         uploadedRefs.add(backUpload.ref);
@@ -240,6 +246,7 @@ class ProviderOnboardingRepository {
         final payload = <String, dynamic>{
           'userId': uid,
           'status': providerVerificationPending,
+          'submissionId': submissionId,
           'documentType': normalizedDocumentType,
           'documentFrontPath': frontUpload.storagePath,
           'documentBackPath': backUpload?.storagePath ?? '',
@@ -376,6 +383,7 @@ class ProviderOnboardingRepository {
   Future<_UploadedVerificationDocument> _uploadIdentityDocument({
     required String userId,
     required ProviderVerificationUploadFile document,
+    required String submissionId,
     required String suffix,
   }) async {
     final fileName = document.fileName.trim().isEmpty
@@ -398,7 +406,7 @@ class ProviderOnboardingRepository {
     }
     final extension = _normalizedExtension(fileName, document.contentType);
     final ref = _storage.ref().child(
-      'providerVerification/$userId/identity/${DateTime.now().millisecondsSinceEpoch}_$suffix.$extension',
+      'providerVerification/$userId/identity/$submissionId/$suffix.$extension',
     );
     debugPrint('File name: $fileName');
     debugPrint('File size: ${document.fileSize}');

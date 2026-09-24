@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../domain/models/moderation_item.dart';
@@ -6,19 +7,19 @@ import '../../domain/models/moderation_item.dart';
 class AdminModerationRepository {
   final FirebaseFirestore _firestore;
   final FirebaseAuth _auth;
+  final FirebaseFunctions _functions;
 
-  AdminModerationRepository({FirebaseFirestore? firestore, FirebaseAuth? auth})
-    : _firestore = firestore ?? FirebaseFirestore.instance,
-      _auth = auth ?? FirebaseAuth.instance;
+  AdminModerationRepository({
+    FirebaseFirestore? firestore,
+    FirebaseAuth? auth,
+    FirebaseFunctions? functions,
+  }) : _firestore = firestore ?? FirebaseFirestore.instance,
+       _auth = auth ?? FirebaseAuth.instance,
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   CollectionReference<Map<String, dynamic>> get _queue =>
       _firestore.collection('moderationQueue');
-
-  CollectionReference<Map<String, dynamic>> get _auditLogs =>
-      _firestore.collection('adminAuditLogs');
-
-  CollectionReference<Map<String, dynamic>> get _services =>
-      _firestore.collection('services');
 
   String get _adminUid {
     final uid = _auth.currentUser?.uid;
@@ -45,36 +46,13 @@ class AdminModerationRepository {
     required String moderationItemId,
     String reason = 'Approved by admin',
   }) async {
-    final adminUid = _adminUid;
-    final batch = _firestore.batch();
-    final serviceRef = _services.doc(serviceId);
-    final queueRef = _queue.doc(moderationItemId);
-    final auditRef = _auditLogs.doc();
-
-    batch.set(serviceRef, {
-      'moderationStatus': 'approved',
-      'isVisibleToMarketplace': true,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    batch.set(queueRef, {
-      'status': 'approved',
-      'assignedAdminId': adminUid,
+    _adminUid;
+    await _functions.httpsCallable('moderateService').call<void>({
+      'serviceId': serviceId,
+      'moderationItemId': moderationItemId,
+      'action': 'approve',
       'reason': reason,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'resolvedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    batch.set(auditRef, {
-      'adminId': adminUid,
-      'action': 'service.approve',
-      'targetType': 'service',
-      'targetId': serviceId,
-      'reason': reason,
-      'createdAt': FieldValue.serverTimestamp(),
     });
-
-    await batch.commit();
   }
 
   Future<void> removeService({
@@ -82,39 +60,12 @@ class AdminModerationRepository {
     required String moderationItemId,
     required String reason,
   }) async {
-    final adminUid = _adminUid;
-    final batch = _firestore.batch();
-    final serviceRef = _services.doc(serviceId);
-    final queueRef = _queue.doc(moderationItemId);
-    final auditRef = _auditLogs.doc();
-
-    batch.set(serviceRef, {
-      'moderationStatus': 'removed',
-      'isVisibleToMarketplace': false,
-      'isActive': false,
-      'status': 'removed',
-      'moderationReason': reason,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'removedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    batch.set(queueRef, {
-      'status': 'removed',
-      'assignedAdminId': adminUid,
+    _adminUid;
+    await _functions.httpsCallable('moderateService').call<void>({
+      'serviceId': serviceId,
+      'moderationItemId': moderationItemId,
+      'action': 'remove',
       'reason': reason,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'resolvedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    batch.set(auditRef, {
-      'adminId': adminUid,
-      'action': 'service.remove',
-      'targetType': 'service',
-      'targetId': serviceId,
-      'reason': reason,
-      'createdAt': FieldValue.serverTimestamp(),
     });
-
-    await batch.commit();
   }
 }

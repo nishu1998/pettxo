@@ -36,7 +36,14 @@ test("provider verification paths stay scoped to the same uid", () => {
   assert.equal(
     providerVerificationDocumentPathBelongsToUser(
       "uid_123",
-      "providerVerification/uid_123/identity/nested/front.jpg",
+      "providerVerification/uid_123/identity/submission-1/front.jpg",
+    ),
+    true,
+  );
+  assert.equal(
+    providerVerificationDocumentPathBelongsToUser(
+      "uid_123",
+      "providerVerification/uid_123/identity/submission-1/nested/front.jpg",
     ),
     false,
   );

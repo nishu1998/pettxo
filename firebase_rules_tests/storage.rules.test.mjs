@@ -6,11 +6,10 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import {getFirestore, doc, setDoc} from 'firebase/firestore';
+import {doc, setDoc} from 'firebase/firestore';
 import {
   deleteObject,
   getBytes,
-  getStorage,
   ref,
   uploadBytes,
 } from 'firebase/storage';
@@ -23,16 +22,16 @@ const firestoreRules = readFileSync('../firestore.rules', 'utf8');
 let testEnv;
 
 function authedStorage(uid) {
-  return getStorage(testEnv.authenticatedContext(uid).app, `gs://${bucket}`);
+  return testEnv.authenticatedContext(uid).storage(`gs://${bucket}`);
 }
 
 function unauthedStorage() {
-  return getStorage(testEnv.unauthenticatedContext().app, `gs://${bucket}`);
+  return testEnv.unauthenticatedContext().storage(`gs://${bucket}`);
 }
 
 async function seedUser(uid, data = {}) {
   await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = getFirestore(context.app);
+    const db = context.firestore();
     await setDoc(doc(db, 'users', uid), {
       uid,
       username: uid,
@@ -53,7 +52,7 @@ async function seedUser(uid, data = {}) {
 
 async function seedSupportTicket(ticketId, userId) {
   await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = getFirestore(context.app);
+    const db = context.firestore();
     await setDoc(doc(db, 'supportTickets', ticketId), {
       ticketId,
       userId,
@@ -71,6 +70,21 @@ async function seedSupportTicket(ticketId, userId) {
       contactNumber: '+919999999999',
       attachments: [],
     });
+  });
+}
+
+async function seedVerification(uid, {status, submissionId, path}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), 'users', uid, 'providerVerification', 'main'),
+      {
+        userId: uid,
+        status,
+        submissionId,
+        documentFrontPath: path,
+        documentBackPath: '',
+      },
+    );
   });
 }
 
@@ -92,7 +106,7 @@ test('owner can upload a supported image under their own UID', async () => {
   const storage = authedStorage(uid);
   const imageRef = ref(
     storage,
-    `providerVerification/${uid}/identity/front.png`,
+    `providerVerification/${uid}/identity/submission-1/front.png`,
   );
 
   await assertSucceeds(
@@ -108,7 +122,7 @@ test('owner can upload a supported PDF', async () => {
   const storage = authedStorage(uid);
   const pdfRef = ref(
     storage,
-    `providerVerification/${uid}/identity/front.pdf`,
+    `providerVerification/${uid}/identity/submission-1/front.pdf`,
   );
 
   await assertSucceeds(
@@ -124,7 +138,7 @@ test('files larger than 10 MB are rejected', async () => {
   const storage = authedStorage(uid);
   const largeRef = ref(
     storage,
-    `providerVerification/${uid}/identity/large.pdf`,
+    `providerVerification/${uid}/identity/submission-1/large.pdf`,
   );
   const tooLarge = new Uint8Array(10 * 1024 * 1024 + 1);
 
@@ -141,7 +155,7 @@ test('unsupported content types are rejected', async () => {
   const storage = authedStorage(uid);
   const textRef = ref(
     storage,
-    `providerVerification/${uid}/identity/front.txt`,
+    `providerVerification/${uid}/identity/submission-1/front.txt`,
   );
 
   await assertFails(
@@ -151,13 +165,13 @@ test('unsupported content types are rejected', async () => {
   );
 });
 
-test('owner can delete their own uploaded verification file', async () => {
+test('owner can delete an unreferenced verification upload after a failed submission', async () => {
   const uid = 'owner-storage-5';
   await seedUser(uid);
   const storage = authedStorage(uid);
   const fileRef = ref(
     storage,
-    `providerVerification/${uid}/identity/front.png`,
+    `providerVerification/${uid}/identity/submission-orphan/front.png`,
   );
 
   await assertSucceeds(
@@ -178,11 +192,11 @@ test('another user cannot delete uploaded verification file', async () => {
   const otherStorage = authedStorage(otherUid);
   const ownerRef = ref(
     ownerStorage,
-    `providerVerification/${ownerUid}/identity/front.png`,
+    `providerVerification/${ownerUid}/identity/submission-1/front.png`,
   );
   const otherRef = ref(
     otherStorage,
-    `providerVerification/${ownerUid}/identity/front.png`,
+    `providerVerification/${ownerUid}/identity/submission-1/front.png`,
   );
 
   await assertSucceeds(
@@ -200,11 +214,11 @@ test('unauthenticated users cannot read, upload, or delete verification files', 
   const publicStorage = unauthedStorage();
   const ownerRef = ref(
     ownerStorage,
-    `providerVerification/${uid}/identity/front.png`,
+    `providerVerification/${uid}/identity/submission-1/front.png`,
   );
   const publicRef = ref(
     publicStorage,
-    `providerVerification/${uid}/identity/front.png`,
+    `providerVerification/${uid}/identity/submission-1/front.png`,
   );
 
   await assertSucceeds(
@@ -219,6 +233,75 @@ test('unauthenticated users cannot read, upload, or delete verification files', 
     }),
   );
   await assertFails(deleteObject(publicRef));
+});
+
+for (const status of ['pending', 'approved']) {
+  test(`${status} verification evidence cannot be overwritten or deleted by owner`, async () => {
+    const uid = `immutable-${status}`;
+    const submissionId = `submission-${status}`;
+    const path = `providerVerification/${uid}/identity/${submissionId}/front.png`;
+    await seedUser(uid);
+    const storage = authedStorage(uid);
+    const fileRef = ref(storage, path);
+    await assertSucceeds(
+      uploadBytes(fileRef, Uint8Array.from([1, 2, 3]), {contentType: 'image/png'}),
+    );
+    await seedVerification(uid, {status, submissionId, path});
+    await assertSucceeds(getBytes(fileRef));
+    await assertFails(
+      uploadBytes(fileRef, Uint8Array.from([4, 5, 6]), {contentType: 'image/png'}),
+    );
+    await assertFails(deleteObject(fileRef));
+  });
+}
+
+test('rejected provider can create a new immutable submission version', async () => {
+  const uid = 'rejected-resubmission';
+  const oldPath = `providerVerification/${uid}/identity/submission-old/front.png`;
+  const newPath = `providerVerification/${uid}/identity/submission-new/front.png`;
+  await seedUser(uid);
+  await seedVerification(uid, {
+    status: 'rejected',
+    submissionId: 'submission-old',
+    path: oldPath,
+  });
+  await assertSucceeds(
+    uploadBytes(ref(authedStorage(uid), newPath), Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+});
+
+test('KYC reads remain owner, support, and super-admin only', async () => {
+  const ownerUid = 'kyc-read-owner';
+  const otherUid = 'kyc-read-other';
+  const supportUid = 'kyc-read-support';
+  const financeUid = 'kyc-read-finance';
+  const superUid = 'kyc-read-super';
+  const path = `providerVerification/${ownerUid}/identity/submission-read/front.png`;
+  await seedUser(ownerUid);
+  await seedUser(otherUid);
+  await seedUser(supportUid, {adminRole: 'customerSupportAdmin'});
+  await seedUser(financeUid, {adminRole: 'financeAdmin'});
+  await seedUser(superUid, {adminRole: 'superAdmin'});
+  await assertSucceeds(
+    uploadBytes(ref(authedStorage(ownerUid), path), Uint8Array.from([1, 2, 3]), {
+      contentType: 'image/png',
+    }),
+  );
+  await assertSucceeds(getBytes(ref(authedStorage(ownerUid), path)));
+  await assertSucceeds(getBytes(ref(authedStorage(supportUid), path)));
+  await assertSucceeds(getBytes(ref(authedStorage(superUid), path)));
+  await assertFails(getBytes(ref(authedStorage(financeUid), path)));
+  await assertFails(getBytes(ref(authedStorage(otherUid), path)));
+  await assertFails(
+    uploadBytes(
+      ref(authedStorage(otherUid), path),
+      Uint8Array.from([4, 5, 6]),
+      {contentType: 'image/png'},
+    ),
+  );
+  await assertFails(deleteObject(ref(authedStorage(otherUid), path)));
 });
 
 test('support ticket owner can upload and read their own support attachment', async () => {

@@ -17,6 +17,7 @@ const {
   reconcilePaymentAttemptsV3,
   resolveQrSwitchLockedUntil,
   submitRefundInstructionV3,
+  loadLiveServiceSnapshotForPaymentV3,
 } = require("../lib/booking/application/paymentOrchestrationV3.js");
 const {Timestamp} = require("firebase-admin/firestore");
 const razorpayGateway = require("../lib/booking/application/razorpayGateway.js");
@@ -763,6 +764,45 @@ class StrictOrderingFirestore extends FakeFirestore {
     throw new Error("transaction-conflict");
   }
 }
+
+test("payment materialization reads exact service location from servicePrivate", async () => {
+  const firestore = new FakeFirestore({
+    "services/service-private-location": {
+      ownerUserId: "provider-1",
+      status: "active",
+      isActive: true,
+      isDeleted: false,
+      isPaused: false,
+      isVisibleToMarketplace: true,
+      location: {
+        approximateLatitude: 19.08,
+        approximateLongitude: 72.88,
+        geohash: "te7ud",
+        city: "Mumbai",
+        state: "Maharashtra",
+        country: "IN",
+      },
+    },
+    "servicePrivate/service-private-location": {
+      ownerUserId: "provider-1",
+      location: {
+        displayAddress: "Exact building, Mumbai",
+        latitude: 19.076,
+        longitude: 72.8777,
+      },
+    },
+  });
+
+  const service = await loadLiveServiceSnapshotForPaymentV3({
+    firestore,
+    serviceId: "service-private-location",
+  });
+  assert.deepEqual(service.location, {
+    displayAddress: "Exact building, Mumbai",
+    latitude: 19.076,
+    longitude: 72.8777,
+  });
+});
 
 function toSerializedTimestamp(date) {
   return {

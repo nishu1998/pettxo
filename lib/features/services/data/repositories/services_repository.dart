@@ -29,6 +29,9 @@ class ServicesRepository {
   CollectionReference<Map<String, dynamic>> get _services =>
       _firestore.collection('services');
 
+  CollectionReference<Map<String, dynamic>> get _servicePrivate =>
+      _firestore.collection('servicePrivate');
+
   String get _currentUid {
     final uid = _auth.currentUser?.uid;
     if (uid == null) {
@@ -90,9 +93,7 @@ class ServicesRepository {
         .where('isDeleted', isEqualTo: false)
         .orderBy('updatedAt', descending: true)
         .snapshots()
-        .map(
-          (snapshot) => snapshot.docs.map(ServiceModel.fromDocument).toList(),
-        );
+        .asyncMap(_mapOwnerSnapshot);
   }
 
   Stream<List<ServiceModel>> watchPublicOwnerServices(String ownerUserId) {
@@ -128,7 +129,17 @@ class ServicesRepository {
       _services.doc(id),
     );
     if (!snapshot.exists) return null;
-    final service = ServiceModel.fromDocument(snapshot);
+    final publicData = snapshot.data() ?? const <String, dynamic>{};
+    final ownerUserId = (publicData['ownerUserId'] as String? ?? '').trim();
+    Map<String, dynamic> serviceData = publicData;
+    if (ownerUserId == _currentUid) {
+      final privateSnapshot = await _servicePrivate.doc(id).get();
+      serviceData = _mergeServicePrivateData(
+        publicData,
+        privateSnapshot.data(),
+      );
+    }
+    final service = ServiceModel.fromMap(snapshot.id, serviceData);
     if (!_isServicePubliclyVisible(service)) return null;
     return await _isOwnerVisible(service.ownerUserId) ? service : null;
   }
@@ -235,7 +246,13 @@ class ServicesRepository {
       publishedAt: service.publishedAt,
     );
 
-    await doc.set(serviceWithUploadedPhotos.toCreateMap());
+    final batch = _firestore.batch();
+    batch.set(doc, serviceWithUploadedPhotos.toCreateMap());
+    batch.set(
+      _servicePrivate.doc(doc.id),
+      serviceWithUploadedPhotos.toPrivateCreateMap(doc.id),
+    );
+    await batch.commit();
     return doc.id;
   }
 
@@ -295,6 +312,39 @@ class ServicesRepository {
         .map(ServiceModel.fromDocument)
         .where((service) => !service.isEffectivelyPausedByVerification)
         .toList();
+  }
+
+  Future<List<ServiceModel>> _mapOwnerSnapshot(
+    QuerySnapshot<Map<String, dynamic>> snapshot,
+  ) async {
+    if (snapshot.docs.isEmpty) return const <ServiceModel>[];
+    final privateSnapshots = await Future.wait(
+      snapshot.docs.map((service) => _servicePrivate.doc(service.id).get()),
+    );
+    final privateById = {
+      for (final privateSnapshot in privateSnapshots)
+        privateSnapshot.id: privateSnapshot.data(),
+    };
+    return snapshot.docs
+        .map(
+          (service) => ServiceModel.fromMap(
+            service.id,
+            _mergeServicePrivateData(service.data(), privateById[service.id]),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Map<String, dynamic> _mergeServicePrivateData(
+    Map<String, dynamic> publicData,
+    Map<String, dynamic>? privateData,
+  ) {
+    if (privateData == null) return publicData;
+    return {
+      ...publicData,
+      'privateNotes': privateData['privateNotes'] ?? '',
+      'location': privateData['location'] ?? publicData['location'],
+    };
   }
 
   bool _isServicePubliclyVisible(ServiceModel service) {

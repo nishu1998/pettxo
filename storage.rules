@@ -63,6 +63,24 @@ service firebase.storage {
       return request.resource.size <= 10 * 1024 * 1024;
     }
 
+    function verificationDocument(userId) {
+      return firestore.get(
+        /databases/(default)/documents/users/$(userId)/providerVerification/main
+      );
+    }
+
+    function canStartVerificationSubmission(userId) {
+      return !firestore.exists(
+        /databases/(default)/documents/users/$(userId)/providerVerification/main
+      ) || verificationDocument(userId).data.status in ['rejected', 'notSubmitted'];
+    }
+
+    function submissionIsNotReferenced(userId, submissionId) {
+      return !firestore.exists(
+        /databases/(default)/documents/users/$(userId)/providerVerification/main
+      ) || verificationDocument(userId).data.submissionId != submissionId;
+    }
+
     function canUploadBookingDisputeEvidence(bookingId, userId) {
       return isOwner(userId) &&
         isSupportedImage() &&
@@ -132,10 +150,21 @@ service firebase.storage {
 
     match /providerVerification/{userId}/identity/{fileName} {
       allow read: if isOwner(userId) || canReviewProviderVerificationDocuments();
-      allow create, update: if isOwner(userId) &&
+      // Legacy submitted evidence is immutable. Server cleanup uses Admin SDK.
+      allow create, update, delete: if false;
+    }
+
+    match /providerVerification/{userId}/identity/{submissionId}/{fileName} {
+      allow read: if isOwner(userId) || canReviewProviderVerificationDocuments();
+      allow create: if isOwner(userId) &&
+        canStartVerificationSubmission(userId) &&
         isSupportedVerificationDocument() &&
         isMaxTenMb();
-      allow delete: if isOwner(userId);
+      allow update: if false;
+      // This supports cleanup after a failed Firestore submission while making
+      // the version immutable as soon as its submissionId is referenced.
+      allow delete: if isOwner(userId) &&
+        submissionIsNotReferenced(userId, submissionId);
     }
 
     match /supportTickets/{userId}/{ticketId}/{fileName} {
