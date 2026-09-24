@@ -11,7 +11,16 @@ import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../domain/notification_visibility.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../profile/presentation/widgets/profile_content_sections.dart';
+import '../../../provider/presentation/screens/provider_verification_hub_screen.dart';
 import '../../../support/presentation/screens/support_ticket_detail_screen.dart';
+
+@immutable
+class NotificationDisplayContent {
+  const NotificationDisplayContent({required this.title, required this.body});
+
+  final String title;
+  final String body;
+}
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -48,6 +57,34 @@ class NotificationsScreen extends StatelessWidget {
     final category = '${data['category'] ?? nested['category'] ?? ''}'.trim();
     final type = '${data['type'] ?? nested['type'] ?? ''}'.trim();
     return category == 'promotion' || type == 'promotionalBroadcast';
+  }
+
+  @visibleForTesting
+  static bool isProviderVerificationNotification(Map<String, dynamic> data) {
+    final nested = data['data'] is Map
+        ? Map<String, dynamic>.from(data['data'] as Map)
+        : const <String, dynamic>{};
+    final type = '${data['type'] ?? nested['type'] ?? ''}'.trim();
+    return type == 'providerVerificationApproved' ||
+        type == 'providerVerificationRejected';
+  }
+
+  @visibleForTesting
+  static Widget? destinationForNotificationData(Map<String, dynamic> data) {
+    if (isProviderVerificationNotification(data)) {
+      return const ProviderVerificationHubScreen();
+    }
+    return null;
+  }
+
+  @visibleForTesting
+  static NotificationDisplayContent displayContentFromNotificationData(
+    Map<String, dynamic> data,
+  ) {
+    return NotificationDisplayContent(
+      title: '${data['title'] ?? 'Pettxo update'}',
+      body: '${data['body'] ?? ''}',
+    );
   }
 
   @visibleForTesting
@@ -227,6 +264,11 @@ class NotificationsScreen extends StatelessWidget {
     if (isPromotionalNotification(data)) {
       return;
     }
+    final destination = destinationForNotificationData(data);
+    if (destination != null) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => destination));
+      return;
+    }
     final bookingRequest = bookingOpenRequestFromNotificationData(data);
     final bookingId = bookingRequest.bookingId;
     final category = '${data['category'] ?? data['data']?['category'] ?? ''}';
@@ -401,8 +443,10 @@ class _NotificationTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final data = doc.data();
-    final title = '${data['title'] ?? 'Pettxo update'}';
-    final body = '${data['body'] ?? ''}';
+    final displayContent =
+        NotificationsScreen.displayContentFromNotificationData(data);
+    final title = displayContent.title;
+    final body = displayContent.body;
     final type = '${data['type'] ?? ''}';
     final category = '${data['category'] ?? ''}';
     final isUnread = data['read'] != true && data['isRead'] != true;

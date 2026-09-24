@@ -4,6 +4,22 @@ import 'package:pettexo/features/bookings/domain/models/booking_flow_models.dart
 
 void main() {
   group('foreground push intents', () {
+    test('verification approval routes to provider verification', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'type': 'providerVerificationApproved',
+      }, mode: PushPayloadDeliveryMode.foreground);
+
+      expect(intent.target, PushNavigationTarget.providerVerification);
+    });
+
+    test('verification rejection routes to provider verification', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'type': 'providerVerificationRejected',
+      }, mode: PushPayloadDeliveryMode.foreground);
+
+      expect(intent.target, PushNavigationTarget.providerVerification);
+    });
+
     test('promotional payload resolves to no navigation intent', () {
       final intent = PushNotificationService.navigationIntentFromPayload({
         'category': 'promotion',
@@ -81,6 +97,22 @@ void main() {
   });
 
   group('background push tap intents', () {
+    test('nested verification approval routes to provider verification', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'data': {'type': 'providerVerificationApproved'},
+      }, mode: PushPayloadDeliveryMode.backgroundTap);
+
+      expect(intent.target, PushNavigationTarget.providerVerification);
+    });
+
+    test('verification rejection routes to provider verification', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'type': 'providerVerificationRejected',
+      }, mode: PushPayloadDeliveryMode.backgroundTap);
+
+      expect(intent.target, PushNavigationTarget.providerVerification);
+    });
+
     test('promotional background payload remains non-actionable', () {
       final intent = PushNotificationService.navigationIntentFromPayload({
         'data': {
@@ -144,6 +176,22 @@ void main() {
   });
 
   group('terminated launch intents', () {
+    test('verification approval routes to provider verification', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'type': 'providerVerificationApproved',
+      }, mode: PushPayloadDeliveryMode.initialLaunch);
+
+      expect(intent.target, PushNavigationTarget.providerVerification);
+    });
+
+    test('nested verification rejection routes to provider verification', () {
+      final intent = PushNotificationService.navigationIntentFromPayload({
+        'data': {'type': 'providerVerificationRejected'},
+      }, mode: PushPayloadDeliveryMode.initialLaunch);
+
+      expect(intent.target, PushNavigationTarget.providerVerification);
+    });
+
     test('terminated confirmed payload resolves to booking intent', () {
       final intent = PushNotificationService.navigationIntentFromPayload({
         'bookingId': 'booking-5',

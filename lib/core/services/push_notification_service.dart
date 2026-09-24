@@ -13,6 +13,7 @@ import '../../features/bookings/domain/models/booking_flow_models.dart';
 import '../../features/bookings/presentation/navigation/booking_navigation_resolver.dart';
 import '../../features/messages/presentation/screens/chat_detail_screen.dart';
 import '../../features/notifications/presentation/screens/notifications_screen.dart';
+import '../../features/provider/presentation/screens/provider_verification_hub_screen.dart';
 import '../../features/profile/presentation/screens/profile_screen.dart';
 import '../constants/app_colors.dart';
 import 'app_loader.dart';
@@ -52,6 +53,7 @@ enum PushNavigationTarget {
   chat,
   senderProfile,
   recipientProfile,
+  providerVerification,
   notifications,
 }
 
@@ -81,6 +83,12 @@ class PushNavigationIntent {
     : target = PushNavigationTarget.recipientProfile,
       bookingRequest = null,
       chatId = null;
+
+  const PushNavigationIntent.providerVerification()
+    : target = PushNavigationTarget.providerVerification,
+      bookingRequest = null,
+      chatId = null,
+      profileUserId = null;
 
   const PushNavigationIntent.notifications()
     : target = PushNavigationTarget.notifications,
@@ -566,6 +574,10 @@ class PushNotificationService {
     if (category == 'promotion' || type == 'promotionalBroadcast') {
       return const PushNavigationIntent.none();
     }
+    if (type == 'providerVerificationApproved' ||
+        type == 'providerVerificationRejected') {
+      return const PushNavigationIntent.providerVerification();
+    }
     final bookingRequest = bookingOpenRequestFromPayload(data);
     final chatId = '${data['chatId'] ?? nested['chatId'] ?? ''}'.trim();
     final senderId = '${data['senderId'] ?? nested['senderId'] ?? ''}'.trim();
@@ -631,6 +643,13 @@ class PushNotificationService {
         navigator.push(
           MaterialPageRoute(
             builder: (_) => ProfileScreen(userId: intent.profileUserId!),
+          ),
+        );
+        return;
+      case PushNavigationTarget.providerVerification:
+        navigator.push(
+          MaterialPageRoute(
+            builder: (_) => const ProviderVerificationHubScreen(),
           ),
         );
         return;

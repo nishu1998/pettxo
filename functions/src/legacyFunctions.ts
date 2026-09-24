@@ -43,6 +43,9 @@ import {
   normalizeProviderVerificationDocumentPath,
   providerVerificationDocumentPathBelongsToUser,
 } from "./providerVerificationDocuments";
+import {
+  buildProviderVerificationDecisionNotification,
+} from "./providerVerification/providerVerificationNotifications";
 import {serviceSlotConfigChanged} from "./services/serviceSlotCandidates";
 import {ensureServiceSlotCoverage} from "./services/serviceSlotCoverage";
 import {
@@ -1272,6 +1275,7 @@ function userAllowsNotification(
 
 type ProviderVerificationSnapshot = {
   status: string;
+  submissionId: string;
   documentFrontPath: string;
   documentBackPath: string;
   gracePeriodEndsAt: Timestamp | null;
@@ -1285,6 +1289,7 @@ type ProviderVerificationSnapshot = {
 function normalizeProviderVerification(data: DocumentData | undefined): ProviderVerificationSnapshot {
   return {
     status: asTrimmedString(data?.status) || "notSubmitted",
+    submissionId: asTrimmedString(data?.submissionId),
     documentFrontPath: normalizeProviderVerificationDocumentPath(data?.documentFrontPath),
     documentBackPath: normalizeProviderVerificationDocumentPath(data?.documentBackPath),
     gracePeriodEndsAt: data?.gracePeriodEndsAt instanceof Timestamp ? data.gracePeriodEndsAt as Timestamp : null,
@@ -3122,6 +3127,27 @@ export const syncProviderServicesOnVerificationUpdate = onDocumentWritten(
         event.params.userId,
         afterVerification,
       );
+    }
+
+    const decisionNotification = buildProviderVerificationDecisionNotification({
+      beforeStatus: beforeVerification.status,
+      afterStatus: afterVerification.status,
+      providerUserId: event.params.userId,
+      submissionId: afterVerification.submissionId,
+    });
+    if (decisionNotification) {
+      const notificationRef = db
+        .collection("notifications")
+        .doc(decisionNotification.documentId);
+      await db.runTransaction(async (transaction) => {
+        const existingNotification = await transaction.get(notificationRef);
+        if (existingNotification.exists) return;
+        transaction.create(notificationRef, {
+          ...decisionNotification.document,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      });
     }
 
     if (documentPathChanged &&

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/bookings/domain/models/booking_flow_models.dart';
 import 'package:pettexo/features/notifications/presentation/screens/notifications_screen.dart';
+import 'package:pettexo/features/provider/presentation/screens/provider_verification_hub_screen.dart';
 
 void main() {
   test(
@@ -99,6 +100,68 @@ void main() {
         'type': 'payment_required',
       }),
       isTrue,
+    );
+  });
+
+  test('approval notification renders canonical content and routes to hub', () {
+    final data = <String, dynamic>{
+      'type': 'providerVerificationApproved',
+      'title': 'Verification approved',
+      'body':
+          'Your provider verification has been approved. You can now continue as a verified provider on Pettxo.',
+      'channels': ['in_app', 'push'],
+    };
+
+    final content = NotificationsScreen.displayContentFromNotificationData(
+      data,
+    );
+
+    expect(content.title, 'Verification approved');
+    expect(content.body, contains('approved'));
+    expect(NotificationsScreen.isVisibleInAppNotification(data), isTrue);
+    expect(
+      NotificationsScreen.destinationForNotificationData(data),
+      isA<ProviderVerificationHubScreen>(),
+    );
+  });
+
+  test('rejection notification renders canonical content and routes to hub', () {
+    final data = <String, dynamic>{
+      'type': 'providerVerificationRejected',
+      'title': 'Verification needs attention',
+      'body':
+          'Your provider verification was not approved. Open Pettxo to review the details and resubmit your verification.',
+      'channels': ['in_app', 'push'],
+    };
+
+    final content = NotificationsScreen.displayContentFromNotificationData(
+      data,
+    );
+
+    expect(content.title, 'Verification needs attention');
+    expect(content.body, contains('resubmit'));
+    expect(NotificationsScreen.isVisibleInAppNotification(data), isTrue);
+    expect(
+      NotificationsScreen.destinationForNotificationData(data),
+      isA<ProviderVerificationHubScreen>(),
+    );
+  });
+
+  test('nested verification type routes to hub', () {
+    expect(
+      NotificationsScreen.destinationForNotificationData({
+        'data': {'type': 'providerVerificationRejected'},
+      }),
+      isA<ProviderVerificationHubScreen>(),
+    );
+  });
+
+  test('generic notification destination behavior remains unchanged', () {
+    expect(
+      NotificationsScreen.destinationForNotificationData({
+        'type': 'accountUpdate',
+      }),
+      isNull,
     );
   });
 }
