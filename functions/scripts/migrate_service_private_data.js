@@ -96,7 +96,19 @@ function privateCopyIsComplete(serviceId, publicData, privateData) {
     location.longitude >= -180 && location.longitude <= 180;
 }
 
+function terminalServiceSkipReason(data) {
+  if (data.isDeleted === true) return "deleted-service";
+  if (data.status === "removed" &&
+      data.isActive === false &&
+      data.isVisibleToMarketplace === false) {
+    return "removed-service";
+  }
+  return null;
+}
+
 function buildMigration(serviceId, data) {
+  const skipReason = terminalServiceSkipReason(data);
+  if (skipReason) return {skip: skipReason};
   const location = data.location || {};
   const latitude = location.latitude;
   const longitude = location.longitude;
@@ -149,6 +161,41 @@ function buildMigration(serviceId, data) {
   };
 }
 
+async function executeMigration({apply, db, document, migration}) {
+  if (!apply) return false;
+  const privateRef = db.collection("servicePrivate").doc(document.id);
+  const existingPrivate = await privateRef.get();
+  const privateWrite = {
+    ...migration.privateData,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (!existingPrivate.exists) privateWrite.createdAt = FieldValue.serverTimestamp();
+  await privateRef.set(privateWrite, {merge: true});
+  const verified = await privateRef.get();
+  const privateData = verified.data() || {};
+  if (!verified.exists || privateData.ownerUserId !== migration.privateData.ownerUserId ||
+      privateData.serviceId !== migration.privateData.serviceId ||
+      privateData.privateNotes !== migration.privateData.privateNotes ||
+      privateData.location?.displayAddress !== migration.privateData.location.displayAddress ||
+      Number(privateData.location?.latitude) !== migration.privateData.location.latitude ||
+      Number(privateData.location?.longitude) !== migration.privateData.location.longitude) {
+    throw new Error(`Private copy verification failed for service ${document.id}`);
+  }
+  await document.ref.update({
+    location: migration.publicLocation,
+    privateNotes: FieldValue.delete(),
+  }, {lastUpdateTime: document.updateTime});
+  const sanitized = (await document.ref.get()).data() || {};
+  const sanitizedLocation = sanitized.location || {};
+  if (Object.hasOwn(sanitized, "privateNotes") ||
+      Object.hasOwn(sanitizedLocation, "displayAddress") ||
+      Object.hasOwn(sanitizedLocation, "latitude") ||
+      Object.hasOwn(sanitizedLocation, "longitude")) {
+    throw new Error(`Public sanitization verification failed for service ${document.id}`);
+  }
+  return true;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help || !options.projectId) {
@@ -190,6 +237,17 @@ async function main() {
     for (const document of page.docs) {
       totals.scanned += 1;
       const migration = buildMigration(document.id, document.data());
+      if (migration?.skip) {
+        totals.skipped += 1;
+        console.log(JSON.stringify({
+          mode: options.apply ? "apply" : "dry-run",
+          serviceId: document.id,
+          skip: migration.skip,
+        }));
+        lastId = document.id;
+        saveCheckpoint();
+        continue;
+      }
       if (!migration) {
         const privateSnapshot = await db.collection("servicePrivate").doc(document.id).get();
         if (!privateSnapshot.exists ||
@@ -215,37 +273,12 @@ async function main() {
       }
       totals.candidates += 1;
       console.log(JSON.stringify({mode: options.apply ? "apply" : "dry-run", serviceId: document.id}));
-      if (options.apply) {
-        const privateRef = db.collection("servicePrivate").doc(document.id);
-        const existingPrivate = await privateRef.get();
-        const privateWrite = {
-          ...migration.privateData,
-          updatedAt: FieldValue.serverTimestamp(),
-        };
-        if (!existingPrivate.exists) privateWrite.createdAt = FieldValue.serverTimestamp();
-        await privateRef.set(privateWrite, {merge: true});
-        const verified = await privateRef.get();
-        const privateData = verified.data() || {};
-        if (!verified.exists || privateData.ownerUserId !== migration.privateData.ownerUserId ||
-            privateData.serviceId !== migration.privateData.serviceId ||
-            privateData.privateNotes !== migration.privateData.privateNotes ||
-            privateData.location?.displayAddress !== migration.privateData.location.displayAddress ||
-            Number(privateData.location?.latitude) !== migration.privateData.location.latitude ||
-            Number(privateData.location?.longitude) !== migration.privateData.location.longitude) {
-          throw new Error(`Private copy verification failed for service ${document.id}`);
-        }
-        await document.ref.update({
-          location: migration.publicLocation,
-          privateNotes: FieldValue.delete(),
-        }, {lastUpdateTime: document.updateTime});
-        const sanitized = (await document.ref.get()).data() || {};
-        const sanitizedLocation = sanitized.location || {};
-        if (Object.hasOwn(sanitized, "privateNotes") ||
-            Object.hasOwn(sanitizedLocation, "displayAddress") ||
-            Object.hasOwn(sanitizedLocation, "latitude") ||
-            Object.hasOwn(sanitizedLocation, "longitude")) {
-          throw new Error(`Public sanitization verification failed for service ${document.id}`);
-        }
+      if (await executeMigration({
+        apply: options.apply,
+        db,
+        document,
+        migration,
+      })) {
         totals.migrated += 1;
       }
       lastId = document.id;
@@ -261,9 +294,11 @@ module.exports = {
   EXPECTED_PROJECT_ID,
   buildMigration,
   encodeGeohash,
+  executeMigration,
   parseArgs,
   privateCopyIsComplete,
   roundCoordinate,
+  terminalServiceSkipReason,
   validateSafetyOptions,
 };
 if (require.main === module) main().catch((error) => {
