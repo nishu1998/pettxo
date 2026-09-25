@@ -145,6 +145,130 @@ void main() {
         <String>['p1', 'p2', 'p3', 'p4'],
       );
     });
+
+    test('appends multiple pages without replacing or duplicating posts', () {
+      final session = HomeFeedSession();
+      const viewerContext = HomeFeedViewerContext(
+        currentUserId: 'viewer',
+        city: '',
+        state: '',
+        followingIds: <String>{},
+        blockedUserIds: <String>{},
+        mutedUserIds: <String>{},
+        creatorsWhoBlockedViewerIds: <String>{},
+      );
+
+      session.reset(
+        candidates: <SocialPostModel>[
+          _post(id: 'p1', authorId: 'author-a', homeScore: 10),
+          _post(id: 'p2', authorId: 'author-b', homeScore: 9),
+        ],
+        viewerContext: viewerContext,
+        initialEntryCount: 2,
+        preserveSeenPosts: false,
+      );
+      session.appendCandidates(
+        candidates: <SocialPostModel>[
+          _post(id: 'p2', authorId: 'author-b', homeScore: 9),
+          _post(id: 'p3', authorId: 'author-c', homeScore: 8),
+        ],
+        viewerContext: viewerContext,
+        count: 2,
+      );
+      session.appendCandidates(
+        candidates: <SocialPostModel>[
+          _post(id: 'p4', authorId: 'author-d', homeScore: 7),
+          _post(id: 'p5', authorId: 'author-e', homeScore: 6),
+        ],
+        viewerContext: viewerContext,
+        count: 2,
+      );
+
+      expect(
+        session.entries.map((entry) => entry.post.id).toList(growable: false),
+        <String>['p1', 'p2', 'p3', 'p4', 'p5'],
+      );
+    });
+
+    test('pagination failure leaves already emitted entries usable', () {
+      final session = HomeFeedSession();
+      const viewerContext = HomeFeedViewerContext(
+        currentUserId: 'viewer',
+        city: '',
+        state: '',
+        followingIds: <String>{},
+        blockedUserIds: <String>{},
+        mutedUserIds: <String>{},
+        creatorsWhoBlockedViewerIds: <String>{},
+      );
+      session.reset(
+        candidates: <SocialPostModel>[
+          _post(id: 'p1', authorId: 'author-a', homeScore: 10),
+          _post(id: 'p2', authorId: 'author-b', homeScore: 9),
+        ],
+        viewerContext: viewerContext,
+        initialEntryCount: 2,
+        preserveSeenPosts: false,
+      );
+      final beforeFailedRequest = session.entries;
+
+      // A failed repository request never calls appendCandidates.
+      expect(session.entries, beforeFailedRequest);
+      expect(session.entries.map((entry) => entry.post.id), <String>[
+        'p1',
+        'p2',
+      ]);
+    });
+
+    test('newest refresh post appears and pagination continues afterward', () {
+      final session = HomeFeedSession();
+      const viewerContext = HomeFeedViewerContext(
+        currentUserId: 'viewer',
+        city: '',
+        state: '',
+        followingIds: <String>{},
+        blockedUserIds: <String>{},
+        mutedUserIds: <String>{},
+        creatorsWhoBlockedViewerIds: <String>{},
+      );
+      session.reset(
+        candidates: <SocialPostModel>[
+          _post(id: 'c', authorId: 'author-c', homeScore: 10),
+          _post(id: 'b', authorId: 'author-b', homeScore: 9),
+          _post(id: 'a', authorId: 'author-a', homeScore: 8),
+        ],
+        viewerContext: viewerContext,
+        initialEntryCount: 3,
+        preserveSeenPosts: false,
+      );
+
+      session.reset(
+        candidates: <SocialPostModel>[
+          _post(id: 'd', authorId: 'author-d', homeScore: 11),
+          _post(id: 'c', authorId: 'author-c', homeScore: 10),
+          _post(id: 'b', authorId: 'author-b', homeScore: 9),
+        ],
+        viewerContext: viewerContext,
+        initialEntryCount: 3,
+        preserveSeenPosts: true,
+      );
+      session.appendCandidates(
+        candidates: <SocialPostModel>[
+          _post(id: 'b', authorId: 'author-b', homeScore: 9),
+          _post(id: 'a', authorId: 'author-a', homeScore: 8),
+        ],
+        viewerContext: viewerContext,
+        count: 2,
+      );
+
+      expect(session.entries.first.post.id, 'd');
+      expect(session.entries.map((entry) => entry.post.id).toSet(), <String>{
+        'a',
+        'b',
+        'c',
+        'd',
+      });
+    });
   });
 }
 

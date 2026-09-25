@@ -4,44 +4,10 @@ import 'package:pettexo/features/social/domain/models/social_post_model.dart';
 
 void main() {
   group('HomeFeedRefreshPolicy', () {
-    test(
-      'non-empty feed plus refresh posts still replaces the visible list',
-      () {
-        final refreshedPosts = <SocialPostModel>[
-          _post(id: 'post-1'),
-          _post(id: 'post-2'),
-        ];
-
-        expect(
-          HomeFeedRefreshPolicy.shouldReplaceVisibleFeed(
-            hadExistingPosts: true,
-            refreshedPosts: refreshedPosts,
-          ),
-          isTrue,
-        );
-      },
-    );
-
-    test(
-      'non-empty feed plus temporary empty refresh retains existing list',
-      () {
-        expect(
-          HomeFeedRefreshPolicy.shouldReplaceVisibleFeed(
-            hadExistingPosts: true,
-            refreshedPosts: const <SocialPostModel>[],
-          ),
-          isFalse,
-        );
-      },
-    );
-
-    test('initial load genuinely empty still allows empty state', () {
+    test('successful empty refresh produces an empty replacement feed', () {
       expect(
-        HomeFeedRefreshPolicy.shouldReplaceVisibleFeed(
-          hadExistingPosts: false,
-          refreshedPosts: const <SocialPostModel>[],
-        ),
-        isTrue,
+        HomeFeedRefreshPolicy.dedupeReplacementPosts(const <SocialPostModel>[]),
+        isEmpty,
       );
     });
 
@@ -63,6 +29,22 @@ void main() {
       },
     );
 
+    test('replacement preserves newest-first repository order', () {
+      final replacement = HomeFeedRefreshPolicy.dedupeReplacementPosts(
+        <SocialPostModel>[
+          _post(id: 'new-post'),
+          _post(id: 'previous-post'),
+          _post(id: 'old-post'),
+        ],
+      );
+
+      expect(replacement.map((post) => post.id), <String>[
+        'new-post',
+        'previous-post',
+        'old-post',
+      ]);
+    });
+
     test('append dedupe prevents duplicates after refresh then pagination', () {
       final appended = HomeFeedRefreshPolicy.dedupeAppendedPosts(
         <SocialPostModel>[
@@ -77,6 +59,24 @@ void main() {
         'post-3',
       ]);
     });
+
+    test(
+      'refresh failure retains a usable feed but initial failure does not',
+      () {
+        expect(
+          HomeFeedRefreshPolicy.shouldRetainExistingFeedAfterFailure(
+            hadExistingPosts: true,
+          ),
+          isTrue,
+        );
+        expect(
+          HomeFeedRefreshPolicy.shouldRetainExistingFeedAfterFailure(
+            hadExistingPosts: false,
+          ),
+          isFalse,
+        );
+      },
+    );
   });
 
   group('HomeFeedRequestTracker', () {
@@ -88,6 +88,90 @@ void main() {
 
       expect(tracker.isCurrent(first), isFalse);
       expect(tracker.isCurrent(second), isTrue);
+    });
+
+    test('pagination can capture the active refresh generation', () {
+      final tracker = HomeFeedRequestTracker();
+      final initial = tracker.startRequest();
+
+      expect(tracker.currentRequestId, initial);
+
+      tracker.startRequest();
+      expect(tracker.isCurrent(initial), isFalse);
+    });
+  });
+
+  group('HomeFeedLoadPolicy', () {
+    test('requests the next page inside the prefetch threshold', () {
+      expect(
+        HomeFeedLoadPolicy.shouldRequestNextPage(
+          pixels: 680,
+          maxScrollExtent: 1000,
+          prefetchDistance: 320,
+        ),
+        isTrue,
+      );
+      expect(
+        HomeFeedLoadPolicy.shouldRequestNextPage(
+          pixels: 679,
+          maxScrollExtent: 1000,
+          prefetchDistance: 320,
+        ),
+        isFalse,
+      );
+    });
+
+    test('prevents duplicate pagination and pagination during refresh', () {
+      expect(
+        HomeFeedLoadPolicy.canLoadMore(
+          isInitialLoading: false,
+          isRefreshing: false,
+          isLoadingMore: false,
+          hasMore: true,
+        ),
+        isTrue,
+      );
+      expect(
+        HomeFeedLoadPolicy.canLoadMore(
+          isInitialLoading: false,
+          isRefreshing: false,
+          isLoadingMore: true,
+          hasMore: true,
+        ),
+        isFalse,
+      );
+      expect(
+        HomeFeedLoadPolicy.canLoadMore(
+          isInitialLoading: false,
+          isRefreshing: true,
+          isLoadingMore: false,
+          hasMore: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('caught-up footer appears only after genuine exhaustion', () {
+      HomeFeedFooterState state({
+        bool loading = false,
+        bool refreshing = false,
+        bool hasMore = true,
+        bool error = false,
+      }) => HomeFeedLoadPolicy.footerState(
+        hasEntries: true,
+        isInitialLoading: false,
+        isRefreshing: refreshing,
+        isLoadingMore: loading,
+        hasMore: hasMore,
+        hasLoadMoreError: error,
+      );
+
+      expect(state(), HomeFeedFooterState.none);
+      expect(state(loading: true), HomeFeedFooterState.loading);
+      expect(state(error: true), HomeFeedFooterState.retry);
+      expect(state(error: true, hasMore: false), HomeFeedFooterState.retry);
+      expect(state(refreshing: true, hasMore: false), HomeFeedFooterState.none);
+      expect(state(hasMore: false), HomeFeedFooterState.caughtUp);
     });
   });
 }

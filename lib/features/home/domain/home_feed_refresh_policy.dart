@@ -3,12 +3,10 @@ import '../../social/domain/models/social_post_model.dart';
 class HomeFeedRefreshPolicy {
   const HomeFeedRefreshPolicy._();
 
-  static bool shouldReplaceVisibleFeed({
+  static bool shouldRetainExistingFeedAfterFailure({
     required bool hadExistingPosts,
-    required List<SocialPostModel> refreshedPosts,
   }) {
-    if (!hadExistingPosts) return true;
-    return refreshedPosts.isNotEmpty;
+    return hadExistingPosts;
   }
 
   static List<SocialPostModel> dedupeReplacementPosts(
@@ -46,7 +44,49 @@ class HomeFeedRefreshPolicy {
 class HomeFeedRequestTracker {
   int _latestRequestId = 0;
 
+  int get currentRequestId => _latestRequestId;
+
   int startRequest() => ++_latestRequestId;
 
   bool isCurrent(int requestId) => requestId == _latestRequestId;
+}
+
+enum HomeFeedFooterState { none, loading, retry, caughtUp }
+
+class HomeFeedLoadPolicy {
+  const HomeFeedLoadPolicy._();
+
+  static bool canLoadMore({
+    required bool isInitialLoading,
+    required bool isRefreshing,
+    required bool isLoadingMore,
+    required bool hasMore,
+  }) {
+    return !isInitialLoading && !isRefreshing && !isLoadingMore && hasMore;
+  }
+
+  static bool shouldRequestNextPage({
+    required double pixels,
+    required double maxScrollExtent,
+    required double prefetchDistance,
+  }) {
+    return pixels >= maxScrollExtent - prefetchDistance;
+  }
+
+  static HomeFeedFooterState footerState({
+    required bool hasEntries,
+    required bool isInitialLoading,
+    required bool isRefreshing,
+    required bool isLoadingMore,
+    required bool hasMore,
+    required bool hasLoadMoreError,
+  }) {
+    if (!hasEntries || isInitialLoading || isRefreshing) {
+      return HomeFeedFooterState.none;
+    }
+    if (hasLoadMoreError) return HomeFeedFooterState.retry;
+    if (isLoadingMore) return HomeFeedFooterState.loading;
+    if (!hasMore) return HomeFeedFooterState.caughtUp;
+    return HomeFeedFooterState.none;
+  }
 }

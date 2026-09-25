@@ -46,6 +46,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late int _suggestionSeed;
 
   bool _isLoadingFeed = true;
+  bool _isRefreshing = false;
   bool _isLoadingMore = false;
   bool _isTopBarVisible = true;
   bool _hasMorePosts = true;
@@ -69,6 +70,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final VoidCallback _postPublishListener;
   int _lastHandledPublishEventId = 0;
   final HomeFeedRequestTracker _feedRequestTracker = HomeFeedRequestTracker();
+  int _latestPaginationRequestId = 0;
 
   static const double _topBarTopResetOffset = 12;
   static const double _topBarHideThreshold = 32;
@@ -168,10 +170,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refreshHome() async {
+    if (_isRefreshing) return;
+    _latestPaginationRequestId += 1;
+    setState(() {
+      _isRefreshing = true;
+      _isLoadingMore = false;
+    });
     _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
     _shownSuggestionIds.clear();
     _suggestionFollowRefreshCounter = 0;
-    await _loadInitialPosts(forceRefresh: true);
+    try {
+      await _loadInitialPosts(forceRefresh: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isRefreshing = false);
+      }
+    }
   }
 
   Future<void> _loadInitialPosts({bool forceRefresh = false}) async {
@@ -211,23 +225,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final replacementPosts = HomeFeedRefreshPolicy.dedupeReplacementPosts(
         page.posts,
       );
-      final shouldReplaceVisibleFeed =
-          HomeFeedRefreshPolicy.shouldReplaceVisibleFeed(
-            hadExistingPosts: hadExistingPosts,
-            refreshedPosts: replacementPosts,
-          );
-      if (!shouldReplaceVisibleFeed) {
-        setState(() {
-          _viewerContext = viewerContext;
-          _userCity = viewerContext.city;
-          _userState = viewerContext.state;
-          _followingIds
-            ..clear()
-            ..addAll(viewerContext.followingIds);
-        });
-        unawaited(_loadSuggestedUsers());
-        return;
-      }
 
       _homeFeedSession.reset(
         candidates: replacementPosts,
@@ -257,7 +254,9 @@ class _HomeScreenState extends State<HomeScreen> {
       unawaited(_loadSuggestedUsers());
     } catch (error) {
       if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
-      if (hadExistingPosts) {
+      if (HomeFeedRefreshPolicy.shouldRetainExistingFeedAfterFailure(
+        hadExistingPosts: hadExistingPosts,
+      )) {
         AppFeedback.show(
           context,
           message: NetworkStatusService.instance.isOffline
@@ -280,7 +279,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadMorePosts() async {
-    if (_isLoadingFeed || _isLoadingMore || !_hasMorePosts) return;
+    if (!HomeFeedLoadPolicy.canLoadMore(
+      isInitialLoading: _isLoadingFeed,
+      isRefreshing: _isRefreshing,
+      isLoadingMore: _isLoadingMore,
+      hasMore: _hasMorePosts,
+    )) {
+      return;
+    }
 
     if (_homeFeedSession.hasPendingCandidates) {
       setState(() {
@@ -295,6 +301,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final requestId = _feedRequestTracker.currentRequestId;
+    final paginationRequestId = ++_latestPaginationRequestId;
     setState(() => _isLoadingMore = true);
     try {
       final page = await _homeFeedRepository.fetchPage(
@@ -307,6 +315,12 @@ class _HomeScreenState extends State<HomeScreen> {
           .fetchCurrentUserLikedPostIds(
             page.posts.map((post) => post.id).toList(growable: false),
           );
+      if (!mounted ||
+          _isRefreshing ||
+          paginationRequestId != _latestPaginationRequestId ||
+          !_feedRequestTracker.isCurrent(requestId)) {
+        return;
+      }
       final uniqueNewPosts = HomeFeedRefreshPolicy.dedupeAppendedPosts(
         page.posts,
         existingPostIds: _posts.map((post) => post.id),
@@ -316,7 +330,6 @@ class _HomeScreenState extends State<HomeScreen> {
         viewerContext: _viewerContext,
         count: socialFeedPageSize,
       );
-      if (!mounted) return;
       setState(() {
         _loadMoreError = null;
         _posts.addAll(uniqueNewPosts);
@@ -327,12 +340,17 @@ class _HomeScreenState extends State<HomeScreen> {
         _syncHasMorePosts();
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted ||
+          _isRefreshing ||
+          paginationRequestId != _latestPaginationRequestId ||
+          !_feedRequestTracker.isCurrent(requestId)) {
+        return;
+      }
       setState(() {
         _loadMoreError = 'We could not load more posts right now.';
       });
     } finally {
-      if (mounted) {
+      if (mounted && paginationRequestId == _latestPaginationRequestId) {
         setState(() => _isLoadingMore = false);
       }
     }
@@ -377,7 +395,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _scrollDeltaAccumulator = 0;
     }
 
-    if (pixels >= position.maxScrollExtent - socialFeedLoadMoreTriggerPx) {
+    if (HomeFeedLoadPolicy.shouldRequestNextPage(
+      pixels: pixels,
+      maxScrollExtent: position.maxScrollExtent,
+      prefetchDistance: socialFeedLoadMoreTriggerPx,
+    )) {
       _loadMorePosts();
     }
   }
@@ -545,7 +567,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   );
                 }
                 if (index >= _baseFeedItemCount) {
-                  if (_loadMoreError != null) {
+                  final footerState = _feedFooterState;
+                  if (footerState == HomeFeedFooterState.retry) {
                     return _FeedStatusCard(
                       title: 'Could not load more posts',
                       message: _loadMoreError!,
@@ -553,10 +576,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       onPressed: _loadMorePosts,
                     );
                   }
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Center(child: CircularProgressIndicator()),
-                  );
+                  if (footerState == HomeFeedFooterState.loading) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  return const HomeFeedCaughtUpFooter();
                 }
                 final entry = _feedEntries[_postIndexForFeedIndex(index)];
                 return SocialPostCard(
@@ -735,7 +761,37 @@ class _HomeScreenState extends State<HomeScreen> {
       return 1;
     }
     return _baseFeedItemCount +
-        ((_isLoadingMore || _loadMoreError != null) ? 1 : 0);
+        (_feedFooterState == HomeFeedFooterState.none ? 0 : 1);
+  }
+
+  HomeFeedFooterState get _feedFooterState => HomeFeedLoadPolicy.footerState(
+    hasEntries: _feedEntries.isNotEmpty,
+    isInitialLoading: _isLoadingFeed,
+    isRefreshing: _isRefreshing,
+    isLoadingMore: _isLoadingMore,
+    hasMore: _hasMorePosts,
+    hasLoadMoreError: _loadMoreError != null,
+  );
+}
+
+class HomeFeedCaughtUpFooter extends StatelessWidget {
+  const HomeFeedCaughtUpFooter({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: Text(
+          "You're all caught up",
+          style: TextStyle(
+            color: AppColors.textGrey,
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+    );
   }
 }
 
