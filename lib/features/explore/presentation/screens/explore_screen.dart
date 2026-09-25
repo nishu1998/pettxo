@@ -21,6 +21,7 @@ import '../../domain/models/explore_feed_kind.dart';
 import '../../domain/models/explore_feed_viewer_context.dart';
 import '../../domain/models/nearby_location_mode.dart';
 import '../../domain/utils/explore_request_guard.dart';
+import '../../domain/utils/explore_search_policy.dart';
 import '../../domain/utils/nearby_error_message.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -58,6 +59,8 @@ class _ExploreScreenState extends State<ExploreScreen>
   final ScrollController _scrollController = ScrollController();
 
   Timer? _searchDebounce;
+  final ExploreSearchRequestTracker _searchRequestTracker =
+      ExploreSearchRequestTracker();
   StreamSubscription<User?>? _authStateSubscription;
   bool _isLoadingSections = true;
   bool _isLoadingMoreDiscoverPosts = false;
@@ -178,6 +181,8 @@ class _ExploreScreenState extends State<ExploreScreen>
     _authGenerationUid = nextUid;
     _nearbyRequestGeneration += 1;
     _exploreRequestGeneration += 1;
+    _searchRequestTracker.invalidate();
+    _searchDebounce?.cancel();
     _memoryCache = null;
     if (!mounted) return;
     setState(() {
@@ -195,6 +200,11 @@ class _ExploreScreenState extends State<ExploreScreen>
       _hasMoreNearbyPosts = true;
       _isLoadingNearbyPosts = false;
       _isLoadingMoreNearbyPosts = false;
+      _profileResults = const <UserProfile>[];
+      _hashtagSuggestions = const <ExploreHashtagSummary>[];
+      _hashtagResults = const <SocialPostModel>[];
+      _isSearching = false;
+      _searchError = null;
       _likedPostIds.clear();
       _likeMutations.clear();
       _likeMutationRevision = 0;
@@ -667,6 +677,8 @@ class _ExploreScreenState extends State<ExploreScreen>
     final nextQuery = _searchController.text.trim();
     if (nextQuery == _searchQuery) return;
 
+    _searchRequestTracker.invalidate();
+
     setState(() {
       _searchQuery = nextQuery;
       _searchError = null;
@@ -687,8 +699,15 @@ class _ExploreScreenState extends State<ExploreScreen>
   }
 
   Future<void> _runSearch(String rawQuery) async {
-    final query = rawQuery.trim();
-    if (query.isEmpty) return;
+    final searchQuery = ExploreSearchQuery.parse(rawQuery);
+    if (searchQuery.isEmpty) return;
+    final requestGeneration = _searchRequestTracker.startRequest();
+
+    bool requestIsCurrent() {
+      return mounted &&
+          _searchRequestTracker.isCurrent(requestGeneration) &&
+          searchQuery.raw == _searchQuery.trim();
+    }
 
     setState(() {
       _isSearching = true;
@@ -698,73 +717,81 @@ class _ExploreScreenState extends State<ExploreScreen>
     try {
       final currentUserId = _currentUserId;
       final hashtagFuture = _socialPostRepository.searchHashtags(
-        query,
+        searchQuery.hashtag,
         limit: 8,
       );
+      final profileFuture = searchQuery.isHashtagOnly
+          ? Future<List<UserProfile>>.value(const <UserProfile>[])
+          : _profileRepository.searchProfiles(
+              searchQuery.raw,
+              excludeUserId: currentUserId,
+              limit: 10,
+            );
+      final initialResults = await Future.wait<dynamic>([
+        profileFuture,
+        hashtagFuture,
+      ]);
+      if (!requestIsCurrent()) return;
 
-      if (query.startsWith('#')) {
-        final results = await Future.wait<dynamic>([
-          hashtagFuture,
-          _socialPostRepository.searchPostsByHashtag(query, limit: 12),
-        ]);
+      final rawProfiles = initialResults[0] as List<UserProfile>;
+      var hashtagSuggestions = initialResults[1] as List<ExploreHashtagSummary>;
+      var selectedTag = searchQuery.hashtag;
+      final exactMatch = hashtagSuggestions.where(
+        (summary) => summary.tag == searchQuery.hashtag,
+      );
+      var hashtagPosts = selectedTag.isEmpty
+          ? const <SocialPostModel>[]
+          : await _socialPostRepository.searchPostsByHashtag(
+              selectedTag,
+              limit: searchQuery.isHashtagOnly ? 12 : 6,
+            );
+      if (!requestIsCurrent()) return;
 
-        if (!mounted || query != _searchQuery.trim()) return;
-        setState(() {
-          _profileResults = const <UserProfile>[];
-          _hashtagSuggestions = results[0] as List<ExploreHashtagSummary>;
-          _hashtagResults = results[1] as List<SocialPostModel>;
-        });
-      } else {
-        final results = await Future.wait<dynamic>([
-          _profileRepository.searchProfiles(
-            query,
-            excludeUserId: currentUserId,
-            limit: 10,
-          ),
-          hashtagFuture,
-        ]);
-
-        final profiles = results[0] as List<UserProfile>;
-        final hashtagSuggestions = results[1] as List<ExploreHashtagSummary>;
-        List<SocialPostModel> hashtagPosts = const <SocialPostModel>[];
-        if (hashtagSuggestions.isNotEmpty) {
-          final exactTag = _findBestHashtagMatch(hashtagSuggestions, query);
-          hashtagPosts = await _socialPostRepository.fetchPostsByIds(
-            exactTag.recentPostIds,
-            limit: 6,
-          );
-        }
-
-        if (!mounted || query != _searchQuery.trim()) return;
-        setState(() {
-          _profileResults = profiles;
-          _hashtagSuggestions = hashtagSuggestions;
-          _hashtagResults = hashtagPosts;
-        });
+      if (hashtagPosts.isEmpty &&
+          exactMatch.isEmpty &&
+          hashtagSuggestions.isNotEmpty) {
+        selectedTag = hashtagSuggestions.first.tag;
+        hashtagPosts = await _socialPostRepository.searchPostsByHashtag(
+          selectedTag,
+          limit: searchQuery.isHashtagOnly ? 12 : 6,
+        );
+        if (!requestIsCurrent()) return;
       }
+
+      if (selectedTag == searchQuery.hashtag) {
+        hashtagSuggestions = reconcileExactHashtagSummary(
+          normalizedHashtag: searchQuery.hashtag,
+          suggestions: hashtagSuggestions,
+          exactPosts: hashtagPosts,
+        );
+      }
+      final profiles = filterSearchProfilesForViewer(
+        rawProfiles,
+        currentUserId: currentUserId,
+        blockedUserIds: _viewerContext.blockedUserIds,
+        mutedUserIds: _viewerContext.mutedUserIds,
+      );
+      final visibleHashtagPosts = filterSearchPostsForViewer(
+        hashtagPosts,
+        blockedUserIds: _viewerContext.blockedUserIds,
+        mutedUserIds: _viewerContext.mutedUserIds,
+      );
+
+      setState(() {
+        _profileResults = profiles;
+        _hashtagSuggestions = hashtagSuggestions;
+        _hashtagResults = visibleHashtagPosts;
+      });
     } catch (error) {
-      if (!mounted || query != _searchQuery.trim()) return;
+      if (!requestIsCurrent()) return;
       setState(() {
         _searchError = error.toString().replaceFirst('Exception: ', '');
       });
     } finally {
-      if (mounted && query == _searchQuery.trim()) {
+      if (requestIsCurrent()) {
         setState(() => _isSearching = false);
       }
     }
-  }
-
-  ExploreHashtagSummary _findBestHashtagMatch(
-    List<ExploreHashtagSummary> hashtags,
-    String query,
-  ) {
-    final normalized = _socialPostRepository.normalizeHashtag(query);
-    for (final hashtag in hashtags) {
-      if (hashtag.tag == normalized) {
-        return hashtag;
-      }
-    }
-    return hashtags.first;
   }
 
   void _applyHashtagSearch(String tag) {

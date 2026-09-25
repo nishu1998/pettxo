@@ -12,6 +12,27 @@ import '../../../auth/domain/models/profile_type.dart';
 import '../../../restrictions/domain/models/user_restriction_state.dart';
 import '../../domain/models/user_profile.dart';
 
+@visibleForTesting
+String normalizeProfileSearchQuery(String query) {
+  return username_utils.normalizeUsername(query);
+}
+
+@visibleForTesting
+UserProfile profileFromSearchDocument(
+  String documentId,
+  Map<String, dynamic> data,
+) {
+  return UserProfile.fromMap({...data, 'uid': documentId.trim()});
+}
+
+@visibleForTesting
+bool profileMatchesSearchPrefix(UserProfile profile, String normalizedQuery) {
+  final username = profile.usernameLowercase.trim();
+  final name = profile.name.trim().toLowerCase();
+  return username.startsWith(normalizedQuery) ||
+      name.startsWith(normalizedQuery);
+}
+
 class ProfileRepository {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
@@ -259,14 +280,13 @@ class ProfileRepository {
     String? excludeUserId,
     int limit = 10,
   }) async {
-    final normalized = query.trim().toLowerCase();
+    final normalized = normalizeProfileSearchQuery(query);
     if (normalized.isEmpty || limit <= 0) {
       return const <UserProfile>[];
     }
 
-    final capitalized = normalized.isEmpty
-        ? normalized
-        : '${normalized[0].toUpperCase()}${normalized.substring(1)}';
+    final capitalized =
+        '${normalized[0].toUpperCase()}${normalized.substring(1)}';
     final exactExcludedId = excludeUserId?.trim() ?? '';
     final resultsById = <String, UserProfile>{};
 
@@ -275,14 +295,12 @@ class ProfileRepository {
     ) async {
       final snapshot = await loader();
       for (final doc in snapshot.docs) {
-        final profile = UserProfile.fromMap(doc.data());
+        final profile = profileFromSearchDocument(doc.id, doc.data());
         final profileId = profile.uid.trim();
         if (profileId.isEmpty || profileId == exactExcludedId) continue;
         if (!profile.isPubliclyVisible) continue;
 
-        final name = profile.name.trim().toLowerCase();
-        final username = profile.usernameLowercase.trim();
-        if (name.contains(normalized) || username.contains(normalized)) {
+        if (profileMatchesSearchPrefix(profile, normalized)) {
           resultsById[profileId] = profile;
           if (resultsById.length >= limit) return;
         }
@@ -299,20 +317,17 @@ class ProfileRepository {
           .get(),
     );
 
-    if (resultsById.length < limit) {
+    for (final namePrefix in <String>{normalized, capitalized}) {
+      if (resultsById.length >= limit) break;
       await collect(
         () => _firestore
             .collection('users')
             .orderBy('name')
-            .startAt([capitalized])
-            .endAt(['$capitalized\uf8ff'])
+            .startAt([namePrefix])
+            .endAt(['$namePrefix\uf8ff'])
             .limit(limit)
             .get(),
       );
-    }
-
-    if (resultsById.length < limit) {
-      await collect(() => _firestore.collection('users').limit(20).get());
     }
 
     final ranked = resultsById.values.toList(growable: false)

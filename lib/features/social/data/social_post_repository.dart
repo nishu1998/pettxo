@@ -14,6 +14,7 @@ import '../../profile/data/repositories/profile_repository.dart';
 import '../../profile/domain/models/user_profile.dart';
 import '../domain/models/comment_model.dart';
 import '../domain/models/social_post_model.dart';
+import '../domain/hashtag_normalizer.dart' as hashtag_normalizer;
 
 class SocialPostLikeState {
   final bool isLiked;
@@ -279,13 +280,21 @@ class SocialPostRepository {
     final normalized = normalizeHashtag(query);
     if (normalized.isEmpty) return const <ExploreHashtagSummary>[];
 
-    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(
-      _hashtagsCollection
-          .orderBy('tag')
-          .startAt([normalized])
-          .endAt(['$normalized\uf8ff'])
-          .limit(limit),
-    );
+    final firestoreQuery = _hashtagsCollection
+        .orderBy('tag')
+        .startAt([normalized])
+        .endAt(['$normalized\uf8ff'])
+        .limit(limit);
+    QuerySnapshot<Map<String, dynamic>> snapshot;
+    try {
+      snapshot = await firestoreQuery.get(
+        const GetOptions(source: Source.server),
+      );
+    } catch (_) {
+      snapshot = await firestoreQuery.get(
+        const GetOptions(source: Source.cache),
+      );
+    }
     return snapshot.docs.map(ExploreHashtagSummary.fromDocument).toList();
   }
 
@@ -372,18 +381,22 @@ class SocialPostRepository {
     if (normalized.isEmpty) {
       return const <SocialPostModel>[];
     }
-    final matches = await searchHashtags(normalized, limit: 10);
-    if (matches.isEmpty) return const <SocialPostModel>[];
-
-    ExploreHashtagSummary selected = matches.first;
-    for (final match in matches) {
-      if (match.tag == normalized) {
-        selected = match;
-        break;
-      }
+    final query = _postsCollection
+        .where('hashtags', arrayContains: normalized)
+        .where('visibilityStatus', isEqualTo: 'visible')
+        .where('moderationStatus', isEqualTo: 'approved')
+        .orderBy('createdAt', descending: true)
+        .limit(math.min(math.max(limit * 3, limit), 60));
+    QuerySnapshot<Map<String, dynamic>> snapshot;
+    try {
+      snapshot = await query.get(const GetOptions(source: Source.server));
+    } catch (_) {
+      snapshot = await query.get(const GetOptions(source: Source.cache));
     }
-
-    return fetchPostsByIds(selected.recentPostIds, limit: limit);
+    final visiblePosts = await _filterPostsByVisibleAuthors(
+      snapshot.docs.map(SocialPostModel.fromDocument).toList(growable: false),
+    );
+    return visiblePosts.take(limit).toList(growable: false);
   }
 
   Future<SocialPostModel> createPost({
@@ -410,6 +423,7 @@ class SocialPostRepository {
     final authorId = await _ensureAuthenticatedForStorageWrite();
     final profile = await _profileRepository.getCurrentUserProfile();
     final postRef = _postsCollection.doc();
+    final normalizedHashtags = hashtag_normalizer.normalizeHashtags(hashtags);
     final creationLocation = await _postLocationRepository
         .captureFreshPostLocation();
     final uploads = await _uploadImages(
@@ -428,7 +442,7 @@ class SocialPostRepository {
       thumbnailUrls: uploads.thumbnailUrls,
       aspectRatio: aspectRatio,
       caption: caption,
-      hashtags: hashtags,
+      hashtags: normalizedHashtags,
       createdAtEpoch: DateTime.now().millisecondsSinceEpoch,
     );
     _debugLogCreatePayload(payload);
@@ -458,7 +472,10 @@ class SocialPostRepository {
     }
 
     try {
-      await _updateHashtagDocuments(hashtags: hashtags, postId: postRef.id);
+      await _updateHashtagDocuments(
+        hashtags: normalizedHashtags,
+        postId: postRef.id,
+      );
     } on FirebaseException catch (error, stackTrace) {
       debugPrint(
         'SocialPostRepository createPost hashtag update skipped for '
@@ -514,11 +531,7 @@ class SocialPostRepository {
   }
 
   String normalizeHashtag(String input) {
-    final collapsed = input.trim().replaceAll('#', '').toLowerCase();
-    if (collapsed.isEmpty || collapsed.contains(' ')) {
-      return '';
-    }
-    return collapsed;
+    return hashtag_normalizer.normalizeHashtag(input);
   }
 
   Future<bool> hasCurrentUserLikedPost(
@@ -1034,9 +1047,14 @@ class SocialPostRepository {
     if (normalizedTags.isEmpty) return;
 
     await _firestore.runTransaction((transaction) async {
-      for (final tag in normalizedTags) {
-        final ref = _hashtagsCollection.doc(tag);
-        final snapshot = await transaction.get(ref);
+      final refs = normalizedTags
+          .map(_hashtagsCollection.doc)
+          .toList(growable: false);
+      final snapshots = await Future.wait(refs.map(transaction.get));
+      for (var index = 0; index < normalizedTags.length; index += 1) {
+        final tag = normalizedTags[index];
+        final ref = refs[index];
+        final snapshot = snapshots[index];
         final data = snapshot.data() ?? const <String, dynamic>{};
         final currentPostCount = (data['postCount'] as num?)?.toInt() ?? 0;
         final recentPostIds =
@@ -1068,13 +1086,7 @@ class SocialPostRepository {
   }
 
   bool _isValidHashtagTag(String tag) {
-    if (tag.isEmpty || tag.length > 30) {
-      return false;
-    }
-    if (tag.contains(RegExp(r'\s'))) {
-      return false;
-    }
-    return RegExp(r'^[a-z0-9_]+$').hasMatch(tag);
+    return hashtag_normalizer.isValidCanonicalHashtag(tag);
   }
 
   @visibleForTesting
