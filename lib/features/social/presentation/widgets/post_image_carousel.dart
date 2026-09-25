@@ -1,8 +1,10 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/firebase_resilience_service.dart';
+import '../../domain/fullscreen_image_transform_policy.dart';
 
 class PostImageCarousel extends StatefulWidget {
   final List<String> imageUrls;
@@ -152,6 +154,7 @@ class _PostImageCarouselState extends State<PostImageCarousel> {
           imageUrls: widget.imageUrls,
           thumbnailUrls: widget.thumbnailUrls,
           initialIndex: initialIndex,
+          imageAspectRatio: widget.aspectRatio,
         ),
       ),
     );
@@ -249,11 +252,13 @@ class _FullscreenImageGallery extends StatefulWidget {
   final List<String> imageUrls;
   final List<String> thumbnailUrls;
   final int initialIndex;
+  final double imageAspectRatio;
 
   const _FullscreenImageGallery({
     required this.imageUrls,
     required this.thumbnailUrls,
     required this.initialIndex,
+    required this.imageAspectRatio,
   });
 
   @override
@@ -264,8 +269,6 @@ class _FullscreenImageGallery extends StatefulWidget {
 class _FullscreenImageGalleryState extends State<_FullscreenImageGallery> {
   late final PageController _pageController;
   late int _currentPage;
-  final Map<int, double> _pageScales = <int, double>{};
-  double _verticalDragOffset = 0;
 
   @override
   void initState() {
@@ -282,64 +285,52 @@ class _FullscreenImageGalleryState extends State<_FullscreenImageGallery> {
 
   @override
   Widget build(BuildContext context) {
-    final isZoomed = (_pageScales[_currentPage] ?? 1) > 1.01;
-    final dragProgress = (_verticalDragOffset.abs() / 240).clamp(0.0, 1.0);
-    final backgroundOpacity = 1.0 - (dragProgress * 0.45);
-
     return Scaffold(
-      backgroundColor: Colors.black.withValues(alpha: backgroundOpacity),
+      backgroundColor: Colors.black,
       body: SafeArea(
         child: Stack(
           alignment: Alignment.bottomCenter,
           children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOut,
-              transform: Matrix4.translationValues(0, _verticalDragOffset, 0),
-              child: PageView.builder(
-                controller: _pageController,
-                itemCount: widget.imageUrls.length,
-                physics: isZoomed
-                    ? const NeverScrollableScrollPhysics()
-                    : const BouncingScrollPhysics(),
-                onPageChanged: (value) {
-                  setState(() {
-                    _currentPage = value;
-                    _verticalDragOffset = 0;
-                  });
-                },
-                itemBuilder: (context, index) {
-                  return LayoutBuilder(
-                    builder: (context, constraints) {
-                      final viewportSize = Size(
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      );
-                      return Hero(
-                        tag: _heroTagFor(widget.imageUrls[index], index),
-                        child: ColoredBox(
-                          color: Colors.black,
-                          child: _ZoomableFullscreenImage(
-                            imageUrl: widget.imageUrls[index],
-                            thumbnailUrl: index < widget.thumbnailUrls.length
-                                ? widget.thumbnailUrls[index]
-                                : widget.imageUrls[index],
-                            viewportSize: viewportSize,
-                            enableDismissDrag:
-                                index == _currentPage && !isZoomed,
-                            onScaleChanged: (scale) {
-                              _handleScaleChanged(index, scale);
-                            },
-                            onTapClose: () => Navigator.of(context).maybePop(),
-                            onVerticalDragUpdate: _handleVerticalDragUpdate,
-                            onVerticalDragEnd: _handleVerticalDragEnd,
+            PageView.builder(
+              controller: _pageController,
+              itemCount: widget.imageUrls.length,
+              physics: const NeverScrollableScrollPhysics(),
+              onPageChanged: (value) {
+                setState(() => _currentPage = value);
+              },
+              itemBuilder: (context, index) {
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    final viewportSize = Size(
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                    );
+                    return Hero(
+                      tag: _heroTagFor(widget.imageUrls[index], index),
+                      child: ColoredBox(
+                        color: Colors.black,
+                        child: _ZoomableFullscreenImage(
+                          key: ValueKey(
+                            'fullscreen-${widget.imageUrls[index]}-$index',
                           ),
+                          imageUrl: widget.imageUrls[index],
+                          thumbnailUrl: index < widget.thumbnailUrls.length
+                              ? widget.thumbnailUrls[index]
+                              : widget.imageUrls[index],
+                          viewportSize: viewportSize,
+                          imageAspectRatio: widget.imageAspectRatio,
+                          onTapClose: () => Navigator.of(context).maybePop(),
+                          onSwipeDismiss: () =>
+                              Navigator.of(context).maybePop(),
+                          onPageSwipe: (direction) {
+                            _showAdjacentPage(index, direction);
+                          },
                         ),
-                      );
-                    },
-                  );
-                },
-              ),
+                      ),
+                    );
+                  },
+                );
+              },
             ),
             Positioned(
               top: 8,
@@ -405,32 +396,18 @@ class _FullscreenImageGalleryState extends State<_FullscreenImageGallery> {
     );
   }
 
-  void _handleScaleChanged(int index, double scale) {
-    if (!mounted) return;
-    final normalizedScale = scale < 1.01 ? 1.0 : scale;
-    if ((_pageScales[index] ?? 1.0) == normalizedScale) return;
-    setState(() {
-      _pageScales[index] = normalizedScale;
-      if (index == _currentPage && normalizedScale > 1.01) {
-        _verticalDragOffset = 0;
-      }
-    });
-  }
-
-  void _handleVerticalDragUpdate(DragUpdateDetails details) {
-    setState(() {
-      _verticalDragOffset += details.delta.dy;
-    });
-  }
-
-  void _handleVerticalDragEnd(DragEndDetails details) {
-    final shouldDismiss =
-        _verticalDragOffset.abs() > 120 || details.primaryVelocity!.abs() > 900;
-    if (shouldDismiss) {
-      Navigator.of(context).maybePop();
-      return;
-    }
-    setState(() => _verticalDragOffset = 0);
+  void _showAdjacentPage(int sourceIndex, int direction) {
+    if (sourceIndex != _currentPage || direction == 0) return;
+    final target = (_currentPage + direction).clamp(
+      0,
+      widget.imageUrls.length - 1,
+    );
+    if (target == _currentPage) return;
+    _pageController.animateToPage(
+      target,
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOut,
+    );
   }
 }
 
@@ -438,21 +415,20 @@ class _ZoomableFullscreenImage extends StatefulWidget {
   final String imageUrl;
   final String thumbnailUrl;
   final Size viewportSize;
-  final bool enableDismissDrag;
-  final ValueChanged<double> onScaleChanged;
+  final double imageAspectRatio;
   final VoidCallback onTapClose;
-  final ValueChanged<DragUpdateDetails> onVerticalDragUpdate;
-  final ValueChanged<DragEndDetails> onVerticalDragEnd;
+  final VoidCallback onSwipeDismiss;
+  final ValueChanged<int> onPageSwipe;
 
   const _ZoomableFullscreenImage({
+    super.key,
     required this.imageUrl,
     required this.thumbnailUrl,
     required this.viewportSize,
-    required this.enableDismissDrag,
-    required this.onScaleChanged,
+    required this.imageAspectRatio,
     required this.onTapClose,
-    required this.onVerticalDragUpdate,
-    required this.onVerticalDragEnd,
+    required this.onSwipeDismiss,
+    required this.onPageSwipe,
   });
 
   @override
@@ -464,43 +440,41 @@ class _ZoomableFullscreenImageState extends State<_ZoomableFullscreenImage> {
   final TransformationController _transformationController =
       TransformationController();
   TapDownDetails? _doubleTapDetails;
-
-  @override
-  void initState() {
-    super.initState();
-    _transformationController.addListener(_handleTransformChanged);
-  }
+  int? _swipePointer;
+  bool _pageSwipeEligible = false;
+  Offset _swipeDelta = Offset.zero;
+  VelocityTracker? _swipeVelocityTracker;
 
   @override
   void dispose() {
-    _transformationController.removeListener(_handleTransformChanged);
     _transformationController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Listener(
       behavior: HitTestBehavior.opaque,
-      onTap: widget.onTapClose,
-      onDoubleTapDown: (details) => _doubleTapDetails = details,
-      onDoubleTap: _handleDoubleTap,
-      onVerticalDragUpdate: widget.enableDismissDrag
-          ? widget.onVerticalDragUpdate
-          : null,
-      onVerticalDragEnd: widget.enableDismissDrag
-          ? widget.onVerticalDragEnd
-          : null,
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerUp,
+      onPointerCancel: _handlePointerCancel,
       child: SizedBox.expand(
-        child: ClipRect(
-          child: InteractiveViewer(
-            transformationController: _transformationController,
-            minScale: 1,
-            maxScale: 4,
-            panEnabled: true,
-            boundaryMargin: EdgeInsets.all(widget.viewportSize.longestSide),
-            constrained: true,
-            clipBehavior: Clip.none,
+        child: InteractiveViewer(
+          transformationController: _transformationController,
+          minScale: FullscreenImageTransformPolicy.minScale,
+          maxScale: FullscreenImageTransformPolicy.maxScale,
+          panEnabled: true,
+          scaleEnabled: true,
+          boundaryMargin: EdgeInsets.zero,
+          constrained: true,
+          clipBehavior: Clip.hardEdge,
+          onInteractionEnd: _handleInteractionEnd,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onTapClose,
+            onDoubleTapDown: (details) => _doubleTapDetails = details,
+            onDoubleTap: _handleDoubleTap,
             child: SizedBox(
               width: widget.viewportSize.width,
               height: widget.viewportSize.height,
@@ -517,34 +491,73 @@ class _ZoomableFullscreenImageState extends State<_ZoomableFullscreenImage> {
     );
   }
 
-  void _handleTransformChanged() {
-    widget.onScaleChanged(_transformationController.value.getMaxScaleOnAxis());
+  void _handleDoubleTap() {
+    _transformationController.value =
+        FullscreenImageTransformPolicy.toggleDoubleTap(
+          currentTransform: _transformationController.value,
+          viewportSize: widget.viewportSize,
+          imageAspectRatio: widget.imageAspectRatio,
+          focalPoint: _doubleTapDetails?.localPosition,
+        );
   }
 
-  void _handleDoubleTap() {
-    final currentScale = _transformationController.value.getMaxScaleOnAxis();
-    if (currentScale > 1.01) {
-      _transformationController.value = Matrix4.identity();
-      widget.onScaleChanged(1);
+  void _handleInteractionEnd(ScaleEndDetails details) {
+    _transformationController.value = FullscreenImageTransformPolicy.clamp(
+      _transformationController.value,
+      viewportSize: widget.viewportSize,
+      imageAspectRatio: widget.imageAspectRatio,
+    );
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (_swipePointer == null) {
+      _swipePointer = event.pointer;
+      _swipeDelta = Offset.zero;
+      _swipeVelocityTracker = VelocityTracker.withKind(event.kind)
+        ..addPosition(event.timeStamp, event.position);
+      _pageSwipeEligible = !FullscreenImageTransformPolicy.isZoomed(
+        _transformationController.value,
+      );
       return;
     }
+    _pageSwipeEligible = false;
+  }
 
-    final tapPosition = _doubleTapDetails?.localPosition;
-    if (tapPosition == null) {
-      _transformationController.value = Matrix4.diagonal3Values(2.5, 2.5, 1);
-      widget.onScaleChanged(2.5);
-      return;
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (_pageSwipeEligible && event.pointer == _swipePointer) {
+      _swipeDelta += event.delta;
+      _swipeVelocityTracker?.addPosition(event.timeStamp, event.position);
     }
+  }
 
-    const targetScale = 2.5;
-    final translateX =
-        (widget.viewportSize.width / 2) - tapPosition.dx * targetScale;
-    final translateY =
-        (widget.viewportSize.height / 2) - tapPosition.dy * targetScale;
-    final zoomed = Matrix4.diagonal3Values(targetScale, targetScale, 1)
-      ..setTranslationRaw(translateX, translateY, 0);
-    _transformationController.value = zoomed;
-    widget.onScaleChanged(targetScale);
+  void _handlePointerUp(PointerUpEvent event) {
+    if (event.pointer != _swipePointer) return;
+    _swipeVelocityTracker?.addPosition(event.timeStamp, event.position);
+    final velocity = _swipeVelocityTracker?.getVelocity().pixelsPerSecond;
+    if (_pageSwipeEligible &&
+        !FullscreenImageTransformPolicy.isZoomed(
+          _transformationController.value,
+        )) {
+      if (_swipeDelta.dx.abs() >= 72 &&
+          _swipeDelta.dx.abs() > _swipeDelta.dy.abs() * 1.2) {
+        widget.onPageSwipe(_swipeDelta.dx < 0 ? 1 : -1);
+      } else if (_swipeDelta.dy.abs() > _swipeDelta.dx.abs() * 1.2 &&
+          (_swipeDelta.dy.abs() > 120 || (velocity?.dy.abs() ?? 0) > 900)) {
+        widget.onSwipeDismiss();
+      }
+    }
+    _resetPageSwipe();
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    if (event.pointer == _swipePointer) _resetPageSwipe();
+  }
+
+  void _resetPageSwipe() {
+    _swipePointer = null;
+    _pageSwipeEligible = false;
+    _swipeDelta = Offset.zero;
+    _swipeVelocityTracker = null;
   }
 }
 
