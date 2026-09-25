@@ -32,6 +32,8 @@ class LiveUserIdentityResolver extends StatelessWidget {
   final String placeholderName;
   final Widget Function(BuildContext context, ResolvedUserIdentity identity)
   builder;
+  final Stream<UserProfile> Function(String userId)? profileStreamFactory;
+  final UserProfile? Function(String userId)? initialProfileProvider;
 
   const LiveUserIdentityResolver({
     super.key,
@@ -42,6 +44,8 @@ class LiveUserIdentityResolver extends StatelessWidget {
     this.fallbackRoleLabel = '',
     required this.builder,
     this.placeholderName = 'Pettxo user',
+    this.profileStreamFactory,
+    this.initialProfileProvider,
   });
 
   @override
@@ -53,10 +57,19 @@ class LiveUserIdentityResolver extends StatelessWidget {
     }
 
     return StreamBuilder<UserProfile>(
-      initialData: _LiveUserIdentityCache.latest(trimmedUserId),
-      stream: _LiveUserIdentityCache.watch(trimmedUserId),
+      key: ValueKey<String>('live-user-$trimmedUserId'),
+      initialData:
+          initialProfileProvider?.call(trimmedUserId) ??
+          _LiveUserIdentityCache.latest(trimmedUserId),
+      stream:
+          profileStreamFactory?.call(trimmedUserId) ??
+          _LiveUserIdentityCache.watch(trimmedUserId),
       builder: (context, snapshot) {
-        return builder(context, _resolveIdentity(snapshot.data));
+        final profile = snapshot.data;
+        final matchingProfile = profile?.uid.trim() == trimmedUserId
+            ? profile
+            : null;
+        return builder(context, _resolveIdentity(matchingProfile));
       },
     );
   }

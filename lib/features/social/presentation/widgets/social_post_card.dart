@@ -31,6 +31,7 @@ class SocialPostCard extends StatefulWidget {
   final ValueChanged<String>? onPostDeleted;
   final void Function(String postId, bool isLiked, int newLikeCount)?
   onLikeChanged;
+  final void Function(String postId, bool isPending)? onLikePendingChanged;
   final void Function(String postId, int newCommentCount)?
   onCommentCountChanged;
   final void Function(String authorId, bool isFollowing)? onFollowChanged;
@@ -47,6 +48,7 @@ class SocialPostCard extends StatefulWidget {
     this.onPostUpdated,
     this.onPostDeleted,
     this.onLikeChanged,
+    this.onLikePendingChanged,
     this.onCommentCountChanged,
     this.onFollowChanged,
   });
@@ -78,6 +80,13 @@ class _SocialPostCardState extends State<SocialPostCard> {
   @override
   void didUpdateWidget(covariant SocialPostCard oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.post.id != widget.post.id) {
+      _post = widget.post;
+      _isLiked = widget.initiallyLiked;
+      _isFollowing = widget.initiallyFollowing;
+      _isLiking = false;
+      return;
+    }
     if (oldWidget.post != widget.post) {
       _post = widget.post;
     }
@@ -95,7 +104,10 @@ class _SocialPostCardState extends State<SocialPostCard> {
       return;
     }
 
-    final nextLiked = !_isLiked;
+    final postId = _post.id;
+    final previousLiked = _isLiked;
+    final previousCount = _post.likeCount;
+    final nextLiked = !previousLiked;
     final nextCount = nextLiked
         ? _post.likeCount + 1
         : (_post.likeCount - 1).clamp(0, 1 << 31).toInt();
@@ -106,26 +118,38 @@ class _SocialPostCardState extends State<SocialPostCard> {
       _post = _post.copyWith(likeCount: nextCount);
     });
     widget.onLikeChanged?.call(_post.id, nextLiked, nextCount);
+    widget.onLikePendingChanged?.call(postId, true);
 
     try {
-      await widget.repository.toggleLike(
-        postId: _post.id,
+      final persistedState = await widget.repository.toggleLike(
+        postId: postId,
         currentUserId: widget.currentUserId,
       );
-    } catch (_) {
-      if (!mounted) return;
+      widget.onLikeChanged?.call(
+        postId,
+        persistedState.isLiked,
+        persistedState.likeCount,
+      );
+      if (!mounted || widget.post.id != postId || _post.id != postId) return;
       setState(() {
-        _isLiked = !nextLiked;
-        _post = _post.copyWith(likeCount: widget.post.likeCount);
+        _isLiked = persistedState.isLiked;
+        _post = _post.copyWith(likeCount: persistedState.likeCount);
       });
-      widget.onLikeChanged?.call(_post.id, !nextLiked, widget.post.likeCount);
+    } catch (_) {
+      widget.onLikeChanged?.call(postId, previousLiked, previousCount);
+      if (!mounted || widget.post.id != postId || _post.id != postId) return;
+      setState(() {
+        _isLiked = previousLiked;
+        _post = _post.copyWith(likeCount: previousCount);
+      });
       AppFeedback.show(
         context,
         message: 'We could not update your like right now.',
         tone: AppFeedbackTone.error,
       );
     } finally {
-      if (mounted) {
+      widget.onLikePendingChanged?.call(postId, false);
+      if (mounted && widget.post.id == postId && _post.id == postId) {
         setState(() => _isLiking = false);
       }
     }

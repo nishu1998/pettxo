@@ -24,6 +24,7 @@ import '../../../social/data/follow_repository.dart';
 import '../../../social/data/services/post_publish_coordinator.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
+import '../../../social/domain/social_post_like_state.dart';
 import '../../../social/domain/social_feed_pagination.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 import '../../../social/presentation/widgets/suggested_users_section.dart';
@@ -58,6 +59,9 @@ class _HomeScreenState extends State<HomeScreen> {
   List<UserProfile> _suggestedUsers = const <UserProfile>[];
   List<HomeFeedEntry> _feedEntries = const <HomeFeedEntry>[];
   final Set<String> _likedPostIds = <String>{};
+  final Map<String, SocialPostLikeMutation> _likeMutations =
+      <String, SocialPostLikeMutation>{};
+  int _likeMutationRevision = 0;
   HomeFeedViewerContext _viewerContext = HomeFeedViewerContext.empty;
   String? _userCity;
   String? _userState;
@@ -71,6 +75,8 @@ class _HomeScreenState extends State<HomeScreen> {
   int _lastHandledPublishEventId = 0;
   final HomeFeedRequestTracker _feedRequestTracker = HomeFeedRequestTracker();
   int _latestPaginationRequestId = 0;
+  StreamSubscription<User?>? _authStateSubscription;
+  String _viewerUid = '';
 
   static const double _topBarTopResetOffset = 12;
   static const double _topBarHideThreshold = 32;
@@ -79,6 +85,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _viewerUid = _auth.currentUser?.uid.trim() ?? '';
+    _authStateSubscription = _auth.authStateChanges().listen(
+      _handleAuthChanged,
+    );
     _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
     _scrollController.addListener(_handleScroll);
     _networkStatusListener = () {
@@ -112,6 +122,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _authStateSubscription?.cancel();
     PostPublishCoordinator.instance.stateListenable.removeListener(
       _postPublishListener,
     );
@@ -120,6 +131,45 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _handleAuthChanged(User? user) {
+    final nextUid = user?.uid.trim() ?? '';
+    if (nextUid == _viewerUid) return;
+    _viewerUid = nextUid;
+    _feedRequestTracker.startRequest();
+    _latestPaginationRequestId += 1;
+    if (!mounted) return;
+    setState(() {
+      _posts.clear();
+      _feedEntries = const <HomeFeedEntry>[];
+      _likedPostIds.clear();
+      _likeMutations.clear();
+      _likeMutationRevision = 0;
+      _followingIds.clear();
+      _suggestedUsers = const <UserProfile>[];
+      _shownSuggestionIds.clear();
+      _viewerContext = HomeFeedViewerContext.empty;
+      _userCity = null;
+      _userState = null;
+      _lastPostDocument = null;
+      _hasMorePosts = true;
+      _hasMoreBackendPosts = true;
+      _isLoadingMore = false;
+      _isRefreshing = false;
+      _isLoadingFeed = nextUid.isNotEmpty;
+      _feedError = null;
+      _loadMoreError = null;
+      _homeFeedSession.reset(
+        candidates: const <SocialPostModel>[],
+        viewerContext: HomeFeedViewerContext.empty,
+        initialEntryCount: 0,
+        preserveSeenPosts: false,
+      );
+    });
+    if (nextUid.isNotEmpty) {
+      unawaited(_loadInitialPosts(forceRefresh: true));
+    }
   }
 
   Future<HomeFeedViewerContext> _loadViewerContextForFeed() async {
@@ -146,7 +196,7 @@ class _HomeScreenState extends State<HomeScreen> {
         limit: 10,
         seed: _suggestionSeed,
       );
-      if (!mounted) return;
+      if (!mounted || currentUserId != (_auth.currentUser?.uid ?? '')) return;
       setState(() {
         _suggestedUsers = suggestions;
         _shownSuggestionIds.addAll(
@@ -190,6 +240,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadInitialPosts({bool forceRefresh = false}) async {
     final requestId = _feedRequestTracker.startRequest();
+    final requestUid = _viewerUid;
+    final likeRevisionAtRequestStart = _likeMutationRevision;
     final hadExistingPosts = _feedEntries.isNotEmpty;
     if (!mounted) return;
 
@@ -207,23 +259,43 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final viewerContext = await _loadViewerContextForFeed();
-      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+      if (!mounted ||
+          requestUid != _viewerUid ||
+          !_feedRequestTracker.isCurrent(requestId)) {
+        return;
+      }
 
       final page = await _homeFeedRepository.fetchPage(
         viewerContext: viewerContext,
         limit: socialFeedPageSize,
         forceRefresh: forceRefresh,
       );
-      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+      if (!mounted ||
+          requestUid != _viewerUid ||
+          !_feedRequestTracker.isCurrent(requestId)) {
+        return;
+      }
 
       final likedPostIds = await _socialPostRepository
           .fetchCurrentUserLikedPostIds(
             page.posts.map((post) => post.id).toList(growable: false),
+            preferServer: true,
           );
-      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+      if (!mounted ||
+          requestUid != _viewerUid ||
+          !_feedRequestTracker.isCurrent(requestId)) {
+        return;
+      }
 
-      final replacementPosts = HomeFeedRefreshPolicy.dedupeReplacementPosts(
-        page.posts,
+      final replacementPosts = applyNewerSocialPostLikeMutations(
+        HomeFeedRefreshPolicy.dedupeReplacementPosts(page.posts),
+        mutations: _likeMutations,
+        requestStartRevision: likeRevisionAtRequestStart,
+      );
+      final reconciledLikedPostIds = applyNewerViewerLikeMutations(
+        likedPostIds,
+        mutations: _likeMutations,
+        requestStartRevision: likeRevisionAtRequestStart,
       );
 
       _homeFeedSession.reset(
@@ -245,7 +317,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ..addAll(replacementPosts);
         _likedPostIds
           ..clear()
-          ..addAll(likedPostIds);
+          ..addAll(reconciledLikedPostIds);
         _feedEntries = _homeFeedSession.entries;
         _lastPostDocument = page.lastDocument;
         _hasMoreBackendPosts = page.hasMore;
@@ -253,7 +325,11 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       unawaited(_loadSuggestedUsers());
     } catch (error) {
-      if (!mounted || !_feedRequestTracker.isCurrent(requestId)) return;
+      if (!mounted ||
+          requestUid != _viewerUid ||
+          !_feedRequestTracker.isCurrent(requestId)) {
+        return;
+      }
       if (HomeFeedRefreshPolicy.shouldRetainExistingFeedAfterFailure(
         hadExistingPosts: hadExistingPosts,
       )) {
@@ -302,6 +378,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final requestId = _feedRequestTracker.currentRequestId;
+    final requestUid = _viewerUid;
+    final likeRevisionAtRequestStart = _likeMutationRevision;
     final paginationRequestId = ++_latestPaginationRequestId;
     setState(() => _isLoadingMore = true);
     try {
@@ -314,16 +392,27 @@ class _HomeScreenState extends State<HomeScreen> {
       final likedPostIds = await _socialPostRepository
           .fetchCurrentUserLikedPostIds(
             page.posts.map((post) => post.id).toList(growable: false),
+            preferServer: true,
           );
       if (!mounted ||
+          requestUid != _viewerUid ||
           _isRefreshing ||
           paginationRequestId != _latestPaginationRequestId ||
           !_feedRequestTracker.isCurrent(requestId)) {
         return;
       }
       final uniqueNewPosts = HomeFeedRefreshPolicy.dedupeAppendedPosts(
-        page.posts,
+        applyNewerSocialPostLikeMutations(
+          page.posts,
+          mutations: _likeMutations,
+          requestStartRevision: likeRevisionAtRequestStart,
+        ),
         existingPostIds: _posts.map((post) => post.id),
+      );
+      final reconciledLikedPostIds = applyNewerViewerLikeMutations(
+        likedPostIds,
+        mutations: _likeMutations,
+        requestStartRevision: likeRevisionAtRequestStart,
       );
       _homeFeedSession.appendCandidates(
         candidates: uniqueNewPosts,
@@ -333,7 +422,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _loadMoreError = null;
         _posts.addAll(uniqueNewPosts);
-        _likedPostIds.addAll(likedPostIds);
+        _likedPostIds.addAll(reconciledLikedPostIds);
         _feedEntries = _homeFeedSession.entries;
         _lastPostDocument = page.lastDocument;
         _hasMoreBackendPosts = page.hasMore;
@@ -341,6 +430,7 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (_) {
       if (!mounted ||
+          requestUid != _viewerUid ||
           _isRefreshing ||
           paginationRequestId != _latestPaginationRequestId ||
           !_feedRequestTracker.isCurrent(requestId)) {
@@ -424,7 +514,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final index = _posts.indexWhere((post) => post.id == postId);
     if (index == -1) return;
 
+    final revision = ++_likeMutationRevision;
     setState(() {
+      _likeMutations[postId] = SocialPostLikeMutation(
+        isLiked: isLiked,
+        likeCount: newLikeCount,
+        revision: revision,
+      );
       _posts[index] = _posts[index].copyWith(likeCount: newLikeCount);
       _homeFeedSession.replacePost(_posts[index]);
       _feedEntries = _homeFeedSession.entries;
@@ -434,6 +530,18 @@ class _HomeScreenState extends State<HomeScreen> {
         _likedPostIds.remove(postId);
       }
     });
+  }
+
+  void _handleLikePendingChanged(String postId, bool isPending) {
+    if (!mounted) return;
+    final mutation = _likeMutations[postId];
+    if (mutation == null) return;
+    _likeMutations[postId] = SocialPostLikeMutation(
+      isLiked: mutation.isLiked,
+      likeCount: mutation.likeCount,
+      revision: mutation.revision,
+      isPending: isPending,
+    );
   }
 
   void _handleCommentCountChanged(String postId, int newCommentCount) {
@@ -451,6 +559,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _posts.removeWhere((post) => post.id == postId);
       _likedPostIds.remove(postId);
+      _likeMutations.remove(postId);
       _homeFeedSession.removePost(postId);
       _feedEntries = _homeFeedSession.entries;
     });
@@ -599,6 +708,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPostUpdated: _handlePostUpdated,
                   onPostDeleted: _handlePostDeleted,
                   onLikeChanged: _handleLikeChanged,
+                  onLikePendingChanged: _handleLikePendingChanged,
                   onCommentCountChanged: _handleCommentCountChanged,
                   onFollowChanged: _handleFollowChanged,
                 );

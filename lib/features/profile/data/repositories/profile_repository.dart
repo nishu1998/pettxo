@@ -73,7 +73,7 @@ class ProfileRepository {
       if (data == null) {
         throw Exception('Profile not found');
       }
-      return UserProfile.fromMap(data);
+      return UserProfile.fromMap({...data, 'uid': trimmedUserId});
     });
   }
 

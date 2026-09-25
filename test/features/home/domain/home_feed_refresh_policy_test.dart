@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/home/domain/home_feed_refresh_policy.dart';
 import 'package:pettexo/features/social/domain/models/social_post_model.dart';
+import 'package:pettexo/features/social/domain/social_post_like_state.dart';
 
 void main() {
   group('HomeFeedRefreshPolicy', () {
@@ -99,6 +100,63 @@ void main() {
       tracker.startRequest();
       expect(tracker.isCurrent(initial), isFalse);
     });
+
+    test('account change invalidates the active viewer request', () {
+      final tracker = HomeFeedRequestTracker();
+      final accountARequest = tracker.startRequest();
+
+      tracker.startRequest();
+
+      expect(tracker.isCurrent(accountARequest), isFalse);
+    });
+  });
+
+  group('Home like reconciliation', () {
+    test('refresh cannot overwrite a newer Home card mutation', () {
+      final refreshed = applyNewerSocialPostLikeMutations(
+        <SocialPostModel>[_post(id: 'post-1', likeCount: 0)],
+        mutations: const <String, SocialPostLikeMutation>{
+          'post-1': SocialPostLikeMutation(
+            isLiked: true,
+            likeCount: 1,
+            revision: 2,
+          ),
+        },
+        requestStartRevision: 1,
+      );
+
+      expect(refreshed.single.likeCount, 1);
+    });
+
+    test('later canonical Home refresh replaces a settled local count', () {
+      final refreshed = applyNewerSocialPostLikeMutations(
+        <SocialPostModel>[_post(id: 'post-1', likeCount: 3)],
+        mutations: const <String, SocialPostLikeMutation>{
+          'post-1': SocialPostLikeMutation(
+            isLiked: true,
+            likeCount: 1,
+            revision: 2,
+          ),
+        },
+        requestStartRevision: 2,
+      );
+
+      expect(refreshed.single.likeCount, 3);
+    });
+
+    test('pagination does not replace an existing post mutation', () {
+      final existing = <SocialPostModel>[_post(id: 'post-1', likeCount: 1)];
+      final appended = HomeFeedRefreshPolicy.dedupeAppendedPosts(
+        <SocialPostModel>[
+          _post(id: 'post-1', likeCount: 0),
+          _post(id: 'post-2', likeCount: 4),
+        ],
+        existingPostIds: existing.map((post) => post.id),
+      );
+
+      expect(existing.single.likeCount, 1);
+      expect(appended.map((post) => post.id), <String>['post-2']);
+    });
   });
 
   group('HomeFeedLoadPolicy', () {
@@ -176,7 +234,7 @@ void main() {
   });
 }
 
-SocialPostModel _post({required String id}) {
+SocialPostModel _post({required String id, int likeCount = 0}) {
   return SocialPostModel(
     id: id,
     authorId: 'author-$id',
@@ -208,7 +266,7 @@ SocialPostModel _post({required String id}) {
     imageAspectRatio: SocialPostAspectRatio.square,
     caption: 'caption',
     hashtags: const <String>['pets'],
-    likeCount: 0,
+    likeCount: likeCount,
     commentCount: 0,
     shareCount: 0,
     saveCount: 0,
