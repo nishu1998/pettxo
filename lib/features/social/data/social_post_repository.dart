@@ -8,10 +8,19 @@ import 'package:image/image.dart' as img;
 
 import '../../../core/services/firestore_cache_service.dart';
 import '../../notifications/data/repositories/notification_repository.dart';
+import '../../explore/data/explore_location_repository.dart';
+import '../../explore/domain/models/explore_location_snapshot.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../profile/domain/models/user_profile.dart';
 import '../domain/models/comment_model.dart';
 import '../domain/models/social_post_model.dart';
+
+class SocialPostLikeState {
+  final bool isLiked;
+  final int likeCount;
+
+  const SocialPostLikeState({required this.isLiked, required this.likeCount});
+}
 
 class SocialFeedPage {
   final List<SocialPostModel> posts;
@@ -92,18 +101,22 @@ class SocialPostRepository {
     FirebaseAuth? auth,
     ProfileRepository? profileRepository,
     NotificationRepository? notificationRepository,
+    ExploreLocationRepository? postLocationRepository,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
        _storage = storage ?? FirebaseStorage.instance,
        _auth = auth ?? FirebaseAuth.instance,
        _profileRepository = profileRepository ?? ProfileRepository(),
        _notificationRepository =
-           notificationRepository ?? NotificationRepository();
+           notificationRepository ?? NotificationRepository(),
+       _postLocationRepository =
+           postLocationRepository ?? ExploreLocationRepository();
 
   final FirebaseFirestore _firestore;
   final FirebaseStorage _storage;
   final FirebaseAuth _auth;
   final ProfileRepository _profileRepository;
   final NotificationRepository _notificationRepository;
+  final ExploreLocationRepository _postLocationRepository;
   final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
   static const Set<String> _backendOwnedCreateFields = <String>{
@@ -134,6 +147,9 @@ class SocialPostRepository {
       _firestore.collection('socialPosts');
   CollectionReference<Map<String, dynamic>> get _hashtagsCollection =>
       _firestore.collection('hashtags');
+  CollectionReference<Map<String, dynamic>>
+  get _postLocationIntentsCollection =>
+      _firestore.collection('socialPostLocationIntents');
 
   // Counter updates stay colocated with the write transaction for now.
   Future<void> _updatePostLikeCounter({
@@ -394,6 +410,8 @@ class SocialPostRepository {
     final authorId = await _ensureAuthenticatedForStorageWrite();
     final profile = await _profileRepository.getCurrentUserProfile();
     final postRef = _postsCollection.doc();
+    final creationLocation = await _postLocationRepository
+        .captureFreshPostLocation();
     final uploads = await _uploadImages(
       authorId: authorId,
       postId: postRef.id,
@@ -423,7 +441,17 @@ class SocialPostRepository {
           message: 'Publishing your post...',
         ),
       );
-      await postRef.set(payload);
+      final batch = _firestore.batch()..set(postRef, payload);
+      if (creationLocation.hasCoordinates) {
+        batch.set(
+          _postLocationIntentsCollection.doc(postRef.id),
+          buildPostLocationIntentPayload(
+            authorId: authorId,
+            location: creationLocation,
+          ),
+        );
+      }
+      await batch.commit();
     } on FirebaseException catch (error) {
       await _cleanupUploadedImages(uploads);
       throw Exception(_mapCreatePostError(error));
@@ -493,19 +521,37 @@ class SocialPostRepository {
     return collapsed;
   }
 
-  Future<bool> hasCurrentUserLikedPost(String postId) async {
-    final likeSnapshot = await FirestoreCacheService.getDocCacheFirst(
-      _postsCollection.doc(postId).collection('likes').doc(_uid),
-    );
+  Future<bool> hasCurrentUserLikedPost(
+    String postId, {
+    bool preferServer = false,
+  }) async {
+    final likeRef = _postsCollection.doc(postId).collection('likes').doc(_uid);
+    if (preferServer) {
+      try {
+        final serverSnapshot = await likeRef.get(
+          const GetOptions(source: Source.server),
+        );
+        return serverSnapshot.exists;
+      } catch (_) {
+        // Offline detail views can still use the locally cached viewer state.
+      }
+    }
+    final likeSnapshot = await FirestoreCacheService.getDocCacheFirst(likeRef);
     return likeSnapshot.exists;
   }
 
-  Future<Set<String>> fetchCurrentUserLikedPostIds(List<String> postIds) async {
+  Future<Set<String>> fetchCurrentUserLikedPostIds(
+    List<String> postIds, {
+    bool preferServer = false,
+  }) async {
     if (postIds.isEmpty) return <String>{};
 
     final entries = await Future.wait(
       postIds.map((postId) async {
-        final liked = await hasCurrentUserLikedPost(postId);
+        final liked = await hasCurrentUserLikedPost(
+          postId,
+          preferServer: preferServer,
+        );
         return MapEntry(postId, liked);
       }),
     );
@@ -516,7 +562,7 @@ class SocialPostRepository {
         .toSet();
   }
 
-  Future<void> toggleLike({
+  Future<SocialPostLikeState> toggleLike({
     required String postId,
     required String currentUserId,
   }) async {
@@ -525,51 +571,58 @@ class SocialPostRepository {
     var createdLike = false;
     var recipientId = '';
 
-    await _firestore.runTransaction((transaction) async {
-      final postSnapshot = await transaction.get(postRef);
-      if (!postSnapshot.exists) {
-        throw Exception('Post not found.');
-      }
-      final postData = postSnapshot.data();
-      if (postData == null) {
-        throw Exception('Post not found.');
-      }
-      final visibilityStatus = (postData['visibilityStatus'] as String? ?? '')
-          .trim();
-      final moderationStatus = (postData['moderationStatus'] as String? ?? '')
-          .trim();
-      if (visibilityStatus != 'visible' || moderationStatus != 'approved') {
-        throw Exception('This post is no longer available for likes.');
-      }
-      recipientId = (postData['authorId'] as String? ?? '').trim();
-      if (!await _isUserVisible(recipientId)) {
-        throw Exception('This post is no longer available for likes.');
-      }
+    final persistedState = await _firestore.runTransaction<SocialPostLikeState>(
+      (transaction) async {
+        final postSnapshot = await transaction.get(postRef);
+        if (!postSnapshot.exists) {
+          throw Exception('Post not found.');
+        }
+        final postData = postSnapshot.data();
+        if (postData == null) {
+          throw Exception('Post not found.');
+        }
+        final visibilityStatus = (postData['visibilityStatus'] as String? ?? '')
+            .trim();
+        final moderationStatus = (postData['moderationStatus'] as String? ?? '')
+            .trim();
+        if (visibilityStatus != 'visible' || moderationStatus != 'approved') {
+          throw Exception('This post is no longer available for likes.');
+        }
+        recipientId = (postData['authorId'] as String? ?? '').trim();
+        if (!await _isUserVisible(recipientId)) {
+          throw Exception('This post is no longer available for likes.');
+        }
 
-      final likeSnapshot = await transaction.get(likeRef);
-      final currentLikeCount = (postData['likeCount'] as num?)?.toInt() ?? 0;
+        final likeSnapshot = await transaction.get(likeRef);
+        final currentLikeCount = (postData['likeCount'] as num?)?.toInt() ?? 0;
 
-      if (likeSnapshot.exists) {
-        transaction.delete(likeRef);
+        if (likeSnapshot.exists) {
+          transaction.delete(likeRef);
+          final nextLikeCount = math.max(0, currentLikeCount - 1);
+          await _updatePostLikeCounter(
+            transaction: transaction,
+            postRef: postRef,
+            nextLikeCount: nextLikeCount,
+          );
+          return SocialPostLikeState(isLiked: false, likeCount: nextLikeCount);
+        }
+
+        transaction.set(likeRef, {
+          'userId': currentUserId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        createdLike = true;
         await _updatePostLikeCounter(
           transaction: transaction,
           postRef: postRef,
-          nextLikeCount: math.max(0, currentLikeCount - 1),
+          nextLikeCount: currentLikeCount + 1,
         );
-        return;
-      }
-
-      transaction.set(likeRef, {
-        'userId': currentUserId,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-      createdLike = true;
-      await _updatePostLikeCounter(
-        transaction: transaction,
-        postRef: postRef,
-        nextLikeCount: currentLikeCount + 1,
-      );
-    });
+        return SocialPostLikeState(
+          isLiked: true,
+          likeCount: currentLikeCount + 1,
+        );
+      },
+    );
 
     if (createdLike && recipientId.isNotEmpty && recipientId != currentUserId) {
       try {
@@ -581,6 +634,7 @@ class SocialPostRepository {
         // Notifications are best-effort and should not break like success.
       }
     }
+    return persistedState;
   }
 
   Future<int> incrementShareCount({required String postId}) async {
@@ -1059,6 +1113,27 @@ class SocialPostRepository {
       'createdAtEpoch': createdAtEpoch,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
+    };
+  }
+
+  @visibleForTesting
+  static Map<String, dynamic> buildPostLocationIntentPayload({
+    required String authorId,
+    required ExploreLocationSnapshot location,
+  }) {
+    if (!location.hasCoordinates) return const <String, dynamic>{};
+    return <String, dynamic>{
+      'ownerUid': authorId,
+      'source': 'freshDeviceAtPublish',
+      'location': <String, dynamic>{
+        'latitude': location.latitude,
+        'longitude': location.longitude,
+        'city': location.city,
+        'state': location.state,
+        'country': location.country,
+      },
+      'capturedAt': FieldValue.serverTimestamp(),
+      'createdAt': FieldValue.serverTimestamp(),
     };
   }
 

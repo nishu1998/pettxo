@@ -9,9 +9,13 @@ const {
   computeDiscoverScoreBreakdown,
   computeHomeScoreBreakdown,
   computeNearbyScoreBreakdown,
+  decodeGeohashBounds,
+  encodeGeohash,
   formatNearbyDistanceLabel,
+  geohashPrefixesAround,
   metadataMatchesCurrent,
   rankingInputsEqual,
+  resolvePostSpecificLocationMetadata,
   runNearbyFeedQuery,
   runRefreshSocialPostDiscoverScores,
   runSocialPostFeedMetadataBackfill,
@@ -395,7 +399,7 @@ test("home scoring excludes non-visible or unapproved posts", () => {
 
 test("privacy-safe feed metadata keeps precise location private and only returns public geohash metadata", () => {
   const metadata = buildFeedMetadata(buildPost(), Date.now(), {
-    authorLocation: {
+    creationLocation: {
       latitude: 21.81341,
       longitude: 80.18324,
       city: "Balaghat",
@@ -414,6 +418,98 @@ test("privacy-safe feed metadata keeps precise location private and only returns
   assert.equal(metadata.feedStateKey, "madhya pradesh");
   assert.equal("feedLatitudeBucket" in metadata, false);
   assert.equal("feedLongitudeBucket" in metadata, false);
+});
+
+test("post location stays immutable when an author moves and new posts use the new creation location", () => {
+  const locationA = {
+    latitude: 21.8134,
+    longitude: 80.1832,
+    city: "Balaghat",
+    state: "Madhya Pradesh",
+    country: "India",
+    geohash3: encodeGeohash(21.8134, 80.1832, 3),
+    geohash4: encodeGeohash(21.8134, 80.1832, 4),
+    geohash5: encodeGeohash(21.8134, 80.1832, 5),
+  };
+  const locationB = {
+    latitude: 18.5204,
+    longitude: 73.8567,
+    city: "Pune",
+    state: "Maharashtra",
+    country: "India",
+    geohash3: encodeGeohash(18.5204, 73.8567, 3),
+    geohash4: encodeGeohash(18.5204, 73.8567, 4),
+    geohash5: encodeGeohash(18.5204, 73.8567, 5),
+  };
+  const oldPostMetadata = buildFeedMetadata(buildPost({id: "A1"}), Date.now(), {
+    creationLocation: locationA,
+  });
+  const oldPostAfterMove = buildFeedMetadata(
+    {...buildPost({id: "A1"}), ...oldPostMetadata},
+    Date.now(),
+    {creationLocation: locationB},
+  );
+  const newPostMetadata = buildFeedMetadata(buildPost({id: "B1"}), Date.now(), {
+    creationLocation: locationB,
+  });
+
+  assert.equal(oldPostAfterMove.feedGeohash5, locationA.geohash5);
+  assert.equal(newPostMetadata.feedGeohash5, locationB.geohash5);
+  assert.notEqual(oldPostAfterMove.feedGeohash5, newPostMetadata.feedGeohash5);
+});
+
+test("post-specific creation intent wins without consulting stale author location", () => {
+  const resolved = resolvePostSpecificLocationMetadata({
+    postData: buildPost({id: "B1", authorId: "viewer"}),
+    privateData: undefined,
+    intentData: {
+      ownerUid: "viewer",
+      source: "freshDeviceAtPublish",
+      location: {
+        latitude: 18.5204,
+        longitude: 73.8567,
+        city: "Pune",
+        state: "Maharashtra",
+        country: "India",
+      },
+      capturedAt: Timestamp.fromDate(new Date("2026-09-25T12:00:00.000Z")),
+    },
+    authorId: "viewer",
+  });
+
+  assert.equal(resolved.intent.ownerUid, "viewer");
+  assert.equal(resolved.privateLocation.latitudeBucket, 18.52);
+  assert.equal(resolved.privateLocation.longitudeBucket, 73.86);
+  assert.equal(resolved.metadata.feedGeohash5, encodeGeohash(18.52, 73.86, 5));
+  assert.equal(resolved.metadata.feedCityKey, "pune");
+  assert.equal(resolved.metadata.feedStateKey, "maharashtra");
+});
+
+test("post intent public GeoHash is derived from the persisted private bucket", () => {
+  const resolved = resolvePostSpecificLocationMetadata({
+    postData: buildPost({id: "boundary", authorId: "viewer"}),
+    intentData: {
+      ownerUid: "viewer",
+      source: "freshDeviceAtPublish",
+      location: {
+        latitude: 23.293169,
+        longitude: 77.420000,
+        city: "Bhopal",
+        state: "Madhya Pradesh",
+        country: "India",
+      },
+      capturedAt: Timestamp.fromDate(new Date("2026-09-25T12:00:00.000Z")),
+    },
+    authorId: "viewer",
+  });
+
+  const expected = encodeGeohash(
+    resolved.privateLocation.latitudeBucket,
+    resolved.privateLocation.longitudeBucket,
+    5,
+  );
+  assert.notEqual(expected, encodeGeohash(23.293169, 77.420000, 5));
+  assert.equal(resolved.metadata.feedGeohash5, expected);
 });
 
 test("ranking input guard ignores metadata-only changes and metadata match prevents duplicate writes", () => {
@@ -552,6 +648,41 @@ test("nearby scoring favors closer fresher posts and excludes posts outside 50 k
   assert.equal(outside.nearbyEligible, false);
 });
 
+test("nearby applies the 50 km radius at the distance boundary", () => {
+  const latitude = 21.8134;
+  const insideLatitude = latitude + (49.9 / 111.195);
+  const outsideLatitude = latitude + (50.1 / 111.195);
+  const inside = computeNearbyScoreBreakdown(
+    buildPost({nearbyEligible: true}),
+    latitude,
+    80.1832,
+    Date.now(),
+    {latitudeBucket: insideLatitude, longitudeBucket: 80.1832, feedLocationVersion: 2},
+  );
+  const outside = computeNearbyScoreBreakdown(
+    buildPost({nearbyEligible: true}),
+    latitude,
+    80.1832,
+    Date.now(),
+    {latitudeBucket: outsideLatitude, longitudeBucket: 80.1832, feedLocationVersion: 2},
+  );
+
+  assert.equal(inside.nearbyEligible, true);
+  assert.equal(outside.nearbyEligible, false);
+});
+
+test("nearby GeoHash candidates include the adjacent cell across a boundary", () => {
+  const originalHash = encodeGeohash(21.8134, 80.1832, 3);
+  const bounds = decodeGeohashBounds(originalHash);
+  assert.ok(bounds);
+  const latitude = (bounds.minLat + bounds.maxLat) / 2;
+  const viewerHash = encodeGeohash(latitude, bounds.maxLon - 0.001, 3);
+  const adjacentHash = encodeGeohash(latitude, bounds.maxLon + 0.001, 3);
+
+  assert.notEqual(viewerHash, adjacentHash);
+  assert.ok(geohashPrefixesAround(viewerHash).includes(adjacentHash));
+});
+
 test("nearby query ranks by distance, paginates via sessions, and omits public buckets", async () => {
   const firestore = new FakeFirestore({
     "userPrivate/viewer": {
@@ -658,9 +789,276 @@ test("nearby query falls back to city/state when precise coordinates are unavail
   });
 
   assert.equal(response.usedCityStateFallback, true);
+  assert.equal(response.locationMode, "savedCityState");
   assert.equal(response.posts.length, 1);
   assert.equal(response.posts[0].nearbyDistanceLabel, "Near your city");
   assert.equal(response.posts[0].usesNearbyFallback, true);
+});
+
+test("nearby includes the viewer's and other users' eligible posts within 50 km", async () => {
+  const firestore = new FakeFirestore({
+    "userPrivate/viewer": {
+      exploreLocation: {
+        latitude: 21.8134,
+        longitude: 80.1832,
+        city: "Balaghat",
+        state: "Madhya Pradesh",
+        geohash3: "te7",
+        geohash4: "te7g",
+        geohash5: "te7g4",
+      },
+    },
+    "users/viewer": buildUser({uid: "viewer", username: "viewer", usernameLowercase: "viewer"}),
+    "users/user-b": buildUser({uid: "user-b", username: "userb", usernameLowercase: "userb"}),
+  });
+  const posts = [
+    ["a1", "viewer", 21.8224],
+    ["a2", "viewer", 21.9934],
+    ["b1", "user-b", 21.8314],
+    ["b2", "user-b", 22.0834],
+    ["outside", "user-b", 22.3534],
+  ];
+  for (const [id, authorId, latitudeBucket] of posts) {
+    firestore.store.set(`socialPosts/${id}`, buildPost({
+      id,
+      authorId,
+      nearbyEligible: true,
+      feedGeohash3: "te7",
+      feedGeohash4: "te7g",
+      feedGeohash5: "te7g4",
+    }));
+    firestore.store.set(
+      `socialPostPrivate/${id}`,
+      buildPrivatePostLocation({latitudeBucket, longitudeBucket: 80.1832}),
+    );
+  }
+
+  const response = await runNearbyFeedQuery({
+    uid: "viewer",
+    limit: 10,
+    firestore,
+    authoritativeNow: new Date("2026-07-31T12:00:00.000Z"),
+  });
+
+  assert.deepStrictEqual(
+    new Set(response.posts.map((post) => post.id)),
+    new Set(["a1", "a2", "b1", "b2"]),
+  );
+  assert.equal(response.locationMode, "radius");
+  assert.equal(response.activeRadiusKm, 50);
+});
+
+test("nearby candidate collection is not truncated at the former 40-post pool limit", async () => {
+  const seed = {
+    "userPrivate/viewer": {
+      exploreLocation: {
+        latitude: 21.8134,
+        longitude: 80.1832,
+        city: "Balaghat",
+        state: "Madhya Pradesh",
+        geohash3: "te7",
+        geohash4: "te7g",
+        geohash5: "te7g4",
+      },
+    },
+    "users/viewer": buildUser({uid: "viewer", username: "viewer", usernameLowercase: "viewer"}),
+    "users/user-b": buildUser({uid: "user-b", username: "userb", usernameLowercase: "userb"}),
+  };
+  for (let index = 0; index < 70; index += 1) {
+    const id = `dense-${String(index).padStart(2, "0")}`;
+    const authorId = index % 2 === 0 ? "viewer" : "user-b";
+    seed[`socialPosts/${id}`] = buildPost({
+      id,
+      authorId,
+      nearbyEligible: true,
+      feedGeohash3: "te7",
+      feedGeohash4: "te7g",
+      feedGeohash5: "te7g4",
+      createdAtEpoch: new Date("2026-07-31T12:00:00.000Z").getTime() - index,
+    });
+    seed[`socialPostPrivate/${id}`] = buildPrivatePostLocation();
+  }
+  const firestore = new FakeFirestore(seed);
+  const received = [];
+  let cursor = null;
+  do {
+    const page = await runNearbyFeedQuery({
+      uid: "viewer",
+      limit: 20,
+      cursor,
+      firestore,
+      authoritativeNow: new Date("2026-07-31T12:00:00.000Z"),
+    });
+    received.push(...page.posts.map((post) => post.id));
+    cursor = page.nextCursor;
+  } while (cursor != null);
+
+  assert.equal(received.length, 70);
+  assert.equal(new Set(received).size, 70);
+  assert.ok(received.some((id) => id === "dense-00"));
+  assert.ok(received.some((id) => id === "dense-69"));
+});
+
+test("nearby refresh is deterministic and includes a newly eligible post", async () => {
+  const firestore = new FakeFirestore({
+    "userPrivate/viewer": {
+      exploreLocation: {
+        latitude: 21.8134,
+        longitude: 80.1832,
+        city: "Balaghat",
+        state: "Madhya Pradesh",
+        geohash3: "te7",
+        geohash4: "te7g",
+        geohash5: "te7g4",
+      },
+    },
+    "users/viewer": buildUser({uid: "viewer", username: "viewer", usernameLowercase: "viewer"}),
+    "users/user-b": buildUser({uid: "user-b", username: "userb", usernameLowercase: "userb"}),
+    "socialPosts/own": buildPost({id: "own", authorId: "viewer", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4"}),
+    "socialPostPrivate/own": buildPrivatePostLocation(),
+    "socialPosts/other": buildPost({id: "other", authorId: "user-b", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4"}),
+    "socialPostPrivate/other": buildPrivatePostLocation({latitudeBucket: 21.82}),
+  });
+
+  const first = await runNearbyFeedQuery({uid: "viewer", limit: 20, firestore});
+  const refreshed = await runNearbyFeedQuery({uid: "viewer", limit: 20, firestore});
+  assert.deepStrictEqual(
+    refreshed.posts.map((post) => post.id),
+    first.posts.map((post) => post.id),
+  );
+
+  firestore.store.set("socialPosts/new-own", buildPost({
+    id: "new-own",
+    authorId: "viewer",
+    nearbyEligible: true,
+    feedGeohash3: "te7",
+    feedGeohash4: "te7g",
+    feedGeohash5: "te7g4",
+    createdAtEpoch: Date.now() + 1,
+  }));
+  firestore.store.set("socialPostPrivate/new-own", buildPrivatePostLocation());
+  const afterCreate = await runNearbyFeedQuery({uid: "viewer", limit: 20, firestore});
+  assert.ok(afterCreate.posts.some((post) => post.id === "new-own"));
+  assert.ok(afterCreate.posts.some((post) => post.id === "own"));
+  assert.ok(afterCreate.posts.some((post) => post.id === "other"));
+});
+
+test("nearby excludes an own post stored far away while returning multiple nearby authors", async () => {
+  const firestore = new FakeFirestore({
+    "userPrivate/viewer": {
+      exploreLocation: {
+        latitude: 21.8134,
+        longitude: 80.1832,
+        city: "Balaghat",
+        state: "Madhya Pradesh",
+        geohash3: "te7",
+        geohash4: "te7g",
+        geohash5: "te7g4",
+      },
+    },
+    "users/viewer": buildUser({uid: "viewer", username: "viewer", usernameLowercase: "viewer"}),
+    "users/user-b": buildUser({uid: "user-b", username: "userb", usernameLowercase: "userb"}),
+    "users/user-c": buildUser({uid: "user-c", username: "userc", usernameLowercase: "userc"}),
+    "socialPosts/own-far": buildPost({
+      id: "own-far",
+      authorId: "viewer",
+      nearbyEligible: true,
+      feedGeohash3: "ttn",
+      feedGeohash4: "ttnf",
+      feedGeohash5: "ttnfv",
+    }),
+    "socialPostPrivate/own-far": buildPrivatePostLocation({
+      latitudeBucket: 28.61,
+      longitudeBucket: 77.21,
+    }),
+    "socialPosts/nearby-own": buildPost({id: "nearby-own", authorId: "viewer", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4"}),
+    "socialPostPrivate/nearby-own": buildPrivatePostLocation(),
+    "socialPosts/nearby-b": buildPost({id: "nearby-b", authorId: "user-b", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4"}),
+    "socialPostPrivate/nearby-b": buildPrivatePostLocation({latitudeBucket: 21.82}),
+    "socialPosts/nearby-c": buildPost({id: "nearby-c", authorId: "user-c", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4"}),
+    "socialPostPrivate/nearby-c": buildPrivatePostLocation({longitudeBucket: 80.19}),
+  });
+
+  const response = await runNearbyFeedQuery({
+    uid: "viewer",
+    limit: 20,
+    firestore,
+    debugDiagnostics: true,
+  });
+  const ids = response.posts.map((post) => post.id);
+
+  assert.equal(ids.includes("own-far"), false);
+  assert.deepStrictEqual(new Set(ids), new Set(["nearby-own", "nearby-b", "nearby-c"]));
+});
+
+test("nearby handles missing post location without crashing or broadening results", async () => {
+  const firestore = new FakeFirestore({
+    "userPrivate/viewer": {
+      exploreLocation: {
+        latitude: 21.8134,
+        longitude: 80.1832,
+        city: "Balaghat",
+        state: "Madhya Pradesh",
+        geohash3: "te7",
+        geohash4: "te7g",
+        geohash5: "te7g4",
+      },
+    },
+    "users/viewer": buildUser({uid: "viewer", username: "viewer", usernameLowercase: "viewer"}),
+    "socialPosts/malformed": buildPost({
+      id: "malformed",
+      authorId: "viewer",
+      nearbyEligible: true,
+      feedGeohash3: "te7",
+      feedGeohash4: "te7g",
+      feedGeohash5: "te7g4",
+    }),
+  });
+
+  const response = await runNearbyFeedQuery({uid: "viewer", limit: 20, firestore});
+  assert.deepStrictEqual(response.posts, []);
+});
+
+test("nearby session paging refills past posts hidden after session creation", async () => {
+  const firestore = new FakeFirestore({
+    "userPrivate/viewer": {
+      exploreLocation: {
+        latitude: 21.8134,
+        longitude: 80.1832,
+        city: "Balaghat",
+        state: "Madhya Pradesh",
+        geohash3: "te7",
+        geohash4: "te7g",
+        geohash5: "te7g4",
+      },
+    },
+    "users/viewer": buildUser({uid: "viewer", username: "viewer", usernameLowercase: "viewer"}),
+    "socialPosts/p1": buildPost({id: "p1", authorId: "viewer", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4", createdAtEpoch: 3}),
+    "socialPosts/p2": buildPost({id: "p2", authorId: "viewer", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4", createdAtEpoch: 2}),
+    "socialPosts/p3": buildPost({id: "p3", authorId: "viewer", nearbyEligible: true, feedGeohash3: "te7", feedGeohash4: "te7g", feedGeohash5: "te7g4", createdAtEpoch: 1}),
+    "socialPostPrivate/p1": buildPrivatePostLocation(),
+    "socialPostPrivate/p2": buildPrivatePostLocation(),
+    "socialPostPrivate/p3": buildPrivatePostLocation(),
+  });
+  const first = await runNearbyFeedQuery({uid: "viewer", limit: 1, firestore});
+  const sessionPath = `nearbyFeedSessions/${first.nextCursor.sessionId}`;
+  const ordered = firestore.store.get(sessionPath).orderedPosts;
+  const hiddenId = ordered[1].id;
+  firestore.store.set(`socialPosts/${hiddenId}`, {
+    ...firestore.store.get(`socialPosts/${hiddenId}`),
+    visibilityStatus: "hidden",
+  });
+
+  const second = await runNearbyFeedQuery({
+    uid: "viewer",
+    limit: 1,
+    cursor: first.nextCursor,
+    firestore,
+  });
+
+  assert.equal(second.posts.length, 1);
+  assert.notEqual(second.posts[0].id, hiddenId);
+  assert.notEqual(second.posts[0].id, first.posts[0].id);
 });
 
 test("nearby sessions keep paging stable when engagement changes between pages", async () => {
@@ -842,6 +1240,36 @@ test("backfill migrates private location, removes public buckets, and stays idem
   assert.equal(secondRun.updated, 0);
   assert.equal(secondRun.alreadyMigrated, 2);
   assert.equal(secondRun.skipped, 2);
+});
+
+test("backfill never invents a historical post location from the author's current location", async () => {
+  const firestore = new FakeFirestore({
+    "socialPosts/legacyMissing": buildPost({
+      id: "legacyMissing",
+      authorId: "author-1",
+      feedLatitudeBucket: 0,
+      feedLongitudeBucket: 0,
+      feedLocationVersion: 0,
+    }),
+    "userPrivate/author-1": {
+      exploreLocation: {
+        latitude: 18.5204,
+        longitude: 73.8567,
+        city: "Pune",
+        state: "Maharashtra",
+        geohash3: "tek",
+        geohash4: "tek1",
+        geohash5: "tek1x",
+      },
+    },
+  });
+
+  const summary = await runSocialPostFeedMetadataBackfill({firestore});
+
+  assert.equal(summary.updated, 0);
+  assert.equal(summary.missingLocation, 1);
+  assert.equal(firestore.store.has("socialPostPrivate/legacyMissing"), false);
+  assert.equal(firestore.store.get("socialPosts/legacyMissing").nearbyEligible, false);
 });
 
 test("nearby backend filtering excludes blocked and inactive creators before results are returned", async () => {

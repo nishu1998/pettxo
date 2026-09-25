@@ -4,6 +4,7 @@ import 'package:pettexo/features/profile/domain/models/user_profile.dart';
 import 'package:pettexo/features/restrictions/domain/models/user_restriction_state.dart';
 import 'package:pettexo/features/social/data/social_post_repository.dart';
 import 'package:pettexo/features/social/domain/models/social_post_model.dart';
+import 'package:pettexo/features/explore/domain/models/explore_location_snapshot.dart';
 
 void main() {
   group('SocialPostRepository.buildCreatePostPayload', () {
@@ -97,6 +98,46 @@ void main() {
       expect(payload.containsKey('moderatedBy'), isFalse);
       expect(payload.containsKey('moderatedAt'), isFalse);
       expect(payload.containsKey('lastReportedAt'), isFalse);
+    });
+  });
+
+  group('SocialPostRepository.buildPostLocationIntentPayload', () {
+    test('uses the fresh publish location as immutable private intent', () {
+      const freshLocationB = ExploreLocationSnapshot(
+        latitude: 18.5204,
+        longitude: 73.8567,
+        city: 'Pune',
+        state: 'Maharashtra',
+        country: 'India',
+        geohash3: 'tek',
+        geohash4: 'tek1',
+        geohash5: 'tek1x',
+        updatedAt: null,
+      );
+
+      final payload = SocialPostRepository.buildPostLocationIntentPayload(
+        authorId: 'author-1',
+        location: freshLocationB,
+      );
+      final location = payload['location'] as Map<String, dynamic>;
+
+      expect(payload['ownerUid'], 'author-1');
+      expect(payload['source'], 'freshDeviceAtPublish');
+      expect(location['latitude'], 18.5204);
+      expect(location['longitude'], 73.8567);
+      expect(location['city'], 'Pune');
+      expect(payload['capturedAt'], isA<FieldValue>());
+      expect(payload['createdAt'], isA<FieldValue>());
+      expect(payload.toString(), isNot(contains('Balaghat')));
+    });
+
+    test('does not create an intent from an unavailable fresh reading', () {
+      final payload = SocialPostRepository.buildPostLocationIntentPayload(
+        authorId: 'author-1',
+        location: ExploreLocationSnapshot.empty,
+      );
+
+      expect(payload, isEmpty);
     });
   });
 }

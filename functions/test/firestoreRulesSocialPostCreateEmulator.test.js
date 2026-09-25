@@ -7,7 +7,7 @@ const {
   assertFails,
   assertSucceeds,
 } = require("@firebase/rules-unit-testing");
-const { doc, setDoc, serverTimestamp } = require("firebase/firestore");
+const {doc, setDoc, serverTimestamp, writeBatch} = require("firebase/firestore");
 
 const projectId = "pettexo-d9409";
 const rules = fs.readFileSync(
@@ -97,6 +97,74 @@ test("social post create accepts runtime payload without backend-owned feed defa
         payload,
       ),
     );
+  } finally {
+    await testEnv.cleanup();
+  }
+});
+
+test("social post and private creation-location intent are created atomically", async () => {
+  const testEnv = await initializeTestEnvironment({
+    projectId,
+    firestore: {rules},
+  });
+  try {
+    const uid = "user_123";
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", uid), {
+        uid,
+        accountStatus: "active",
+      });
+    });
+    const firestore = testEnv.authenticatedContext(uid).firestore();
+    const postId = "post_with_creation_location";
+    const batch = writeBatch(firestore);
+    batch.set(doc(firestore, "socialPosts", postId), buildRuntimePayload(uid, postId));
+    batch.set(doc(firestore, "socialPostLocationIntents", postId), {
+      ownerUid: uid,
+      source: "freshDeviceAtPublish",
+      location: {
+        latitude: 18.5204,
+        longitude: 73.8567,
+        city: "Pune",
+        state: "Maharashtra",
+        country: "India",
+      },
+      capturedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    });
+    await assertSucceeds(batch.commit());
+  } finally {
+    await testEnv.cleanup();
+  }
+});
+
+test("creation-location intent cannot be written without the matching post create", async () => {
+  const testEnv = await initializeTestEnvironment({
+    projectId,
+    firestore: {rules},
+  });
+  try {
+    const uid = "user_123";
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", uid), {
+        uid,
+        accountStatus: "active",
+      });
+    });
+    const firestore = testEnv.authenticatedContext(uid).firestore();
+    await assertFails(setDoc(doc(firestore, "socialPostLocationIntents", "orphan"), {
+      ownerUid: uid,
+      source: "freshDeviceAtPublish",
+      location: {
+        latitude: 18.5204,
+        longitude: 73.8567,
+        city: "Pune",
+        state: "Maharashtra",
+        country: "India",
+      },
+      capturedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    }));
   } finally {
     await testEnv.cleanup();
   }

@@ -14,6 +14,7 @@ import '../../social/domain/social_feed_pagination.dart';
 import '../domain/models/explore_feed_kind.dart';
 import '../domain/models/explore_feed_page.dart';
 import '../domain/models/explore_feed_viewer_context.dart';
+import '../domain/models/nearby_location_mode.dart';
 import 'explore_feed_filter_service.dart';
 
 class ExploreNearbyAuthException implements Exception {
@@ -575,13 +576,14 @@ class ExploreFeedRepository {
     Map<String, dynamic>? cursor,
   }) async {
     await _nearbyAuthReadiness.waitForAuthenticatedUser();
-    const maxRefillAttempts = 2;
+    const maxRefillAttempts = 240;
     final posts = <SocialPostModel>[];
     final seenPostIds = Set<String>.from(excludePostIds);
     Map<String, dynamic>? nextCursor = cursor;
     bool hasMore = true;
     double? activeRadiusKm;
     bool usedLocationFallback = false;
+    NearbyLocationMode nearbyLocationMode = NearbyLocationMode.unavailable;
     String? emptyStateReason;
     var attempts = 0;
     var restartedExpiredSession = false;
@@ -591,6 +593,7 @@ class ExploreFeedRepository {
       final remaining = math.max(1, limit - posts.length);
       final payload = <String, dynamic>{
         'limit': math.min(math.max(remaining, limit), 20),
+        if (kDebugMode) 'debugDiagnostics': true,
       };
       if (nextCursor != null) {
         payload['cursor'] = nextCursor;
@@ -618,19 +621,57 @@ class ExploreFeedRepository {
         }
       }
 
-      final rawPosts = (data['posts'] as List<dynamic>? ?? const <dynamic>[])
-          .whereType<Map>()
-          .map(
-            (item) => SocialPostModel.fromMap(
+      final rawItems = data['posts'] as List<dynamic>? ?? const <dynamic>[];
+      final rawMaps = rawItems.whereType<Map>().toList(growable: false);
+      final responseMode = data['locationMode']?.toString() ?? '';
+      final responseIds = rawMaps
+          .map((item) => item['id']?.toString().trim() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toList(growable: false);
+      _debugLog(
+        '[NearbyDiag] callable-response mode=$responseMode '
+        'postCount=${rawMaps.length} postIds=$responseIds '
+        'hasMore=${data['hasMore'] == true} '
+        'cursorPresent=${data['nextCursor'] is Map}',
+      );
+      for (final item in rawMaps) {
+        _debugLog(
+          '[NearbyDiag] callable-post postId=${item['id'] ?? ''} '
+          'authorId=${item['authorId'] ?? ''} '
+          'distanceKm=${item['nearbyDistanceKm'] ?? 'missing'} '
+          'mode=$responseMode',
+        );
+      }
+
+      final rawPosts = <SocialPostModel>[];
+      for (final item in rawMaps) {
+        final postId = item['id']?.toString().trim() ?? '';
+        try {
+          rawPosts.add(
+            SocialPostModel.fromMap(
               Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
             ),
-          )
-          .toList(growable: false);
+          );
+        } catch (error) {
+          _debugLog('[NearbyDiag] parse-failed postId=$postId reason=$error');
+          rethrow;
+        }
+      }
+      _debugLog(
+        '[NearbyDiag] parsed rawCount=${rawItems.length} '
+        'parsedCount=${rawPosts.length} '
+        'droppedCount=${rawItems.length - rawPosts.length}',
+      );
 
       final filteredPosts = await _filterService.apply(
         posts: rawPosts,
         viewerContext: viewerContext,
         seenPostIds: seenPostIds,
+        diagnosticsLabel: 'nearby',
+      );
+      _debugLog(
+        '[NearbyDiag] client-filter-summary receivedCount=${rawPosts.length} '
+        'afterFilteringCount=${filteredPosts.length}',
       );
       posts.addAll(filteredPosts);
 
@@ -641,12 +682,17 @@ class ExploreFeedRepository {
       hasMore = data['hasMore'] == true && nextCursor != null;
       activeRadiusKm = (data['activeRadiusKm'] as num?)?.toDouble();
       usedLocationFallback = data['usedCityStateFallback'] == true;
+      nearbyLocationMode = NearbyLocationMode.fromResponse(
+        value: data['locationMode'],
+        usedCityStateFallback: usedLocationFallback,
+        activeRadiusKm: activeRadiusKm,
+      );
       emptyStateReason =
           (data['emptyStateReason'] as String?)?.trim().isNotEmpty == true
           ? (data['emptyStateReason'] as String).trim()
           : null;
 
-      if (rawPosts.isEmpty || nextCursor == null) {
+      if (nextCursor == null) {
         hasMore = false;
       }
     }
@@ -658,6 +704,7 @@ class ExploreFeedRepository {
       hasMore: hasMore,
       activeRadiusKm: activeRadiusKm,
       usedLocationFallback: usedLocationFallback,
+      nearbyLocationMode: nearbyLocationMode,
       emptyStateReason: emptyStateReason,
     );
   }

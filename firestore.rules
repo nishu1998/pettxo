@@ -1020,6 +1020,40 @@ service cloud.firestore {
       request.resource.data.updatedAt == request.time;
     }
 
+    function safeSocialPostLocationIntentCreate(postId) {
+      let location = request.resource.data.location;
+      return request.resource.data.keys().hasOnly([
+          'ownerUid',
+          'source',
+          'location',
+          'capturedAt',
+          'createdAt'
+        ]) &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.source == 'freshDeviceAtPublish' &&
+        request.resource.data.capturedAt == request.time &&
+        request.resource.data.createdAt == request.time &&
+        location.keys().hasOnly([
+          'latitude',
+          'longitude',
+          'city',
+          'state',
+          'country'
+        ]) &&
+        location.latitude is number &&
+        location.latitude >= -90 &&
+        location.latitude <= 90 &&
+        location.longitude is number &&
+        location.longitude >= -180 &&
+        location.longitude <= 180 &&
+        (location.latitude != 0 || location.longitude != 0) &&
+        location.city is string &&
+        location.state is string &&
+        location.country is string &&
+        existsAfter(/databases/$(database)/documents/socialPosts/$(postId)) &&
+        getAfter(/databases/$(database)/documents/socialPosts/$(postId)).data.authorId == request.auth.uid;
+    }
+
     function likeDocPath(postId) {
       return /databases/$(database)/documents/socialPosts/$(postId)/likes/$(request.auth.uid);
     }
@@ -1940,6 +1974,12 @@ service cloud.firestore {
 
     match /socialPostPrivate/{postId} {
       allow read, write: if false;
+    }
+
+    match /socialPostLocationIntents/{postId} {
+      allow create: if requesterAccountIsActive() &&
+        safeSocialPostLocationIntentCreate(postId);
+      allow read, update, delete: if false;
     }
 
     match /nearbyFeedSessions/{sessionId} {

@@ -122,6 +122,39 @@ class ExploreLocationRepository {
     }
   }
 
+  /// Captures the device's current position for an immutable, post-specific
+  /// creation record. Unlike [ensureLocation], this never substitutes a
+  /// previously stored snapshot when a fresh reading is unavailable.
+  Future<ExploreLocationSnapshot> captureFreshPostLocation({
+    bool requestPermission = true,
+  }) async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return ExploreLocationSnapshot.empty;
+
+    var permission = await Geolocator.checkPermission();
+    if (requestPermission && permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      return ExploreLocationSnapshot.empty;
+    }
+
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+        ),
+      );
+      final snapshot = await _buildSnapshotFromPosition(position);
+      if (!snapshot.hasCoordinates) return ExploreLocationSnapshot.empty;
+      await _persistSnapshot(snapshot);
+      return snapshot;
+    } catch (_) {
+      return ExploreLocationSnapshot.empty;
+    }
+  }
+
   Future<void> openAppSettings() => Geolocator.openAppSettings();
 
   Future<void> openLocationSettings() => Geolocator.openLocationSettings();

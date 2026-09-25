@@ -6,6 +6,7 @@ import 'package:pettexo/features/explore/data/explore_feed_filter_service.dart';
 import 'package:pettexo/features/explore/data/explore_feed_repository.dart';
 import 'package:pettexo/features/explore/domain/models/explore_feed_kind.dart';
 import 'package:pettexo/features/explore/domain/models/explore_feed_viewer_context.dart';
+import 'package:pettexo/features/explore/domain/models/nearby_location_mode.dart';
 import 'package:pettexo/features/social/domain/models/social_post_model.dart';
 
 void main() {
@@ -308,7 +309,118 @@ void main() {
       );
       expect(callCount, 0);
     });
+
+    test('continues beyond two filtered backend pages', () async {
+      final fakeSession = _FakeAuthSession(
+        current: _FakeUserSession(uid: 'viewer', token: 'token-a'),
+      );
+      var callCount = 0;
+      final repository = ExploreFeedRepository(
+        nearbyAuthReadiness: ExploreNearbyAuthReadiness(
+          authSession: fakeSession,
+          timeout: const Duration(milliseconds: 20),
+        ),
+        filterService: _SelectiveFilterService(),
+        nearbyCallableInvoker: (payload) async {
+          callCount += 1;
+          final id = callCount < 3 ? 'filtered-$callCount' : 'eligible';
+          return <String, dynamic>{
+            'posts': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': id,
+                'authorId': 'author-$id',
+                'visibilityStatus': 'visible',
+                'moderationStatus': 'approved',
+                'imageUrls': const <String>[],
+                'thumbnailUrls': const <String>[],
+              },
+            ],
+            'nextCursor': callCount < 3
+                ? <String, dynamic>{
+                    'sessionId': 'session-1',
+                    'offset': callCount,
+                  }
+                : null,
+            'hasMore': callCount < 3,
+            'activeRadiusKm': 50,
+            'usedCityStateFallback': false,
+            'locationMode': 'radius',
+            'emptyStateReason': null,
+          };
+        },
+      );
+
+      final page = await repository.fetchPage(
+        kind: ExploreFeedKind.nearby,
+        viewerContext: ExploreFeedViewerContext.empty,
+        limit: 1,
+      );
+
+      expect(callCount, 3);
+      expect(page.posts.map((post) => post.id), <String>['eligible']);
+      expect(page.nearbyLocationMode, NearbyLocationMode.radius);
+    });
+
+    test('keeps an eligible own post with multiple nearby posts', () async {
+      final fakeSession = _FakeAuthSession(
+        current: _FakeUserSession(uid: 'viewer', token: 'token-a'),
+      );
+      Map<String, dynamic>? capturedPayload;
+      final repository = ExploreFeedRepository(
+        nearbyAuthReadiness: ExploreNearbyAuthReadiness(
+          authSession: fakeSession,
+          timeout: const Duration(milliseconds: 20),
+        ),
+        filterService: _PassthroughFilterService(),
+        nearbyCallableInvoker: (payload) async {
+          capturedPayload = payload;
+          return <String, dynamic>{
+            'posts': <Map<String, dynamic>>[
+              _nearbyPostMap('own', 'viewer', 1.2),
+              _nearbyPostMap('other-b', 'user-b', 8.3),
+              _nearbyPostMap('other-c', 'user-c', 12.4),
+            ],
+            'nextCursor': null,
+            'hasMore': false,
+            'activeRadiusKm': 50,
+            'usedCityStateFallback': false,
+            'locationMode': 'radius',
+            'emptyStateReason': null,
+          };
+        },
+      );
+
+      final page = await repository.fetchPage(
+        kind: ExploreFeedKind.nearby,
+        viewerContext: ExploreFeedViewerContext.empty,
+        limit: 10,
+      );
+
+      expect(page.posts.map((post) => post.id), <String>[
+        'own',
+        'other-b',
+        'other-c',
+      ]);
+      expect(capturedPayload?['debugDiagnostics'], isTrue);
+    });
   });
+}
+
+Map<String, dynamic> _nearbyPostMap(
+  String id,
+  String authorId,
+  double distanceKm,
+) {
+  return <String, dynamic>{
+    'id': id,
+    'authorId': authorId,
+    'visibilityStatus': 'visible',
+    'moderationStatus': 'approved',
+    'nearbyDistanceKm': distanceKm,
+    'nearbyDistanceLabel': '$distanceKm km away',
+    'imageUrls': const <String>[],
+    'thumbnailUrls': const <String>[],
+  };
 }
 
 SocialPostModel _post(String id) {
@@ -492,8 +604,24 @@ class _PassthroughFilterService extends ExploreFeedFilterService {
     required List<SocialPostModel> posts,
     required ExploreFeedViewerContext viewerContext,
     required Set<String> seenPostIds,
+    String? diagnosticsLabel,
   }) async {
     return posts
+        .where((post) => seenPostIds.add(post.id))
+        .toList(growable: false);
+  }
+}
+
+class _SelectiveFilterService extends ExploreFeedFilterService {
+  @override
+  Future<List<SocialPostModel>> apply({
+    required List<SocialPostModel> posts,
+    required ExploreFeedViewerContext viewerContext,
+    required Set<String> seenPostIds,
+    String? diagnosticsLabel,
+  }) async {
+    return posts
+        .where((post) => !post.id.startsWith('filtered-'))
         .where((post) => seenPostIds.add(post.id))
         .toList(growable: false);
   }

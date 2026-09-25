@@ -19,11 +19,10 @@ const NEARBY_MAX_REPORT_PENALTY = 3;
 const REFRESH_BATCH_SIZE = 100;
 const BACKFILL_DEFAULT_LIMIT = 100;
 const BACKFILL_MAX_LIMIT = 200;
-const BACKFILL_AUTHOR_CACHE_LIMIT = 500;
 const NEARBY_DEFAULT_LIMIT = 12;
 const NEARBY_MAX_LIMIT = 20;
-const NEARBY_MAX_CANDIDATES = 240;
-const NEARBY_FRESH_POOL_LIMIT = 40;
+const NEARBY_MAX_CANDIDATES = 400;
+const NEARBY_FRESH_POOL_LIMIT = 240;
 const NEARBY_ENGAGED_POOL_LIMIT = 40;
 const NEARBY_LOCAL_FRESH_POOL_LIMIT = 30;
 const NEARBY_LOCAL_ENGAGED_POOL_LIMIT = 30;
@@ -33,8 +32,12 @@ const NEARBY_SESSION_TTL_MS = 30 * 60 * 1000;
 const REFRESH_LOCK_PATH = "systemLocks/refreshSocialPostDiscoverScores";
 const USER_PRIVATE_LOCATION_FIELD = "exploreLocation";
 const SOCIAL_POST_PRIVATE_COLLECTION = "socialPostPrivate";
+const SOCIAL_POST_LOCATION_INTENT_COLLECTION = "socialPostLocationIntents";
 const NEARBY_FEED_SESSION_COLLECTION = "nearbyFeedSessions";
-const NEARBY_RADIUS_TIERS_KM = [5, 15, 30, 50] as const;
+const NEARBY_RADIUS_KM = 50;
+const NEARBY_DIAGNOSTIC_UIDS = new Set([
+  "JWiLki0pMlgpLH4N1jzoExsUtCa2",
+]);
 const GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
 const ADMIN_ROLES = new Set([
   "superAdmin",
@@ -58,6 +61,12 @@ type PrivatePostLocationMetadata = {
   latitudeBucket: number;
   longitudeBucket: number;
   feedLocationVersion: number;
+};
+
+type PostLocationIntent = {
+  ownerUid: string;
+  location: PrivateLocationSnapshot;
+  capturedAt: unknown;
 };
 
 type FeedMetadata = NearbyLocationMetadata & {
@@ -245,6 +254,10 @@ type RequestDiagnostics = {
   filteredByMissingPrivateLocation: number;
   filteredByRadius: number;
   filteredByDuplicate: number;
+  privateLocationResolved: number;
+  withinRadius: number;
+  visibilityEligible: number;
+  sessionPostCount: number;
   radiusStages: number[];
   poolCounts: Record<string, number>;
 };
@@ -255,6 +268,7 @@ type NearbyFeedResponse = {
   hasMore: boolean;
   activeRadiusKm: number | null;
   usedCityStateFallback: boolean;
+  locationMode: "radius" | "savedCityState" | "unavailable";
   emptyStateReason: string | null;
 };
 
@@ -303,7 +317,7 @@ function hasUsableCoordinates(latitude: number, longitude: number): boolean {
     (latitude !== 0 || longitude !== 0);
 }
 
-function encodeGeohash(latitude: number, longitude: number, precision = 5): string {
+export function encodeGeohash(latitude: number, longitude: number, precision = 5): string {
   if (!hasUsableCoordinates(latitude, longitude)) return "";
   let isEven = true;
   let bit = 0;
@@ -344,7 +358,7 @@ function encodeGeohash(latitude: number, longitude: number, precision = 5): stri
   return geohash;
 }
 
-function decodeGeohashBounds(geohash: string): {
+export function decodeGeohashBounds(geohash: string): {
   minLat: number;
   maxLat: number;
   minLon: number;
@@ -388,7 +402,7 @@ function decodeGeohashBounds(geohash: string): {
   };
 }
 
-function geohashPrefixesAround(geohash: string): string[] {
+export function geohashPrefixesAround(geohash: string): string[] {
   const normalized = geohash.trim().toLowerCase();
   if (normalized.length === 0) return [];
   const bounds = decodeGeohashBounds(normalized);
@@ -720,7 +734,7 @@ function hasCurrentNearbyLocationMetadata(data: SocialPostSnapshot): boolean {
 
 function buildNearbyLocationMetadata(
   data: SocialPostSnapshot,
-  authorLocation: PrivateLocationSnapshot | null,
+  creationLocation: PrivateLocationSnapshot | null,
   privateLocation: PrivatePostLocationMetadata | null,
 ): NearbyLocationMetadata {
   const existing = readStoredNearbyLocation(data);
@@ -728,11 +742,11 @@ function buildNearbyLocationMetadata(
     existing.feedCityKey || normalizeLocationKey(data.authorCity);
   const existingStateKey =
     existing.feedStateKey || normalizeLocationKey(data.authorState);
-  const feedCityKey = authorLocation?.city ?
-    normalizeLocationKey(authorLocation.city) :
+  const feedCityKey = creationLocation?.city ?
+    normalizeLocationKey(creationLocation.city) :
     existingCityKey;
-  const feedStateKey = authorLocation?.state ?
-    normalizeLocationKey(authorLocation.state) :
+  const feedStateKey = creationLocation?.state ?
+    normalizeLocationKey(creationLocation.state) :
     existingStateKey;
 
   if (existing.feedLocationVersion >= FEED_LOCATION_VERSION) {
@@ -765,17 +779,17 @@ function buildNearbyLocationMetadata(
         FEED_LOCATION_VERSION,
         privateLocation.feedLocationVersion,
       ),
-      feedCityKey: existingCityKey,
-      feedStateKey: existingStateKey,
+      feedCityKey,
+      feedStateKey,
     };
   }
 
-  if (authorLocation != null) {
+  if (creationLocation != null) {
     return {
       nearbyEligible: true,
-      feedGeohash3: authorLocation.geohash3,
-      feedGeohash4: authorLocation.geohash4,
-      feedGeohash5: authorLocation.geohash5,
+      feedGeohash3: creationLocation.geohash3,
+      feedGeohash4: creationLocation.geohash4,
+      feedGeohash5: creationLocation.geohash5,
       feedLocationVersion: FEED_LOCATION_VERSION,
       feedCityKey,
       feedStateKey,
@@ -794,12 +808,12 @@ function buildNearbyLocationMetadata(
 }
 
 function buildPrivatePostLocationMetadata(
-  authorLocation: PrivateLocationSnapshot | null,
+  creationLocation: PrivateLocationSnapshot | null,
 ): PrivatePostLocationMetadata | null {
-  if (authorLocation == null) return null;
+  if (creationLocation == null) return null;
   return {
-    latitudeBucket: roundCoordinateBucket(authorLocation.latitude),
-    longitudeBucket: roundCoordinateBucket(authorLocation.longitude),
+    latitudeBucket: roundCoordinateBucket(creationLocation.latitude),
+    longitudeBucket: roundCoordinateBucket(creationLocation.longitude),
     feedLocationVersion: FEED_LOCATION_VERSION,
   };
 }
@@ -808,7 +822,7 @@ export function buildFeedMetadata(
   data: SocialPostSnapshot,
   nowMs = Date.now(),
   options?: {
-    authorLocation?: PrivateLocationSnapshot | null;
+    creationLocation?: PrivateLocationSnapshot | null;
     privateLocation?: PrivatePostLocationMetadata | null;
   },
 ): FeedMetadata {
@@ -816,7 +830,7 @@ export function buildFeedMetadata(
   const homeBreakdown = computeHomeScoreBreakdown(data, nowMs);
   const nearbyLocation = buildNearbyLocationMetadata(
     data,
-    options?.authorLocation ?? null,
+    options?.creationLocation ?? null,
     options?.privateLocation ?? null,
   );
   return {
@@ -827,6 +841,62 @@ export function buildFeedMetadata(
     homeRankVersion: HOME_RANK_VERSION,
     homeEligible: homeBreakdown.homeEligible,
     ...nearbyLocation,
+  };
+}
+
+export function resolvePostSpecificLocationMetadata(params: {
+  postData: SocialPostSnapshot;
+  privateData?: Record<string, unknown>;
+  intentData?: Record<string, unknown>;
+  authorId: string;
+  nowMs?: number;
+}): {
+  metadata: FeedMetadata;
+  privateLocation: PrivatePostLocationMetadata | null;
+  intent: PostLocationIntent | null;
+  hadLegacyLocation: boolean;
+} {
+  const legacyLocation = readLegacyPublicLocationBuckets(params.postData);
+  const existingPrivateLocation = readPrivatePostLocation(params.privateData);
+  const intent = readPostLocationIntent(params.intentData, params.authorId);
+  const intentPrivateLocation = buildPrivatePostLocationMetadata(
+    intent?.location ?? null,
+  );
+  const acceptedIntent =
+    existingPrivateLocation == null && legacyLocation == null ? intent : null;
+  const privateLocation =
+    existingPrivateLocation ?? legacyLocation ?? intentPrivateLocation;
+  const intentCreationLocation =
+    acceptedIntent != null && intentPrivateLocation != null ?
+      {
+        ...acceptedIntent.location,
+        latitude: intentPrivateLocation.latitudeBucket,
+        longitude: intentPrivateLocation.longitudeBucket,
+        geohash3: encodeGeohash(
+          intentPrivateLocation.latitudeBucket,
+          intentPrivateLocation.longitudeBucket,
+          3,
+        ),
+        geohash4: encodeGeohash(
+          intentPrivateLocation.latitudeBucket,
+          intentPrivateLocation.longitudeBucket,
+          4,
+        ),
+        geohash5: encodeGeohash(
+          intentPrivateLocation.latitudeBucket,
+          intentPrivateLocation.longitudeBucket,
+          5,
+        ),
+      } :
+      null;
+  return {
+    metadata: buildFeedMetadata(params.postData, params.nowMs ?? Date.now(), {
+      creationLocation: intentCreationLocation,
+      privateLocation,
+    }),
+    privateLocation,
+    intent: acceptedIntent,
+    hadLegacyLocation: legacyLocation != null,
   };
 }
 
@@ -890,6 +960,7 @@ function sanitizeNearbyResponseData(
 
 function buildPrivateNearbyLocationWrite(
   privateLocation: PrivatePostLocationMetadata | null,
+  provenance?: {source: string; capturedAt: unknown} | null,
 ): Record<string, unknown> | null {
   if (privateLocation == null) return null;
   return {
@@ -897,6 +968,11 @@ function buildPrivateNearbyLocationWrite(
       latitudeBucket: privateLocation.latitudeBucket,
       longitudeBucket: privateLocation.longitudeBucket,
       feedLocationVersion: privateLocation.feedLocationVersion,
+      ...(provenance == null ? {} : {
+        source: provenance.source,
+        capturedAt: provenance.capturedAt,
+        createdAt: provenance.capturedAt,
+      }),
       updatedAt: FieldValue.serverTimestamp(),
     },
     updatedAt: FieldValue.serverTimestamp(),
@@ -988,16 +1064,6 @@ async function releaseRefreshLease(
   }, {merge: true});
 }
 
-async function loadAuthorLocationSnapshot(
-  firestore: typeof db,
-  authorId: string,
-): Promise<PrivateLocationSnapshot | null> {
-  const normalizedAuthorId = authorId.trim();
-  if (normalizedAuthorId.length === 0) return null;
-  const snapshot = await firestore.collection("userPrivate").doc(normalizedAuthorId).get();
-  return readPrivateLocationSnapshot(snapshot.data());
-}
-
 function readLegacyPublicLocationBuckets(data: SocialPostSnapshot): PrivatePostLocationMetadata | null {
   const latitudeBucket = asNumber(data.feedLatitudeBucket);
   const longitudeBucket = asNumber(data.feedLongitudeBucket);
@@ -1027,8 +1093,35 @@ function readPrivatePostLocation(data: Record<string, unknown> | undefined): Pri
   };
 }
 
-function hasLegacyPublicLocationBuckets(data: SocialPostSnapshot): boolean {
-  return readLegacyPublicLocationBuckets(data) != null;
+function readPostLocationIntent(
+  data: Record<string, unknown> | undefined,
+  expectedOwnerUid: string,
+): PostLocationIntent | null {
+  if (asTrimmedString(data?.ownerUid) !== expectedOwnerUid) return null;
+  if (asTrimmedString(data?.source) !== "freshDeviceAtPublish") return null;
+  const raw = data?.location;
+  if (raw == null || typeof raw !== "object") return null;
+  const location = raw as Record<string, unknown>;
+  const latitude = asNumber(location.latitude);
+  const longitude = asNumber(location.longitude);
+  const geohash5 = encodeGeohash(latitude, longitude, 5);
+  if (!hasUsableCoordinates(latitude, longitude) || geohash5.length === 0) {
+    return null;
+  }
+  return {
+    ownerUid: expectedOwnerUid,
+    location: {
+      latitude,
+      longitude,
+      city: asTrimmedString(location.city),
+      state: asTrimmedString(location.state),
+      country: asTrimmedString(location.country),
+      geohash3: geohash5.slice(0, 3),
+      geohash4: geohash5.slice(0, 4),
+      geohash5,
+    },
+    capturedAt: data?.capturedAt ?? null,
+  };
 }
 
 function isPubliclyVisibleUser(data: Record<string, unknown> | undefined): boolean {
@@ -1448,29 +1541,6 @@ function buildNearbyResultFromDoc(params: {
   };
 }
 
-function sliceSessionPage(params: {
-  session: NearbyFeedSessionRecord;
-  limit: number;
-  offset: number;
-}): {
-  pageEntries: NearbyFeedSessionPost[];
-  nextCursor: NearbyFeedCursor | null;
-  hasMore: boolean;
-} {
-  const safeOffset = clampNonNegativeInteger(params.offset);
-  const pageEntries = params.session.orderedPosts.slice(
-    safeOffset,
-    safeOffset + params.limit,
-  );
-  const nextOffset = safeOffset + pageEntries.length;
-  const hasMore = nextOffset < params.session.orderedPosts.length;
-  return {
-    pageEntries,
-    nextCursor: hasMore ? {sessionId: "", offset: nextOffset} : null,
-    hasMore,
-  };
-}
-
 async function fetchFallbackCandidates(params: {
   firestore: typeof db;
   viewerLocation: ViewerLocationContext & {kind: "fallback"};
@@ -1479,7 +1549,7 @@ async function fetchFallbackCandidates(params: {
   viewerFilterContext: ViewerFilterContext;
   diagnostics: RequestDiagnostics;
 }): Promise<NearbyFeedPostResult[]> {
-  const queryLimit = Math.max(NEARBY_FRESH_POOL_LIMIT, params.limit * 3);
+  const queryLimit = NEARBY_SESSION_MAX_POSTS;
   let query = params.firestore
     .collection("socialPosts")
     .where("visibilityStatus", "==", "visible")
@@ -1564,6 +1634,7 @@ async function createNearbyFeedSession(params: {
   limit: number;
   rankingAsOfMs: number;
   diagnostics: RequestDiagnostics;
+  debugDiagnostics: boolean;
 }): Promise<{sessionId: string; record: NearbyFeedSessionRecord}> {
   const sessionId = randomSessionId();
   const expiresAt = new Date(params.rankingAsOfMs + NEARBY_SESSION_TTL_MS);
@@ -1624,35 +1695,31 @@ async function createNearbyFeedSession(params: {
     const executedPoolKeys = new Set<string>();
     let activeRadiusKm: number | null = null;
 
-    for (const radiusKm of NEARBY_RADIUS_TIERS_KM) {
-      params.diagnostics.radiusStages.push(radiusKm);
-      activeRadiusKm = radiusKm;
-      for (const definition of buildNearbyPoolDefinitions({
-        viewerLocation: params.viewerLocation,
-        radiusKm,
-      })) {
-        if (executedPoolKeys.size >= NEARBY_MAX_QUERIES || allCandidates.size >= NEARBY_MAX_CANDIDATES) {
-          break;
-        }
-        if (executedPoolKeys.has(definition.key)) {
-          continue;
-        }
-        executedPoolKeys.add(definition.key);
-        const docs = await fetchNearbyPoolCandidates({
-          firestore: params.firestore,
-          definition,
-          diagnostics: params.diagnostics,
-        });
-        for (const doc of docs) {
-          if (!allCandidates.has(doc.id)) {
-            allCandidates.set(doc.id, doc);
-          } else {
-            params.diagnostics.filteredByDuplicate += 1;
-          }
-        }
-      }
+    const radiusKm = NEARBY_RADIUS_KM;
+    params.diagnostics.radiusStages.push(radiusKm);
+    activeRadiusKm = radiusKm;
+    for (const definition of buildNearbyPoolDefinitions({
+      viewerLocation: params.viewerLocation,
+      radiusKm,
+    })) {
       if (executedPoolKeys.size >= NEARBY_MAX_QUERIES || allCandidates.size >= NEARBY_MAX_CANDIDATES) {
         break;
+      }
+      if (executedPoolKeys.has(definition.key)) {
+        continue;
+      }
+      executedPoolKeys.add(definition.key);
+      const docs = await fetchNearbyPoolCandidates({
+        firestore: params.firestore,
+        definition,
+        diagnostics: params.diagnostics,
+      });
+      for (const doc of docs) {
+        if (!allCandidates.has(doc.id)) {
+          allCandidates.set(doc.id, doc);
+        } else {
+          params.diagnostics.filteredByDuplicate += 1;
+        }
       }
     }
 
@@ -1675,35 +1742,67 @@ async function createNearbyFeedSession(params: {
       postIds: candidateDocs.map((doc) => doc.id),
       cache: privateLocationCache,
     });
+    params.diagnostics.privateLocationResolved = candidateDocs.filter(
+      (doc) => privateLocationCache.get(doc.id) != null,
+    ).length;
 
     const rankedResults: NearbyFeedPostResult[] = [];
     for (const doc of candidateDocs) {
       const data = doc.data() ?? {};
       const authorId = asTrimmedString(data.authorId);
+      const privateLocation = privateLocationCache.get(doc.id) ?? null;
+      const location = privateLocation ?? readLegacyPublicLocationBuckets(data);
+      const breakdown = computeNearbyScoreBreakdown(
+        data,
+        params.viewerLocation.latitude,
+        params.viewerLocation.longitude,
+        params.rankingAsOfMs,
+        location,
+      );
+      if (location != null && breakdown.distanceKm <= (activeRadiusKm ?? NEARBY_RADIUS_KM)) {
+        params.diagnostics.withinRadius += 1;
+      }
+      const logCandidate = (included: boolean, reason: string) => {
+        if (!params.debugDiagnostics) return;
+        logger.info("[NearbyDiag] server-candidate", {
+          viewerUid: params.uid,
+          postId: doc.id,
+          authorId,
+          distanceKm: Number.isFinite(breakdown.distanceKm) ? breakdown.distanceKm : null,
+          included,
+          reason,
+        });
+      };
       if (authorId.length === 0) {
         params.diagnostics.filteredByVisibility += 1;
+        logCandidate(false, "OTHER");
         continue;
       }
       if (viewerFilterContext.blockedCreatorIds.has(authorId)) {
         params.diagnostics.filteredByBlocked += 1;
+        logCandidate(false, "AUTHOR_BLOCKED");
         continue;
       }
       if (viewerFilterContext.mutedCreatorIds.has(authorId)) {
         params.diagnostics.filteredByMuted += 1;
+        logCandidate(false, "AUTHOR_MUTED");
         continue;
       }
       if (viewerFilterContext.creatorsWhoBlockedViewerIds.has(authorId)) {
         params.diagnostics.filteredByBlockedByCreator += 1;
+        logCandidate(false, "AUTHOR_BLOCKED");
         continue;
       }
       if ((authorVisibilityCache.get(authorId)?.publiclyVisible ?? false) !== true) {
         params.diagnostics.filteredByVisibility += 1;
+        logCandidate(false, "ACCOUNT_INELIGIBLE");
         continue;
       }
+      params.diagnostics.visibilityEligible += 1;
 
-      const privateLocation = privateLocationCache.get(doc.id) ?? null;
-      if (privateLocation == null && readLegacyPublicLocationBuckets(data) == null) {
+      if (location == null) {
         params.diagnostics.filteredByMissingPrivateLocation += 1;
+        logCandidate(false, "PRIVATE_LOCATION_MISSING");
         continue;
       }
 
@@ -1711,18 +1810,24 @@ async function createNearbyFeedSession(params: {
         doc,
         viewerLocation: params.viewerLocation,
         rankingAsOfMs: params.rankingAsOfMs,
-        radiusKm: activeRadiusKm ?? NEARBY_RADIUS_TIERS_KM[NEARBY_RADIUS_TIERS_KM.length - 1],
+        radiusKm: activeRadiusKm ?? NEARBY_RADIUS_KM,
         privateLocation,
       });
       if (result == null) {
         params.diagnostics.filteredByRadius += 1;
+        logCandidate(false, "OUTSIDE_RADIUS");
         continue;
       }
       rankedResults.push(result);
+      logCandidate(true, "INCLUDED");
     }
 
     rankedResults.sort(compareNearbyFeedPosts);
     params.diagnostics.rankedCandidates = rankedResults.length;
+    params.diagnostics.sessionPostCount = Math.min(
+      rankedResults.length,
+      NEARBY_SESSION_MAX_POSTS,
+    );
     record = {
       ownerUid: params.uid,
       rankingAsOfEpoch: params.rankingAsOfMs,
@@ -1801,29 +1906,51 @@ async function loadNearbyFeedSession(params: {
   };
 }
 
-async function hydrateSessionPagePosts(params: {
+async function hydrateSessionPage(params: {
   firestore: typeof db;
-  pageEntries: NearbyFeedSessionPost[];
-}): Promise<Record<string, unknown>[]> {
-  const docs = await Promise.all(
-    params.pageEntries.map((entry) => params.firestore.collection("socialPosts").doc(entry.id).get()),
-  );
+  session: NearbyFeedSessionRecord;
+  offset: number;
+  limit: number;
+}): Promise<{
+  posts: Record<string, unknown>[];
+  nextOffset: number;
+  hasMore: boolean;
+}> {
   const hydrated: Record<string, unknown>[] = [];
-  for (let index = 0; index < docs.length; index += 1) {
-    const snapshot = docs[index];
-    const entry = params.pageEntries[index];
-    const data = snapshot.data() ?? {};
-    if (!snapshot.exists) continue;
-    if (asTrimmedString(data.visibilityStatus) !== "visible") continue;
-    if (asTrimmedString(data.moderationStatus) !== "approved") continue;
-    hydrated.push({
-      ...sanitizeNearbyResponseData(data, snapshot.id),
-      nearbyDistanceKm: entry.nearbyDistanceKm,
-      nearbyDistanceLabel: entry.nearbyDistanceLabel,
-      usesNearbyFallback: entry.usesNearbyFallback,
-    });
+  let nextOffset = clampNonNegativeInteger(params.offset);
+  while (
+    hydrated.length < params.limit &&
+    nextOffset < params.session.orderedPosts.length
+  ) {
+    const remaining = params.limit - hydrated.length;
+    const entries = params.session.orderedPosts.slice(
+      nextOffset,
+      nextOffset + remaining,
+    );
+    const docs = await Promise.all(
+      entries.map((entry) => params.firestore.collection("socialPosts").doc(entry.id).get()),
+    );
+    nextOffset += entries.length;
+    for (let index = 0; index < docs.length; index += 1) {
+      const snapshot = docs[index];
+      const entry = entries[index];
+      const data = snapshot.data() ?? {};
+      if (!snapshot.exists) continue;
+      if (asTrimmedString(data.visibilityStatus) !== "visible") continue;
+      if (asTrimmedString(data.moderationStatus) !== "approved") continue;
+      hydrated.push({
+        ...sanitizeNearbyResponseData(data, snapshot.id),
+        nearbyDistanceKm: entry.nearbyDistanceKm,
+        nearbyDistanceLabel: entry.nearbyDistanceLabel,
+        usesNearbyFallback: entry.usesNearbyFallback,
+      });
+    }
   }
-  return hydrated;
+  return {
+    posts: hydrated,
+    nextOffset,
+    hasMore: nextOffset < params.session.orderedPosts.length,
+  };
 }
 
 export async function runNearbyFeedQuery(params: {
@@ -1832,6 +1959,7 @@ export async function runNearbyFeedQuery(params: {
   cursor?: NearbyFeedCursor | null;
   authoritativeNow?: Date;
   firestore?: typeof db;
+  debugDiagnostics?: boolean;
 }): Promise<NearbyFeedResponse> {
   const firestore = params.firestore ?? db;
   const limit = coerceNearbyLimit(params.limit);
@@ -1850,6 +1978,10 @@ export async function runNearbyFeedQuery(params: {
     filteredByMissingPrivateLocation: 0,
     filteredByRadius: 0,
     filteredByDuplicate: 0,
+    privateLocationResolved: 0,
+    withinRadius: 0,
+    visibilityEligible: 0,
+    sessionPostCount: 0,
     radiusStages: [],
     poolCounts: {},
   };
@@ -1861,32 +1993,30 @@ export async function runNearbyFeedQuery(params: {
       sessionId: cursor.sessionId,
       now: authoritativeNow,
     });
-    const sliced = sliceSessionPage({
-      session,
-      limit,
-      offset: cursor.offset,
-    });
-    const posts = await hydrateSessionPagePosts({
+    const hydrated = await hydrateSessionPage({
       firestore,
-      pageEntries: sliced.pageEntries,
+      session,
+      offset: cursor.offset,
+      limit,
     });
     const response = {
-      posts,
-      nextCursor: sliced.nextCursor == null ? null : {
+      posts: hydrated.posts,
+      nextCursor: hydrated.hasMore ? {
         sessionId: cursor.sessionId,
-        offset: sliced.nextCursor.offset,
-      },
-      hasMore: sliced.hasMore,
+        offset: hydrated.nextOffset,
+      } : null,
+      hasMore: hydrated.hasMore,
       activeRadiusKm: session.activeRadiusKm,
       usedCityStateFallback: session.usedCityStateFallback,
-      emptyStateReason: posts.length === 0 ? session.emptyStateReason : null,
+      locationMode: session.usedCityStateFallback ? "savedCityState" as const : "radius" as const,
+      emptyStateReason: hydrated.posts.length === 0 ? session.emptyStateReason : null,
     };
     logger.info("social.nearby.session.reused", {
       uid: params.uid,
       sessionId: cursor.sessionId,
       offset: cursor.offset,
-      resultCount: posts.length,
-      hasMore: sliced.hasMore,
+      resultCount: hydrated.posts.length,
+      hasMore: hydrated.hasMore,
       activeRadiusKm: session.activeRadiusKm,
       usedCityStateFallback: session.usedCityStateFallback,
       durationMs: Date.now() - startedAtMs,
@@ -1902,6 +2032,7 @@ export async function runNearbyFeedQuery(params: {
       hasMore: false,
       activeRadiusKm: null,
       usedCityStateFallback: false,
+      locationMode: "unavailable",
       emptyStateReason: "missingLocation",
     };
   }
@@ -1913,6 +2044,7 @@ export async function runNearbyFeedQuery(params: {
     limit,
     rankingAsOfMs: authoritativeNow.getTime(),
     diagnostics,
+    debugDiagnostics: params.debugDiagnostics === true,
   });
   logger.info("social.nearby.session.created", {
     uid: params.uid,
@@ -1937,25 +2069,41 @@ export async function runNearbyFeedQuery(params: {
     durationMs: Date.now() - startedAtMs,
   });
 
-  const sliced = sliceSessionPage({
-    session: record,
-    limit,
-    offset: 0,
-  });
-  const posts = await hydrateSessionPagePosts({
+  const hydrated = await hydrateSessionPage({
     firestore,
-    pageEntries: sliced.pageEntries,
+    session: record,
+    offset: 0,
+    limit,
   });
+  if (params.debugDiagnostics === true) {
+    logger.info("[NearbyDiag] server-summary", {
+      viewerUid: params.uid,
+      mode: record.usedCityStateFallback ? "savedCityState" : "radius",
+      radiusKm: record.activeRadiusKm,
+      geohashQueryCount: diagnostics.queriesExecuted,
+      rawCandidateCount: diagnostics.documentsRead,
+      deduplicatedCandidateCount: diagnostics.deduplicatedCandidates,
+      privateLocationResolvedCount: diagnostics.privateLocationResolved,
+      withinRadiusCount: diagnostics.withinRadius,
+      visibilityEligibleCount: diagnostics.visibilityEligible,
+      sessionPostCount: diagnostics.sessionPostCount,
+      pageRequested: 0,
+      pageReturnedCount: hydrated.posts.length,
+      returnedPostIds: hydrated.posts.map((post) => asTrimmedString(post.id)),
+      hasMore: hydrated.hasMore,
+    });
+  }
   return {
-    posts,
-    nextCursor: sliced.nextCursor == null ? null : {
+    posts: hydrated.posts,
+    nextCursor: hydrated.hasMore ? {
       sessionId,
-      offset: sliced.nextCursor.offset,
-    },
-    hasMore: sliced.hasMore,
+      offset: hydrated.nextOffset,
+    } : null,
+    hasMore: hydrated.hasMore,
     activeRadiusKm: record.activeRadiusKm,
     usedCityStateFallback: record.usedCityStateFallback,
-    emptyStateReason: posts.length === 0 ? record.emptyStateReason : null,
+    locationMode: record.usedCityStateFallback ? "savedCityState" : "radius",
+    emptyStateReason: hydrated.posts.length === 0 ? record.emptyStateReason : null,
   };
 }
 
@@ -1979,40 +2127,49 @@ export const syncSocialPostFeedMetadata = onDocumentWritten(
       return;
     }
 
-    const legacyPrivateLocation = readLegacyPublicLocationBuckets(afterData);
-    const existingPrivateLocation = needsLocationMetadata || legacyPrivateLocation != null ?
-      readPrivatePostLocation(
-        (
-          await db.collection(SOCIAL_POST_PRIVATE_COLLECTION).doc(afterSnapshot.id).get()
-        ).data(),
-      ) :
-      null;
-    const preferredPrivateLocation = existingPrivateLocation ?? legacyPrivateLocation;
-    const authorLocation = preferredPrivateLocation == null && needsLocationMetadata ?
-      await loadAuthorLocationSnapshot(db, asTrimmedString(afterData.authorId)) :
-      null;
-    const nextMetadata = buildFeedMetadata(afterData, Date.now(), {
-      authorLocation,
-      privateLocation: preferredPrivateLocation,
+    const authorId = asTrimmedString(afterData.authorId);
+    const privateRef = db.collection(SOCIAL_POST_PRIVATE_COLLECTION).doc(afterSnapshot.id);
+    const intentRef = db.collection(SOCIAL_POST_LOCATION_INTENT_COLLECTION).doc(afterSnapshot.id);
+    const [privateSnapshot, intentSnapshot] = await Promise.all([
+      privateRef.get(),
+      intentRef.get(),
+    ]);
+    const resolvedLocation = resolvePostSpecificLocationMetadata({
+      postData: afterData,
+      privateData: privateSnapshot.data(),
+      intentData: intentSnapshot.data(),
+      authorId,
     });
-    const nextPrivateLocation =
-      preferredPrivateLocation ?? buildPrivatePostLocationMetadata(authorLocation);
-    const legacyBucketsPresent = hasLegacyPublicLocationBuckets(afterData);
+    const existingPrivateLocation = readPrivatePostLocation(privateSnapshot.data());
+    const nextMetadata = resolvedLocation.metadata;
+    const nextPrivateLocation = resolvedLocation.privateLocation;
+    const locationIntent = resolvedLocation.intent;
+    const legacyBucketsPresent = resolvedLocation.hadLegacyLocation;
     const hasPrivateLocationState =
       existingPrivateLocation != null || nextPrivateLocation == null;
     if (
       metadataMatchesCurrent(afterData, nextMetadata) &&
       !legacyBucketsPresent &&
-      hasPrivateLocationState
+      hasPrivateLocationState &&
+      !intentSnapshot.exists
     ) {
       return;
     }
 
     const batch = db.batch();
     batch.set(afterSnapshot.ref, buildPublicNearbyMetadataWrite(nextMetadata), {merge: true});
-    const privateWrite = buildPrivateNearbyLocationWrite(nextPrivateLocation);
+    const privateWrite = buildPrivateNearbyLocationWrite(
+      nextPrivateLocation,
+      locationIntent == null ? null : {
+        source: "freshDeviceAtPublish",
+        capturedAt: locationIntent.capturedAt,
+      },
+    );
     if (privateWrite != null) {
-      batch.set(db.collection(SOCIAL_POST_PRIVATE_COLLECTION).doc(afterSnapshot.id), privateWrite, {merge: true});
+      batch.set(privateRef, privateWrite, {merge: true});
+    }
+    if (intentSnapshot.exists) {
+      batch.delete(intentRef);
     }
     await batch.commit();
   },
@@ -2084,7 +2241,7 @@ export async function runRefreshSocialPostDiscoverScores(params?: {
         try {
           const data = doc.data() ?? {};
           const nextMetadata = buildFeedMetadata(data, authoritativeNow.getTime(), {
-            authorLocation: null,
+            creationLocation: null,
           });
           if (metadataMatchesCurrent(data, nextMetadata)) {
             summary.skipped += 1;
@@ -2201,6 +2358,9 @@ export const getNearbySocialPosts = onCall(
         uid,
         limit: request.data?.limit,
         cursor,
+        debugDiagnostics:
+          request.data?.debugDiagnostics === true &&
+          NEARBY_DIAGNOSTIC_UIDS.has(uid),
       });
     } catch (error) {
       const normalized = normalizeError(error);
@@ -2267,25 +2427,6 @@ export async function runSocialPostFeedMetadataBackfill(params?: {
     },
   };
   const batch = dryRun ? null : firestore.batch();
-  const authorLocationCache = new Map<string, PrivateLocationSnapshot | null>();
-
-  const loadCachedAuthorLocation = async (authorId: string): Promise<PrivateLocationSnapshot | null> => {
-    if (authorLocationCache.has(authorId)) {
-      summary.authorCacheHits += 1;
-      return authorLocationCache.get(authorId) ?? null;
-    }
-    summary.authorCacheMisses += 1;
-    summary.uniqueAuthorsRead += 1;
-    const location = await loadAuthorLocationSnapshot(firestore, authorId);
-    if (authorLocationCache.size >= BACKFILL_AUTHOR_CACHE_LIMIT) {
-      const oldestKey = authorLocationCache.keys().next().value;
-      if (oldestKey) {
-        authorLocationCache.delete(oldestKey);
-      }
-    }
-    authorLocationCache.set(authorId, location);
-    return location;
-  };
 
   for (const doc of snapshot.docs) {
     summary.scanned += 1;
@@ -2306,15 +2447,11 @@ export async function runSocialPostFeedMetadataBackfill(params?: {
         .get();
       const existingPrivateLocation = readPrivatePostLocation(privateSnapshot.data());
       const preferredPrivateLocation = existingPrivateLocation ?? legacyPrivateLocation;
-      const authorLocation = preferredPrivateLocation == null ?
-        await loadCachedAuthorLocation(authorId) :
-        null;
       const nextMetadataResolved = buildFeedMetadata(data, authoritativeNow.getTime(), {
-        authorLocation,
+        creationLocation: null,
         privateLocation: preferredPrivateLocation,
       });
-      const nextPrivateLocation =
-        preferredPrivateLocation ?? buildPrivatePostLocationMetadata(authorLocation);
+      const nextPrivateLocation = preferredPrivateLocation;
       const legacyBucketsPresent = legacyPrivateLocation != null;
       const alreadyMigrated =
         metadataMatchesCurrent(data, nextMetadataResolved) &&
@@ -2425,7 +2562,7 @@ export async function runSocialPostHomeMetadataBackfill(params?: {
     try {
       const data = doc.data() ?? {};
       const nextMetadata = buildFeedMetadata(data, authoritativeNow.getTime(), {
-        authorLocation: null,
+        creationLocation: null,
         privateLocation: null,
       });
       const homeUnchanged =
