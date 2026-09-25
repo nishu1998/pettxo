@@ -29,7 +29,7 @@ test("pending to approved creates one canonical provider notification", () => {
   assert.equal(notification.document.title, "Verification approved");
   assert.equal(
     notification.document.body,
-    "Your provider verification has been approved. You can now continue as a verified provider on Pettxo.",
+    "You can now offer services as a verified provider.",
   );
   assert.deepEqual(notification.document.channels, ["in_app", "push"]);
   assert.equal(notification.document.visibleInApp, true);

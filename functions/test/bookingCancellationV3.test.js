@@ -115,6 +115,16 @@ test("customer cancellation at exactly 24h creates one deterministic refund inst
   );
   assert.equal(result.booking.privacy.isPaidContactUnlocked, false);
   assert.equal(result.bookingPrivateWrite.parentOtpCode, "");
+  assert.deepEqual(
+    result.notifications.map(({title, body}) => ({title, body})),
+    [
+      {title: "Booking cancelled", body: "Your refund is underway."},
+      {
+        title: "Booking cancelled",
+        body: "The customer cancelled this paid booking.",
+      },
+    ],
+  );
 
   const slotPath = `services/${booking.serviceId}/slots/${slotId}`;
   const firestore = new FakeFirestore({[slotPath]: {capacity: 1, acceptedCount: 1, status: "open"}});
@@ -180,6 +190,19 @@ test("provider cancellation refunds the full customer-paid amount and records pr
   assert.equal(result.payoutReadinessWrite.status, "cancelled");
   assert.equal(result.providerEarningWrite.status, "cancelled");
   assert.equal(result.providerEarningWrite.amountPaise, 0);
+  assert.deepEqual(
+    result.notifications.map(({title, body}) => ({title, body})),
+    [
+      {
+        title: "Booking cancelled",
+        body: "The provider cancelled. Your refund is underway.",
+      },
+      {
+        title: "Booking cancelled",
+        body: "The booking has been removed from your schedule.",
+      },
+    ],
+  );
   assert.equal(result.providerEarningWrite.providerFinalEntitlementPaise, 0);
 });
 

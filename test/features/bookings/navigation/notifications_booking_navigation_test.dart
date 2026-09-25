@@ -107,8 +107,7 @@ void main() {
     final data = <String, dynamic>{
       'type': 'providerVerificationApproved',
       'title': 'Verification approved',
-      'body':
-          'Your provider verification has been approved. You can now continue as a verified provider on Pettxo.',
+      'body': 'You can now offer services as a verified provider.',
       'channels': ['in_app', 'push'],
     };
 
@@ -117,7 +116,7 @@ void main() {
     );
 
     expect(content.title, 'Verification approved');
-    expect(content.body, contains('approved'));
+    expect(content.body, 'You can now offer services as a verified provider.');
     expect(NotificationsScreen.isVisibleInAppNotification(data), isTrue);
     expect(
       NotificationsScreen.destinationForNotificationData(data),
@@ -125,27 +124,29 @@ void main() {
     );
   });
 
-  test('rejection notification renders canonical content and routes to hub', () {
-    final data = <String, dynamic>{
-      'type': 'providerVerificationRejected',
-      'title': 'Verification needs attention',
-      'body':
-          'Your provider verification was not approved. Open Pettxo to review the details and resubmit your verification.',
-      'channels': ['in_app', 'push'],
-    };
+  test(
+    'rejection notification renders canonical content and routes to hub',
+    () {
+      final data = <String, dynamic>{
+        'type': 'providerVerificationRejected',
+        'title': 'Verification needs attention',
+        'body': 'Review the details and resubmit your verification.',
+        'channels': ['in_app', 'push'],
+      };
 
-    final content = NotificationsScreen.displayContentFromNotificationData(
-      data,
-    );
+      final content = NotificationsScreen.displayContentFromNotificationData(
+        data,
+      );
 
-    expect(content.title, 'Verification needs attention');
-    expect(content.body, contains('resubmit'));
-    expect(NotificationsScreen.isVisibleInAppNotification(data), isTrue);
-    expect(
-      NotificationsScreen.destinationForNotificationData(data),
-      isA<ProviderVerificationHubScreen>(),
-    );
-  });
+      expect(content.title, 'Verification needs attention');
+      expect(content.body, contains('resubmit'));
+      expect(NotificationsScreen.isVisibleInAppNotification(data), isTrue);
+      expect(
+        NotificationsScreen.destinationForNotificationData(data),
+        isA<ProviderVerificationHubScreen>(),
+      );
+    },
+  );
 
   test('nested verification type routes to hub', () {
     expect(

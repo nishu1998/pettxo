@@ -2814,8 +2814,8 @@ export async function resolveBookingDisputeV3(params: {
       title: "Dispute resolved",
       body:
         outcome.customerRefundPaise > 0 ?
-          "Your booking dispute has been resolved and any approved refund is now queued safely." :
-          "Your booking dispute has been resolved.",
+          "Your approved refund is being processed." :
+          "Review the outcome in booking details.",
       bookingId,
       actorId: adminUid,
       now,
@@ -2827,8 +2827,8 @@ export async function resolveBookingDisputeV3(params: {
       title: "Dispute resolved",
       body:
         payoutEligibility.status === "READY" ?
-          "The dispute has been resolved and your payout is now ready." :
-          "The dispute has been resolved. Payout remains on hold until the remaining financial checks clear.",
+          "Your payout is ready." :
+          "Payout remains on hold pending financial checks.",
       bookingId,
       actorId: adminUid,
       now,
@@ -3274,7 +3274,7 @@ export async function processProviderPayoutV3(params: {
         userId: latestBooking.providerId,
         type: "booking_payout_completed",
         title: "Payout completed",
-        body: "Your Pettxo payout for this booking has been completed.",
+        body: "Funds were sent for this booking.",
         bookingId: params.bookingId,
         actorId: "system",
         now,
@@ -3320,8 +3320,8 @@ export async function processProviderPayoutV3(params: {
         type: "booking_payout_failed",
         title: "Payout needs attention",
         body: gatewayResult.retryable ?
-          "Your payout is being retried safely in the background." :
-          "Your payout needs manual Pettxo review before it can proceed.",
+          "Pettxo is retrying your payout." :
+          "Pettxo support must review this payout.",
         bookingId: params.bookingId,
         actorId: "system",
         now,

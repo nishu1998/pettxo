@@ -1730,6 +1730,8 @@ test("refund.processed synchronizes cancellation refund status and persists safe
   assert.ok(notificationDoc);
   assert.equal(notificationDoc.bookingId, fixture.ids.bookingId);
   assert.equal(notificationDoc.type, "booking_refund_processed");
+  assert.equal(notificationDoc.title, "Refund completed");
+  assert.equal(notificationDoc.body, "Your cancellation refund has been processed.");
   assertNoPrivateLeakage(notificationDoc.data);
   assertNoPrivateLeakage(notificationDoc);
 });

@@ -182,7 +182,7 @@ async function createSupportReplyNotification(params: {
     senderId: params.senderId,
     category: "support",
     type: "supportReply",
-    title: `Pettxo Support replied to your support ticket`,
+    title: "Pettxo Support replied",
     body: truncatedPreview(params.message, 120),
     ticketId: params.ticketId,
     subject: params.subject,

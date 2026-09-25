@@ -60,8 +60,8 @@ export function buildProviderVerificationDecisionNotification(params: {
       type,
       title: approved ? "Verification approved" : "Verification needs attention",
       body: approved ?
-        "Your provider verification has been approved. You can now continue as a verified provider on Pettxo." :
-        "Your provider verification was not approved. Open Pettxo to review the details and resubmit your verification.",
+        "You can now offer services as a verified provider." :
+        "Review the details and resubmit your verification.",
       read: false,
       isRead: false,
       data: {

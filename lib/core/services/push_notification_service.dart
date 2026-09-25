@@ -464,7 +464,7 @@ class PushNotificationService {
     final body = _firstNonEmpty(
       message.notification?.body,
       message.data['body'],
-      'You have a new notification.',
+      category == 'social' ? '' : 'You have a new notification.',
     );
 
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
@@ -961,18 +961,20 @@ class _PushNotificationBanner extends StatelessWidget {
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                            const SizedBox(height: 3),
-                            Text(
-                              body,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textGrey,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                height: 1.3,
+                            if (body.isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Text(
+                                body,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppColors.textGrey,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  height: 1.3,
+                                ),
                               ),
-                            ),
+                            ],
                           ],
                         ),
                       ),

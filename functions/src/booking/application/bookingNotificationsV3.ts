@@ -86,8 +86,8 @@ export function buildQueuedRequestCreatedNotification(params: {
     recipientUserId: params.providerId,
     type: "queued_request_created",
     channels: ["in_app"],
-    title: "New request queued",
-    body: "A new booking request is waiting for your next working window.",
+    title: "New booking request",
+    body: "Waiting for your next working window.",
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -112,7 +112,7 @@ export function buildProviderActionRequiredNotification(params: {
     type: "provider_action_required",
     channels: ["push", "in_app"],
     title: "New booking request",
-    body: `You received a booking request for ${serviceName}. Review it before the request expires.`,
+    body: `${serviceName}. Respond before the request expires.`,
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -144,8 +144,8 @@ export function buildProviderRequestReminderNotification(params: {
       "Booking request expires soon";
   const body =
     params.stage === "halfway" ?
-      `A booking request for ${serviceName} is still waiting for your response. ${safeMinutesRemaining} minutes remain.` :
-      `Only ${safeMinutesRemaining} minutes remain to accept or decline the booking request for ${serviceName}.`;
+      `${serviceName}: ${safeMinutesRemaining} minutes left to respond.` :
+      `${serviceName}: ${safeMinutesRemaining} minutes left to accept or decline.`;
   return buildPlan({
     bookingId: params.bookingId,
     recipientUserId: params.providerId,
@@ -174,8 +174,8 @@ export function buildPaymentRequiredNotification(params: {
     recipientUserId: params.parentId,
     type: "payment_required",
     channels: ["push", "in_app"],
-    title: "Provider accepted your request",
-    body: "Complete payment within 60 minutes. Availability will be confirmed when payment succeeds.",
+    title: "Request accepted",
+    body: "Complete payment within 60 minutes to confirm availability.",
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -205,8 +205,8 @@ export function buildCustomerPaymentReminderNotification(params: {
       "Payment expires soon";
   const body =
     params.stage === "halfway" ?
-      `Complete payment to confirm your booking. ${safeMinutesRemaining} minutes remain before this booking request expires.` :
-      `Only ${safeMinutesRemaining} minutes remain to complete payment before your booking request expires.`;
+      `${safeMinutesRemaining} minutes left to complete payment.` :
+      `${safeMinutesRemaining} minutes left before payment expires.`;
   return buildPlan({
     bookingId: params.bookingId,
     recipientUserId: params.parentId,
@@ -238,7 +238,7 @@ export function buildPaymentOrderReadyNotification(params: {
       type: "payment_order_ready",
       channels: ["push", "in_app"],
       title: "Payment ready",
-      body: "Checkout is ready. Complete payment before the 60-minute window ends.",
+      body: "Complete payment before the payment window ends.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -264,7 +264,7 @@ export function buildPaymentCapturedProcessingNotification(params: {
       type: "payment_captured_processing",
       channels: ["in_app"],
       title: "Payment received",
-      body: "We are finalizing your booking confirmation now.",
+      body: "Confirming your booking.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -292,7 +292,7 @@ export function buildBookingConfirmedNotification(params: {
       type: "booking_confirmed",
       channels: ["push", "in_app"],
       title: "Booking confirmed",
-      body: "Your booking is confirmed. OTP, contact, and chat are now available in booking details.",
+      body: "OTP, contact, and chat are available in booking details.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -307,7 +307,7 @@ export function buildBookingConfirmedNotification(params: {
       type: "booking_confirmed",
       channels: ["push", "in_app"],
       title: "Booking confirmed",
-      body: `Payment was successful. Your booking for ${serviceName} is now confirmed.`,
+      body: `Payment successful for ${serviceName}.`,
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -332,8 +332,8 @@ export function buildPaymentRefundRequiredNotification(params: {
       recipientUserId: params.parentId,
       type: "payment_refund_required",
       channels: ["push", "in_app"],
-      title: "Payment captured, refund initiated",
-      body: "This booking could not be confirmed. A full refund has been initiated.",
+      title: "Refund initiated",
+      body: "We could not confirm the booking. A full refund is underway.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -347,8 +347,8 @@ export function buildPaymentRefundRequiredNotification(params: {
       recipientUserId: params.providerId,
       type: "payment_refund_required",
       channels: ["in_app"],
-      title: "Capacity race resolved",
-      body: "A captured payment could not be confirmed because availability was exhausted first.",
+      title: "Booking unavailable",
+      body: "Another booking filled the remaining availability first.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -373,8 +373,8 @@ export function buildPaymentFailedNotification(params: {
       recipientUserId: params.parentId,
       type: "payment_failed",
       channels: ["push", "in_app"],
-      title: "Payment could not be confirmed",
-      body: "This payment attempt could not be completed within the allowed booking window.",
+      title: "Payment not completed",
+      body: "The payment window ended before confirmation.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -389,7 +389,7 @@ export function buildPaymentFailedNotification(params: {
       type: "payment_failed",
       channels: ["in_app"],
       title: "Payment not completed",
-      body: "The booking did not advance to paid confirmation.",
+      body: "The customer did not complete payment in time.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -417,7 +417,7 @@ export function buildZeroPayableConfirmationNotification(params: {
       type: "zero_payable_confirmed",
       channels: ["push", "in_app"],
       title: "Booking confirmed",
-      body: "Your Pettxo promotion covered the full amount and the booking is confirmed.",
+      body: "Your Pettxo promotion covered the full amount.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -432,7 +432,7 @@ export function buildZeroPayableConfirmationNotification(params: {
       type: "zero_payable_confirmed",
       channels: ["push", "in_app"],
       title: "Booking confirmed",
-      body: `Your booking for ${serviceName} is now confirmed.`,
+      body: `Confirmed for ${serviceName}.`,
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -456,7 +456,7 @@ export function buildDeclinedNotification(params: {
     type: "request_declined",
     channels: ["push", "in_app"],
     title: "Request declined",
-    body: "The provider declined your booking request.",
+    body: "The provider could not accept this booking.",
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -502,7 +502,7 @@ export function buildCancelledByParentNotification(params: {
     type: "request_cancelled_by_parent",
     channels: ["push", "in_app"],
     title: "Request cancelled",
-    body: "The pet parent cancelled this request before payment.",
+    body: "The customer cancelled before payment.",
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -527,7 +527,7 @@ export function buildPaymentExpiredNotification(params: {
       type: "payment_expired",
       channels: ["push", "in_app"],
       title: "Payment window expired",
-      body: "This request expired because payment was not completed in time.",
+      body: "Payment was not completed in time.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -542,7 +542,7 @@ export function buildPaymentExpiredNotification(params: {
       type: "payment_expired",
       channels: ["push", "in_app"],
       title: "Payment not completed",
-      body: "The pet parent did not complete payment before the 60-minute deadline.",
+      body: "The customer missed the 60-minute deadline.",
       data: {
         bookingType: params.bookingType,
         state: params.state,
@@ -566,7 +566,7 @@ export function buildServiceStartedNotification(params: {
     type: "service_started",
     channels: ["push", "in_app"],
     title: "Service started",
-    body: "Your provider has started this Pettxo booking.",
+    body: "Your provider has begun the booking.",
     data: {bookingType: params.bookingType, state: params.state},
   });
 }
@@ -585,7 +585,7 @@ export function buildBookingNoShowNotifications(params: {
       type: "booking_no_show",
       channels: ["push", "in_app"],
       title: "Booking marked no-show",
-      body: "This booking was marked as no-show because the service OTP was not entered before the service window ended.",
+      body: "The service OTP was not entered before the service window ended.",
       data: {bookingType: params.bookingType, state: params.state},
     }),
     buildPlan({
@@ -594,7 +594,7 @@ export function buildBookingNoShowNotifications(params: {
       type: "booking_no_show",
       channels: ["push", "in_app"],
       title: "Booking marked no-show",
-      body: "This booking was marked as no-show because the service OTP was not entered before the service window ended.",
+      body: "The service OTP was not entered before the service window ended.",
       data: {bookingType: params.bookingType, state: params.state},
     }),
   ];
@@ -613,7 +613,7 @@ export function buildServiceCompletedNotification(params: {
       type: "service_completed",
       channels: ["push", "in_app"],
       title: "Service completed",
-      body: "Your provider marked this service complete. Review your experience or raise a dispute within 24 hours if needed.",
+      body: "Review your experience or raise a dispute within 24 hours.",
       data: {bookingType: params.bookingType, state: params.state},
     }),
   ];
@@ -631,8 +631,7 @@ export function buildBookingDisputeOpenedNotification(params: {
     type: "booking_dispute_opened",
     channels: ["push", "in_app"],
     title: "Booking dispute opened",
-    body:
-      "A dispute has been raised for this booking. Your settlement is currently on hold while Pettxo reviews the case.",
+    body: "Settlement is on hold while Pettxo reviews the case.",
     data: {
       bookingType: params.bookingType,
       state: params.state,
@@ -656,7 +655,7 @@ export function buildBookingReviewReceivedNotification(params: {
       type: "review_received",
       channels: ["push", "in_app"],
       title: "New review received",
-      body: "The pet parent submitted a review for this completed booking.",
+      body: "A customer reviewed this completed booking.",
       data: {bookingType: params.bookingType, state: params.state},
     }),
   ];
@@ -675,7 +674,7 @@ export function buildBookingFinalizedNotifications(params: {
       type: "booking_finalized",
       channels: ["push", "in_app"],
       title: "Booking finalized",
-      body: "The customer review window closed and this booking is now finalized.",
+      body: "The customer review window has closed.",
       data: {bookingType: params.bookingType, state: params.state},
     }),
   ];
@@ -694,7 +693,7 @@ export function buildBookingPayoutReadyNotifications(params: {
       type: "payout_ready",
       channels: ["push", "in_app"],
       title: "Payout ready",
-      body: "This completed booking is now payout-ready in Pettxo.",
+      body: "Earnings from this booking are ready for payout.",
       data: {bookingType: params.bookingType, state: params.state},
     }),
   ];

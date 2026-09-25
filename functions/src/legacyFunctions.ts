@@ -79,7 +79,7 @@ type RestrictionType = typeof restrictionTypes[number];
 type AdminRole = typeof adminRoles[number];
 type OfferCampaignType = typeof offerCampaignTypes[number];
 type OfferDiscountType = typeof offerDiscountTypes[number];
-type SocialNotificationType = typeof socialNotificationTypes[number];
+export type SocialNotificationType = typeof socialNotificationTypes[number];
 type AccountStatus = "active" | "restricted" | "hardBanned";
 type PublicAccountStatus = AccountStatus | "pendingDeletion" | "deletionInProgress";
 type RestrictionState = {
@@ -1027,6 +1027,7 @@ function isChatEligibleService(service: Record<string, unknown>, nowMs = Date.no
 }
 
 async function createSocialNotificationDoc(params: {
+  documentId: string;
   recipientId: string;
   senderId: string;
   senderDisplayName: string;
@@ -1036,39 +1037,81 @@ async function createSocialNotificationDoc(params: {
   body: string;
   postId?: string;
   commentId?: string;
-}): Promise<void> {
-  if (!params.recipientId || params.recipientId === params.senderId) return;
+}): Promise<boolean> {
+  if (!params.recipientId || params.recipientId === params.senderId) return false;
   const recipientSnapshot = await db.collection("users").doc(params.recipientId).get();
   const recipientData = recipientSnapshot.data() ?? {};
   if (isAccountUnavailableForNormalUse(recipientData)) {
-    return;
+    return false;
   }
 
-  await db.collection("notifications").add({
-    userId: params.recipientId,
-    category: "social",
-    type: params.type,
-    title: params.title,
-    body: params.body,
-    read: false,
-    isRead: false,
-    senderId: params.senderId,
-    senderDisplayName: params.senderDisplayName,
-    senderPhotoUrl: params.senderPhotoUrl,
-    postId: params.postId ?? "",
-    commentId: params.commentId ?? "",
-    data: {
+  const notificationRef = db.collection("notifications").doc(params.documentId);
+  return db.runTransaction(async (transaction) => {
+    const existing = await transaction.get(notificationRef);
+    if (existing.exists) return false;
+    transaction.create(notificationRef, {
+      userId: params.recipientId,
+      category: "social",
+      type: params.type,
+      title: params.title,
+      body: params.body,
+      read: false,
+      isRead: false,
       senderId: params.senderId,
       senderDisplayName: params.senderDisplayName,
       senderPhotoUrl: params.senderPhotoUrl,
       postId: params.postId ?? "",
       commentId: params.commentId ?? "",
-      type: params.type,
-      category: "social",
-    },
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
+      data: {
+        senderId: params.senderId,
+        senderDisplayName: params.senderDisplayName,
+        senderPhotoUrl: params.senderPhotoUrl,
+        postId: params.postId ?? "",
+        commentId: params.commentId ?? "",
+        type: params.type,
+        category: "social",
+      },
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return true;
   });
+}
+
+export function socialNotificationDocumentId(params: {
+  type: SocialNotificationType;
+  senderId: string;
+  recipientId: string;
+  sourceEventId: string;
+}): string {
+  const digest = createHash("sha256")
+    .update(
+      `${params.type}:${params.senderId}:${params.recipientId}:${params.sourceEventId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return `social_${params.type}_${digest}`;
+}
+
+export function buildSocialNotificationCopy(params: {
+  type: SocialNotificationType;
+  senderDisplayName: string;
+  commentText?: string;
+}): {title: string; body: string} {
+  if (params.type === "socialFollow") {
+    return {title: `${params.senderDisplayName} followed you`, body: ""};
+  }
+  if (params.type === "socialLike") {
+    return {title: `${params.senderDisplayName} liked your post`, body: ""};
+  }
+  return {
+    title: `${params.senderDisplayName} commented on your post`,
+    body: safeText(params.commentText, "Open the post to view the comment."),
+  };
+}
+
+function socialSourceVersion(value: unknown): string {
+  return value instanceof Timestamp ? String(value.toMillis()) : "legacy";
 }
 
 function notificationData(data: Record<string, unknown>): Record<string, string> {
@@ -2945,7 +2988,10 @@ export const sendPushForNotification = onDocumentWritten(
       safeText(notification.title, "Pettxo booking update"),
       emojiUsed,
     );
-    const pushBody = safeText(notification.body, "You have a new booking update.");
+    const pushBody = safeText(
+      notification.body,
+      category === "social" ? "" : "You have a new booking update.",
+    );
 
     console.info("Notification created", {
       notificationId: event.params.notificationId,
@@ -3805,16 +3851,23 @@ export const createSocialNotification = onCall({
       throw new HttpsError("failed-precondition", "Follow relationship not found.");
     }
 
-    await createSocialNotificationDoc({
+    const copy = buildSocialNotificationCopy({type, senderDisplayName});
+    const created = await createSocialNotificationDoc({
+      documentId: socialNotificationDocumentId({
+        type,
+        senderId,
+        recipientId,
+        sourceEventId: `${followId}:${socialSourceVersion(followSnapshot.data()?.createdAt)}`,
+      }),
       recipientId,
       senderId,
       senderDisplayName,
       senderPhotoUrl,
       type,
-      title: `${senderDisplayName} followed you`,
-      body: "See what they are sharing on Pettxo.",
+      title: copy.title,
+      body: copy.body,
     });
-    return {ok: true, created: true};
+    return {ok: true, created};
   }
 
   if (!postId) {
@@ -3842,17 +3895,24 @@ export const createSocialNotification = onCall({
       throw new HttpsError("failed-precondition", "Like not found.");
     }
 
-    await createSocialNotificationDoc({
+    const copy = buildSocialNotificationCopy({type, senderDisplayName});
+    const created = await createSocialNotificationDoc({
+      documentId: socialNotificationDocumentId({
+        type,
+        senderId,
+        recipientId,
+        sourceEventId: `${postId}:${socialSourceVersion(likeSnapshot.data()?.createdAt)}`,
+      }),
       recipientId,
       senderId,
       senderDisplayName,
       senderPhotoUrl,
       type,
-      title: `${senderDisplayName} liked your post`,
-      body: "Tap to see the post in your feed.",
+      title: copy.title,
+      body: copy.body,
       postId,
     });
-    return {ok: true, created: true};
+    return {ok: true, created};
   }
 
   if (!commentId) {
@@ -3873,18 +3933,29 @@ export const createSocialNotification = onCall({
     throw new HttpsError("failed-precondition", "Comment author does not match sender.");
   }
 
-  await createSocialNotificationDoc({
+  const copy = buildSocialNotificationCopy({
+    type,
+    senderDisplayName,
+    commentText: String(commentData.text ?? ""),
+  });
+  const created = await createSocialNotificationDoc({
+    documentId: socialNotificationDocumentId({
+      type,
+      senderId,
+      recipientId,
+      sourceEventId: `${postId}:${commentId}`,
+    }),
     recipientId,
     senderId,
     senderDisplayName,
     senderPhotoUrl,
     type,
-    title: `${senderDisplayName} commented on your post`,
-    body: safeText(commentData.text, "Tap to see the conversation."),
+    title: copy.title,
+    body: copy.body,
     postId,
     commentId,
   });
-  return {ok: true, created: true};
+  return {ok: true, created};
 });
 
 export const startProviderChat = onCall({

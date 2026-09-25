@@ -1127,16 +1127,13 @@ export function applyConfirmedBookingCancellationV3(params: {
         params.actorType === "PROVIDER"
           ? "booking_cancelled_by_provider"
           : "booking_cancelled_by_customer",
-      title:
-        params.actorType === "PROVIDER"
-          ? "Provider cancelled your booking"
-          : "Booking cancelled",
+      title: "Booking cancelled",
       body:
         params.actorType === "PROVIDER"
-          ? "Your booking was cancelled by the provider. Refund processing is underway."
+          ? "The provider cancelled. Your refund is underway."
           : decision.grossCustomerRefundPaise > 0
-          ? "Your booking cancellation has been recorded. Refund processing is underway."
-          : "Your booking cancellation has been recorded. No gateway refund applies for this time band.",
+          ? "Your refund is underway."
+          : "No refund applies for this cancellation window.",
       state: safeState,
       bookingType: params.booking.bookingType,
       refundStatus: cancellationRecord.refundStatus,
@@ -1148,14 +1145,11 @@ export function applyConfirmedBookingCancellationV3(params: {
         params.actorType === "PROVIDER"
           ? "booking_cancellation_acknowledged"
           : "booking_cancelled_by_customer",
-      title:
-        params.actorType === "PROVIDER"
-          ? "Booking cancellation recorded"
-          : "Customer cancelled the booking",
+      title: "Booking cancelled",
       body:
         params.actorType === "PROVIDER"
-          ? "This booking is cancelled and payout eligibility has been removed."
-          : "The customer cancelled this paid booking. Capacity and payout eligibility were reversed.",
+          ? "The booking has been removed from your schedule."
+          : "The customer cancelled this paid booking.",
       state: safeState,
       bookingType: params.booking.bookingType,
       refundStatus: cancellationRecord.refundStatus,

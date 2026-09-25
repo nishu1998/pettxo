@@ -374,11 +374,11 @@ function buildCancellationRefundNotification(params: {
       recipientUserId: params.parentId,
       type: parentType,
       channels: ["push", "in_app"],
-      title: params.eventName === "refund.processed" ? "Refund processed" : "Refund retry needed",
+      title: params.eventName === "refund.processed" ? "Refund completed" : "Refund delayed",
       body:
         params.eventName === "refund.processed" ?
           "Your cancellation refund has been processed." :
-          "Your cancellation refund is taking longer than expected. Pettxo will keep retrying safely.",
+          "Pettxo is retrying your refund.",
       data: {
         bookingId: params.bookingId,
         bookingType: params.bookingType,
@@ -393,11 +393,11 @@ function buildCancellationRefundNotification(params: {
       title:
         params.eventName === "refund.processed" ?
           "Refund completed" :
-          "Refund pending retry",
+          "Refund delayed",
       body:
         params.eventName === "refund.processed" ?
-          "The cancellation refund has completed for this booking." :
-          "The cancellation refund has not completed yet. Payout remains blocked.",
+          "The cancellation refund for this booking was processed." :
+          "Payout remains on hold while the refund is retried.",
       data: {
         bookingId: params.bookingId,
         bookingType: params.bookingType,

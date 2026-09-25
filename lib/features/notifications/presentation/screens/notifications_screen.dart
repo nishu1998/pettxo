@@ -203,8 +203,8 @@ class NotificationsScreen extends StatelessWidget {
                             padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
                             children: docs
                                 .map(
-                                  (doc) => _NotificationTile(
-                                    doc: doc,
+                                  (doc) => NotificationCard(
+                                    data: doc.data(),
                                     onTap: isActionableNotification(doc.data())
                                         ? () => _openNotification(context, doc)
                                         : null,
@@ -434,15 +434,20 @@ class _NotificationsHeader extends StatelessWidget {
   }
 }
 
-class _NotificationTile extends StatelessWidget {
-  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+class NotificationCard extends StatelessWidget {
+  final Map<String, dynamic> data;
   final VoidCallback? onTap;
+  final DateTime? now;
 
-  const _NotificationTile({required this.doc, required this.onTap});
+  const NotificationCard({
+    super.key,
+    required this.data,
+    required this.onTap,
+    this.now,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final data = doc.data();
     final displayContent =
         NotificationsScreen.displayContentFromNotificationData(data);
     final title = displayContent.title;
@@ -473,6 +478,7 @@ class _NotificationTile extends StatelessWidget {
           ],
         ),
         child: Material(
+          key: const Key('notification-card-surface'),
           color: isUnread ? const Color(0xFFF7AF83) : Colors.white,
           borderRadius: BorderRadius.circular(22),
           child: InkWell(
@@ -492,22 +498,54 @@ class _NotificationTile extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _avatarContent(
-                    senderId: senderId,
-                    senderDisplayName: senderDisplayName,
-                    senderPhotoUrl: senderPhotoUrl,
-                    type: type,
-                    category: category,
+                  KeyedSubtree(
+                    key: const Key('notification-avatar'),
+                    child: _avatarContent(
+                      senderId: senderId,
+                      senderDisplayName: senderDisplayName,
+                      senderPhotoUrl: senderPhotoUrl,
+                      type: type,
+                      category: category,
+                    ),
                   ),
                   const SizedBox(width: 16),
-                  Expanded(child: _buildStyledText(title, body)),
-                  const SizedBox(width: 12),
-                  Text(
-                    _relativeTime(createdDate),
-                    style: const TextStyle(
-                      color: AppColors.textGrey,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          key: const Key('notification-title-row'),
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: _buildStyledTitle(title)),
+                            const SizedBox(width: 10),
+                            Text(
+                              _relativeTime(createdDate, now: now),
+                              key: const Key('notification-timestamp'),
+                              maxLines: 1,
+                              style: const TextStyle(
+                                color: AppColors.textGrey,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (!_shouldHideBody(body.trim())) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            body.trim(),
+                            key: const Key('notification-body'),
+                            style: const TextStyle(
+                              fontSize: 15,
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w400,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ],
@@ -582,17 +620,16 @@ class _NotificationTile extends StatelessWidget {
     return Icons.calendar_today_outlined;
   }
 
-  Widget _buildStyledText(String title, String body) {
+  Widget _buildStyledTitle(String title) {
     final cleanedTitle = title.trim();
-    final cleanedBody = body.trim();
     final combined = cleanedTitle.isEmpty ? 'Pettxo update' : cleanedTitle;
     final subjectLength = _subjectLengthFor(combined);
     final safeSubjectLength = subjectLength.clamp(0, combined.length);
     final subject = combined.substring(0, safeSubjectLength).trim();
     final remainder = combined.substring(safeSubjectLength).trimLeft();
-    final bodySuffix = _shouldHideBody(cleanedBody) ? '' : cleanedBody;
 
     return Text.rich(
+      key: const Key('notification-title'),
       TextSpan(
         children: [
           TextSpan(
@@ -607,16 +644,6 @@ class _NotificationTile extends StatelessWidget {
           if (remainder.isNotEmpty)
             TextSpan(
               text: ' $remainder',
-              style: const TextStyle(
-                fontSize: 16,
-                color: AppColors.textDark,
-                fontWeight: FontWeight.w400,
-                height: 1.45,
-              ),
-            ),
-          if (bodySuffix.isNotEmpty)
-            TextSpan(
-              text: ' $bodySuffix',
               style: const TextStyle(
                 fontSize: 16,
                 color: AppColors.textDark,
@@ -665,9 +692,9 @@ class _NotificationTile extends StatelessWidget {
         normalized.startsWith("see what they're sharing");
   }
 
-  String _relativeTime(DateTime? date) {
+  String _relativeTime(DateTime? date, {DateTime? now}) {
     if (date == null) return 'Just now';
-    final diff = DateTime.now().difference(date);
+    final diff = (now ?? DateTime.now()).difference(date);
     if (diff.inMinutes < 1) return 'Just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes}m';
     if (diff.inHours < 24) return '${diff.inHours}h';
