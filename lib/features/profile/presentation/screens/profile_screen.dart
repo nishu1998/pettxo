@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -38,7 +40,9 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  static final Map<String, ProfileFollowCounts> _sharedFollowCountCache =
+  final Map<String, ProfileFollowCounts> _followCountCache =
+      <String, ProfileFollowCounts>{};
+  final Map<String, ProfileFollowCounts> _observedProjectedCounts =
       <String, ProfileFollowCounts>{};
 
   final ProfileRepository _profileRepository = ProfileRepository();
@@ -65,11 +69,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
       <String, Future<ProfileFollowCounts>>{};
   final Map<String, Future<bool>> _providerVerificationRequests =
       <String, Future<bool>>{};
+  StreamSubscription<FollowChange>? _followChangeSubscription;
 
   @override
   void initState() {
     super.initState();
     _settingsFuture = _loadInitialSettings();
+    _followChangeSubscription = _followRepository.changes.listen(
+      _handleCanonicalFollowChange,
+    );
+  }
+
+  @override
+  void dispose() {
+    _followChangeSubscription?.cancel();
+    super.dispose();
   }
 
   Future<AppSettings> _loadInitialSettings() async {
@@ -122,7 +136,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     if (forceRefresh) {
       _followCountRequests.remove(trimmedUserId);
-    } else if (_sharedFollowCountCache.containsKey(trimmedUserId) ||
+    } else if (_followCountCache.containsKey(trimmedUserId) ||
         _followCountRequests.containsKey(trimmedUserId)) {
       return;
     }
@@ -130,11 +144,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _requestFollowCounts(trimmedUserId)
         .then((counts) {
           _followCountRequests.remove(trimmedUserId);
-          final previous = _sharedFollowCountCache[trimmedUserId];
+          final previous = _followCountCache[trimmedUserId];
           final didChange =
               previous?.followerCount != counts.followerCount ||
               previous?.followingCount != counts.followingCount;
-          _sharedFollowCountCache[trimmedUserId] = counts;
+          _followCountCache[trimmedUserId] = counts;
           if (!mounted || !didChange) return;
           setState(() {});
         })
@@ -142,6 +156,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _followCountRequests.remove(trimmedUserId);
           // Keep the last visible counts if refresh fails.
         });
+  }
+
+  void _handleCanonicalFollowChange(FollowChange change) {
+    _ensureFollowCountsLoaded(change.followerId, forceRefresh: true);
+    _ensureFollowCountsLoaded(change.followeeId, forceRefresh: true);
+  }
+
+  void _observeProjectedFollowCounts(UserProfile profile) {
+    final projected = ProfileFollowCounts(
+      followerCount: profile.followerCount,
+      followingCount: profile.followingCount,
+    );
+    final previous = _observedProjectedCounts[profile.uid];
+    if (previous?.followerCount == projected.followerCount &&
+        previous?.followingCount == projected.followingCount) {
+      _ensureFollowCountsLoaded(profile.uid);
+      return;
+    }
+    _observedProjectedCounts[profile.uid] = projected;
+    _ensureFollowCountsLoaded(profile.uid, forceRefresh: true);
   }
 
   void _syncFollowState({
@@ -492,8 +526,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   profileUserId: profile.uid,
                   isOwnProfile: isOwnProfile,
                 );
-                _ensureFollowCountsLoaded(profile.uid);
-                final cachedCounts = _sharedFollowCountCache[profile.uid];
+                _observeProjectedFollowCounts(profile);
+                final cachedCounts = _followCountCache[profile.uid];
 
                 return StreamBuilder<List<ProfileServiceListing>>(
                   stream:

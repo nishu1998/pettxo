@@ -1,9 +1,27 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
-import '../../../core/services/firestore_cache_service.dart';
 import '../../notifications/data/repositories/notification_repository.dart';
-import '../../profile/data/repositories/profile_repository.dart';
+
+typedef FollowCallableInvoker =
+    Future<Map<String, dynamic>> Function(
+      String functionName,
+      Map<String, dynamic> payload,
+    );
+
+class FollowChange {
+  final String followerId;
+  final String followeeId;
+  final bool isFollowing;
+
+  const FollowChange({
+    required this.followerId,
+    required this.followeeId,
+    required this.isFollowing,
+  });
+}
 
 class FollowIdsPage {
   final List<String> userIds;
@@ -28,23 +46,50 @@ class ProfileFollowCounts {
 }
 
 class FollowRepository {
+  static final StreamController<FollowChange> _changesController =
+      StreamController<FollowChange>.broadcast();
+
   FollowRepository({
     FirebaseFirestore? firestore,
     FirebaseFunctions? functions,
     NotificationRepository? notificationRepository,
-  }) : _firestore = firestore ?? FirebaseFirestore.instance,
-       _functions =
-           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1'),
-       _notificationRepository =
-           notificationRepository ?? NotificationRepository();
+    FollowCallableInvoker? callableInvoker,
+  }) : _firestoreOverride = firestore,
+       _functionsOverride = functions,
+       _notificationRepositoryOverride = notificationRepository,
+       _callableInvoker = callableInvoker;
 
-  final FirebaseFirestore _firestore;
-  final FirebaseFunctions _functions;
-  final NotificationRepository _notificationRepository;
-  final ProfileRepository _profileRepository = ProfileRepository();
+  final FirebaseFirestore? _firestoreOverride;
+  final FirebaseFunctions? _functionsOverride;
+  final NotificationRepository? _notificationRepositoryOverride;
+  final FollowCallableInvoker? _callableInvoker;
+
+  FirebaseFirestore get _firestore =>
+      _firestoreOverride ?? FirebaseFirestore.instance;
+
+  FirebaseFunctions get _functions =>
+      _functionsOverride ??
+      FirebaseFunctions.instanceFor(region: 'asia-south1');
+
+  NotificationRepository get _notificationRepository =>
+      _notificationRepositoryOverride ?? NotificationRepository();
+
+  Stream<FollowChange> get changes => _changesController.stream;
 
   CollectionReference<Map<String, dynamic>> get _followsCollection =>
       _firestore.collection('follows');
+
+  Future<Map<String, dynamic>> _invoke(
+    String functionName,
+    Map<String, dynamic> payload,
+  ) async {
+    final override = _callableInvoker;
+    if (override != null) return override(functionName, payload);
+    final result = await _functions
+        .httpsCallable(functionName)
+        .call<Map<String, dynamic>>(payload);
+    return result.data;
+  }
 
   String _normalizeRequiredUserId(String userId, String label) {
     final trimmed = userId.trim();
@@ -68,10 +113,14 @@ class FollowRepository {
     if (trimmedFollowerId.isEmpty || trimmedFolloweeId.isEmpty) return false;
     if (trimmedFollowerId == trimmedFolloweeId) return false;
 
-    final snapshot = await _followsCollection
-        .doc(followIdFor(followerId: followerId, followeeId: followeeId))
-        .get();
-    return snapshot.exists;
+    try {
+      final data = await _invoke('getFollowState', {
+        'followeeId': trimmedFolloweeId,
+      });
+      return data['isFollowing'] == true;
+    } on FirebaseFunctionsException catch (error) {
+      throw Exception(_mapFollowFunctionError(error));
+    }
   }
 
   Future<void> followUser({
@@ -83,34 +132,11 @@ class FollowRepository {
     if (trimmedFollowerId == trimmedFolloweeId) {
       throw Exception('You cannot follow yourself.');
     }
-    final isFolloweeVisible = await _profileRepository.isUserPubliclyVisible(
-      trimmedFolloweeId,
+    await _setFollowState(
+      followerId: trimmedFollowerId,
+      followeeId: trimmedFolloweeId,
+      desiredFollowing: true,
     );
-    if (!isFolloweeVisible) {
-      throw Exception('This account is no longer available.');
-    }
-
-    final followRef = _followsCollection.doc(
-      followIdFor(followerId: trimmedFollowerId, followeeId: trimmedFolloweeId),
-    );
-
-    try {
-      await followRef.set({
-        'followerId': trimmedFollowerId,
-        'followeeId': trimmedFolloweeId,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-    } on FirebaseException catch (error) {
-      throw Exception(_mapFollowError(error));
-    }
-
-    try {
-      await _notificationRepository.createFollowNotification(
-        recipientId: trimmedFolloweeId,
-      );
-    } catch (_) {
-      // Notifications are best-effort and should not break follow success.
-    }
   }
 
   Future<void> unfollowUser({
@@ -123,17 +149,11 @@ class FollowRepository {
       return;
     }
 
-    final followRef = _followsCollection.doc(
-      followIdFor(followerId: trimmedFollowerId, followeeId: trimmedFolloweeId),
+    await _setFollowState(
+      followerId: trimmedFollowerId,
+      followeeId: trimmedFolloweeId,
+      desiredFollowing: false,
     );
-
-    try {
-      await followRef.delete();
-    } on FirebaseException catch (error) {
-      if (!_isMissingDocumentError(error)) {
-        throw Exception(_mapFollowError(error));
-      }
-    }
   }
 
   Future<bool> toggleFollow({
@@ -141,13 +161,52 @@ class FollowRepository {
     required String followeeId,
     required bool currentlyFollowing,
   }) async {
-    if (currentlyFollowing) {
-      await unfollowUser(followerId: followerId, followeeId: followeeId);
-      return false;
+    final trimmedFollowerId = _normalizeRequiredUserId(followerId, 'Follower');
+    final trimmedFolloweeId = _normalizeRequiredUserId(followeeId, 'Followee');
+    if (trimmedFollowerId == trimmedFolloweeId) {
+      throw Exception('You cannot follow yourself.');
     }
+    return _setFollowState(
+      followerId: trimmedFollowerId,
+      followeeId: trimmedFolloweeId,
+      desiredFollowing: !currentlyFollowing,
+    );
+  }
 
-    await followUser(followerId: followerId, followeeId: followeeId);
-    return true;
+  Future<bool> _setFollowState({
+    required String followerId,
+    required String followeeId,
+    required bool desiredFollowing,
+  }) async {
+    try {
+      final data = await _invoke('setFollowState', {
+        'followeeId': followeeId,
+        'desiredFollowing': desiredFollowing,
+      });
+      final isFollowing = data['isFollowing'] == true;
+      final changed = data['changed'] == true;
+      if (changed) {
+        _changesController.add(
+          FollowChange(
+            followerId: followerId,
+            followeeId: followeeId,
+            isFollowing: isFollowing,
+          ),
+        );
+      }
+      if (changed && isFollowing) {
+        try {
+          await _notificationRepository.createFollowNotification(
+            recipientId: followeeId,
+          );
+        } catch (_) {
+          // Notifications are best-effort and should not break follow success.
+        }
+      }
+      return isFollowing;
+    } on FirebaseFunctionsException catch (error) {
+      throw Exception(_mapFollowFunctionError(error));
+    }
   }
 
   Future<Set<String>> fetchFollowingIds(String userId) async {
@@ -158,7 +217,10 @@ class FollowRepository {
       'followerId',
       isEqualTo: trimmedUserId,
     );
-    final snapshot = await FirestoreCacheService.getCollectionCacheFirst(query);
+    // Callable mutations happen on the server and do not update this client's
+    // local query cache. A normal get checks the server when online while still
+    // retaining Firestore's offline fallback behavior.
+    final snapshot = await query.get();
 
     return snapshot.docs
         .map((doc) => (doc.data()['followeeId'] as String? ?? '').trim())
@@ -259,13 +321,7 @@ class FollowRepository {
     }
   }
 
-  bool _isMissingDocumentError(FirebaseException error) {
-    return error.code == 'not-found' ||
-        (error.message?.toLowerCase().contains('no document to update') ??
-            false);
-  }
-
-  String _mapFollowError(FirebaseException error) {
+  String _mapFollowFunctionError(FirebaseFunctionsException error) {
     switch (error.code) {
       case 'permission-denied':
         return 'You do not have permission to update this follow right now.';
