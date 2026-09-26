@@ -24,7 +24,9 @@ void main() {
       final repository = _FakeBookingRepository(
         _buildExpiredAwaitingPaymentBooking(),
       );
-      final servicesRepository = _FakeServicesRepository();
+      final servicesRepository = _FakeServicesRepository(
+        loader: (_, callCount) => callCount == 1 ? _buildActiveService() : null,
+      );
 
       await tester.pumpWidget(
         MaterialApp(
@@ -113,7 +115,10 @@ void main() {
 
       await tester.tap(bookAgain);
       await tester.pumpAndSettle();
-      expect(servicesRepository.requestedServiceIds, ['service-1']);
+      expect(servicesRepository.requestedServiceIds, [
+        'service-1',
+        'service-1',
+      ]);
     },
   );
 
@@ -163,6 +168,7 @@ void main() {
       expect(find.text('₹0.60'), findsNothing);
       expect(find.text('Payout status'), findsNothing);
       expect(find.text('IMPORTANT INFORMATION'), findsNothing);
+      expect(find.byKey(const ValueKey('book-again-cta')), findsOneWidget);
     },
   );
 
@@ -201,6 +207,11 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await tester.scrollUntilVisible(
+        find.text('Cancelled by Provider'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Cancelled by Provider'), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text('View Refund Status'),
@@ -210,9 +221,48 @@ void main() {
       expect(find.text('View Refund Status'), findsOneWidget);
       expect(find.text('Contact Support'), findsOneWidget);
       expect(find.text('Refund Status'), findsOneWidget);
-      expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
+      expect(find.byKey(const ValueKey('book-again-cta')), findsOneWidget);
       expect(find.text('Pay now'), findsNothing);
       expect(find.text('Resume payment'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'eligible terminal request hides Book Again for missing service',
+    (tester) async {
+      final repository = _FakeBookingRepository(
+        _buildExpiredAwaitingPaymentBooking(),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CanonicalBookingRequestStatusScreen(
+            bookingId: 'booking-1',
+            initialResult: CanonicalBookingRequestResult(
+              bookingId: 'booking-1',
+              source: 'canonical_v3',
+              schemaVersion: canonicalBookingSchemaVersion,
+              bookingModelVersion: canonicalBookingModelVersion,
+              state: CanonicalBookingStateV3.paymentExpired,
+              bookingType: BookingV3Type.slot,
+              requestedAt: DateTime.utc(2026, 7, 28, 8),
+              timerStartsAt: DateTime.utc(2026, 7, 28, 8),
+              acceptDeadlineAt: DateTime.utc(2026, 7, 28, 9),
+              wasQueuedOutsideWorkingHours: false,
+              idempotentReplay: false,
+            ),
+            serviceName: 'Daily Dog Walk',
+            providerName: 'Nishant Gautam',
+            serviceImageUrl: '',
+            bookingRepository: repository,
+            servicesRepository: _FakeServicesRepository(missing: true),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
+      expect(find.text('PRIMARY ACTIONS'), findsNothing);
     },
   );
 
@@ -934,14 +984,38 @@ CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking({
 }
 
 class _FakeServicesRepository implements ServicesRepository {
+  _FakeServicesRepository({
+    ServiceModel? service,
+    bool missing = false,
+    this.loader,
+  }) : service = missing ? null : service ?? _buildActiveService();
+
+  final ServiceModel? service;
+  final ServiceModel? Function(String serviceId, int callCount)? loader;
   final List<String> requestedServiceIds = <String>[];
 
   @override
   Future<ServiceModel?> fetchServiceById(String serviceId) async {
     requestedServiceIds.add(serviceId);
-    return null;
+    if (loader != null) {
+      return loader!(serviceId, requestedServiceIds.length);
+    }
+    return service;
   }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+ServiceModel _buildActiveService() {
+  return ServiceModel.fromMap('service-1', {
+    'ownerUserId': 'provider-1',
+    'title': 'Daily Dog Walk',
+    'status': 'active',
+    'isActive': true,
+    'isDeleted': false,
+    'isPaused': false,
+    'isVisibleToMarketplace': true,
+    'providerVerificationStatus': 'approved',
+  });
 }

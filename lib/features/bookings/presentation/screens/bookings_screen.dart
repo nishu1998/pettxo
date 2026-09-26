@@ -21,6 +21,7 @@ import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../navigation/booking_navigation_resolver.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../utils/canonical_booking_presentation_state.dart';
+import '../utils/canonical_rebooking_eligibility.dart';
 import '../utils/canonical_booking_schedule_presentation.dart';
 import '../widgets/booking_deadline_countdown.dart';
 import '../widgets/canonical_provider_request_card.dart';
@@ -81,6 +82,8 @@ class _BookingsScreenState extends State<BookingsScreen> {
   String? _canonicalActionType;
   String? _openingCanonicalBookingId;
   bool _isLoadingServiceDetails = false;
+  final Map<String, bool> _serviceRebookability = <String, bool>{};
+  final Set<String> _pendingServiceRebookability = <String>{};
   final Map<String, String> _bookingDiagnosticsSignatures = {};
   bool _isHandlingBackNavigation = false;
 
@@ -673,6 +676,11 @@ class _BookingsScreenState extends State<BookingsScreen> {
       return const [_EmptyState()];
     }
 
+    if (_context == BookingContextMode.receiving &&
+        _activeTab == BookingTab.past) {
+      _scheduleServiceRebookabilityChecks(canonicalBookings);
+    }
+
     return [
       Padding(
         padding: const EdgeInsets.only(bottom: 12),
@@ -700,13 +708,70 @@ class _BookingsScreenState extends State<BookingsScreen> {
             paymentDeadlineAt: booking.booking.lifecycle.payDeadlineAt,
             onBookAgain:
                 _context == BookingContextMode.receiving &&
-                    _activeTab == BookingTab.past
+                    _activeTab == BookingTab.past &&
+                    canonicalBookingAllowsRebooking(
+                      booking.booking,
+                      effectiveState:
+                          effectiveCanonicalBookingPresentationState(
+                            booking.booking,
+                          ),
+                    ) &&
+                    _serviceRebookability[booking.booking.serviceId.trim()] ==
+                        true
                 ? () => _openCanonicalRebookService(booking.booking)
                 : null,
           ),
         ),
       ),
     ];
+  }
+
+  void _scheduleServiceRebookabilityChecks(
+    List<CanonicalBookingReadModel> bookings,
+  ) {
+    final serviceIds = bookings
+        .where(
+          (booking) => canonicalBookingAllowsRebooking(
+            booking.booking,
+            effectiveState: effectiveCanonicalBookingPresentationState(
+              booking.booking,
+            ),
+          ),
+        )
+        .map((booking) => booking.booking.serviceId.trim())
+        .where((serviceId) => serviceId.isNotEmpty)
+        .where((serviceId) => !_serviceRebookability.containsKey(serviceId))
+        .where((serviceId) => !_pendingServiceRebookability.contains(serviceId))
+        .toSet();
+    if (serviceIds.isEmpty) return;
+
+    _pendingServiceRebookability.addAll(serviceIds);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _pendingServiceRebookability.removeAll(serviceIds);
+        return;
+      }
+      unawaited(_resolveServiceRebookability(serviceIds));
+    });
+  }
+
+  Future<void> _resolveServiceRebookability(Set<String> serviceIds) async {
+    final results = await Future.wait(
+      serviceIds.map((serviceId) async {
+        try {
+          final service = await _servicesRepository.fetchServiceById(serviceId);
+          final canRebook = canonicalServiceAllowsRebooking(service);
+          return MapEntry(serviceId, canRebook);
+        } catch (_) {
+          return MapEntry(serviceId, false);
+        }
+      }),
+    );
+    if (!mounted) return;
+    setState(() {
+      _serviceRebookability.addEntries(results);
+      _pendingServiceRebookability.removeAll(serviceIds);
+    });
   }
 
   List<BookingTab> _tabsForContext(BookingContextMode contextMode) {

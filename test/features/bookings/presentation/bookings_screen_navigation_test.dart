@@ -11,6 +11,8 @@ import 'package:pettexo/features/bookings/domain/models/booking_v3_models.dart';
 import 'package:pettexo/features/bookings/domain/models/canonical_provider_booking_request_view.dart';
 import 'package:pettexo/features/bookings/presentation/navigation/booking_navigation_resolver.dart';
 import 'package:pettexo/features/bookings/presentation/screens/bookings_screen.dart';
+import 'package:pettexo/features/services/data/repositories/services_repository.dart';
+import 'package:pettexo/features/services/domain/models/service_model.dart';
 
 void main() {
   DateTime fixtureBaseUtc() {
@@ -285,6 +287,7 @@ void main() {
     DateTime? paidAtOverride,
     DateTime? otpEnteredAtOverride,
     bool reviewSubmitted = false,
+    String? cancelledBy,
     String parentDisplayFirstName = 'Nisha',
     String parentLastInitial = 'G',
   }) {
@@ -333,6 +336,10 @@ void main() {
         : null;
     (map['lifecycle'] as Map<String, dynamic>)['otpEnteredAt'] =
         otpEnteredAtOverride;
+    if (cancelledBy != null) {
+      (map['cancellation'] as Map<String, dynamic>)['cancelledBy'] =
+          cancelledBy;
+    }
     (map['payment'] as Map<String, dynamic>)['status'] =
         state == CanonicalBookingStateV3.confirmed
         ? 'confirmed'
@@ -408,6 +415,7 @@ void main() {
     DateTime? otpEnteredAtOverride,
     String parentDisplayFirstName = 'Nisha',
     String parentLastInitial = 'G',
+    String? cancelledBy,
   }) {
     return CanonicalBookingReadModel(
       documentId: 'booking-1',
@@ -421,6 +429,7 @@ void main() {
         otpEnteredAtOverride: otpEnteredAtOverride,
         parentDisplayFirstName: parentDisplayFirstName,
         parentLastInitial: parentLastInitial,
+        cancelledBy: cancelledBy,
       ),
     );
   }
@@ -430,6 +439,7 @@ void main() {
     required RecordingBookingOpener opener,
     required BookingStreamBuilder bookingStreamBuilder,
     ProviderRequestStreamBuilder? providerRequestStreamBuilder,
+    ServicesRepository? servicesRepository,
     String currentUserIdOverride = 'parent-1',
     double textScaleFactor = 1,
   }) async {
@@ -442,6 +452,7 @@ void main() {
             bookingStreamBuilder: bookingStreamBuilder,
             providerRequestStreamBuilder: providerRequestStreamBuilder,
             bookingRequestOpener: opener.call,
+            servicesRepository: servicesRepository ?? _FakeServicesRepository(),
             useLiveIdentity: false,
           ),
         ),
@@ -944,6 +955,197 @@ void main() {
     );
   }
 
+  testWidgets(
+    'eligible past booking shows Book again only after its service is confirmed rebookable',
+    (tester) async {
+      final booking = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.expired,
+      );
+      final activeService = _buildService();
+      final servicesRepository = _FakeServicesRepository(
+        loader: (serviceId, callCount) async =>
+            callCount == 1 ? activeService : null,
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(latestBookings: {'booking-1': booking}),
+        bookingStreamBuilder: (_, _) => Stream.value([booking]),
+        servicesRepository: servicesRepository,
+      );
+
+      await tester.tap(find.text('Past'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Book again'), findsOneWidget);
+      expect(servicesRepository.requestedServiceIds, ['service-1']);
+
+      await tester.tap(find.widgetWithText(SecondaryButton, 'Book again'));
+      await tester.pumpAndSettle();
+
+      expect(servicesRepository.requestedServiceIds, [
+        'service-1',
+        'service-1',
+      ]);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('eligible past booking hides Book again for a missing service', (
+    tester,
+  ) async {
+    final booking = buildCanonicalReadModel(
+      state: CanonicalBookingStateV3.expired,
+    );
+    final servicesRepository = _FakeServicesRepository();
+
+    await pumpScreen(
+      tester,
+      opener: RecordingBookingOpener(latestBookings: {'booking-1': booking}),
+      bookingStreamBuilder: (_, _) => Stream.value([booking]),
+      servicesRepository: servicesRepository,
+    );
+
+    await tester.tap(find.text('Past'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Book again'), findsNothing);
+    expect(servicesRepository.requestedServiceIds, ['service-1']);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final service in <ServiceModel>[
+    _buildService(isDeleted: true),
+    _buildService(isActive: false),
+    _buildService(isPaused: true),
+    _buildService(isVisibleToMarketplace: false),
+    _buildService(
+      providerVerificationStatus: 'pending',
+      isPausedByVerification: true,
+    ),
+  ]) {
+    testWidgets(
+      'eligible past booking hides Book again for non-rebookable service ${service.status}/${service.isDeleted}/${service.isVisibleToMarketplace}',
+      (tester) async {
+        final booking = buildCanonicalReadModel(
+          state: CanonicalBookingStateV3.expired,
+        );
+        final servicesRepository = _FakeServicesRepository(
+          loader: (_, _) async => service,
+        );
+
+        await pumpScreen(
+          tester,
+          opener: RecordingBookingOpener(
+            latestBookings: {'booking-1': booking},
+          ),
+          bookingStreamBuilder: (_, _) => Stream.value([booking]),
+          servicesRepository: servicesRepository,
+        );
+
+        await tester.tap(find.text('Past'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Book again'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final scenario in <({CanonicalBookingStateV3 state, String? actor})>[
+    (state: CanonicalBookingStateV3.completedPendingReview, actor: null),
+    (state: CanonicalBookingStateV3.completedFinal, actor: null),
+    (state: CanonicalBookingStateV3.noShow, actor: null),
+    (state: CanonicalBookingStateV3.cancelledByParent, actor: 'parent'),
+    (state: CanonicalBookingStateV3.cancelled, actor: 'parent'),
+    (state: CanonicalBookingStateV3.cancelled, actor: 'provider'),
+  ]) {
+    testWidgets(
+      '${scenario.state} booking can Book again when the service is active',
+      (tester) async {
+        final booking = buildCanonicalReadModel(
+          state: scenario.state,
+          cancelledBy: scenario.actor,
+        );
+        final servicesRepository = _FakeServicesRepository(
+          loader: (_, _) async => _buildService(),
+        );
+
+        await pumpScreen(
+          tester,
+          opener: RecordingBookingOpener(
+            latestBookings: {'booking-1': booking},
+          ),
+          bookingStreamBuilder: (_, _) => Stream.value([booking]),
+          servicesRepository: servicesRepository,
+        );
+
+        await tester.tap(find.text('Past'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Book again'), findsOneWidget);
+        expect(servicesRepository.requestedServiceIds, ['service-1']);
+      },
+    );
+  }
+
+  testWidgets('admin-cancelled booking does not expose Book again', (
+    tester,
+  ) async {
+    final booking = buildCanonicalReadModel(
+      state: CanonicalBookingStateV3.cancelled,
+      cancelledBy: 'admin',
+    );
+    final servicesRepository = _FakeServicesRepository(
+      loader: (_, _) async => _buildService(),
+    );
+
+    await pumpScreen(
+      tester,
+      opener: RecordingBookingOpener(latestBookings: {'booking-1': booking}),
+      bookingStreamBuilder: (_, _) => Stream.value([booking]),
+      servicesRepository: servicesRepository,
+    );
+
+    await tester.tap(find.text('Past'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Book again'), findsNothing);
+    expect(servicesRepository.requestedServiceIds, isEmpty);
+  });
+
+  testWidgets(
+    'Book again stays hidden while service eligibility is unresolved',
+    (tester) async {
+      final booking = buildCanonicalReadModel(
+        state: CanonicalBookingStateV3.expired,
+      );
+      final serviceResult = Completer<ServiceModel?>();
+      final servicesRepository = _FakeServicesRepository(
+        loader: (_, _) => serviceResult.future,
+      );
+
+      await pumpScreen(
+        tester,
+        opener: RecordingBookingOpener(latestBookings: {'booking-1': booking}),
+        bookingStreamBuilder: (_, _) => Stream.value([booking]),
+        servicesRepository: servicesRepository,
+      );
+
+      await tester.tap(find.text('Past'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Book again'), findsNothing);
+      expect(servicesRepository.requestedServiceIds, ['service-1']);
+
+      serviceResult.complete(_buildService());
+      await tester.pumpAndSettle();
+
+      expect(find.text('Book again'), findsOneWidget);
+    },
+  );
+
   testWidgets('provider request card opens provider request detail', (
     tester,
   ) async {
@@ -1406,4 +1608,42 @@ class RecordingBookingOpener {
       lastError = error;
     }
   }
+}
+
+ServiceModel _buildService({
+  bool isActive = true,
+  bool isDeleted = false,
+  bool isPaused = false,
+  bool isVisibleToMarketplace = true,
+  String providerVerificationStatus = 'approved',
+  bool isPausedByVerification = false,
+}) {
+  return ServiceModel.fromMap('service-1', {
+    'ownerUserId': 'provider-1',
+    'title': 'Dog Walking',
+    'status': isPaused ? 'paused' : 'active',
+    'isActive': isActive,
+    'isDeleted': isDeleted,
+    'isPaused': isPaused,
+    'isVisibleToMarketplace': isVisibleToMarketplace,
+    'providerVerificationStatus': providerVerificationStatus,
+    'isPausedByVerification': isPausedByVerification,
+  });
+}
+
+class _FakeServicesRepository implements ServicesRepository {
+  _FakeServicesRepository({this.loader});
+
+  final Future<ServiceModel?> Function(String serviceId, int callCount)? loader;
+  final List<String> requestedServiceIds = <String>[];
+
+  @override
+  Future<ServiceModel?> fetchServiceById(String serviceId) {
+    requestedServiceIds.add(serviceId);
+    return loader?.call(serviceId, requestedServiceIds.length) ??
+        Future<ServiceModel?>.value();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

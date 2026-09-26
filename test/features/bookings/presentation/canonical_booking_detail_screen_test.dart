@@ -16,6 +16,8 @@ import 'package:pettexo/features/bookings/domain/models/canonical_booking_payout
 import 'package:pettexo/features/bookings/domain/models/canonical_booking_refund_models.dart';
 import 'package:pettexo/features/bookings/presentation/controllers/canonical_booking_private_controller.dart';
 import 'package:pettexo/features/bookings/presentation/screens/canonical_booking_detail_screen.dart';
+import 'package:pettexo/features/services/data/repositories/services_repository.dart';
+import 'package:pettexo/features/services/domain/models/service_model.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 void main() {
@@ -246,9 +248,13 @@ void main() {
           tester,
           bookingRepository: bookingRepository,
           privateController: privateController,
+          servicesRepository: _FakeServicesRepository(
+            service: _buildActiveService(),
+          ),
         );
 
         expect(find.text('No-show'), findsOneWidget);
+        expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
         expect(
           find.text(
             'The service window ended without the required OTP verification.',
@@ -750,6 +756,9 @@ void main() {
           bookingRepository: bookingRepository,
           privateController: privateController,
           currentUserIdOverride: 'provider-1',
+          servicesRepository: _FakeServicesRepository(
+            service: _buildActiveService(),
+          ),
         );
 
         expect(find.text('SERVICE START'), findsNothing);
@@ -1015,6 +1024,7 @@ void main() {
         expect(find.text('Customer phone'), findsOneWidget);
         expect(find.text('Provider contact'), findsNothing);
         expect(find.text('Provider phone'), findsNothing);
+        expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
       },
     );
 
@@ -1035,10 +1045,15 @@ void main() {
           tester,
           bookingRepository: bookingRepository,
           privateController: privateController,
+          servicesRepository: _FakeServicesRepository(
+            service: _buildActiveService(),
+          ),
         );
+        await tester.pumpAndSettle();
 
-        expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
+        expect(find.byKey(const ValueKey('book-again-cta')), findsOneWidget);
         expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'BOOKING STATUS');
         expect(find.text('BOOKING STATUS'), findsOneWidget);
         await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
         expect(find.text('BOOKING TIMELINE'), findsOneWidget);
@@ -1055,6 +1070,54 @@ void main() {
         );
         await _scrollUntilTextVisible(tester, 'Message provider');
         expect(find.text('Message provider'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'IMPORTANT INFORMATION');
+        final detailsScroll = tester.state<ScrollableState>(
+          find.byType(Scrollable).first,
+        );
+        detailsScroll.position.jumpTo(detailsScroll.position.maxScrollExtent);
+        await tester.pump();
+        expect(
+          tester.getBottomRight(find.text('IMPORTANT INFORMATION')).dy,
+          lessThanOrEqualTo(
+            tester.getTopLeft(find.byKey(const ValueKey('book-again-cta'))).dy,
+          ),
+        );
+      },
+    );
+
+    testWidgets(
+      'customer final no-show booking shows persistent Book Again and keeps no-show financial UI',
+      (tester) async {
+        tester.view.physicalSize = const Size(360, 640);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        bookingRepository.booking = _buildRawNoShowBooking();
+        final servicesRepository = _FakeServicesRepository(
+          service: _buildActiveService(),
+        );
+        final privateController = CanonicalBookingPrivateController(
+          privateLoader: (_) =>
+              Stream.value(_buildPrivateOtpData(otpState: 'REVOKED')),
+        );
+
+        await _pumpScreen(
+          tester,
+          bookingRepository: bookingRepository,
+          privateController: privateController,
+          servicesRepository: servicesRepository,
+        );
+        await tester.pumpAndSettle();
+
+        final bookAgain = find.byKey(const ValueKey('book-again-cta'));
+        expect(bookAgain, findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'BOOKING STATUS');
+        expect(find.text('No-show'), findsOneWidget);
+        await _scrollUntilTextVisible(tester, 'PAYMENT SUMMARY');
+        expect(find.text('PAYMENT SUMMARY'), findsOneWidget);
+        expect(tester.takeException(), isNull);
       },
     );
 
@@ -1655,6 +1718,7 @@ Future<void> _pumpScreen(
   Future<void> Function(String bookingId)? onOpenChatOverride,
   Future<bool> Function(Uri uri)? canLaunchUrlOverride,
   Future<bool> Function(Uri uri, {LaunchMode mode})? launchUrlOverride,
+  ServicesRepository? servicesRepository,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -1666,11 +1730,42 @@ Future<void> _pumpScreen(
         onOpenChatOverride: onOpenChatOverride,
         canLaunchUrlOverride: canLaunchUrlOverride,
         launchUrlOverride: launchUrlOverride,
+        servicesRepository:
+            servicesRepository ?? _FakeServicesRepository(service: null),
       ),
     ),
   );
   await tester.pump();
   await tester.pump();
+}
+
+class _FakeServicesRepository implements ServicesRepository {
+  _FakeServicesRepository({required this.service});
+
+  final ServiceModel? service;
+  final List<String> requestedServiceIds = <String>[];
+
+  @override
+  Future<ServiceModel?> fetchServiceById(String serviceId) async {
+    requestedServiceIds.add(serviceId);
+    return service;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+ServiceModel _buildActiveService() {
+  return ServiceModel.fromMap('service-1', {
+    'ownerUserId': 'provider-1',
+    'title': 'Daily Dog Walk',
+    'status': 'active',
+    'isActive': true,
+    'isDeleted': false,
+    'isPaused': false,
+    'isVisibleToMarketplace': true,
+    'providerVerificationStatus': 'approved',
+  });
 }
 
 class _FakeBookingRepository extends BookingRepository {

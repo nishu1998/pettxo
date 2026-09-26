@@ -12,6 +12,8 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
+import '../../../profile/presentation/screens/service_detail_screen.dart';
+import '../../../services/data/repositories/services_repository.dart';
 import '../controllers/canonical_booking_private_controller.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_document_v3.dart';
@@ -27,7 +29,9 @@ import '../../domain/models/canonical_provider_booking_request_view.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/utils/booking_request_attempt_id.dart';
 import '../utils/canonical_booking_presentation_state.dart';
+import '../utils/canonical_rebooking_eligibility.dart';
 import '../utils/canonical_booking_schedule_presentation.dart';
+import '../widgets/book_again_bottom_bar.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
 
 class CanonicalBookingDetailScreen extends StatefulWidget {
@@ -40,6 +44,7 @@ class CanonicalBookingDetailScreen extends StatefulWidget {
     this.onOpenChatOverride,
     this.canLaunchUrlOverride,
     this.launchUrlOverride,
+    this.servicesRepository,
   });
 
   final String bookingId;
@@ -49,6 +54,7 @@ class CanonicalBookingDetailScreen extends StatefulWidget {
   final Future<void> Function(String bookingId)? onOpenChatOverride;
   final Future<bool> Function(Uri uri)? canLaunchUrlOverride;
   final Future<bool> Function(Uri uri, {LaunchMode mode})? launchUrlOverride;
+  final ServicesRepository? servicesRepository;
 
   @override
   State<CanonicalBookingDetailScreen> createState() =>
@@ -59,6 +65,8 @@ class _CanonicalBookingDetailScreenState
     extends State<CanonicalBookingDetailScreen> {
   late final BookingRepository _repository =
       widget.repository ?? BookingRepository();
+  late final ServicesRepository _servicesRepository =
+      widget.servicesRepository ?? ServicesRepository();
   late final CanonicalBookingPrivateController _privateController =
       widget.privateController ??
       CanonicalBookingPrivateController(
@@ -73,6 +81,9 @@ class _CanonicalBookingDetailScreenState
   bool _isSubmittingReview = false;
   bool _isSubmittingDispute = false;
   bool _isOpeningChat = false;
+  bool _isLoadingServiceDetails = false;
+  final Map<String, bool> _serviceRebookability = <String, bool>{};
+  final Set<String> _pendingServiceRebookability = <String>{};
   bool _reviewSubmittedLocally = false;
   int _privateRetryTick = 0;
   Timer? _completionAvailabilityTicker;
@@ -260,17 +271,21 @@ class _CanonicalBookingDetailScreenState
                                   widget.bookingId,
                                 ),
                           builder: (context, refundSnapshot) {
-                            return _buildCustomerBookingDetailsExperience(
+                            return _withPersistentBookAgain(
                               booking: displayBooking,
-                              participantPrivateData: participantSnapshot.data,
-                              participantErrorMessage:
-                                  participantSnapshot.hasError
-                                  ? 'Paid-only booking details could not be loaded right now.'
-                                  : null,
-                              otpPrivateData: privateState.privateData,
-                              isOtpLoading: privateState.isLoading,
-                              otpErrorMessage: privateState.errorMessage,
-                              refundRecord: refundSnapshot.data,
+                              child: _buildCustomerBookingDetailsExperience(
+                                booking: displayBooking,
+                                participantPrivateData:
+                                    participantSnapshot.data,
+                                participantErrorMessage:
+                                    participantSnapshot.hasError
+                                    ? 'Paid-only booking details could not be loaded right now.'
+                                    : null,
+                                otpPrivateData: privateState.privateData,
+                                isOtpLoading: privateState.isLoading,
+                                otpErrorMessage: privateState.errorMessage,
+                                refundRecord: refundSnapshot.data,
+                              ),
                             );
                           },
                         );
@@ -723,6 +738,102 @@ class _CanonicalBookingDetailScreenState
     return participantPrivateData?.hasAddress == true ||
         participantPrivateData?.hasProviderPhoneNumber == true ||
         (participantErrorMessage?.trim().isNotEmpty ?? false);
+  }
+
+  Widget _withPersistentBookAgain({
+    required CanonicalBookingDocumentV3 booking,
+    required Widget child,
+  }) {
+    final effectiveState = effectiveCanonicalBookingPresentationState(booking);
+    final bookingAllowsRebooking = canonicalBookingAllowsRebooking(
+      booking,
+      effectiveState: effectiveState,
+    );
+    if (bookingAllowsRebooking) {
+      _scheduleServiceRebookabilityCheck(booking);
+    }
+    final showBookAgain =
+        bookingAllowsRebooking &&
+        _serviceRebookability[booking.serviceId.trim()] == true;
+
+    return Column(
+      children: [
+        Expanded(child: child),
+        if (showBookAgain)
+          BookAgainBottomBar(
+            isLoading: _isLoadingServiceDetails,
+            onPressed: () => _bookAgain(booking),
+          ),
+      ],
+    );
+  }
+
+  void _scheduleServiceRebookabilityCheck(CanonicalBookingDocumentV3 booking) {
+    final serviceId = booking.serviceId.trim();
+    if (serviceId.isEmpty ||
+        _serviceRebookability.containsKey(serviceId) ||
+        _pendingServiceRebookability.contains(serviceId)) {
+      return;
+    }
+
+    _pendingServiceRebookability.add(serviceId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _pendingServiceRebookability.remove(serviceId);
+        return;
+      }
+      unawaited(_resolveServiceRebookability(serviceId));
+    });
+  }
+
+  Future<void> _resolveServiceRebookability(String serviceId) async {
+    var canRebook = false;
+    try {
+      final service = await _servicesRepository.fetchServiceById(serviceId);
+      canRebook = canonicalServiceAllowsRebooking(service);
+    } catch (_) {
+      canRebook = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _serviceRebookability[serviceId] = canRebook;
+      _pendingServiceRebookability.remove(serviceId);
+    });
+  }
+
+  Future<void> _bookAgain(CanonicalBookingDocumentV3 booking) async {
+    final serviceId = booking.serviceId.trim();
+    if (serviceId.isEmpty || _isLoadingServiceDetails) return;
+
+    setState(() => _isLoadingServiceDetails = true);
+    try {
+      final service = await _servicesRepository.fetchServiceById(serviceId);
+      if (!mounted) return;
+      if (!canonicalServiceAllowsRebooking(service)) {
+        AppSnackbar.showWarning(
+          context,
+          'This service is no longer available.',
+        );
+        return;
+      }
+
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ServiceDetailScreen(
+            service: service!.toProfileListing(),
+            showRebookHint: true,
+            suggestedSlotStartAt: booking.scheduledStartAt,
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackbar.showError(context, 'Could not open this service right now.');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingServiceDetails = false);
+      }
+    }
   }
 
   Widget _buildCustomerBookingDetailsExperience({

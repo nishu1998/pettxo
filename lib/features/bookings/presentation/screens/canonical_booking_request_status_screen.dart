@@ -15,7 +15,9 @@ import '../../domain/models/booking_read_model.dart';
 import '../../domain/models/booking_v3_models.dart';
 import '../../domain/models/canonical_booking_request_models.dart';
 import '../utils/canonical_booking_schedule_presentation.dart';
+import '../utils/canonical_rebooking_eligibility.dart';
 import '../widgets/booking_deadline_countdown.dart';
+import '../widgets/book_again_bottom_bar.dart';
 import '../../../services/data/repositories/services_repository.dart';
 import '../widgets/canonical_booking_status_detail_template.dart';
 import '../../../profile/presentation/screens/service_detail_screen.dart';
@@ -58,6 +60,8 @@ class _CanonicalBookingRequestStatusScreenState
   Timer? _ticker;
   bool _isCancelling = false;
   bool _isLoadingServiceDetails = false;
+  final Map<String, bool> _serviceRebookability = <String, bool>{};
+  final Set<String> _pendingServiceRebookability = <String>{};
 
   @override
   void initState() {
@@ -89,22 +93,31 @@ class _CanonicalBookingRequestStatusScreenState
           final canonicalBooking = readModel is CanonicalBookingReadModel
               ? readModel.booking
               : null;
+          if (canonicalBooking != null) {
+            _scheduleServiceRebookabilityCheck(canonicalBooking);
+          }
           final terminalPresentation = canonicalBooking == null
               ? null
               : _buildTerminalPresentation(canonicalBooking);
           final canOpenPayment = _canOpenCanonicalPayment(canonicalBooking);
           final bookAgainAction = terminalPresentation?.actions;
-          final hasPersistentBookAgain =
+          final actionsAreOnlyBookAgain =
               bookAgainAction?.primaryLabel == 'Book Again' &&
-              bookAgainAction?.onPrimaryPressed != null &&
               bookAgainAction?.secondaryLabel == null;
+          final hasPersistentBookAgain =
+              canonicalBooking != null &&
+              canonicalBookingAllowsRebooking(
+                canonicalBooking,
+                effectiveState: _effectiveDisplayState(canonicalBooking),
+              ) &&
+              _serviceRebookability[canonicalBooking.serviceId.trim()] == true;
           return Scaffold(
             backgroundColor: AppColors.background,
             appBar: const CanonicalBookingStatusDetailTopBar(),
             bottomNavigationBar: hasPersistentBookAgain
-                ? _BookAgainBottomBar(
+                ? BookAgainBottomBar(
                     isLoading: _isLoadingServiceDetails,
-                    onPressed: bookAgainAction!.onPrimaryPressed!,
+                    onPressed: () => _bookAgain(canonicalBooking),
                   )
                 : null,
             body: Stack(
@@ -113,7 +126,7 @@ class _CanonicalBookingRequestStatusScreenState
                   SafeArea(
                     child: CanonicalBookingStatusDetailTemplate(
                       model: terminalPresentation,
-                      showActions: !hasPersistentBookAgain,
+                      showActions: !actionsAreOnlyBookAgain,
                       showImportantInformation:
                           !_isCustomerCancelledAfterPayment(canonicalBooking!),
                       financialSummary:
@@ -1199,6 +1212,18 @@ class _CanonicalBookingRequestStatusScreenState
     CanonicalBookingDocumentV3 booking,
     CanonicalBookingStateV3 displayState,
   ) {
+    if (displayState != CanonicalBookingStateV3.cancelled &&
+        canonicalBookingAllowsRebooking(
+          booking,
+          effectiveState: displayState,
+        )) {
+      return StatusActionsPresentationModel(
+        primaryLabel: 'Book Again',
+        onPrimaryPressed: () => _bookAgain(booking),
+        primaryIcon: Icons.event_repeat_outlined,
+        footnote: _actionsFootnoteForState(displayState),
+      );
+    }
     switch (displayState) {
       case CanonicalBookingStateV3.cancelled:
         if (_isProviderCancelledAfterPayment(booking)) {
@@ -1216,16 +1241,6 @@ class _CanonicalBookingRequestStatusScreenState
         return StatusActionsPresentationModel(
           secondaryLabel: 'Contact Support',
           onSecondaryPressed: _openSupportEntryPoint,
-          footnote: _actionsFootnoteForState(displayState),
-        );
-      case CanonicalBookingStateV3.cancelledByParent:
-      case CanonicalBookingStateV3.declined:
-      case CanonicalBookingStateV3.expired:
-      case CanonicalBookingStateV3.paymentExpired:
-        return StatusActionsPresentationModel(
-          primaryLabel: 'Book Again',
-          onPrimaryPressed: () => _bookAgain(booking),
-          primaryIcon: Icons.event_repeat_outlined,
           footnote: _actionsFootnoteForState(displayState),
         );
       default:
@@ -1356,6 +1371,46 @@ class _CanonicalBookingRequestStatusScreenState
     return null;
   }
 
+  void _scheduleServiceRebookabilityCheck(CanonicalBookingDocumentV3 booking) {
+    final effectiveState = _effectiveDisplayState(booking);
+    if (!canonicalBookingAllowsRebooking(
+      booking,
+      effectiveState: effectiveState,
+    )) {
+      return;
+    }
+    final serviceId = booking.serviceId.trim();
+    if (serviceId.isEmpty ||
+        _serviceRebookability.containsKey(serviceId) ||
+        _pendingServiceRebookability.contains(serviceId)) {
+      return;
+    }
+
+    _pendingServiceRebookability.add(serviceId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _pendingServiceRebookability.remove(serviceId);
+        return;
+      }
+      unawaited(_resolveServiceRebookability(serviceId));
+    });
+  }
+
+  Future<void> _resolveServiceRebookability(String serviceId) async {
+    var canRebook = false;
+    try {
+      final service = await _servicesRepository.fetchServiceById(serviceId);
+      canRebook = canonicalServiceAllowsRebooking(service);
+    } catch (_) {
+      canRebook = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _serviceRebookability[serviceId] = canRebook;
+      _pendingServiceRebookability.remove(serviceId);
+    });
+  }
+
   Future<void> _bookAgain(CanonicalBookingDocumentV3 booking) async {
     final serviceId = booking.serviceId.trim();
     if (serviceId.isEmpty || _isLoadingServiceDetails) {
@@ -1372,7 +1427,7 @@ class _CanonicalBookingRequestStatusScreenState
       final service = await _servicesRepository.fetchServiceById(serviceId);
       if (!mounted) return;
 
-      if (service == null || service.isDeleted || !service.isActive) {
+      if (!canonicalServiceAllowsRebooking(service)) {
         AppSnackbar.showWarning(
           context,
           'This service is no longer available.',
@@ -1384,7 +1439,7 @@ class _CanonicalBookingRequestStatusScreenState
         context,
         MaterialPageRoute(
           builder: (_) => ServiceDetailScreen(
-            service: service.toProfileListing(),
+            service: service!.toProfileListing(),
             showRebookHint: true,
             suggestedSlotStartAt: booking.scheduledStartAt,
           ),
@@ -1451,91 +1506,6 @@ class _CanonicalBookingRequestStatusScreenState
         setState(() => _isCancelling = false);
       }
     }
-  }
-}
-
-class _BookAgainBottomBar extends StatelessWidget {
-  const _BookAgainBottomBar({required this.isLoading, required this.onPressed});
-
-  final bool isLoading;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
-        child: Container(
-          key: const ValueKey('book-again-cta-shell'),
-          padding: const EdgeInsets.all(9),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(25),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: SizedBox(
-            height: 54,
-            child: AnimatedOpacity(
-              opacity: isLoading ? 0.5 : 1,
-              duration: const Duration(milliseconds: 120),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: AppColors.brandGradient,
-                  borderRadius: BorderRadius.circular(19),
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    key: const ValueKey('book-again-cta'),
-                    onTap: isLoading ? null : onPressed,
-                    borderRadius: BorderRadius.circular(19),
-                    child: Center(
-                      child: isLoading
-                          ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.4,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white,
-                                ),
-                              ),
-                            )
-                          : const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.event_repeat_outlined,
-                                  color: Colors.white,
-                                  size: 20,
-                                ),
-                                SizedBox(width: 8),
-                                Text(
-                                  'Book Again',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w900,
-                                  ),
-                                ),
-                              ],
-                            ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
