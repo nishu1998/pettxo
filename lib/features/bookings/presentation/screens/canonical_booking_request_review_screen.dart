@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/utils/service_duration.dart';
-import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_v3_models.dart';
@@ -17,6 +16,7 @@ class CanonicalBookingRequestReviewScreen extends StatefulWidget {
   final String serviceImageUrl;
   final String timezone;
   final String schedulingMode;
+  final BookingRepository? bookingRepository;
 
   const CanonicalBookingRequestReviewScreen({
     super.key,
@@ -26,6 +26,7 @@ class CanonicalBookingRequestReviewScreen extends StatefulWidget {
     required this.serviceImageUrl,
     required this.timezone,
     required this.schedulingMode,
+    this.bookingRepository,
   });
 
   @override
@@ -35,7 +36,8 @@ class CanonicalBookingRequestReviewScreen extends StatefulWidget {
 
 class _CanonicalBookingRequestReviewScreenState
     extends State<CanonicalBookingRequestReviewScreen> {
-  final BookingRepository _bookingRepository = BookingRepository();
+  late final BookingRepository _bookingRepository =
+      widget.bookingRepository ?? BookingRepository();
   bool _isSubmitting = false;
 
   CanonicalSlotRequestInput get _slotRequest => widget.input.slotRequest!;
@@ -152,9 +154,13 @@ class _CanonicalBookingRequestReviewScreenState
           ),
         ),
       ),
+      bottomNavigationBar: _ReviewRequestBottomBar(
+        isSubmitting: _isSubmitting,
+        onSubmit: _submit,
+      ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 20),
+          padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
           children: [
             _ReviewHeroCard(
               serviceName: widget.serviceName,
@@ -244,18 +250,84 @@ class _CanonicalBookingRequestReviewScreenState
                 ],
               ),
             ),
-            const SizedBox(height: 20),
-            GradientButton(
-              label: 'Send request',
-              onPressed: _isSubmitting ? null : _submit,
-              isLoading: _isSubmitting,
-            ),
-            const SizedBox(height: 10),
-            SecondaryButton(
-              label: 'Back',
-              onPressed: _isSubmitting ? null : () => Navigator.pop(context),
-            ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewRequestBottomBar extends StatelessWidget {
+  final bool isSubmitting;
+  final VoidCallback onSubmit;
+
+  const _ReviewRequestBottomBar({
+    required this.isSubmitting,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+        child: Container(
+          key: const ValueKey('send-request-cta-shell'),
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(25),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: SizedBox(
+            height: 54,
+            child: AnimatedOpacity(
+              opacity: isSubmitting ? 0.5 : 1,
+              duration: const Duration(milliseconds: 120),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: AppColors.brandGradient,
+                  borderRadius: BorderRadius.circular(19),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: const ValueKey('send-request-cta'),
+                    onTap: isSubmitting ? null : onSubmit,
+                    borderRadius: BorderRadius.circular(19),
+                    child: Center(
+                      child: isSubmitting
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.4,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
+                              ),
+                            )
+                          : const Text(
+                              'Send request',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
