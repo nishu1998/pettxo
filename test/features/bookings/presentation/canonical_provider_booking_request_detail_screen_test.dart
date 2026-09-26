@@ -107,6 +107,7 @@ void main() {
       expect(find.text('RESPONSE WINDOW'), findsOneWidget);
       expect(find.text('Accept'), findsOneWidget);
       expect(find.text('Decline'), findsOneWidget);
+      expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
       expect(find.textContaining('actions stay locked'), findsNothing);
     },
   );

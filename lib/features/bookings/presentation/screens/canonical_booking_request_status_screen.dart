@@ -81,27 +81,39 @@ class _CanonicalBookingRequestStatusScreenState
         if (didPop || !widget.exitToBookingsOnClose) return;
         _closeToBookings();
       },
-      child: Scaffold(
-        backgroundColor: AppColors.background,
-        appBar: const CanonicalBookingStatusDetailTopBar(),
-        body: StreamBuilder<BookingReadModel?>(
-          stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
-          builder: (context, snapshot) {
-            final readModel = snapshot.data;
-            final status = _deriveStatus(readModel);
-            final canonicalBooking = readModel is CanonicalBookingReadModel
-                ? readModel.booking
-                : null;
-            final terminalPresentation = canonicalBooking == null
-                ? null
-                : _buildTerminalPresentation(canonicalBooking);
-            final canOpenPayment = _canOpenCanonicalPayment(canonicalBooking);
-            return Stack(
+      child: StreamBuilder<BookingReadModel?>(
+        stream: _bookingRepository.watchCanonicalBooking(widget.bookingId),
+        builder: (context, snapshot) {
+          final readModel = snapshot.data;
+          final status = _deriveStatus(readModel);
+          final canonicalBooking = readModel is CanonicalBookingReadModel
+              ? readModel.booking
+              : null;
+          final terminalPresentation = canonicalBooking == null
+              ? null
+              : _buildTerminalPresentation(canonicalBooking);
+          final canOpenPayment = _canOpenCanonicalPayment(canonicalBooking);
+          final bookAgainAction = terminalPresentation?.actions;
+          final hasPersistentBookAgain =
+              bookAgainAction?.primaryLabel == 'Book Again' &&
+              bookAgainAction?.onPrimaryPressed != null &&
+              bookAgainAction?.secondaryLabel == null;
+          return Scaffold(
+            backgroundColor: AppColors.background,
+            appBar: const CanonicalBookingStatusDetailTopBar(),
+            bottomNavigationBar: hasPersistentBookAgain
+                ? _BookAgainBottomBar(
+                    isLoading: _isLoadingServiceDetails,
+                    onPressed: bookAgainAction!.onPrimaryPressed!,
+                  )
+                : null,
+            body: Stack(
               children: [
                 if (terminalPresentation != null)
                   SafeArea(
                     child: CanonicalBookingStatusDetailTemplate(
                       model: terminalPresentation,
+                      showActions: !hasPersistentBookAgain,
                       showImportantInformation:
                           !_isCustomerCancelledAfterPayment(canonicalBooking!),
                       financialSummary:
@@ -278,9 +290,9 @@ class _CanonicalBookingRequestStatusScreenState
                     mode: PettxoFullScreenLoaderMode.frosted,
                   ),
               ],
-            );
-          },
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1439,6 +1451,91 @@ class _CanonicalBookingRequestStatusScreenState
         setState(() => _isCancelling = false);
       }
     }
+  }
+}
+
+class _BookAgainBottomBar extends StatelessWidget {
+  const _BookAgainBottomBar({required this.isLoading, required this.onPressed});
+
+  final bool isLoading;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+        child: Container(
+          key: const ValueKey('book-again-cta-shell'),
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(25),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: SizedBox(
+            height: 54,
+            child: AnimatedOpacity(
+              opacity: isLoading ? 0.5 : 1,
+              duration: const Duration(milliseconds: 120),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: AppColors.brandGradient,
+                  borderRadius: BorderRadius.circular(19),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: const ValueKey('book-again-cta'),
+                    onTap: isLoading ? null : onPressed,
+                    borderRadius: BorderRadius.circular(19),
+                    child: Center(
+                      child: isLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.4,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
+                              ),
+                            )
+                          : const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.event_repeat_outlined,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                                SizedBox(width: 8),
+                                Text(
+                                  'Book Again',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

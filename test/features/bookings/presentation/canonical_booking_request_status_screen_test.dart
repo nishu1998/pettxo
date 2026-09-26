@@ -24,9 +24,18 @@ void main() {
       final repository = _FakeBookingRepository(
         _buildExpiredAwaitingPaymentBooking(),
       );
+      final servicesRepository = _FakeServicesRepository();
 
       await tester.pumpWidget(
         MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: const TextScaler.linear(1.3),
+              padding: const EdgeInsets.only(bottom: 34),
+              viewPadding: const EdgeInsets.only(bottom: 34),
+            ),
+            child: child!,
+          ),
           home: CanonicalBookingRequestStatusScreen(
             bookingId: 'booking-1',
             initialResult: CanonicalBookingRequestResult(
@@ -46,14 +55,20 @@ void main() {
             providerName: 'Nishant Gautam',
             serviceImageUrl: '',
             bookingRepository: repository,
-            servicesRepository: _FakeServicesRepository(),
+            servicesRepository: servicesRepository,
           ),
         ),
       );
       await tester.pumpAndSettle();
 
+      final bookAgain = find.byKey(const ValueKey('book-again-cta'));
       expect(find.text('Booking Details'), findsOneWidget);
       expect(find.text('BOOKING SUMMARY'), findsOneWidget);
+      expect(bookAgain, findsOneWidget);
+      expect(find.text('Book Again'), findsOneWidget);
+      expect(find.text('PRIMARY ACTIONS'), findsNothing);
+      expect(tester.getBottomRight(bookAgain).dy, lessThanOrEqualTo(640 - 34));
+      final initialBookAgainTop = tester.getTopLeft(bookAgain).dy;
       await tester.scrollUntilVisible(
         find.text('BOOKING STATUS'),
         200,
@@ -72,17 +87,33 @@ void main() {
         scrollable: find.byType(Scrollable).first,
       );
       expect(find.text('FINANCIAL SUMMARY'), findsOneWidget);
+      final bottomMostDetails = find.text(
+        'The payment window ended before checkout completed. No active payment action remains on this booking.',
+      );
       await tester.scrollUntilVisible(
-        find.text('Book Again'),
+        bottomMostDetails,
         200,
         scrollable: find.byType(Scrollable).first,
       );
-      expect(find.text('Book Again'), findsOneWidget);
+      final detailsScroll = tester.state<ScrollableState>(
+        find.byType(Scrollable).first,
+      );
+      detailsScroll.position.jumpTo(detailsScroll.position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(bookAgain).dy, initialBookAgainTop);
+      expect(
+        tester.getBottomRight(bottomMostDetails).dy,
+        lessThanOrEqualTo(tester.getTopLeft(bookAgain).dy),
+      );
       expect(find.text('Pay now'), findsNothing);
       expect(find.text('Resume payment'), findsNothing);
       expect(find.text('Latest payment attempt'), findsNothing);
       expect(find.text('Cancellation Policy'), findsNothing);
       expect(tester.takeException(), isNull);
+
+      await tester.tap(bookAgain);
+      await tester.pumpAndSettle();
+      expect(servicesRepository.requestedServiceIds, ['service-1']);
     },
   );
 
@@ -179,6 +210,7 @@ void main() {
       expect(find.text('View Refund Status'), findsOneWidget);
       expect(find.text('Contact Support'), findsOneWidget);
       expect(find.text('Refund Status'), findsOneWidget);
+      expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
       expect(find.text('Pay now'), findsNothing);
       expect(find.text('Resume payment'), findsNothing);
     },
@@ -245,6 +277,7 @@ void main() {
       expect(find.text('Close'), findsOneWidget);
       expect(find.text('Pay Now'), findsNothing);
       expect(find.text('Resume Payment'), findsNothing);
+      expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -901,8 +934,14 @@ CanonicalBookingDocumentV3 _buildProviderCancelledAfterPaymentBooking({
 }
 
 class _FakeServicesRepository implements ServicesRepository {
+  final List<String> requestedServiceIds = <String>[];
+
   @override
-  Future<ServiceModel?> fetchServiceById(String serviceId) async => null;
+  Future<ServiceModel?> fetchServiceById(String serviceId) async {
+    requestedServiceIds.add(serviceId);
+    return null;
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

@@ -1037,6 +1037,7 @@ void main() {
           privateController: privateController,
         );
 
+        expect(find.byKey(const ValueKey('book-again-cta')), findsNothing);
         expect(find.text('BOOKING SUMMARY'), findsOneWidget);
         expect(find.text('BOOKING STATUS'), findsOneWidget);
         await _scrollUntilTextVisible(tester, 'BOOKING TIMELINE');
