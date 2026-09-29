@@ -240,7 +240,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         break;
     }
 
-    final usernameResult = normalizeAndValidateUsername(
+    final usernameResult = normalizeAndValidateUsernameClaimInput(
       usernameController.text,
     );
     final normalizedUsername = usernameResult.normalized;
@@ -370,7 +370,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   }
 
   String? _validateUsername(String username) {
-    return validateNormalizedUsername(username);
+    return validateUsernameClaimInput(username);
   }
 
   @override

@@ -464,6 +464,32 @@ test('authorization: username changes stay server-owned after profile completion
   await assertSucceeds(updateDoc(doc(authedDb(uid), 'users', uid), {bio: 'Updated', updatedAt: serverTimestamp()}));
 });
 
+test('authorization: clients cannot directly claim the protected pettxo username', async () => {
+  const uid = 'official_username_attempt';
+  const db = authedDb(uid);
+  await assertFails(setDoc(doc(db, 'usernames', 'pettxo'), {
+    uid,
+    username: 'pettxo',
+    usernameLowercase: 'pettxo',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+});
+
+test('authorization: a username reservation cannot outlive an interrupted profile write', async () => {
+  const uid = 'reserve_no_profile';
+  const db = authedDb(uid);
+  await assertFails(setDoc(doc(db, 'usernames', 'abandoned_name'), {
+    uid,
+    username: 'abandoned_name',
+    usernameLowercase: 'abandoned_name',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  await assertSucceeds(createProfile(db, uid));
+});
+
 async function seedCanonicalConfirmedBooking({
   bookingId,
   parentId,

@@ -1,5 +1,6 @@
 export {
   changeUsername,
+  checkUsernameAvailability,
   completeOnboardingProfile,
   syncAuthIdentity,
   checkPhoneLoginEligibility,

@@ -34,7 +34,7 @@ class UserService {
       throw Exception('User not authenticated');
     }
 
-    final usernameResult = normalizeAndValidateUsername(username);
+    final usernameResult = normalizeAndValidateUsernameClaimInput(username);
     if (!usernameResult.isValid) {
       throw Exception(usernameResult.error);
     }

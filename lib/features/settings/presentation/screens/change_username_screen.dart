@@ -4,18 +4,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/identity/username_utils.dart';
+import '../../../../core/identity/username_availability.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../../auth/data/services/auth_service.dart';
-import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../auth/domain/models/auth_action_exception.dart';
 import '../../domain/models/username_change_models.dart';
 import '../../../auth/presentation/widgets/auth_input_field.dart';
 import '../../../auth/presentation/widgets/auth_shell.dart';
 
 class ChangeUsernameScreen extends StatefulWidget {
   final String currentUsername;
+  final AuthService? authService;
 
-  const ChangeUsernameScreen({super.key, required this.currentUsername});
+  const ChangeUsernameScreen({
+    super.key,
+    required this.currentUsername,
+    this.authService,
+  });
 
   @override
   State<ChangeUsernameScreen> createState() => _ChangeUsernameScreenState();
@@ -24,8 +30,7 @@ class ChangeUsernameScreen extends StatefulWidget {
 class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
   static const _debounceDuration = Duration(milliseconds: 450);
 
-  final AuthService _authService = AuthService();
-  final ProfileRepository _profileRepository = ProfileRepository();
+  late final AuthService _authService = widget.authService ?? AuthService();
   final TextEditingController _usernameController = TextEditingController();
 
   Timer? _debounce;
@@ -33,6 +38,7 @@ class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
   bool _isSubmitting = false;
   UsernameAvailabilityState _availabilityState =
       UsernameAvailabilityState.unchanged;
+  String? _availabilityError;
 
   String get _currentNormalizedUsername =>
       normalizeUsername(widget.currentUsername);
@@ -59,9 +65,10 @@ class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
       );
     }
 
-    final validationError = validateNormalizedUsername(normalized);
+    final validationError = validateUsernameClaimInput(normalized);
     setState(() {
       _usernameError = validationError;
+      _availabilityError = null;
       _availabilityState = normalized == _currentNormalizedUsername
           ? UsernameAvailabilityState.unchanged
           : validationError != null
@@ -75,22 +82,36 @@ class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
     }
 
     _debounce = Timer(_debounceDuration, () async {
-      final currentUserId = _authService.currentUser?.uid.trim() ?? '';
       try {
-        final isAvailable = await _profileRepository.isUsernameAvailable(
-          normalized,
-          excludeUid: currentUserId,
+        final result = await _authService.checkUsernameAvailability(
+          username: normalized,
         );
         if (!mounted || _usernameController.text.trim() != normalized) return;
         setState(() {
-          _availabilityState = isAvailable
-              ? UsernameAvailabilityState.available
-              : UsernameAvailabilityState.unavailable;
+          _availabilityState = switch (result.status) {
+            UsernameAvailabilityStatus.available ||
+            UsernameAvailabilityStatus.owned =>
+              UsernameAvailabilityState.available,
+            UsernameAvailabilityStatus.taken => UsernameAvailabilityState.taken,
+            UsernameAvailabilityStatus.reserved =>
+              UsernameAvailabilityState.reserved,
+            UsernameAvailabilityStatus.staleReservation =>
+              UsernameAvailabilityState.staleReservation,
+            UsernameAvailabilityStatus.invalid =>
+              UsernameAvailabilityState.invalid,
+          };
+        });
+      } on AuthActionException catch (error) {
+        if (!mounted || _usernameController.text.trim() != normalized) return;
+        setState(() {
+          _availabilityState = UsernameAvailabilityState.failed;
+          _availabilityError = error.message;
         });
       } catch (_) {
         if (!mounted || _usernameController.text.trim() != normalized) return;
         setState(() {
-          _availabilityState = UsernameAvailabilityState.unavailable;
+          _availabilityState = UsernameAvailabilityState.failed;
+          _availabilityError = 'Could not check availability. Try again.';
         });
       }
     });
@@ -98,7 +119,7 @@ class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
 
   Future<void> _submit() async {
     final normalized = normalizeUsername(_usernameController.text);
-    final validationError = validateNormalizedUsername(normalized);
+    final validationError = validateUsernameClaimInput(normalized);
 
     setState(() {
       _usernameError = validationError;
@@ -182,8 +203,13 @@ class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
       UsernameAvailabilityState.unchanged => 'Unchanged',
       UsernameAvailabilityState.checking => 'Checking',
       UsernameAvailabilityState.available => 'Available',
-      UsernameAvailabilityState.unavailable => 'Unavailable',
+      UsernameAvailabilityState.taken => 'Already taken',
+      UsernameAvailabilityState.reserved => 'Reserved',
+      UsernameAvailabilityState.staleReservation =>
+        'Unavailable — contact Pettxo support',
       UsernameAvailabilityState.invalid => 'Invalid',
+      UsernameAvailabilityState.failed =>
+        _availabilityError ?? 'Could not check availability',
     };
   }
 
@@ -191,7 +217,10 @@ class _ChangeUsernameScreenState extends State<ChangeUsernameScreen> {
     return switch (_availabilityState) {
       UsernameAvailabilityState.available => const Color(0xFF1F8A4C),
       UsernameAvailabilityState.invalid ||
-      UsernameAvailabilityState.unavailable => const Color(0xFFE15656),
+      UsernameAvailabilityState.taken ||
+      UsernameAvailabilityState.reserved ||
+      UsernameAvailabilityState.staleReservation ||
+      UsernameAvailabilityState.failed => const Color(0xFFE15656),
       UsernameAvailabilityState.checking => const Color(0xFFB86A07),
       UsernameAvailabilityState.unchanged => const Color(0xFF8E8479),
     };

@@ -53,6 +53,8 @@ String mapFirebaseAuthErrorCode(String code) {
       return "This account has been disabled. Please contact Pettxo support.";
     case 'username-taken':
       return "That username is already taken.";
+    case 'username-reserved':
+      return "That username is reserved.";
     case 'invalid-username':
       return "Choose a valid username using 3-20 lowercase letters, numbers, dots, or underscores.";
     case 'invalid-display-name':
@@ -71,6 +73,18 @@ String mapFirebaseAuthErrorCode(String code) {
       return "Verify your phone number before completing your Pettxo profile.";
     case 'username-reservation-mismatch':
       return "Pettxo could not verify your current username ownership. Please refresh and try again.";
+    case 'unauthenticated':
+      return "Sign in again before checking or changing your username.";
+    case 'permission-denied':
+      return "Your account is not permitted to perform this username action.";
+    case 'unavailable':
+    case 'deadline-exceeded':
+      return "Network error. Please try again.";
+    case 'resource-exhausted':
+      return "Too many username checks. Please wait a moment and try again.";
+    case 'internal':
+    case 'invalid-server-response':
+      return "Pettxo could not verify this username right now.";
     default:
       return "Authentication error. Please try again.";
   }

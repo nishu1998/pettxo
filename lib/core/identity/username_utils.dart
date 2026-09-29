@@ -39,6 +39,20 @@ String normalizeUsername(String value) {
 }
 
 String? validateNormalizedUsername(String normalized) {
+  return _validateNormalizedUsername(normalized, allowReserved: false);
+}
+
+String? validateUsernameClaimInput(String normalized) {
+  return _validateNormalizedUsername(
+    normalized,
+    allowReserved: normalized == 'pettxo',
+  );
+}
+
+String? _validateNormalizedUsername(
+  String normalized, {
+  required bool allowReserved,
+}) {
   if (normalized.isEmpty) {
     return 'Username is required';
   }
@@ -55,7 +69,7 @@ String? validateNormalizedUsername(String normalized) {
     return 'Username cannot contain consecutive dots';
   }
 
-  if (kReservedUsernames.contains(normalized)) {
+  if (!allowReserved && kReservedUsernames.contains(normalized)) {
     return 'This username is reserved';
   }
 
@@ -67,5 +81,13 @@ UsernameValidationResult normalizeAndValidateUsername(String value) {
   return UsernameValidationResult(
     normalized: normalized,
     error: validateNormalizedUsername(normalized),
+  );
+}
+
+UsernameValidationResult normalizeAndValidateUsernameClaimInput(String value) {
+  final normalized = normalizeUsername(value);
+  return UsernameValidationResult(
+    normalized: normalized,
+    error: validateUsernameClaimInput(normalized),
   );
 }

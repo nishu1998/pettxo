@@ -2,6 +2,9 @@ enum UsernameAvailabilityState {
   unchanged,
   checking,
   available,
-  unavailable,
+  taken,
+  reserved,
+  staleReservation,
   invalid,
+  failed,
 }

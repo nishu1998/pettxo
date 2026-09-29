@@ -1605,10 +1605,18 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn() &&
         safeUsernameReservationWrite(normalizedUsername) &&
+        usernameReservationBackedByUserDoc(
+          request.auth.uid,
+          normalizedUsername
+        ) &&
         request.resource.data.createdAt == request.time;
       allow update: if signedIn() &&
         resource.data.uid == request.auth.uid &&
         safeUsernameReservationWrite(normalizedUsername) &&
+        usernameReservationBackedByUserDoc(
+          request.auth.uid,
+          normalizedUsername
+        ) &&
         request.resource.data.createdAt == resource.data.createdAt;
       allow delete: if signedIn() &&
         resource.data.uid == request.auth.uid &&

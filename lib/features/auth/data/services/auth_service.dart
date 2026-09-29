@@ -3,6 +3,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../../core/services/firebase_app_scope.dart';
+import '../../../../core/identity/username_availability.dart';
 import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/services/push_notification_service.dart';
 import 'pending_email_change_service.dart';
@@ -622,6 +623,27 @@ class AuthService {
       return (data['username'] as String? ?? '').trim();
     } on FirebaseFunctionsException catch (e) {
       throw mapFunctionsActionException(e);
+    }
+  }
+
+  Future<UsernameAvailabilityResult> checkUsernameAvailability({
+    required String username,
+  }) async {
+    try {
+      final callable = _functions.httpsCallable('checkUsernameAvailability');
+      final result = await callable.call<Map<String, dynamic>>({
+        'username': username,
+      });
+      return UsernameAvailabilityResult.fromMap(
+        Map<String, dynamic>.from(result.data),
+      );
+    } on FirebaseFunctionsException catch (e) {
+      throw mapFunctionsActionException(e);
+    } on FormatException {
+      throw const AuthActionException(
+        code: 'invalid-server-response',
+        message: 'Pettxo could not verify this username right now.',
+      );
     }
   }
 

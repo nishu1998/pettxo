@@ -22,7 +22,14 @@ import {
   deriveServiceRestorationDecision,
   usernameReservationBelongsToUid,
 } from "./accountDeletionUtils";
-import {normalizeUsername, validateNormalizedUsername} from "./identity/username";
+import {
+  canClaimProtectedUsername,
+  classifyUsernameReservation,
+  isReservedUsername,
+  normalizeUsername,
+  usernameReservationConflicts,
+  validateNormalizedUsername,
+} from "./identity/username";
 import {isPersistedCompletedAccount} from "./identity/onboardingProfileUtils";
 import {
   evaluatePasswordResetEligibility,
@@ -2239,13 +2246,68 @@ export const processScheduledAccountDeletions = onSchedule(
   },
 );
 
+export const checkUsernameAvailability = onCall({invoker: "public"}, async (request) => {
+  const uid = requireUid(request.auth);
+  const requestedUsername = normalizeUsername(request.data?.username);
+  const authUser = await getAuth().getUser(uid);
+  const mayClaimProtectedUsername = canClaimProtectedUsername(
+    requestedUsername,
+    authUser,
+  );
+  const validationError = validateNormalizedUsername(requestedUsername, {
+    allowReserved: mayClaimProtectedUsername,
+  });
+
+  if (validationError) {
+    return {
+      ok: true,
+      username: requestedUsername,
+      available: false,
+      status: isReservedUsername(requestedUsername) ? "reserved" : "invalid",
+    };
+  }
+
+  const reservationSnapshot = await db
+    .collection("usernames")
+    .doc(requestedUsername)
+    .get();
+  const reservedUid = asTrimmedString(reservationSnapshot.data()?.uid);
+  const ownerSnapshot = reservedUid && reservedUid !== uid ?
+    await db.collection("users").doc(reservedUid).get() :
+    null;
+  const ownerUsername = normalizeUsername(
+    asTrimmedString(
+      ownerSnapshot?.data()?.usernameLowercase || ownerSnapshot?.data()?.username,
+    ),
+  );
+  const status = classifyUsernameReservation({
+    requestingUid: uid,
+    requestedUsername,
+    reservationExists: reservationSnapshot.exists,
+    reservationUid: reservedUid,
+    ownerExists: ownerSnapshot?.exists === true,
+    ownerUsername,
+  });
+  return {
+    ok: true,
+    username: requestedUsername,
+    available: status === "available" || status === "owned",
+    status,
+  };
+});
+
 export const changeUsername = onCall({invoker: "public"}, async (request) => {
   const uid = requireUid(request.auth);
   const requestedUsername = normalizeUsername(request.data?.username);
-  const validationError = validateNormalizedUsername(requestedUsername);
+  const authUser = await getAuth().getUser(uid);
+  const validationError = validateNormalizedUsername(requestedUsername, {
+    allowReserved: canClaimProtectedUsername(requestedUsername, authUser),
+  });
   if (validationError) {
     throw new HttpsError("invalid-argument", validationError, {
-      appCode: "invalid-username",
+      appCode: isReservedUsername(requestedUsername) ?
+        "username-reserved" :
+        "invalid-username",
     });
   }
 
@@ -2296,7 +2358,11 @@ export const changeUsername = onCall({invoker: "public"}, async (request) => {
     }
 
     const nextReservedUid = asTrimmedString(nextUsernameSnapshot.data()?.uid);
-    if (nextUsernameSnapshot.exists && nextReservedUid && nextReservedUid !== uid) {
+    if (usernameReservationConflicts({
+      reservationExists: nextUsernameSnapshot.exists,
+      reservationUid: nextReservedUid,
+      requestingUid: uid,
+    })) {
       throw new HttpsError("already-exists", "Username is already taken.", {
         appCode: "username-taken",
       });
@@ -2355,10 +2421,15 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
       appCode: "invalid-display-name",
     });
   }
-  const usernameValidationError = validateNormalizedUsername(requestedUsername);
+  const authUser = await getAuth().getUser(uid);
+  const usernameValidationError = validateNormalizedUsername(requestedUsername, {
+    allowReserved: canClaimProtectedUsername(requestedUsername, authUser),
+  });
   if (usernameValidationError) {
     throw new HttpsError("invalid-argument", usernameValidationError, {
-      appCode: "invalid-username",
+      appCode: isReservedUsername(requestedUsername) ?
+        "username-reserved" :
+        "invalid-username",
     });
   }
   if (!state) {
@@ -2382,7 +2453,6 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
     });
   }
 
-  const authUser = await getAuth().getUser(uid);
   const providers = providerIdsFromAuthUser(authUser);
   const email = asTrimmedString(authUser.email);
   const phoneNumber = asTrimmedString(authUser.phoneNumber);
@@ -2432,7 +2502,11 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
     const currentBio = asTrimmedString(user.bio);
 
     const reservedUid = asTrimmedString(targetUsernameSnapshot.data()?.uid);
-    if (targetUsernameSnapshot.exists && reservedUid && reservedUid !== uid) {
+    if (usernameReservationConflicts({
+      reservationExists: targetUsernameSnapshot.exists,
+      reservationUid: reservedUid,
+      requestingUid: uid,
+    })) {
       throw new HttpsError("already-exists", "Username is already taken.", {
         appCode: "username-taken",
       });

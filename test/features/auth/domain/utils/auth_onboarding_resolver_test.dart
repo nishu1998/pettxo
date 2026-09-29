@@ -415,6 +415,10 @@ void main() {
         mapFirebaseAuthErrorCode('invalid-username'),
         contains('Choose a valid username'),
       );
+      expect(
+        mapFirebaseAuthErrorCode('username-reserved'),
+        contains('reserved'),
+      );
       expect(mapFirebaseAuthErrorCode('user-disabled'), contains('disabled'));
     });
 
@@ -429,8 +433,30 @@ void main() {
         );
 
         expect(error.code, 'permission-denied');
-        expect(error.message, 'Authentication error. Please try again.');
+        expect(
+          error.message,
+          'Your account is not permitted to perform this username action.',
+        );
         expect(error.message, isNot(contains('sensitive')));
+      },
+    );
+
+    test(
+      'keeps backend and network failures distinct from taken usernames',
+      () {
+        expect(mapFirebaseAuthErrorCode('unavailable'), contains('Network'));
+        expect(
+          mapFirebaseAuthErrorCode('deadline-exceeded'),
+          contains('Network'),
+        );
+        expect(
+          mapFirebaseAuthErrorCode('internal'),
+          contains('could not verify'),
+        );
+        expect(
+          mapFirebaseAuthErrorCode('permission-denied'),
+          isNot(contains('already taken')),
+        );
       },
     );
   });

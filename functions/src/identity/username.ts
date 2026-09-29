@@ -19,13 +19,83 @@ export const reservedUsernames = new Set([
   "username",
 ]);
 
+type AuthenticatedUsernameClaimant = {
+  uid: string;
+  email?: string | null;
+  emailVerified?: boolean;
+};
+
+export type UsernameReservationStatus =
+  | "available"
+  | "owned"
+  | "taken"
+  | "staleReservation";
+
+const protectedUsernameOwners = new Map([
+  [
+    "pettxo",
+    {
+      uid: "Yo5HtRbusBNl9NkPhelXp5naNF93",
+      email: "hello@pettxo.com",
+    },
+  ],
+]);
+
 export function normalizeUsername(value: unknown): string {
   return typeof value === "string" ?
     value.trim().replaceAll("@", "").toLowerCase() :
     "";
 }
 
-export function validateNormalizedUsername(value: string): string | null {
+export function isReservedUsername(value: string): boolean {
+  return reservedUsernames.has(value);
+}
+
+export function canClaimProtectedUsername(
+  username: string,
+  claimant: AuthenticatedUsernameClaimant,
+): boolean {
+  const owner = protectedUsernameOwners.get(username);
+  if (!owner) return false;
+
+  return claimant.uid === owner.uid &&
+    claimant.emailVerified === true &&
+    (claimant.email ?? "").trim().toLowerCase() === owner.email;
+}
+
+export function classifyUsernameReservation(params: {
+  requestingUid: string;
+  requestedUsername: string;
+  reservationExists: boolean;
+  reservationUid: string;
+  ownerExists: boolean;
+  ownerUsername: string;
+}): UsernameReservationStatus {
+  if (!params.reservationExists) return "available";
+  if (params.reservationUid === params.requestingUid) return "owned";
+  if (!params.reservationUid) return "staleReservation";
+  if (
+    params.ownerExists &&
+    params.ownerUsername === params.requestedUsername
+  ) {
+    return "taken";
+  }
+  return "staleReservation";
+}
+
+export function usernameReservationConflicts(params: {
+  reservationExists: boolean;
+  reservationUid: string;
+  requestingUid: string;
+}): boolean {
+  return params.reservationExists &&
+    params.reservationUid !== params.requestingUid;
+}
+
+export function validateNormalizedUsername(
+  value: string,
+  options: {allowReserved?: boolean} = {},
+): string | null {
   if (!value) {
     return "Username is required.";
   }
@@ -42,7 +112,7 @@ export function validateNormalizedUsername(value: string): string | null {
     return "Username cannot contain consecutive dots.";
   }
 
-  if (reservedUsernames.has(value)) {
+  if (!options.allowReserved && isReservedUsername(value)) {
     return "This username is reserved.";
   }
 

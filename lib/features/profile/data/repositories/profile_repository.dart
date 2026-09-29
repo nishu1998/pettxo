@@ -46,10 +46,6 @@ class ProfileRepository {
     return _firestore.collection('userPrivate').doc(userId);
   }
 
-  DocumentReference<Map<String, dynamic>> _usernameDoc(String normalized) {
-    return _firestore.collection('usernames').doc(normalized);
-  }
-
   String get _uid {
     final uid = _auth.currentUser?.uid;
     if (uid == null) {
@@ -366,28 +362,6 @@ class ProfileRepository {
   Future<UserRestrictionState> getCurrentUserRestrictionState() async {
     final snapshot = await _publicUserDoc(_uid).get();
     return UserRestrictionState.fromMap(snapshot.data() ?? const {});
-  }
-
-  Future<bool> isUsernameAvailable(
-    String username, {
-    String? excludeUid,
-  }) async {
-    final normalized = username_utils.normalizeUsername(username);
-    if (normalized.isEmpty) return false;
-
-    final validationError = username_utils.validateNormalizedUsername(
-      normalized,
-    );
-    if (validationError != null) return false;
-
-    final reservationSnapshot = await _usernameDoc(normalized).get();
-    if (!reservationSnapshot.exists) {
-      return true;
-    }
-
-    final matchedUid = (reservationSnapshot.data()?['uid'] as String? ?? '')
-        .trim();
-    return excludeUid != null && matchedUid == excludeUid;
   }
 
   Future<String> uploadProfileImage(File file) async {
