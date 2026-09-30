@@ -9,15 +9,22 @@ class LegalPolicyDocument {
   final String routeName;
   final String remoteConfigKey;
   final IconData icon;
-  final List<String> paragraphs;
+  final List<LegalPolicyItem> items;
 
   const LegalPolicyDocument({
     required this.title,
     required this.routeName,
     required this.remoteConfigKey,
     required this.icon,
-    required this.paragraphs,
+    required this.items,
   });
+}
+
+class LegalPolicyItem {
+  final String text;
+  final List<String> details;
+
+  const LegalPolicyItem(this.text, {this.details = const []});
 }
 
 class LegalPoliciesCatalog {
@@ -28,11 +35,29 @@ class LegalPoliciesCatalog {
     routeName: '/settings/legal/cancellation-policy',
     remoteConfigKey: PolicyLinkService.cancellationPolicyKey,
     icon: Icons.event_busy_outlined,
-    paragraphs: [
-      'Free cancellation is available within 30 minutes of booking confirmation.',
-      'After the free-cancellation window, refund eligibility depends on how close the cancellation is to the scheduled service time.',
-      'If the provider does not respond within 24 hours, or before 1 hour of service start, whichever comes first, the request expires automatically.',
-      'Approved refunds are processed back to the original payment method according to the payment partner timeline.',
+    items: [
+      LegalPolicyItem(
+        'You can cancel a booking request for free at any time before you pay. Nothing is charged until payment.',
+      ),
+      LegalPolicyItem(
+        'After payment, your refund depends on how much time is left before the service starts:',
+        details: [
+          'More than 24 hours before: 95% back',
+          '12 to 24 hours before: 75% back',
+          '6 to 12 hours before: 50% back',
+          '2 to 6 hours before: 25% back',
+          'Less than 2 hours before: no refund',
+        ],
+      ),
+      LegalPolicyItem(
+        "Once the provider enters your OTP, the service has started and the booking can't be cancelled.",
+      ),
+      LegalPolicyItem(
+        "If you don't show up for your booking, it is treated like a cancellation less than 2 hours before, so there is no refund.",
+      ),
+      LegalPolicyItem(
+        'For boarding and sitting, the time is counted from your check-in time. Collecting your pet early does not give a partial refund.',
+      ),
     ],
   );
 
@@ -41,10 +66,19 @@ class LegalPoliciesCatalog {
     routeName: '/settings/legal/refund-policy',
     remoteConfigKey: PolicyLinkService.refundPolicyKey,
     icon: Icons.currency_rupee_rounded,
-    paragraphs: [
-      'Eligible refunds are calculated after any applicable cancellation charges, service fees, or offer adjustments.',
-      'If a provider cannot fulfill a confirmed booking, Pettxo will initiate the applicable refund automatically.',
-      'Refund timelines depend on your bank, card network, or wallet provider after Pettxo marks the refund as processed.',
+    items: [
+      LegalPolicyItem(
+        'Your refund is calculated on the amount you actually paid, based on the cancellation timing.',
+      ),
+      LegalPolicyItem(
+        'If the provider cancels a paid booking, you get 100% of what you paid back, automatically.',
+      ),
+      LegalPolicyItem(
+        'Refunds go back to the account you paid from, within 5 to 7 working days.',
+      ),
+      LegalPolicyItem(
+        'If something went wrong with your service, you can raise an issue in the app within 24 hours of the service ending. We review every case before any money is released.',
+      ),
     ],
   );
 
@@ -53,10 +87,22 @@ class LegalPoliciesCatalog {
     routeName: '/settings/legal/terms-and-conditions',
     remoteConfigKey: PolicyLinkService.termsConditionsKey,
     icon: Icons.description_outlined,
-    paragraphs: [
-      'Using Pettxo means you agree to provide accurate account details, respectful communication, and lawful use of the platform.',
-      'Bookings, messages, offers, and provider tools are subject to platform eligibility, moderation, and safety checks.',
-      'Pettxo may update operational rules and notify users when important policy or product changes are made.',
+    items: [
+      LegalPolicyItem(
+        'Booking works in three steps. You send a request. The provider has 60 minutes to accept, counted within their working hours. You then have 60 minutes to pay. Your booking is confirmed only after payment.',
+      ),
+      LegalPolicyItem(
+        'A service starts only when the provider enters your OTP.',
+      ),
+      LegalPolicyItem(
+        "Bookings can't be rescheduled. To change a time, cancel and book again.",
+      ),
+      LegalPolicyItem(
+        'Providers on Pettxo are independent. Pettxo verifies them, but they run their own services.',
+      ),
+      LegalPolicyItem(
+        'Using Pettxo means you agree to give accurate details, communicate respectfully, and use the platform lawfully. Pettxo will notify you before important policy changes take effect.',
+      ),
     ],
   );
 
@@ -65,10 +111,19 @@ class LegalPoliciesCatalog {
     routeName: '/settings/legal/privacy-policy',
     remoteConfigKey: PolicyLinkService.privacyPolicyKey,
     icon: Icons.privacy_tip_outlined,
-    paragraphs: [
-      'Pettxo collects account, booking, and device information needed to deliver platform features securely.',
-      'Personal data is used for authentication, service delivery, notifications, moderation, and support operations.',
-      'Users can review and update important profile information from within the app settings and account flows.',
+    items: [
+      LegalPolicyItem(
+        'Pettxo collects account, pet, booking, and device information to run the platform.',
+      ),
+      LegalPolicyItem(
+        'Your name and phone number are shared with a provider only after your booking is paid and confirmed.',
+      ),
+      LegalPolicyItem(
+        'Booking activity, such as response and cancellation history, is used for safety checks and to rank providers in search.',
+      ),
+      LegalPolicyItem(
+        'Your data is stored on servers in India. You can update your details in app settings or contact hello@pettxo.com.',
+      ),
     ],
   );
 
@@ -77,10 +132,19 @@ class LegalPoliciesCatalog {
     routeName: '/settings/legal/provider-policy',
     remoteConfigKey: PolicyLinkService.providerPolicyKey,
     icon: Icons.verified_user_outlined,
-    paragraphs: [
-      'Providers must maintain accurate listings, honor accepted bookings, and keep verification and payout information up to date.',
-      'Services may be paused or hidden if verification expires, moderation actions apply, or trust and safety checks fail.',
-      'Provider payouts, disputes, and service-quality expectations follow the latest Pettxo provider operations policy.',
+    items: [
+      LegalPolicyItem(
+        'Providers are verified manually using a government ID and bank details before they can list.',
+      ),
+      LegalPolicyItem(
+        'You have 60 minutes within your working hours to accept or decline a request. Declining is never penalised.',
+      ),
+      LegalPolicyItem(
+        'Ignoring requests or cancelling paid bookings leads to temporary pauses. If you cancel a paid booking, the pet parent gets 100% back and you earn nothing for it.',
+      ),
+      LegalPolicyItem(
+        'Payment for a service is released 24 hours after it ends, if no issue has been raised. If a pet parent cancels close to the service time, you get the provider share set out in the Cancellation Policy.',
+      ),
     ],
   );
 
@@ -277,8 +341,8 @@ class LegalPolicyDetailScreen extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 18),
-                  for (final paragraph in document.paragraphs) ...[
-                    _PolicyBullet(text: paragraph),
+                  for (final item in document.items) ...[
+                    _PolicyBullet(item: item),
                     const SizedBox(height: 12),
                   ],
                   const SizedBox(height: 6),
@@ -338,32 +402,108 @@ class _PolicyTile extends StatelessWidget {
 }
 
 class _PolicyBullet extends StatelessWidget {
-  final String text;
+  final LegalPolicyItem item;
 
-  const _PolicyBullet({required this.text});
+  const _PolicyBullet({required this.item});
 
   @override
   Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(top: 6),
+              decoration: const BoxDecoration(
+                color: AppColors.primary,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                item.text,
+                style: const TextStyle(
+                  color: AppColors.textDark,
+                  height: 1.55,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (item.details.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.only(left: 20),
+            child: Column(
+              children: [
+                for (var index = 0; index < item.details.length; index++) ...[
+                  _PolicyDetailBullet(text: item.details[index]),
+                  if (index != item.details.length - 1)
+                    const SizedBox(height: 8),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _PolicyDetailBullet extends StatelessWidget {
+  final String text;
+
+  const _PolicyDetailBullet({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final separatorIndex = text.lastIndexOf(': ');
+    final timing = separatorIndex == -1
+        ? text
+        : text.substring(0, separatorIndex + 1);
+    final refund = separatorIndex == -1
+        ? ''
+        : text.substring(separatorIndex + 2);
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          width: 8,
-          height: 8,
-          margin: const EdgeInsets.only(top: 6),
-          decoration: const BoxDecoration(
-            color: AppColors.primary,
+          width: 6,
+          height: 6,
+          margin: const EdgeInsets.only(top: 7),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withValues(alpha: 0.75),
             shape: BoxShape.circle,
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
-          child: Text(
-            text,
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(text: '$timing${refund.isEmpty ? '' : ' '}'),
+                if (refund.isNotEmpty)
+                  TextSpan(
+                    text: refund,
+                    style: const TextStyle(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+              ],
+            ),
             style: const TextStyle(
               color: AppColors.textDark,
-              height: 1.55,
+              height: 1.45,
               fontWeight: FontWeight.w600,
+              fontSize: 14,
             ),
           ),
         ),
