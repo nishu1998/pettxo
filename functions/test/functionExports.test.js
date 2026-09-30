@@ -95,6 +95,7 @@ const expectedExportNames = [
   "listOfferWallCampaigns",
   "sendAdminPromotionalNotification",
   "sendVerificationEmailV2",
+  "sendWelcomeEmailOnUserCreated",
   "sendChatMessage",
   "sendProviderRequestRemindersV3",
   "synchronizeManualSettlementPayoutsV3",

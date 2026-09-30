@@ -6,8 +6,11 @@ const {
   passwordResetEmailSubject,
   renderPasswordResetEmail,
   renderVerificationEmail,
+  renderWelcomeEmail,
   verificationEmailPreview,
   verificationEmailSubject,
+  welcomeEmailPreview,
+  welcomeEmailSubject,
 } = require("../lib/email/authEmailTemplates.js");
 const {
   authEmailFrom,
@@ -81,4 +84,33 @@ test("reset template preserves approved CTA, safety copy, and escaped link", () 
   assert.ok(html.includes("mode=resetPassword&amp;oobCode=a%2Bb"));
   assert.equal(html.includes("<iframe"), false);
   assert.equal(html.includes("srcdoc="), false);
+});
+
+test("welcome template preserves approved subject, preheader, CTA, and footer", () => {
+  const html = renderWelcomeEmail({name: "Arjun"});
+  assert.equal(welcomeEmailSubject("Arjun"), "Welcome to Pettxo, Arjun");
+  assert.equal(welcomeEmailPreview, "Here's how to get started with Pettxo.");
+  assert.match(html, /Welcome to Pettxo, Arjun/);
+  assert.match(html, /Add your pet's profile/);
+  assert.match(html, /Find care near you/);
+  assert.match(html, /Say hello to the community/);
+  assert.match(html, /href="https:\/\/pettxo\.com\/app"/);
+  assert.match(html, />Open Pettxo<\/a>/);
+  assert.match(html, /Pettxo Private Limited/);
+  assert.match(html, /hello@pettxo\.com/);
+  assert.equal(html.includes("<iframe"), false);
+  assert.equal(html.includes("srcdoc="), false);
+});
+
+test("welcome name fallback and HTML escaping are safe", () => {
+  const fallback = renderWelcomeEmail({name: "  "});
+  const escaped = renderWelcomeEmail({name: '<img onerror="bad">'});
+  assert.equal(welcomeEmailSubject(), "Welcome to Pettxo, there");
+  assert.match(fallback, /Welcome to Pettxo, there/);
+  assert.match(escaped, /Welcome to Pettxo, &lt;img onerror=&quot;bad&quot;&gt;/);
+  assert.equal(escaped.includes('<img onerror="bad">'), false);
+  assert.equal(
+    welcomeEmailSubject("Person\r\nBcc: attacker@example.com"),
+    "Welcome to Pettxo, Person Bcc: attacker@example.com",
+  );
 });

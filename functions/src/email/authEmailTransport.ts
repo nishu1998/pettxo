@@ -6,7 +6,7 @@ interface ResendClient {
       to: string[];
       subject: string;
       html: string;
-    }): Promise<{error?: unknown}>;
+    }, options?: {idempotencyKey?: string}): Promise<{error?: unknown}>;
   };
 }
 
@@ -27,18 +27,28 @@ export interface AuthEmailMessage {
   html: string;
 }
 
+export interface AuthEmailSendOptions {
+  idempotencyKey?: string;
+}
+
 export async function sendAuthEmail(
   apiKey: string,
   message: AuthEmailMessage,
+  options: AuthEmailSendOptions = {},
 ): Promise<void> {
   const resend = new Resend(apiKey);
-  const result = await resend.emails.send({
-    from: authEmailFrom,
-    replyTo: authEmailReplyTo,
-    to: [message.to],
-    subject: message.subject,
-    html: message.html,
-  });
+  const result = await resend.emails.send(
+    {
+      from: authEmailFrom,
+      replyTo: authEmailReplyTo,
+      to: [message.to],
+      subject: message.subject,
+      html: message.html,
+    },
+    options.idempotencyKey ?
+      {idempotencyKey: options.idempotencyKey} :
+      undefined,
+  );
 
   if (result.error) {
     throw new Error("Transactional email provider rejected the message.");
