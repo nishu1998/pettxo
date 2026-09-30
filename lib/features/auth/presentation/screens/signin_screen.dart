@@ -690,7 +690,8 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
       setState(() {
         _isSubmitting = false;
         _successEmail = _maskEmail(result.normalizedEmail);
-        _statusMessage = 'Password reset email sent';
+        _statusMessage =
+            "If an account exists for that email, we've sent password reset instructions.";
       });
       return;
     }
@@ -894,7 +895,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                               SizedBox(width: 10),
                               Expanded(
                                 child: Text(
-                                  'Password reset email sent',
+                                  'Check your inbox',
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.w700,
@@ -907,7 +908,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                           const SizedBox(height: 14),
                           _buildStatusBanner(
                             message:
-                                'Check your inbox and follow the link to create a new password.',
+                                "If an account exists for that email, we've sent password reset instructions.",
                             borderColor: AppColors.primary,
                             backgroundColor: const Color(
                               0xFFFFF8EF,
@@ -933,7 +934,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                           ),
                           const SizedBox(height: 4),
                           const Text(
-                            'We will send a reset link only when password sign-in is enabled for that account.',
+                            "If an account exists for that email, we'll send password reset instructions.",
                             style: TextStyle(
                               fontSize: 14,
                               color: Color(0xFF4A4A4A),

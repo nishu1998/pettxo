@@ -4,16 +4,12 @@ import 'package:pettexo/features/auth/domain/utils/password_reset_request_flow.d
 
 void main() {
   test('request flow rejects invalid email before backend call', () async {
-    var approveCalled = false;
-    var sendCalled = false;
+    var requestCalled = false;
 
     final result = await runPasswordResetRequestFlow(
       email: 'bad-email',
-      approveRequest: (_) async {
-        approveCalled = true;
-      },
-      sendResetEmail: (_) async {
-        sendCalled = true;
+      requestReset: (_) async {
+        requestCalled = true;
       },
       mapError: (_, stackTrace, normalizedEmail) => PasswordResetRequestResult(
         status: PasswordResetRequestStatus.unknownError,
@@ -23,21 +19,16 @@ void main() {
     );
 
     expect(result.status, PasswordResetRequestStatus.invalidEmail);
-    expect(approveCalled, isFalse);
-    expect(sendCalled, isFalse);
+    expect(requestCalled, isFalse);
   });
 
-  test('request flow sends reset email exactly once after approval', () async {
-    var approveCalls = 0;
-    var sendCalls = 0;
+  test('request flow calls the V2 backend exactly once', () async {
+    var requestCalls = 0;
 
     final result = await runPasswordResetRequestFlow(
       email: '  Person@Example.com ',
-      approveRequest: (_) async {
-        approveCalls += 1;
-      },
-      sendResetEmail: (_) async {
-        sendCalls += 1;
+      requestReset: (_) async {
+        requestCalls += 1;
       },
       mapError: (_, stackTrace, normalizedEmail) => PasswordResetRequestResult(
         status: PasswordResetRequestStatus.unknownError,
@@ -48,30 +39,30 @@ void main() {
 
     expect(result.status, PasswordResetRequestStatus.sent);
     expect(result.normalizedEmail, 'person@example.com');
-    expect(approveCalls, 1);
-    expect(sendCalls, 1);
+    expect(requestCalls, 1);
+    expect(
+      result.message,
+      "If an account exists for that email, we've sent password reset instructions.",
+    );
   });
 
-  test('request flow does not send reset email when backend rejects', () async {
-    var sendCalls = 0;
+  test('request flow maps backend transport failures', () async {
+    var requestCalls = 0;
 
     final result = await runPasswordResetRequestFlow(
       email: 'person@example.com',
-      approveRequest: (_) async {
-        throw StateError('phone-only');
-      },
-      sendResetEmail: (_) async {
-        sendCalls += 1;
+      requestReset: (_) async {
+        requestCalls += 1;
+        throw StateError('backend unavailable');
       },
       mapError: (error, _, normalizedEmail) => PasswordResetRequestResult(
-        status: PasswordResetRequestStatus.phoneOnlyAccount,
+        status: PasswordResetRequestStatus.unknownError,
         normalizedEmail: normalizedEmail,
-        message:
-            'This account does not have a password. Sign in using your phone number.',
+        message: 'Unable to request a password reset right now.',
       ),
     );
 
-    expect(result.status, PasswordResetRequestStatus.phoneOnlyAccount);
-    expect(sendCalls, 0);
+    expect(result.status, PasswordResetRequestStatus.unknownError);
+    expect(requestCalls, 1);
   });
 }

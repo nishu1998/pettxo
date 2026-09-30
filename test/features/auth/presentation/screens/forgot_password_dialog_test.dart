@@ -46,7 +46,13 @@ void main() {
       await tester.tap(find.text('Send Reset Link'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Password reset email sent'), findsOneWidget);
+      expect(find.text('Check your inbox'), findsOneWidget);
+      expect(
+        find.text(
+          "If an account exists for that email, we've sent password reset instructions.",
+        ),
+        findsOneWidget,
+      );
       expect(find.text('Done'), findsNothing);
       expect(find.text('Back to Sign In'), findsNothing);
 

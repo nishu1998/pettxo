@@ -79,25 +79,23 @@ class AuthService {
   final FirebaseAuth _auth;
   final FirebaseFunctions _functions;
   final PendingEmailChangeService _pendingEmailChangeService;
-  final Future<Map<String, dynamic>> Function(String normalizedEmail)?
-  _passwordResetApprovalRequester;
   final Future<void> Function(String normalizedEmail)?
-  _passwordResetEmailSender;
+  _passwordResetV2Requester;
+  final Future<void> Function()? _verificationEmailV2Requester;
   Future<PasswordResetRequestResult>? _pendingPasswordResetRequest;
 
   AuthService({
     FirebaseAuth? auth,
     FirebaseFunctions? functions,
     PendingEmailChangeService? pendingEmailChangeService,
-    Future<Map<String, dynamic>> Function(String normalizedEmail)?
-    passwordResetApprovalRequester,
-    Future<void> Function(String normalizedEmail)? passwordResetEmailSender,
+    Future<void> Function(String normalizedEmail)? passwordResetV2Requester,
+    Future<void> Function()? verificationEmailV2Requester,
   }) : _auth = auth ?? FirebaseAppScope.auth(),
        _functions = functions ?? FirebaseAppScope.functions(),
        _pendingEmailChangeService =
            pendingEmailChangeService ?? const PendingEmailChangeService(),
-       _passwordResetApprovalRequester = passwordResetApprovalRequester,
-       _passwordResetEmailSender = passwordResetEmailSender;
+       _passwordResetV2Requester = passwordResetV2Requester,
+       _verificationEmailV2Requester = verificationEmailV2Requester;
 
   Future<AuthResult> signUp({
     required String email,
@@ -113,7 +111,9 @@ class AuthService {
         user: credential.user,
         forceRefreshToken: false,
       );
-      await credential.user?.sendEmailVerification();
+      if (credential.user != null) {
+        await _requestVerificationEmailV2();
+      }
       await syncTrustedAuthIdentity();
       await _syncNotificationsSafely('sign-up');
 
@@ -246,20 +246,13 @@ class AuthService {
   ) async {
     return runPasswordResetRequestFlow(
       email: email,
-      approveRequest: (normalizedEmail) async {
-        if (_passwordResetApprovalRequester != null) {
-          await _passwordResetApprovalRequester(normalizedEmail);
+      requestReset: (normalizedEmail) async {
+        if (_passwordResetV2Requester != null) {
+          await _passwordResetV2Requester(normalizedEmail);
           return;
         }
-        final callable = _functions.httpsCallable('requestPasswordReset');
+        final callable = _functions.httpsCallable('requestPasswordResetV2');
         await callable.call<Map<String, dynamic>>({'email': normalizedEmail});
-      },
-      sendResetEmail: (normalizedEmail) async {
-        if (_passwordResetEmailSender != null) {
-          await _passwordResetEmailSender(normalizedEmail);
-          return;
-        }
-        await _auth.sendPasswordResetEmail(email: normalizedEmail);
       },
       mapError: (error, _, normalizedEmail) {
         if (error is FirebaseFunctionsException) {
@@ -452,12 +445,8 @@ class AuthService {
   }
 
   Future<void> sendCurrentUserEmailVerification() async {
-    final currentUser = _requireCurrentUser();
-    try {
-      await currentUser.sendEmailVerification();
-    } on FirebaseAuthException catch (e) {
-      throw mapFirebaseAuthException(e);
-    }
+    _requireCurrentUser();
+    await _requestVerificationEmailV2();
   }
 
   Future<void> linkCurrentUserWithEmailPassword({
@@ -486,7 +475,7 @@ class AuthService {
         );
       }
 
-      await linkedUser.sendEmailVerification();
+      await _requestVerificationEmailV2();
       await reloadCurrentUser(syncTrustedIdentity: true);
       final refreshedUser = _requireCurrentUser();
       if (!linkedUidRemainsUnchanged(
@@ -514,6 +503,22 @@ class AuthService {
         code: 'link-failed',
         message: 'Unable to link email and password right now.',
       );
+    }
+  }
+
+  Future<void> _requestVerificationEmailV2() async {
+    try {
+      if (_verificationEmailV2Requester != null) {
+        await _verificationEmailV2Requester();
+        return;
+      }
+      final callable = _functions.httpsCallable('sendVerificationEmailV2');
+      await callable.call<Map<String, dynamic>>();
+    } on FirebaseFunctionsException catch (error) {
+      final message = error.code == 'resource-exhausted'
+          ? 'Please wait before requesting another verification email.'
+          : 'Unable to send a verification email right now.';
+      throw AuthActionException(code: error.code, message: message);
     }
   }
 
@@ -869,39 +874,16 @@ class AuthService {
           message: 'Enter a valid email address.',
         );
       case 'account-not-found':
-        return PasswordResetRequestResult(
-          status: PasswordResetRequestStatus.accountNotFound,
-          normalizedEmail: normalizedEmail,
-          message:
-              'We couldn’t find a password-enabled Pettxo account with this email.',
-        );
       case 'phone-only-account':
-        return PasswordResetRequestResult(
-          status: PasswordResetRequestStatus.phoneOnlyAccount,
-          normalizedEmail: normalizedEmail,
-          message:
-              'This account does not have a password. Sign in using your phone number.',
-        );
       case 'account-pending-deletion':
-        return PasswordResetRequestResult(
-          status: PasswordResetRequestStatus.accountPendingDeletion,
-          normalizedEmail: normalizedEmail,
-          message:
-              'This account is in recovery mode. Sign in normally to continue account recovery.',
-        );
       case 'account-disabled':
-        return PasswordResetRequestResult(
-          status: PasswordResetRequestStatus.accountDisabled,
-          normalizedEmail: normalizedEmail,
-          message: 'This account cannot reset its password right now.',
-        );
       case 'rate-limited':
       case 'resource-exhausted':
         return PasswordResetRequestResult(
-          status: PasswordResetRequestStatus.rateLimited,
+          status: PasswordResetRequestStatus.sent,
           normalizedEmail: normalizedEmail,
           message:
-              'Please wait a moment before requesting another reset email.',
+              "If an account exists for that email, we've sent password reset instructions.",
         );
       case 'unavailable':
       case 'deadline-exceeded':

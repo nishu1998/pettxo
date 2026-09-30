@@ -2,6 +2,7 @@ import "./config/runtime";
 
 export * from "./accounts/accountFunctions";
 export * from "./identity/identityFunctions";
+export * from "./email/authEmailFunctions";
 export * from "./profile/profileFunctions";
 export {
   createSocialNotification,
