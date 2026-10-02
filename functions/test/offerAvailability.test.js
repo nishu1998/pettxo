@@ -144,6 +144,30 @@ test("automatic availability enforces audience and active date rules", () => {
   );
 });
 
+test("offer date boundaries use an inclusive start and exclusive end", () => {
+  const startAt = new Date("2026-10-01T18:30:00.000Z");
+  const endAt = new Date("2026-10-10T18:30:00.000Z");
+  const campaign = parseOfferCampaignRecord("boundary", buildCampaign({
+    startAt,
+    endAt,
+    audience: {type: "all"},
+  }));
+  const evaluateAt = (now) => evaluateOfferAvailability({
+    campaign,
+    user: buildUser(),
+    now: new Date(now),
+  });
+
+  assert.equal(evaluateAt("2026-10-01T18:29:59.000Z").ok, false);
+  assert.equal(evaluateAt("2026-10-01T18:30:00.000Z").ok, true);
+  assert.equal(evaluateAt("2026-10-10T06:30:00.000Z").ok, true);
+  assert.equal(evaluateAt("2026-10-10T18:29:59.999Z").ok, true);
+  assert.deepEqual(evaluateAt("2026-10-10T18:30:00.000Z"), {
+    ok: false,
+    reason: "expired",
+  });
+});
+
 test("first-booking and rebooking targeting preserve existing behavior", () => {
   const now = new Date("2026-08-13T10:00:00.000Z");
   const firstBookingOnly = parseOfferCampaignRecord("first", buildCampaign({

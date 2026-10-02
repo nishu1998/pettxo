@@ -445,6 +445,40 @@ void main() {
       expect(find.text('Remove offer'), findsOneWidget);
     },
   );
+
+  testWidgets('coupon picker shows the inclusive IST valid-through date', (
+    tester,
+  ) async {
+    useTallViewport(tester);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    bookingRepository.previewResultsByOfferId[''] = _previewResult(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 25000,
+    );
+    offers = [
+      _buildAvailableOffer(
+        id: 'offer-1',
+        couponCode: 'OCT10',
+        discountValue: 50,
+        endAt: DateTime.parse('2026-10-10T18:30:00.000Z'),
+      ),
+    ];
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+
+    final offersButton = _secondaryButtonFinder('Available offers');
+    await tester.scrollUntilVisible(offersButton, 300);
+    await tester.ensureVisible(offersButton);
+    await tester.tap(offersButton, warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Valid until 10/10/2026'), findsOneWidget);
+  });
 }
 
 Finder _secondaryButtonFinder(String label) {
@@ -855,6 +889,7 @@ AvailableOffer _buildAvailableOffer({
   required String couponCode,
   required double discountValue,
   double? minBookingAmount,
+  DateTime? endAt,
 }) {
   return AvailableOffer(
     id: id,
@@ -870,7 +905,7 @@ AvailableOffer _buildAvailableOffer({
     usageLimitPerUser: 1,
     priority: 10,
     startAt: DateTime.utc(2026, 7, 26, 11),
-    endAt: DateTime.utc(2026, 8, 1),
+    endAt: endAt ?? DateTime.utc(2026, 8, 1),
   );
 }
 

@@ -72,6 +72,33 @@ void main() {
     );
   });
 
+  testWidgets('shows the inclusive IST valid-through date', (tester) async {
+    await pumpScreen(
+      tester,
+      loadAvailableOffers: () async => AvailableOffersResult(
+        offerWall: null,
+        popup: null,
+        offers: [
+          AvailableOffer.fromMap({
+            'id': 'canonical-offer',
+            'title': 'October Offer',
+            'couponCode': 'OCT10',
+            'displayType': 'offerWall',
+            'campaignType': 'general',
+            'discountType': 'flat',
+            'discountValue': 50,
+            'usageLimitPerUser': 1,
+            'endAt': '2026-10-10T18:30:00.000Z',
+          }),
+        ],
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    expect(find.text('Available until 10 Oct 2026'), findsOneWidget);
+  });
+
   test('AvailableOffer parses cleanly without imageUrl in the payload', () {
     final offer = AvailableOffer.fromMap({
       'id': 'available-2',

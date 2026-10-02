@@ -45,7 +45,7 @@ export function evaluateUserLevelOfferEligibility(params: {
   if (campaign.startAt.getTime() > now.getTime()) {
     return failure("future");
   }
-  if (campaign.endAt != null && campaign.endAt.getTime() < now.getTime()) {
+  if (campaign.endAt != null && campaign.endAt.getTime() <= now.getTime()) {
     return failure("expired");
   }
   if (!matchesOfferAudience(campaign.audience, user.role)) {

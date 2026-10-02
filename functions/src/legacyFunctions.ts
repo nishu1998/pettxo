@@ -351,6 +351,31 @@ function asDate(value: unknown): Date | null {
   return null;
 }
 
+function assertUnambiguousOfferTimestamp(value: unknown, field: string): void {
+  if (value instanceof Timestamp || value instanceof Date) return;
+  if (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value.trim()) &&
+    asDate(value) != null
+  ) {
+    return;
+  }
+  throw new HttpsError(
+    "invalid-argument",
+    `${field} must be an ISO-8601 timestamp with an explicit timezone.`,
+  );
+}
+
+function assertUnambiguousOfferPayloadTimestamps(
+  data: Record<string, unknown>,
+): void {
+  for (const field of ["startAt", "endAt"] as const) {
+    if (Object.prototype.hasOwnProperty.call(data, field) && data[field] != null) {
+      assertUnambiguousOfferTimestamp(data[field], field);
+    }
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
@@ -3657,6 +3682,7 @@ export const createOfferCampaign = onCall(async (request) => {
     rawData: request.data,
     requireCampaignId: false,
   });
+  assertUnambiguousOfferPayloadTimestamps(mutation.payload);
   const normalized = normalizeOfferPayload({
     ...mutation.payload,
     displayType: "offerWall",
@@ -3695,6 +3721,7 @@ export const updateOfferCampaign = onCall(async (request) => {
     rawData: request.data,
     requireCampaignId: true,
   });
+  assertUnambiguousOfferPayloadTimestamps(mutation.payload);
   if (Object.keys(mutation.payload).length === 0) {
     throw new HttpsError("invalid-argument", "At least one offer field must be provided.");
   }

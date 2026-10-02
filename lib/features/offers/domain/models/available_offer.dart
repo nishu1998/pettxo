@@ -1,4 +1,5 @@
 import 'offer_types.dart';
+import 'offer_business_date.dart';
 
 class AvailableOffer {
   final String id;
@@ -85,13 +86,17 @@ class AvailableOffer {
   }
 
   String get availabilitySummary {
-    if (endAt != null) {
-      return 'Available until ${_formatDate(endAt!)}';
+    final validThrough = validThroughBusinessDate;
+    if (validThrough != null) {
+      return 'Available until ${_formatBusinessDate(validThrough)}';
     }
     return 'Available now';
   }
 
-  static String _formatDate(DateTime date) {
+  OfferBusinessDate? get validThroughBusinessDate =>
+      endAt == null ? null : OfferBusinessDate.validThrough(endAt!);
+
+  static String _formatBusinessDate(OfferBusinessDate date) {
     const months = [
       'Jan',
       'Feb',

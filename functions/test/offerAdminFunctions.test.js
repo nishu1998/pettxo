@@ -308,6 +308,44 @@ test("updateOfferCampaign edits an old legacy document with the canonical payloa
   });
 });
 
+test("updateOfferCampaign rejects timezone-less offer boundaries", async () => {
+  await withFakeFirestore({
+    "users/admin_1": {adminRole: "financeAdmin"},
+    "offerCampaigns/campaign_1": baseCampaign(),
+  }, async () => {
+    await assert.rejects(
+      legacyFunctions.updateOfferCampaign.run({
+        auth: {uid: "admin_1"},
+        data: {
+          campaignId: "campaign_1",
+          startAt: "2026-10-02T00:00:00",
+        },
+      }),
+      /startAt must be an ISO-8601 timestamp with an explicit timezone/,
+    );
+  });
+});
+
+test("updateOfferCampaign accepts explicit UTC offer boundaries", async () => {
+  await withFakeFirestore({
+    "users/admin_1": {adminRole: "financeAdmin"},
+    "offerCampaigns/campaign_1": baseCampaign(),
+  }, async (firestore) => {
+    await legacyFunctions.updateOfferCampaign.run({
+      auth: {uid: "admin_1"},
+      data: {
+        campaignId: "campaign_1",
+        startAt: "2026-10-01T18:30:00.000Z",
+        endAt: "2026-10-10T18:30:00.000Z",
+      },
+    });
+
+    const updated = firestore.store.get("offerCampaigns/campaign_1");
+    assert.equal(updated.startAt.toISOString(), "2026-10-01T18:30:00.000Z");
+    assert.equal(updated.endAt.toISOString(), "2026-10-10T18:30:00.000Z");
+  });
+});
+
 test("authorized deleteOfferCampaign soft-deletes the campaign without touching historical financial documents", async () => {
   await withFakeFirestore({
     "users/admin_1": {

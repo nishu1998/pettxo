@@ -1316,6 +1316,7 @@ class _CouponOptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final validThroughDate = offer.validThroughBusinessDate;
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
@@ -1388,10 +1389,10 @@ class _CouponOptionTile extends StatelessWidget {
                     label:
                         'Up to ${_formatMoney((offer.maxDiscountAmount! * 100).round())}',
                   ),
-                if (offer.endAt != null)
+                if (validThroughDate != null)
                   _CouponMetaChip(
                     label:
-                        'Valid until ${offer.endAt!.day}/${offer.endAt!.month}/${offer.endAt!.year}',
+                        'Valid until ${validThroughDate.day}/${validThroughDate.month}/${validThroughDate.year}',
                   ),
               ],
             ),
