@@ -1,10 +1,20 @@
-import {FieldPath, QueryDocumentSnapshot} from "firebase-admin/firestore";
+import {
+  FieldPath,
+  FieldValue,
+  QueryDocumentSnapshot,
+  Timestamp,
+  type Transaction,
+} from "firebase-admin/firestore";
 
 import {db} from "../../shared/firebase";
 import {
   isCanonicalOfferUserRole,
   type CanonicalOfferUserRole,
 } from "../domain/offerAudience";
+import {normalizePromoCode, promoCodeHash} from "../domain/promoCode";
+
+const PROMO_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+export const PROMO_ATTEMPT_LIMIT = 8;
 
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -150,4 +160,138 @@ export async function listOfferUsageRecords(
     campaignId: doc.id,
     data: doc.data(),
   }));
+}
+
+export type ResolvedPromoCode = {
+  normalizedCode: string;
+  campaignId: string;
+};
+
+export async function assertPromoCodeAttemptAllowed(params: {
+  uid: string;
+  now?: Date;
+}): Promise<void> {
+  const now = params.now ?? new Date();
+  const ref = db.collection("offerRedemptionRateLimits").doc(params.uid);
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    const data = snapshot.data() ?? {};
+    const windowStartedAt = asDate(data.windowStartedAt);
+    const inCurrentWindow = windowStartedAt != null &&
+      now.getTime() - windowStartedAt.getTime() < PROMO_ATTEMPT_WINDOW_MS;
+    const attemptCount = inCurrentWindow ?
+      (asOptionalPositiveInt(data.attemptCount) ?? 0) :
+      0;
+    if (attemptCount >= PROMO_ATTEMPT_LIMIT) {
+      throw new Error("PROMO_CODE_RATE_LIMITED");
+    }
+    transaction.set(ref, {
+      uid: params.uid,
+      attemptCount: attemptCount + 1,
+      windowStartedAt: Timestamp.fromDate(inCurrentWindow ? windowStartedAt! : now),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+}
+
+export async function resolveOfferCampaignByPromoCode(
+  rawCode: unknown,
+): Promise<ResolvedPromoCode | null> {
+  const normalizedCode = normalizePromoCode(rawCode);
+  const indexRef = db.collection("offerCodeIndex").doc(promoCodeHash(normalizedCode));
+  const indexed = await indexRef.get();
+  if (indexed.exists) {
+    const data = indexed.data() ?? {};
+    const campaignId = asTrimmedString(data.campaignId);
+    return data.state === "active" && campaignId ?
+      {normalizedCode, campaignId} :
+      null;
+  }
+
+  // Legacy campaigns predate offerCodeIndex. Exact equality against the
+  // canonical value keeps this bounded and non-enumerating. A successful
+  // legacy resolution is indexed transactionally for future direct reads.
+  const legacy = await db.collection("offerCampaigns")
+    .where("couponCode", "==", normalizedCode)
+    .limit(3)
+    .get();
+  const matches = legacy.docs.filter((doc) => {
+    try {
+      return normalizePromoCode(doc.data().couponCode) === normalizedCode;
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length !== 1) return null;
+  const campaignId = matches[0].id;
+  const owner = await db.runTransaction(async (transaction) => {
+    const current = await transaction.get(indexRef);
+    if (current.exists) {
+      const data = current.data() ?? {};
+      return data.state === "active" ? asTrimmedString(data.campaignId) : "";
+    }
+    transaction.create(indexRef, {
+      campaignId,
+      state: "active",
+      codeHashVersion: 1,
+      reservedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      source: "legacy_exact_lookup",
+    });
+    return campaignId;
+  });
+  return owner === campaignId ? {normalizedCode, campaignId} : null;
+}
+
+export async function reserveOfferCodeInTransaction(params: {
+  transaction: Transaction;
+  campaignId: string;
+  couponCode: unknown;
+  previousCouponCode?: unknown;
+}): Promise<string> {
+  const normalizedCode = normalizePromoCode(params.couponCode);
+  const newRef = db.collection("offerCodeIndex").doc(promoCodeHash(normalizedCode));
+  let previousNormalized = "";
+  try {
+    previousNormalized = params.previousCouponCode == null ?
+      "" : normalizePromoCode(params.previousCouponCode);
+  } catch {
+    // Invalid legacy codes cannot be safely indexed, but remain in their
+    // historical campaign document.
+  }
+  const oldRef = previousNormalized && previousNormalized !== normalizedCode ?
+    db.collection("offerCodeIndex").doc(promoCodeHash(previousNormalized)) :
+    null;
+  const [newSnapshot, oldSnapshot] = await Promise.all([
+    params.transaction.get(newRef),
+    oldRef ? params.transaction.get(oldRef) : Promise.resolve(null),
+  ]);
+  if (newSnapshot.exists &&
+    asTrimmedString(newSnapshot.data()?.campaignId) !== params.campaignId) {
+    throw new Error("PROMO_CODE_ALREADY_RESERVED");
+  }
+  if (oldRef && oldSnapshot) {
+    const oldOwner = asTrimmedString(oldSnapshot.data()?.campaignId);
+    if (oldSnapshot.exists && oldOwner && oldOwner !== params.campaignId) {
+      throw new Error("PROMO_CODE_ALREADY_RESERVED");
+    }
+    params.transaction.set(oldRef, {
+      campaignId: params.campaignId,
+      state: "retired",
+      codeHashVersion: 1,
+      retiredAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+  }
+  params.transaction.set(newRef, {
+    campaignId: params.campaignId,
+    state: "active",
+    codeHashVersion: 1,
+    reservedAt: newSnapshot.exists ?
+      (newSnapshot.data()?.reservedAt ?? FieldValue.serverTimestamp()) :
+      FieldValue.serverTimestamp(),
+    retiredAt: null,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return normalizedCode;
 }

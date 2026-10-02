@@ -232,6 +232,38 @@ beforeEach(async () => {
   await testEnv.clearFirestore();
 });
 
+test('offer campaigns and code indexes are backend-readable but not customer-enumerable', async () => {
+  await seedUser('customer', {role: 'petParent'});
+  await seedUser('admin', {adminRole: 'superAdmin'});
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'offerCampaigns', 'secret-offer'), {
+      isActive: true,
+      visibility: 'secret',
+      couponCode: 'HIDDEN50',
+    });
+    await setDoc(doc(db, 'offerCodeIndex', 'hash-1'), {
+      campaignId: 'secret-offer',
+      state: 'active',
+    });
+  });
+
+  const customerDb = authedDb('customer');
+  await assertFails(getDoc(doc(customerDb, 'offerCampaigns', 'secret-offer')));
+  await assertFails(getDocs(collection(customerDb, 'offerCampaigns')));
+  await assertFails(getDoc(doc(customerDb, 'offerCodeIndex', 'hash-1')));
+  await assertFails(setDoc(doc(customerDb, 'offerCodeIndex', 'hash-2'), {
+    campaignId: 'secret-offer',
+  }));
+
+  const adminDb = authedDb('admin');
+  await assertSucceeds(getDoc(doc(adminDb, 'offerCampaigns', 'secret-offer')));
+  await assertSucceeds(getDoc(doc(adminDb, 'offerCodeIndex', 'hash-1')));
+  await assertFails(updateDoc(doc(adminDb, 'offerCodeIndex', 'hash-1'), {
+    state: 'retired',
+  }));
+});
+
 // Exercise real client writes, including added/removed keys and the alternate
 // profile-bootstrap allow branch. Trusted fixtures never use client rules.
 const adminRoles = ['superAdmin', 'financeAdmin', 'customerSupportAdmin'];

@@ -11,11 +11,14 @@ export type OfferCampaignTargeting = {
   rebookingOnly: boolean;
 };
 
+export type OfferVisibility = "public" | "secret" | "invalid";
+
 export type OfferCampaignRecord = {
   id: string;
   title: string;
   description: string;
   couponCode: string;
+  visibility: OfferVisibility;
   displayType: string;
   isDeleted: boolean;
   campaignType: string;
@@ -74,11 +77,19 @@ export function parseOfferCampaignRecord(
       rawValue as Record<string, unknown> :
       {};
 
+  const rawVisibility = data.visibility;
+  const visibility: OfferVisibility = rawVisibility == null ?
+    "public" :
+    rawVisibility === "public" || rawVisibility === "secret" ?
+      rawVisibility :
+      "invalid";
+
   return {
     id: id.trim(),
     title: asTrimmedString(data.title),
     description: asTrimmedString(data.description),
     couponCode: asTrimmedString(data.couponCode),
+    visibility,
     displayType: asTrimmedString(data.displayType) || "offerWall",
     isDeleted: data.isDeleted === true,
     campaignType: asTrimmedString(data.campaignType),

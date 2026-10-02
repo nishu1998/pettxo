@@ -14,6 +14,7 @@ export const offerCampaignMutationFields = [
   "title",
   "description",
   "couponCode",
+  "visibility",
   "campaignType",
   "discountType",
   "discountValue",

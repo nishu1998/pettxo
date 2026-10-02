@@ -644,10 +644,12 @@ class BookingRepository {
   Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
     required String bookingId,
     String? offerCampaignId,
+    String? promoCode,
   }) async {
     const callableName = 'previewBookingPaymentPricingV3';
     final safeBookingId = bookingId.trim();
     final safeOfferCampaignId = offerCampaignId?.trim();
+    final safePromoCode = promoCode?.trim();
     if (kDebugMode) {
       debugPrint(
         '[CanonicalPaymentPreview] request callable=$callableName bookingId=$safeBookingId hasCoupon=${safeOfferCampaignId?.isNotEmpty == true}',
@@ -663,6 +665,7 @@ class BookingRepository {
             invoke: () => callable.call<Map<String, dynamic>>({
               'bookingId': safeBookingId,
               'offerCampaignId': safeOfferCampaignId,
+              'promoCode': safePromoCode,
             }),
           );
       final preview = CanonicalPaymentPricingPreviewResult.fromMap(
@@ -1106,6 +1109,9 @@ class BookingRepository {
       'SERVICE_UNAVAILABLE' => CanonicalPaymentFailureCode.serviceUnavailable,
       'CAPACITY_UNAVAILABLE' => CanonicalPaymentFailureCode.capacityUnavailable,
       'COUPON_INVALID' => CanonicalPaymentFailureCode.couponInvalid,
+      'PROMO_CODE_INVALID' => CanonicalPaymentFailureCode.promoCodeInvalid,
+      'PROMO_CODE_RATE_LIMITED' =>
+        CanonicalPaymentFailureCode.promoCodeRateLimited,
       'PRICING_CHANGED' => CanonicalPaymentFailureCode.pricingChanged,
       'PAYMENT_ALREADY_CONFIRMED' =>
         CanonicalPaymentFailureCode.paymentAlreadyConfirmed,
@@ -1172,6 +1178,10 @@ class BookingRepository {
         return 'One or more selected slots are no longer available. Please review your booking.';
       case CanonicalPaymentFailureCode.couponInvalid:
         return 'This coupon can no longer be applied.';
+      case CanonicalPaymentFailureCode.promoCodeInvalid:
+        return 'This promo code is invalid or unavailable.';
+      case CanonicalPaymentFailureCode.promoCodeRateLimited:
+        return 'Too many promo code attempts. Please try again later.';
       case CanonicalPaymentFailureCode.pricingChanged:
         return 'The booking price changed before payment started.';
       case CanonicalPaymentFailureCode.paymentAlreadyConfirmed:

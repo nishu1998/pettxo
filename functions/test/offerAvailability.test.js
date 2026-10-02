@@ -68,6 +68,47 @@ test("legacy campaigns without audience default to all users", () => {
   assert.deepEqual(parsed.audience, {type: "all"});
 });
 
+test("offer visibility defaults legacy records to public and parses canonical values", () => {
+  assert.equal(parseOfferCampaignRecord("legacy", buildCampaign()).visibility, "public");
+  assert.equal(
+    parseOfferCampaignRecord("public", buildCampaign({visibility: "public"})).visibility,
+    "public",
+  );
+  assert.equal(
+    parseOfferCampaignRecord("secret", buildCampaign({visibility: "secret"})).visibility,
+    "secret",
+  );
+  assert.equal(
+    parseOfferCampaignRecord("bad", buildCampaign({visibility: "PUBLIC"})).visibility,
+    "invalid",
+  );
+});
+
+test("discovery excludes secret and malformed visibility from every derived response", () => {
+  const result = buildAvailableOffersResult({
+    user: buildUser(),
+    campaigns: [
+      {
+        id: "public",
+        data: buildCampaign({visibility: "public", displayType: "offerWall", priority: 1}),
+      },
+      {
+        id: "secret",
+        data: buildCampaign({visibility: "secret", displayType: "popup", priority: 100}),
+      },
+      {
+        id: "malformed",
+        data: buildCampaign({visibility: "PUBLIC", displayType: "popup", priority: 200}),
+      },
+    ],
+    now: new Date("2026-08-13T10:00:00.000Z"),
+  });
+
+  assert.deepEqual(result.offers.map((offer) => offer.id), ["public"]);
+  assert.equal(result.offerWall.id, "public");
+  assert.equal(result.popup, null);
+});
+
 test("audience parsing supports all users, single roles, and multiple roles", () => {
   assert.deepEqual(normalizeOfferAudienceInput({type: "all"}), {type: "all"});
   assert.deepEqual(
@@ -404,6 +445,45 @@ test("getAvailableOffers and booking validation agree on exhausted usage", async
     });
     assert.equal(validation.ok, false);
     assert.equal(validation.code, "COUPON_INVALID");
+  } finally {
+    offerRepository.loadOfferUserProfile = originalLoadOfferUserProfile;
+    offerRepository.loadOfferCampaignDoc = originalLoadOfferCampaignDoc;
+    offerRepository.loadOfferUsageRecord = originalLoadOfferUsageRecord;
+  }
+});
+
+test("booking validation accepts eligible public and secret campaigns identically", async () => {
+  const originalLoadOfferUserProfile = offerRepository.loadOfferUserProfile;
+  const originalLoadOfferCampaignDoc = offerRepository.loadOfferCampaignDoc;
+  const originalLoadOfferUsageRecord = offerRepository.loadOfferUsageRecord;
+  let visibility = "public";
+  offerRepository.loadOfferUserProfile = async () => buildUser();
+  offerRepository.loadOfferCampaignDoc = async () => ({
+    id: `campaign_${visibility}`,
+    data: () => buildCampaign({visibility, couponCode: "EXACT50"}),
+  });
+  offerRepository.loadOfferUsageRecord = async () => ({
+    offerCampaignId: `campaign_${visibility}`,
+    usedCount: 0,
+    consumedBookingIds: [],
+    lastUsedAt: null,
+  });
+
+  try {
+    for (visibility of ["public", "secret"]) {
+      const validation = await validateOfferCampaignForBooking({
+        uid: "user_1",
+        offerCampaignId: `campaign_${visibility}`,
+        booking: {
+          serviceId: "service_1",
+          providerId: "provider_1",
+          service: {category: "grooming"},
+        },
+        serviceSubtotalAmount: 1000,
+        now: new Date("2026-08-13T10:00:00.000Z"),
+      });
+      assert.equal(validation.ok, true, visibility);
+    }
   } finally {
     offerRepository.loadOfferUserProfile = originalLoadOfferUserProfile;
     offerRepository.loadOfferCampaignDoc = originalLoadOfferCampaignDoc;

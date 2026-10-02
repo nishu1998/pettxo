@@ -71,6 +71,12 @@ import {
 import {
   sanitizeOfferCampaignMutationInput,
 } from "./offers/application/offerAdminContract";
+import {
+  normalizePromoCode,
+  promoCodeAuditId,
+  PromoCodeValidationError,
+} from "./offers/domain/promoCode";
+import {reserveOfferCodeInTransaction} from "./offers/data/offerRepository";
 import {db, messaging, storage} from "./shared/firebase";
 const defaultPushChannelId = "pettxo_general_notifications";
 const chatPushChannelId = "pettxo_chat_messages";
@@ -109,6 +115,7 @@ type OfferPayload = {
   title: string;
   description: string;
   couponCode: string;
+  visibility: "public" | "secret";
   campaignType: OfferCampaignType;
   discountType: OfferDiscountType;
   discountValue: number;
@@ -404,7 +411,20 @@ function normalizeOfferPayload(
   options: {requireAllFields: boolean},
 ): OfferPayload {
   const title = asTrimmedString(data.title);
-  const couponCode = asTrimmedString(data.couponCode);
+  let couponCode: string;
+  try {
+    couponCode = normalizePromoCode(data.couponCode);
+  } catch (error) {
+    if (error instanceof PromoCodeValidationError) {
+      throw new HttpsError(
+        "invalid-argument",
+        "couponCode must be 3-32 characters using A-Z, 0-9, underscore, or hyphen.",
+      );
+    }
+    throw error;
+  }
+  const rawVisibility = data.visibility;
+  const visibility = rawVisibility == null ? "public" : asTrimmedString(rawVisibility);
   const campaignType = asTrimmedString(data.campaignType);
   const discountType = asTrimmedString(data.discountType);
   const startAt = asDate(data.startAt);
@@ -433,8 +453,8 @@ function normalizeOfferPayload(
   if (!title) {
     throw new HttpsError("invalid-argument", "title is required.");
   }
-  if (!couponCode) {
-    throw new HttpsError("invalid-argument", "couponCode is required.");
+  if (visibility !== "public" && visibility !== "secret") {
+    throw new HttpsError("invalid-argument", "visibility must be public or secret.");
   }
   if (!isOfferCampaignType(campaignType)) {
     throw new HttpsError(
@@ -471,6 +491,7 @@ function normalizeOfferPayload(
     title,
     description: asTrimmedString(data.description),
     couponCode,
+    visibility,
     campaignType,
     discountType,
     discountValue,
@@ -484,6 +505,30 @@ function normalizeOfferPayload(
     audience,
     priority: toInt(data.priority, 0),
   };
+}
+
+async function assertNoLegacyOfferCodeCollision(
+  normalizedCode: string,
+  campaignId: string,
+): Promise<void> {
+  const snapshot = await db.collection("offerCampaigns").limit(500).get();
+  const collision = snapshot.docs.some((doc) => {
+    if (doc.id === campaignId) return false;
+    try {
+      return normalizePromoCode(doc.data().couponCode) === normalizedCode;
+    } catch {
+      return false;
+    }
+  });
+  if (collision) {
+    throw new HttpsError("already-exists", "That coupon code is already reserved.");
+  }
+  if (snapshot.docs.length >= 500) {
+    throw new HttpsError(
+      "failed-precondition",
+      "The legacy offer catalog is too large to verify coupon uniqueness safely.",
+    );
+  }
 }
 
 function assertAllowedOfferKeys(
@@ -3689,25 +3734,48 @@ export const createOfferCampaign = onCall(async (request) => {
   }, {requireAllFields: true});
 
   const campaignRef = db.collection("offerCampaigns").doc();
-  const batch = db.batch();
-  batch.set(campaignRef, {
-    ...normalized,
-    displayType: "offerWall",
-    isActive: asBoolean(mutation.payload.isActive, false),
-    isDeleted: false,
-    createdAt: FieldValue.serverTimestamp(),
-    createdBy: admin.uid,
-    createdByRole: admin.role,
-    updatedAt: FieldValue.serverTimestamp(),
-    updatedBy: admin.uid,
-    updatedByRole: admin.role,
-  });
-  writeOfferAuditLog(batch, admin, "offerCampaign.create", campaignRef.id, {
-    couponCode: normalized.couponCode,
-    campaignType: normalized.campaignType,
-    ignoredLegacyFields: mutation.ignoredLegacyFields,
-  });
-  await batch.commit();
+  await assertNoLegacyOfferCodeCollision(normalized.couponCode, campaignRef.id);
+  try {
+    await db.runTransaction(async (transaction) => {
+      await reserveOfferCodeInTransaction({
+        transaction,
+        campaignId: campaignRef.id,
+        couponCode: normalized.couponCode,
+      });
+      transaction.create(campaignRef, {
+        ...normalized,
+        displayType: "offerWall",
+        isActive: asBoolean(mutation.payload.isActive, false),
+        isDeleted: false,
+        createdAt: FieldValue.serverTimestamp(),
+        createdBy: admin.uid,
+        createdByRole: admin.role,
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: admin.uid,
+        updatedByRole: admin.role,
+      });
+      const auditRef = db.collection("adminAuditLogs").doc();
+      transaction.set(auditRef, {
+        action: "offerCampaign.create",
+        targetType: "offerCampaign",
+        targetId: campaignRef.id,
+        performedBy: admin.uid,
+        performedByRole: admin.role,
+        createdAt: FieldValue.serverTimestamp(),
+        metadata: {
+          codeAuditId: promoCodeAuditId(normalized.couponCode),
+          visibility: normalized.visibility,
+          campaignType: normalized.campaignType,
+          ignoredLegacyFields: mutation.ignoredLegacyFields,
+        },
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "PROMO_CODE_ALREADY_RESERVED") {
+      throw new HttpsError("already-exists", "That coupon code is already reserved.");
+    }
+    throw error;
+  }
 
   return {ok: true, campaignId: campaignRef.id};
 });
@@ -3749,21 +3817,49 @@ export const updateOfferCampaign = onCall(async (request) => {
       {...asRecord(existingData.targeting), ...asRecord(mutation.payload.targeting)},
   };
   const normalized = normalizeOfferPayload(mergedData, {requireAllFields: true});
-
-  const batch = db.batch();
-  batch.set(campaignRef, {
-    ...normalized,
-    displayType: asTrimmedString(existingData.displayType) || "offerWall",
-    updatedAt: FieldValue.serverTimestamp(),
-    updatedBy: admin.uid,
-    updatedByRole: admin.role,
-  }, {merge: true});
-  writeOfferAuditLog(batch, admin, "offerCampaign.update", campaignId, {
-    updatedFields: Object.keys(mutation.payload),
-    ignoredLegacyFields: mutation.ignoredLegacyFields,
-    usedLegacyIdentityAlias: mutation.usedLegacyIdentityAlias,
-  });
-  await batch.commit();
+  await assertNoLegacyOfferCodeCollision(normalized.couponCode, campaignId);
+  try {
+    await db.runTransaction(async (transaction) => {
+      const current = await transaction.get(campaignRef);
+      if (!current.exists || current.data()?.isDeleted === true) {
+        throw new HttpsError("failed-precondition", "Offer campaign can no longer be edited.");
+      }
+      await reserveOfferCodeInTransaction({
+        transaction,
+        campaignId,
+        couponCode: normalized.couponCode,
+        previousCouponCode: current.data()?.couponCode,
+      });
+      transaction.set(campaignRef, {
+        ...normalized,
+        displayType: asTrimmedString(existingData.displayType) || "offerWall",
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: admin.uid,
+        updatedByRole: admin.role,
+      }, {merge: true});
+      const auditRef = db.collection("adminAuditLogs").doc();
+      transaction.set(auditRef, {
+        action: "offerCampaign.update",
+        targetType: "offerCampaign",
+        targetId: campaignId,
+        performedBy: admin.uid,
+        performedByRole: admin.role,
+        createdAt: FieldValue.serverTimestamp(),
+        metadata: {
+          codeAuditId: promoCodeAuditId(normalized.couponCode),
+          visibility: normalized.visibility,
+          updatedFields: Object.keys(mutation.payload),
+          ignoredLegacyFields: mutation.ignoredLegacyFields,
+          usedLegacyIdentityAlias: mutation.usedLegacyIdentityAlias,
+        },
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "PROMO_CODE_ALREADY_RESERVED") {
+      throw new HttpsError("already-exists", "That coupon code is already reserved.");
+    }
+    throw error;
+  }
 
   return {ok: true, campaignId};
 });

@@ -75,6 +75,13 @@ export async function validateOfferCampaignForBooking(params: {
       message: "Coupon configuration is invalid.",
     };
   }
+  if (campaign.visibility === "invalid") {
+    return {
+      ok: false,
+      code: "COUPON_INVALID",
+      message: "Coupon configuration is invalid.",
+    };
+  }
 
   const eligibility = evaluateOfferAvailability({
     campaign,

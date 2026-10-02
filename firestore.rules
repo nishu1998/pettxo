@@ -1804,8 +1804,19 @@ service cloud.firestore {
     }
 
     match /offerCampaigns/{offerId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.isActive == true);
+      allow read: if isAdmin();
       allow create, update, delete: if false;
+    }
+
+    // Coupon identity and brute-force controls are server-owned. Customer
+    // discovery and redemption go through authenticated Cloud Functions.
+    match /offerCodeIndex/{codeHash} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /offerRedemptionRateLimits/{userId} {
+      allow read, write: if false;
     }
 
     match /offerWallCampaigns/{campaignId} {

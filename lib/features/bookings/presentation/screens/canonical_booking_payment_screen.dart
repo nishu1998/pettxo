@@ -61,6 +61,7 @@ class CanonicalBookingPaymentScreen extends StatefulWidget {
 
 class _CanonicalBookingPaymentScreenState
     extends State<CanonicalBookingPaymentScreen> {
+  final TextEditingController _promoCodeController = TextEditingController();
   StreamSubscription<BookingReadModel?>? _confirmationSubscription;
   StreamSubscription<CanonicalPaymentAttemptReadModel?>? _attemptSubscription;
   Timer? _ticker;
@@ -77,9 +78,12 @@ class _CanonicalBookingPaymentScreenState
   bool _isRefreshingOfferPreview = false;
   bool _isLoadingAvailableOffers = false;
   bool _isLoadingPricingPreview = false;
+  bool _isApplyingPromoCode = false;
   bool _hasAcceptedCancellationPolicy = false;
   String _selectedOfferCampaignId = '';
   String _selectedOfferMessage = '';
+  String _promoCodeError = '';
+  AppliedBookingOffer? _appliedOffer;
   String _pricingPreviewError = '';
   String? _capacityPricingPreviewMessage;
   String _lastPreviewKey = '';
@@ -114,6 +118,7 @@ class _CanonicalBookingPaymentScreenState
 
   @override
   void dispose() {
+    _promoCodeController.dispose();
     _ticker?.cancel();
     _attemptSubscription?.cancel();
     _confirmationSubscription?.cancel();
@@ -139,7 +144,9 @@ class _CanonicalBookingPaymentScreenState
               break;
             }
           }
-          if (_selectedOfferCampaignId.isNotEmpty && selectedOffer == null) {
+          if (_selectedOfferCampaignId.isNotEmpty &&
+              selectedOffer == null &&
+              _appliedOffer == null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (!mounted) return;
               _clearSelectedOffer(showFeedback: false);
@@ -258,6 +265,7 @@ class _CanonicalBookingPaymentScreenState
                       errorMessage: _pricingPreviewError,
                       capacityErrorMessage: _capacityPricingPreviewMessage,
                       selectedOffer: selectedOffer,
+                      appliedOffer: _appliedOffer,
                       selectionMessage: _selectedOfferMessage,
                       isRefreshingOffer: _isRefreshingOfferPreview,
                       offersAvailable: _availableOffers.isNotEmpty,
@@ -272,8 +280,19 @@ class _CanonicalBookingPaymentScreenState
                           ? null
                           : () => _removeSelectedOffer(booking),
                       onChangeOffer: booking == null || selectedOffer == null
-                          ? null
+                          ? booking == null || _selectedOfferCampaignId.isEmpty
+                                ? null
+                                : () => _showCouponSheet(
+                                    booking,
+                                    _availableOffers,
+                                  )
                           : () => _showCouponSheet(booking, _availableOffers),
+                      promoCodeController: _promoCodeController,
+                      isApplyingPromoCode: _isApplyingPromoCode,
+                      promoCodeError: _promoCodeError,
+                      onApplyPromoCode: booking == null
+                          ? null
+                          : () => _applyPromoCode(booking),
                       onRetry: booking == null
                           ? null
                           : () => _refreshPricingPreview(
@@ -1190,23 +1209,30 @@ class _CanonicalBookingPaymentScreenState
     AvailableOffer offer, {
     required bool selectOffer,
   }) async {
-    setState(() => _isRefreshingOfferPreview = true);
+    setState(() {
+      _isRefreshingOfferPreview = true;
+      _promoCodeError = '';
+    });
     try {
-      setState(() {
-        if (selectOffer) {
-          _selectedOfferCampaignId = offer.id;
+      final preview = await _bookingRepository.previewPaymentPricingV3(
+        bookingId: widget.bookingId,
+        offerCampaignId: offer.id,
+      );
+      if (!mounted) return;
+      if (selectOffer) {
+        setState(() {
+          _selectedOfferCampaignId = preview.offerCampaignId;
+          _appliedOffer = preview.appliedOffer ?? _appliedFromAvailable(offer);
           _selectedOfferMessage = offer.couponCode.isEmpty
               ? 'Offer applied.'
               : '${offer.couponCode} applied.';
+          _pricingPreview = preview;
+          _pricingPreviewError = '';
           _paymentAttemptId = '';
           _latestAttempt = null;
-        }
-      });
-      await _refreshPricingPreview(
-        booking,
-        offerCampaignId: offer.id,
-        force: true,
-      );
+          _lastPreviewKey = '${widget.bookingId}:${preview.offerCampaignId}';
+        });
+      }
     } on CanonicalPaymentException catch (error) {
       if (!mounted) return;
       if (error.code == CanonicalPaymentFailureCode.couponInvalid ||
@@ -1237,6 +1263,8 @@ class _CanonicalBookingPaymentScreenState
     setState(() {
       _selectedOfferCampaignId = '';
       _selectedOfferMessage = '';
+      _appliedOffer = null;
+      _promoCodeError = '';
       _paymentAttemptId = '';
       _latestAttempt = null;
       _lastPreviewKey = '';
@@ -1246,6 +1274,69 @@ class _CanonicalBookingPaymentScreenState
         context,
         message: 'Coupon removed. Refreshing your total...',
       );
+    }
+  }
+
+  AppliedBookingOffer _appliedFromAvailable(AvailableOffer offer) {
+    return AppliedBookingOffer(
+      id: offer.id,
+      title: offer.title,
+      description: offer.description,
+      couponCode: offer.couponCode,
+      discountType: offer.discountType.name,
+      discountValue: offer.discountValue,
+    );
+  }
+
+  Future<void> _applyPromoCode(CanonicalBookingDocumentV3 booking) async {
+    if (_isApplyingPromoCode) return;
+    final code = _promoCodeController.text.trim();
+    if (code.isEmpty) {
+      setState(() => _promoCodeError = 'Enter a promo code.');
+      return;
+    }
+    setState(() {
+      _isApplyingPromoCode = true;
+      _promoCodeError = '';
+    });
+    try {
+      final preview = await _bookingRepository.previewPaymentPricingV3(
+        bookingId: widget.bookingId,
+        promoCode: code,
+      );
+      final appliedOffer = preview.appliedOffer;
+      if (preview.offerCampaignId.isEmpty || appliedOffer == null) {
+        throw const FormatException('Missing applied offer response.');
+      }
+      if (!mounted) return;
+      setState(() {
+        _selectedOfferCampaignId = preview.offerCampaignId;
+        _appliedOffer = appliedOffer;
+        _selectedOfferMessage = '${appliedOffer.couponCode} applied.';
+        _promoCodeController.text = appliedOffer.couponCode;
+        _pricingPreview = preview;
+        _pricingPreviewError = '';
+        _paymentAttemptId = '';
+        _latestAttempt = null;
+        _lastPreviewKey = '${widget.bookingId}:${preview.offerCampaignId}';
+      });
+    } on CanonicalPaymentException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _promoCodeError = switch (error.code) {
+          CanonicalPaymentFailureCode.promoCodeRateLimited =>
+            'Too many promo code attempts. Please try again later.',
+          _ => 'This promo code is invalid or unavailable.',
+        };
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _promoCodeError =
+            'We couldn\'t check this promo code. Please try again.';
+      });
+    } finally {
+      if (mounted) setState(() => _isApplyingPromoCode = false);
     }
   }
 
@@ -1726,6 +1817,7 @@ class _PricingCard extends StatelessWidget {
   final String errorMessage;
   final String? capacityErrorMessage;
   final AvailableOffer? selectedOffer;
+  final AppliedBookingOffer? appliedOffer;
   final String selectionMessage;
   final bool isRefreshingOffer;
   final bool offersAvailable;
@@ -1735,6 +1827,10 @@ class _PricingCard extends StatelessWidget {
   final VoidCallback? onRemoveOffer;
   final VoidCallback? onChangeOffer;
   final VoidCallback? onRetry;
+  final TextEditingController promoCodeController;
+  final bool isApplyingPromoCode;
+  final String promoCodeError;
+  final VoidCallback? onApplyPromoCode;
 
   const _PricingCard({
     required this.pricingSummary,
@@ -1742,6 +1838,7 @@ class _PricingCard extends StatelessWidget {
     required this.errorMessage,
     required this.capacityErrorMessage,
     required this.selectedOffer,
+    required this.appliedOffer,
     required this.selectionMessage,
     required this.isRefreshingOffer,
     required this.offersAvailable,
@@ -1751,6 +1848,10 @@ class _PricingCard extends StatelessWidget {
     required this.onRemoveOffer,
     required this.onChangeOffer,
     required this.onRetry,
+    required this.promoCodeController,
+    required this.isApplyingPromoCode,
+    required this.promoCodeError,
+    required this.onApplyPromoCode,
   });
 
   @override
@@ -1827,6 +1928,7 @@ class _PricingCard extends StatelessWidget {
                 const SizedBox(height: 12),
                 _OfferSummaryPanel(
                   selectedOffer: selectedOffer,
+                  appliedOffer: appliedOffer,
                   selectionMessage: selectionMessage,
                   isRefreshing: isRefreshingOffer,
                   offersAvailable: offersAvailable,
@@ -1835,6 +1937,10 @@ class _PricingCard extends StatelessWidget {
                   onChoose: onChooseOffer,
                   onRemove: onRemoveOffer,
                   onChange: onChangeOffer,
+                  promoCodeController: promoCodeController,
+                  isApplyingPromoCode: isApplyingPromoCode,
+                  promoCodeError: promoCodeError,
+                  onApplyPromoCode: onApplyPromoCode,
                 ),
                 const SizedBox(height: 14),
                 _PriceRow(
@@ -1878,6 +1984,7 @@ class _PricingCard extends StatelessWidget {
 class _OfferSummaryPanel extends StatelessWidget {
   const _OfferSummaryPanel({
     required this.selectedOffer,
+    required this.appliedOffer,
     required this.selectionMessage,
     required this.isRefreshing,
     required this.offersAvailable,
@@ -1886,9 +1993,14 @@ class _OfferSummaryPanel extends StatelessWidget {
     required this.onChoose,
     required this.onRemove,
     required this.onChange,
+    required this.promoCodeController,
+    required this.isApplyingPromoCode,
+    required this.promoCodeError,
+    required this.onApplyPromoCode,
   });
 
   final AvailableOffer? selectedOffer;
+  final AppliedBookingOffer? appliedOffer;
   final String selectionMessage;
   final bool isRefreshing;
   final bool offersAvailable;
@@ -1897,10 +2009,19 @@ class _OfferSummaryPanel extends StatelessWidget {
   final VoidCallback? onChoose;
   final VoidCallback? onRemove;
   final VoidCallback? onChange;
+  final TextEditingController promoCodeController;
+  final bool isApplyingPromoCode;
+  final String promoCodeError;
+  final VoidCallback? onApplyPromoCode;
 
   @override
   Widget build(BuildContext context) {
-    final action = selectedOffer == null ? onChoose : onChange;
+    final hasAppliedOffer = selectedOffer != null || appliedOffer != null;
+    final action = hasAppliedOffer ? onChange : onChoose;
+    final appliedTitle = appliedOffer?.title.trim().isNotEmpty == true
+        ? appliedOffer!.title
+        : appliedOffer?.couponCode ?? '';
+    final appliedDiscount = appliedOffer?.discountSummary ?? '';
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -1916,7 +2037,7 @@ class _OfferSummaryPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  selectedOffer == null ? 'Apply an offer' : 'Offer applied',
+                  hasAppliedOffer ? 'Offer applied' : 'Apply an offer',
                   style: const TextStyle(
                     color: AppColors.textDark,
                     fontSize: 16,
@@ -1934,7 +2055,7 @@ class _OfferSummaryPanel extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            selectedOffer == null
+            !hasAppliedOffer
                 ? isLoadingOffers
                       ? 'Loading available offers for this booking...'
                       : offersErrorMessage.trim().isNotEmpty
@@ -1942,7 +2063,9 @@ class _OfferSummaryPanel extends StatelessWidget {
                       : offersAvailable
                       ? 'Choose an offer to refresh your payable amount.'
                       : 'No offers are currently available for this booking.'
-                : '${selectedOffer!.title.isNotEmpty ? selectedOffer!.title : selectedOffer!.couponCode} · ${selectedOffer!.discountSummary}',
+                : selectedOffer != null
+                ? '${selectedOffer!.title.isNotEmpty ? selectedOffer!.title : selectedOffer!.couponCode} · ${selectedOffer!.discountSummary}'
+                : '$appliedTitle · $appliedDiscount',
             style: const TextStyle(
               color: AppColors.textGrey,
               fontSize: 12,
@@ -1961,7 +2084,7 @@ class _OfferSummaryPanel extends StatelessWidget {
               ),
             ),
           ],
-          if (selectedOffer != null) ...[
+          if (hasAppliedOffer) ...[
             const SizedBox(height: 4),
             InkWell(
               onTap: isRefreshing ? null : onRemove,
@@ -1979,6 +2102,54 @@ class _OfferSummaryPanel extends StatelessWidget {
               ),
             ),
           ],
+          const SizedBox(height: 14),
+          const Text(
+            'Have a promo code?',
+            style: TextStyle(
+              color: AppColors.textDark,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: promoCodeController,
+                  enabled: !isApplyingPromoCode,
+                  textCapitalization: TextCapitalization.characters,
+                  textInputAction: TextInputAction.done,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  onSubmitted: isApplyingPromoCode
+                      ? null
+                      : (_) => onApplyPromoCode?.call(),
+                  decoration: InputDecoration(
+                    hintText: 'Enter promo code',
+                    errorText: promoCodeError.trim().isEmpty
+                        ? null
+                        : promoCodeError,
+                    isDense: true,
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              SecondaryButton(
+                label: isApplyingPromoCode ? 'Applying...' : 'Apply',
+                onPressed: isApplyingPromoCode ? null : onApplyPromoCode,
+                size: AppButtonSize.compact,
+                expand: false,
+              ),
+            ],
+          ),
         ],
       ),
     );

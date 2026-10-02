@@ -765,6 +765,38 @@ class StrictOrderingFirestore extends FakeFirestore {
   }
 }
 
+function seedLiveOfferFinalizationDocuments(firestore, result) {
+  const coupon = result.paymentAttempt.couponSnapshot;
+  assert.ok(coupon);
+  firestore._set(`users/${result.booking.parentId}`, {
+    role: "petParent",
+    completedBookingCount: 0,
+  });
+  firestore._set(`offerCampaigns/${coupon.offerCampaignId}`, {
+    title: "Test offer",
+    description: "Test offer",
+    couponCode: coupon.couponCode,
+    visibility: "public",
+    campaignType: coupon.campaignType || "general",
+    discountType: coupon.discountType,
+    discountValue: coupon.discountValue,
+    maxDiscountAmount: coupon.maxDiscountAmountPaise == null ?
+      null : coupon.maxDiscountAmountPaise / 100,
+    minBookingAmount: coupon.minBookingValuePaise == null ?
+      null : coupon.minBookingValuePaise / 100,
+    isActive: true,
+    isDeleted: false,
+    startAt: new Date("2026-01-01T00:00:00.000Z"),
+    endAt: new Date("2099-01-01T00:00:00.000Z"),
+    usageLimitPerUser: coupon.usageLimitPerUser,
+    targeting: {firstBookingOnly: false, rebookingOnly: false},
+    audience: {type: "all"},
+    serviceIds: [],
+    providerIds: [],
+    categoryRestrictions: [],
+  });
+}
+
 test("payment materialization reads exact service location from servicePrivate", async () => {
   const firestore = new FakeFirestore({
     "services/service-private-location": {
@@ -1361,6 +1393,64 @@ test("finalizeCapturedBookingPaymentV3 creates refund-required outcome when capa
   });
 });
 
+test("captured payment with an invalidated offer enters the idempotent refund-required path", () => {
+  const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  const pricing = resolveCanonicalPricingV3({
+    booking,
+    claimedOffer: {
+      status: "claimed",
+      offerCampaignId: "campaign-expired",
+      offerId: "campaign-expired",
+      discountType: "flat",
+      discountValue: 100,
+      usageLimit: 1,
+      usedCount: 0,
+      couponCode: "EXPIRED100",
+    },
+  });
+  booking.financials = pricing.financialSnapshot;
+  const paymentAttempt = buildAttempt({
+    booking,
+    pricing,
+    paymentAttemptId: "attempt-offer-expired",
+    razorpayOrderId: "order_offer_expired",
+  });
+  paymentAttempt.bookingId = "booking-offer-expired";
+
+  const result = finalizeCapturedBookingPaymentV3({
+    bookingId: "booking-offer-expired",
+    booking,
+    paymentAttempt,
+    parent: parentIdentity(),
+    providerPrivate: providerPrivateIdentity(),
+    service: liveService(),
+    slotOccupancy: {},
+    rangeOccupancy: {},
+    razorpayPayment: {
+      id: "pay_offer_expired",
+      orderId: "order_offer_expired",
+      status: "captured",
+      amountPaise: pricing.financialSnapshot.customerPaidPaise,
+      currency: "INR",
+      createdAt: new Date("2026-07-22T10:25:00.000Z"),
+      capturedAt: new Date("2026-07-22T10:25:05.000Z"),
+    },
+    authoritativeNow: new Date("2026-07-22T10:25:10.000Z"),
+    verificationSource: "webhook",
+    offerValidationFailure: "The applied offer is no longer valid.",
+  });
+
+  assertRefundInstructionExactlyOnce(result, {
+    bookingId: "booking-offer-expired",
+    expectedCode: "OFFER_INVALID",
+    expectedReasonCode: "OFFER_INVALID_AFTER_CAPTURE",
+    expectedRefundAmountPaise: pricing.financialSnapshot.customerPaidPaise,
+    expectedEvent: "refunded",
+    expectedNotificationType: "payment_refund_required",
+  });
+  assert.notEqual(result.booking.state, "CONFIRMED");
+});
+
 test("range pricing calculates nights authoritatively", () => {
   const booking = buildRequestedRangeBookingFixture();
   booking.state = "ACCEPTED_AWAITING_PAYMENT";
@@ -1872,6 +1962,21 @@ test("persistFinalizePaymentResultV3 consumes coupon usage exactly once for the 
 
   assert.equal(result.ok, true);
   const firestore = new FakeFirestore();
+  seedLiveOfferFinalizationDocuments(firestore, result);
+  const campaignPath = "offerCampaigns/campaign-idempotent-1";
+  firestore._set(campaignPath, {
+    ...firestore.store.get(campaignPath),
+    endAt: new Date(Date.now() - 1),
+  });
+  await assert.rejects(
+    persistFinalizePaymentResultV3({firestore, result, bookingId}),
+    /applied offer changed before payment confirmation/i,
+  );
+  assert.equal(firestore.store.has(`bookings/${bookingId}`), false);
+  firestore._set(campaignPath, {
+    ...firestore.store.get(campaignPath),
+    endAt: new Date("2099-01-01T00:00:00.000Z"),
+  });
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
 
@@ -1930,6 +2035,7 @@ test("persistFinalizePaymentResultV3 reads coupon usage before transaction write
 
   assert.equal(result.ok, true);
   const firestore = new StrictOrderingFirestore();
+  seedLiveOfferFinalizationDocuments(firestore, result);
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
 
   const usage = firestore.store.get("users/parent-1/offerUsage/campaign-ordering-1");
@@ -2005,6 +2111,7 @@ test("qr-confirmed coupon payments keep the discounted customer payable and cons
   );
 
   const firestore = new FakeFirestore();
+  seedLiveOfferFinalizationDocuments(firestore, result);
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
   const usage = firestore.store.get("users/parent-1/offerUsage/campaign-qr-coupon-1");
@@ -2077,8 +2184,9 @@ test("persistFinalizePaymentResultV3 prevents concurrent cross-booking over-cons
     paymentAttemptId: "attempt-coupon-race-1b",
     paymentId: "pay_coupon_race_1b",
   });
+  seedLiveOfferFinalizationDocuments(firestore, first);
 
-  await Promise.all([
+  const outcomes = await Promise.allSettled([
     persistFinalizePaymentResultV3({
       firestore,
       result: first,
@@ -2091,6 +2199,9 @@ test("persistFinalizePaymentResultV3 prevents concurrent cross-booking over-cons
     }),
   ]);
 
+  assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+  assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);
+
   const usage = firestore.store.get("users/parent-1/offerUsage/campaign-race-1");
   assert.equal(usage.usedCount, 1);
   assert.equal(usage.consumedBookingIds.length, 1);
@@ -2100,6 +2211,11 @@ test("persistFinalizePaymentResultV3 prevents concurrent cross-booking over-cons
     ),
     true,
   );
+  const confirmedBookings = [
+    firestore.store.get("bookings/booking-coupon-race-1a"),
+    firestore.store.get("bookings/booking-coupon-race-1b"),
+  ].filter((booking) => booking?.state === "CONFIRMED");
+  assert.equal(confirmedBookings.length, 1);
 });
 
 test("persistFinalizePaymentResultV3 respects multiple remaining uses during concurrent finalization", async () => {
@@ -2156,14 +2272,16 @@ test("persistFinalizePaymentResultV3 respects multiple remaining uses during con
   };
 
   const firestore = new RacingOfferUsageFirestore({}, 2);
-  await Promise.all([
+  const firstResult = makeResult({
+    bookingId: "booking-coupon-race-2a",
+    paymentAttemptId: "attempt-coupon-race-2a",
+    paymentId: "pay_coupon_race_2a",
+  });
+  seedLiveOfferFinalizationDocuments(firestore, firstResult);
+  const outcomes = await Promise.allSettled([
     persistFinalizePaymentResultV3({
       firestore,
-      result: makeResult({
-        bookingId: "booking-coupon-race-2a",
-        paymentAttemptId: "attempt-coupon-race-2a",
-        paymentId: "pay_coupon_race_2a",
-      }),
+      result: firstResult,
       bookingId: "booking-coupon-race-2a",
     }),
     persistFinalizePaymentResultV3({
@@ -2185,6 +2303,9 @@ test("persistFinalizePaymentResultV3 respects multiple remaining uses during con
       bookingId: "booking-coupon-race-2c",
     }),
   ]);
+
+  assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 2);
+  assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);
 
   const usage = firestore.store.get("users/parent-1/offerUsage/campaign-race-2");
   assert.equal(usage.usedCount, 2);

@@ -288,6 +288,7 @@ class CanonicalPaymentPricingPreviewResult {
   final CanonicalPaymentPricingSummary pricingSummary;
   final DateTime? payDeadlineAt;
   final String offerCampaignId;
+  final AppliedBookingOffer? appliedOffer;
   final bool idempotentReplay;
 
   const CanonicalPaymentPricingPreviewResult({
@@ -295,6 +296,7 @@ class CanonicalPaymentPricingPreviewResult {
     required this.pricingSummary,
     required this.payDeadlineAt,
     required this.offerCampaignId,
+    this.appliedOffer,
     required this.idempotentReplay,
   });
 
@@ -310,8 +312,49 @@ class CanonicalPaymentPricingPreviewResult {
       offerCampaignId: _CanonicalPaymentParsing.asString(
         data['offerCampaignId'],
       ),
+      appliedOffer: data['appliedOffer'] is Map
+          ? AppliedBookingOffer.fromMap(
+              Map<String, dynamic>.from(data['appliedOffer'] as Map),
+            )
+          : null,
       idempotentReplay: data['idempotentReplay'] == true,
     );
+  }
+}
+
+class AppliedBookingOffer {
+  final String id;
+  final String title;
+  final String description;
+  final String couponCode;
+  final String discountType;
+  final double discountValue;
+
+  const AppliedBookingOffer({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.couponCode,
+    required this.discountType,
+    required this.discountValue,
+  });
+
+  factory AppliedBookingOffer.fromMap(Map<String, dynamic> data) {
+    return AppliedBookingOffer(
+      id: _CanonicalPaymentParsing.asString(data['id']),
+      title: _CanonicalPaymentParsing.asString(data['title']),
+      description: _CanonicalPaymentParsing.asString(data['description']),
+      couponCode: _CanonicalPaymentParsing.asString(data['couponCode']),
+      discountType: _CanonicalPaymentParsing.asString(data['discountType']),
+      discountValue: (data['discountValue'] as num?)?.toDouble() ?? 0,
+    );
+  }
+
+  String get discountSummary {
+    final value = discountValue % 1 == 0
+        ? discountValue.toInt().toString()
+        : discountValue.toStringAsFixed(2);
+    return discountType == 'percent' ? '$value% off' : '₹$value off';
   }
 }
 
@@ -505,6 +548,8 @@ enum CanonicalPaymentFailureCode {
   serviceUnavailable,
   capacityUnavailable,
   couponInvalid,
+  promoCodeInvalid,
+  promoCodeRateLimited,
   pricingChanged,
   paymentAlreadyConfirmed,
   paymentReconciliationRequired,

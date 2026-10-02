@@ -32,8 +32,12 @@ import {normalizeTimestampLike} from "../schema/timestampNormalization";
 import {buildStoredBookingNotificationDocument} from "../../notifications/notificationChannels";
 import {
   type ValidatedOfferCampaignSelection,
+  validateOfferCampaignForBooking,
 } from "../../offers/application/validateOfferCampaignForBooking";
 import {consumeOfferUsageInTransaction} from "../../offers/application/consumeOfferUsage";
+import {isCanonicalOfferUserRole} from "../../offers/domain/offerAudience";
+import {parseOfferCampaignRecord} from "../../offers/domain/offerCampaign";
+import {evaluateOfferAvailability} from "../../offers/domain/offerEligibility";
 import {
   buildRevealedParentParticipantSnapshot,
   type AuthenticatedParentIdentity,
@@ -185,6 +189,7 @@ export type FinalizePaymentFailure = {
     | "REFUND_REQUIRED"
     | "PAYMENT_EXPIRED"
     | "CAPACITY_EXHAUSTED"
+    | "OFFER_INVALID"
     | "MALFORMED_BOOKING"
     | "PRIVATE_REPAIR_REQUIRED"
     | "CAPTURE_AFTER_BOOKING_CONFIRMED";
@@ -1180,6 +1185,7 @@ export function finalizeCapturedBookingPaymentV3(params: {
   razorpayPayment: RazorpayPaymentRecord | null;
   authoritativeNow: Date;
   verificationSource: CanonicalPaymentFinalizeSource;
+  offerValidationFailure?: string;
 }): FinalizePaymentResult {
   if (hasRefundEvidenceV3(params.paymentAttempt)) {
     return {ok: false, code: "REFUND_REQUIRED", booking: cloneBooking(params.booking),
@@ -1491,6 +1497,13 @@ export function finalizeCapturedBookingPaymentV3(params: {
   }
 
   try {
+    if (params.offerValidationFailure) {
+      throw new HttpsError(
+        "failed-precondition",
+        params.offerValidationFailure,
+        {code: "OFFER_INVALID_AFTER_CAPTURE"},
+      );
+    }
     const occupancyWrites = params.booking.bookingType === "SLOT" ?
       claimSlotOccupancy({
         bookingId: params.bookingId,
@@ -1606,11 +1619,14 @@ export function finalizeCapturedBookingPaymentV3(params: {
       },
     };
   } catch (error) {
+    const offerInvalid = error instanceof HttpsError &&
+      (error.details as {code?: string} | undefined)?.code ===
+        "OFFER_INVALID_AFTER_CAPTURE";
     const failureMessage = error instanceof HttpsError ?
       error.message :
       "Capacity could not be claimed after capture.";
     attempt.state = "REFUND_REQUIRED";
-    attempt.failureCode = "CAPACITY_EXHAUSTED";
+    attempt.failureCode = offerInvalid ? "OFFER_INVALID" : "CAPACITY_EXHAUSTED";
     attempt.failureMessage = failureMessage;
     attempt.refundRequiredAt = new Date(params.authoritativeNow.getTime());
     attempt.updatedAt = new Date(params.authoritativeNow.getTime());
@@ -1623,7 +1639,7 @@ export function finalizeCapturedBookingPaymentV3(params: {
     });
     return {
       ok: false,
-      code: "CAPACITY_EXHAUSTED",
+      code: offerInvalid ? "OFFER_INVALID" : "CAPACITY_EXHAUSTED",
       booking,
       paymentAttempt: attempt,
       refundInstruction: buildCanonicalRefundInstruction({
@@ -1631,7 +1647,9 @@ export function finalizeCapturedBookingPaymentV3(params: {
         booking,
         paymentAttempt: attempt,
         refundAmountPaise: params.booking.financials.customerPaidPaise,
-        reasonCode: "CAPACITY_UNAVAILABLE_AFTER_CAPTURE",
+        reasonCode: offerInvalid ?
+          "OFFER_INVALID_AFTER_CAPTURE" :
+          "CAPACITY_UNAVAILABLE_AFTER_CAPTURE",
         now: params.authoritativeNow,
       }),
       notifications: buildPaymentRefundRequiredNotification({
@@ -1647,7 +1665,11 @@ export function finalizeCapturedBookingPaymentV3(params: {
           event: "refunded",
           actor: "payment_gateway",
           at: params.authoritativeNow,
-          meta: {reason: "capacity_lost_after_capture"},
+          meta: {
+            reason: offerInvalid ?
+              "offer_invalid_after_capture" :
+              "capacity_lost_after_capture",
+          },
         }),
       ],
       message: failureMessage,
@@ -1830,8 +1852,22 @@ export async function persistFinalizePaymentResultV3(params: {
   await params.firestore.runTransaction(async (transaction) => {
     const currentBookingRef = params.firestore.collection("bookings").doc(params.bookingId);
     const currentAttemptRef = currentBookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId);
-    const [currentBookingSnapshot, currentAttemptSnapshot] = await Promise.all([
-      transaction.get(currentBookingRef), transaction.get(currentAttemptRef),
+    const couponCampaignRef = params.result.ok && params.result.couponWrite ?
+      params.firestore.collection("offerCampaigns").doc(
+        params.result.couponWrite.offerCampaignId,
+      ) : null;
+    const couponUserRef = params.result.ok && params.result.couponWrite ?
+      params.firestore.collection("users").doc(params.result.booking.parentId) : null;
+    const [
+      currentBookingSnapshot,
+      currentAttemptSnapshot,
+      couponCampaignSnapshot,
+      couponUserSnapshot,
+    ] = await Promise.all([
+      transaction.get(currentBookingRef),
+      transaction.get(currentAttemptRef),
+      couponCampaignRef ? transaction.get(couponCampaignRef) : Promise.resolve(null),
+      couponUserRef ? transaction.get(couponUserRef) : Promise.resolve(null),
     ]);
     const currentBooking = currentBookingSnapshot.data() ?? {};
     const currentAttempt = currentAttemptSnapshot.data() ?? {};
@@ -1858,6 +1894,68 @@ export async function persistFinalizePaymentResultV3(params: {
       )) : null;
     const existingInstruction = instructionRef ? await transaction.get(instructionRef) : null;
     if (params.result.ok) {
+      if (params.result.couponWrite) {
+        const failOfferCommit = () => {
+          throw new HttpsError(
+            "failed-precondition",
+            "The applied offer changed before payment confirmation.",
+            {code: "OFFER_INVALID_DURING_FINALIZATION"},
+          );
+        };
+        if (!couponCampaignSnapshot?.exists || !couponUserSnapshot?.exists) {
+          failOfferCommit();
+        }
+        let campaign;
+        try {
+          campaign = parseOfferCampaignRecord(
+            params.result.couponWrite.offerCampaignId,
+            couponCampaignSnapshot?.data(),
+          );
+        } catch {
+          failOfferCommit();
+          return;
+        }
+        const coupon = params.result.paymentAttempt.couponSnapshot;
+        const userData = couponUserSnapshot?.data() ?? {};
+        const rawRole = asString(userData.role);
+        const eligibility = evaluateOfferAvailability({
+          campaign,
+          user: {
+            uid: params.result.booking.parentId,
+            role: isCanonicalOfferUserRole(rawRole) ? rawRole : "",
+            completedBookingCount: asInt(
+              userData.completedBookingCount,
+              asInt(userData.completedBookingsCount, 0),
+            ),
+          },
+          now: new Date(),
+          bookingContext: {
+            bookingAmount:
+              asInt(
+                params.result.booking.financials?.serviceSubtotalPaise,
+                0,
+              ) / 100,
+            serviceId: params.result.booking.serviceId,
+            providerId: params.result.booking.providerId,
+            serviceCategory: params.result.booking.service.category,
+          },
+        });
+        if (campaign.visibility === "invalid" || !eligibility.ok || !coupon ||
+          campaign.couponCode !== coupon.couponCode ||
+          campaign.discountType !== coupon.discountType ||
+          campaign.discountValue !== coupon.discountValue ||
+          campaign.usageLimitPerUser !== coupon.usageLimitPerUser ||
+          campaign.maxDiscountAmount !== (
+            coupon.maxDiscountAmountPaise == null ?
+              null : coupon.maxDiscountAmountPaise / 100
+          ) ||
+          campaign.minBookingAmount !== (
+            coupon.minBookingValuePaise == null ?
+              null : coupon.minBookingValuePaise / 100
+          )) {
+          failOfferCommit();
+        }
+      }
       // Finalization computes a proposal from an earlier occupancy read. Recheck
       // the claim inside the write transaction so two captured payments cannot
       // both commit against the same last unit between those two steps.
@@ -1885,7 +1983,7 @@ export async function persistFinalizePaymentResultV3(params: {
           params.firestore.doc(`services/${params.result.booking.serviceId}/slots/${slot.slotId}`),
         ))) : [];
       if (params.result.couponWrite) {
-        await consumeOfferUsageInTransaction({
+        const consumption = await consumeOfferUsageInTransaction({
           firestore: params.firestore,
           transaction,
           uid: params.result.booking.parentId,
@@ -1895,6 +1993,13 @@ export async function persistFinalizePaymentResultV3(params: {
           couponCode: params.result.couponWrite.couponCode,
           usageLimitPerUser: params.result.couponWrite.usageLimitPerUser,
         });
+        if (consumption === "exhausted") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Offer usage was exhausted before payment confirmation.",
+            {code: "OFFER_USAGE_EXHAUSTED"},
+          );
+        }
       }
       const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
       const privateWritePlan = params.result.privateWritePlan ?? {
@@ -2369,7 +2474,47 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     providerId: loaded.booking.providerId,
   });
 
-  const result = finalizeCapturedBookingPaymentV3({
+  const offerCampaignId = asString(loaded.paymentAttempt.offerCampaignId) ||
+    asString(loaded.paymentAttempt.couponId);
+  let offerValidationFailure = "";
+  if (offerCampaignId) {
+    const serviceSubtotalPaise = loaded.booking.bookingType === "SLOT" ?
+      (loaded.booking.schedule as {slots: Array<{unitPricePaise: number}>}).slots.reduce(
+        (sum, slot) => sum + slot.unitPricePaise,
+        0,
+      ) :
+      (loaded.booking.service.pricePerNightPaise ?? 0) *
+        ((loaded.booking.schedule as {nights: number}).nights ?? 0);
+    const validation = await validateOfferCampaignForBooking({
+      uid: loaded.booking.parentId,
+      offerCampaignId,
+      booking: loaded.booking,
+      serviceSubtotalAmount: serviceSubtotalPaise / 100,
+      now: authoritativeNow,
+    });
+    if (!validation.ok) {
+      offerValidationFailure = "The applied offer is no longer valid.";
+    } else {
+      const coupon = loaded.paymentAttempt.couponSnapshot;
+      const selection = validation.selection;
+      if (!coupon ||
+        coupon.discountType !== selection.discountType ||
+        coupon.discountValue !== selection.discountValue ||
+        coupon.couponCode !== selection.couponCode ||
+        coupon.maxDiscountAmountPaise !== (
+          selection.maxDiscountAmount == null ?
+            null : Math.round(selection.maxDiscountAmount * 100)
+        ) ||
+        coupon.minBookingValuePaise !== (
+          selection.minBookingAmount == null ?
+            null : Math.round(selection.minBookingAmount * 100)
+        )) {
+        offerValidationFailure = "The applied offer changed before payment confirmation.";
+      }
+    }
+  }
+
+  let result = finalizeCapturedBookingPaymentV3({
     bookingId: params.facts.bookingId,
     booking: loaded.booking,
     paymentAttempt: loaded.paymentAttempt,
@@ -2393,6 +2538,7 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     },
     authoritativeNow,
     verificationSource: params.facts.verificationSource,
+    offerValidationFailure,
   });
 
   try {
@@ -2402,12 +2548,50 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
       bookingId: params.facts.bookingId,
     });
   } catch (error) {
-    if (error instanceof HttpsError && error.code === "aborted" &&
+    const persistenceFailureCode = error instanceof HttpsError ?
+      (error.details as {code?: string} | undefined)?.code : "";
+    if (persistenceFailureCode === "OFFER_USAGE_EXHAUSTED" ||
+      persistenceFailureCode === "OFFER_INVALID_DURING_FINALIZATION") {
+      result = finalizeCapturedBookingPaymentV3({
+        bookingId: params.facts.bookingId,
+        booking: loaded.booking,
+        paymentAttempt: loaded.paymentAttempt,
+        parent,
+        providerPrivate,
+        service,
+        existingBookingPrivate: loaded.bookingPrivate,
+        existingBookingPrivateParticipants: loaded.bookingPrivateParticipants,
+        slotOccupancy: loaded.slotOccupancy,
+        rangeOccupancy: loaded.rangeOccupancy,
+        razorpayPayment: {
+          id: params.facts.razorpayPaymentId,
+          orderId: params.facts.razorpayOrderId,
+          status: "captured",
+          amountPaise: params.facts.capturedAmountPaise,
+          currency: params.facts.currency,
+          createdAt: params.facts.capturedAt,
+          capturedAt: params.facts.capturedAt,
+          receipt: "",
+          notes: {},
+        },
+        authoritativeNow,
+        verificationSource: params.facts.verificationSource,
+        offerValidationFailure: persistenceFailureCode === "OFFER_USAGE_EXHAUSTED" ?
+          "The applied offer reached its usage limit." :
+          "The applied offer changed before payment confirmation.",
+      });
+      await persistFinalizePaymentResultV3({
+        firestore: params.firestore,
+        result,
+        bookingId: params.facts.bookingId,
+      });
+    } else if (error instanceof HttpsError && error.code === "aborted" &&
       (error.details as {code?: string} | undefined)?.code === "CAPACITY_CHANGED_DURING_FINALIZATION" &&
       (params.capacityRetryCount ?? 0) < 3) {
       return finalizeCapturedCanonicalPaymentV3({...params, capacityRetryCount: (params.capacityRetryCount ?? 0) + 1});
+    } else {
+      throw error;
     }
-    throw error;
   }
   if (!result.ok &&
     result.refundInstruction &&

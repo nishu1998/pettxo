@@ -46,6 +46,7 @@ export function buildAvailableOffersResult(params: {
     } catch {
       return null;
     }
+    if (campaign.visibility !== "public") return null;
     const eligibility = evaluateOfferAvailability({
       campaign,
       user: params.user,

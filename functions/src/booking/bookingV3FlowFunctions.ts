@@ -105,6 +105,11 @@ import type {
 } from "./domain/slotBooking";
 import {validateSlotBookingSelection} from "./domain/slotBooking";
 import {validateOfferCampaignForBooking} from "../offers/application/validateOfferCampaignForBooking";
+import {
+  assertPromoCodeAttemptAllowed,
+  resolveOfferCampaignByPromoCode,
+} from "../offers/data/offerRepository";
+import {PromoCodeValidationError} from "../offers/domain/promoCode";
 
 type CanonicalBookingRequestResponse = {
   bookingId: string;
@@ -206,6 +211,7 @@ type CanonicalPaymentPricingPreviewResponse = {
   pricingSummary: CanonicalPaymentPricingSummaryResponse;
   payDeadlineAt: string | null;
   offerCampaignId: string;
+  appliedOffer: Record<string, unknown> | null;
   idempotentReplay: boolean;
 };
 
@@ -1167,6 +1173,7 @@ function buildPaymentPricingPreviewResponse(params: {
   booking: CanonicalBookingDocumentV3;
   pricingSummary: CanonicalPaymentPricingSummaryResponse;
   offerCampaignId?: string;
+  appliedOffer?: Record<string, unknown> | null;
   idempotentReplay: boolean;
 }): CanonicalPaymentPricingPreviewResponse {
   return {
@@ -1174,6 +1181,7 @@ function buildPaymentPricingPreviewResponse(params: {
     pricingSummary: params.pricingSummary,
     payDeadlineAt: params.booking.lifecycle.payDeadlineAt?.toISOString() ?? null,
     offerCampaignId: params.offerCampaignId?.trim() ?? "",
+    appliedOffer: params.appliedOffer ?? null,
     idempotentReplay: params.idempotentReplay,
   };
 }
@@ -3163,9 +3171,17 @@ export const previewBookingPaymentPricingV3 = onCall(
   const authoritativeNow = new Date();
   const uid = requireUid(request.auth);
   const bookingId = asString(request.data?.bookingId);
-  const offerCampaignId = asString(request.data?.offerCampaignId);
+  let offerCampaignId = asString(request.data?.offerCampaignId);
+  const promoCode = asString(request.data?.promoCode);
   if (!bookingId) {
     throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+  if (offerCampaignId && promoCode) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Choose either an available offer or a promo code.",
+      {code: "PROMO_CODE_INVALID"},
+    );
   }
 
   const authorized = await authorizeCanonicalPaymentCommand({
@@ -3175,6 +3191,37 @@ export const previewBookingPaymentPricingV3 = onCall(
     now: authoritativeNow,
   });
   await assertPreCheckoutSlotCapacity(db, authorized.booking, bookingId);
+  if (promoCode) {
+    try {
+      await assertPromoCodeAttemptAllowed({uid, now: authoritativeNow});
+      const resolved = await resolveOfferCampaignByPromoCode(promoCode);
+      if (resolved == null) {
+        throw new HttpsError(
+          "failed-precondition",
+          "This promo code is invalid or unavailable.",
+          {code: "PROMO_CODE_INVALID"},
+        );
+      }
+      offerCampaignId = resolved.campaignId;
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      if (error instanceof PromoCodeValidationError) {
+        throw new HttpsError(
+          "invalid-argument",
+          "This promo code is invalid or unavailable.",
+          {code: "PROMO_CODE_INVALID"},
+        );
+      }
+      if (error instanceof Error && error.message === "PROMO_CODE_RATE_LIMITED") {
+        throw new HttpsError(
+          "resource-exhausted",
+          "Too many promo code attempts. Please try again later.",
+          {code: "PROMO_CODE_RATE_LIMITED"},
+        );
+      }
+      throw error;
+    }
+  }
   const claimedOffer = await loadSelectedCouponForCheckout({
     uid,
     offerCampaignId,
@@ -3205,6 +3252,16 @@ export const previewBookingPaymentPricingV3 = onCall(
       currency: preview.pricing.financialSnapshot.currency,
     },
     offerCampaignId,
+    appliedOffer: claimedOffer == null ? null : {
+      id: asString(claimedOffer.offerCampaignId),
+      title: asString(claimedOffer.title),
+      description: asString(claimedOffer.description),
+      couponCode: asString(claimedOffer.couponCode),
+      discountType: asString(claimedOffer.discountType),
+      discountValue: claimedOffer.discountValue,
+      maxDiscountAmount: claimedOffer.maxDiscountAmount ?? null,
+      minBookingAmount: claimedOffer.minBookingAmount ?? null,
+    },
     idempotentReplay: false,
   });
 });

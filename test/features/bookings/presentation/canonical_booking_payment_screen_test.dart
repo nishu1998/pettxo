@@ -381,8 +381,12 @@ void main() {
       await pumpScreen(tester);
       await tester.pumpAndSettle();
 
-      final offersButton = _secondaryButtonFinder('Available offers');
-      await tester.scrollUntilVisible(offersButton, 300);
+      final offersButton = _secondaryButtonFinder('Available offers').first;
+      await tester.scrollUntilVisible(
+        offersButton,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.ensureVisible(offersButton);
       await tester.tap(offersButton, warnIfMissed: false);
       await tester.pumpAndSettle();
@@ -426,8 +430,12 @@ void main() {
       await pumpScreen(tester);
       await tester.pumpAndSettle();
 
-      final offersButton = _secondaryButtonFinder('Available offers');
-      await tester.scrollUntilVisible(offersButton, 300);
+      final offersButton = _secondaryButtonFinder('Available offers').first;
+      await tester.scrollUntilVisible(
+        offersButton,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.ensureVisible(offersButton);
       await tester.tap(offersButton, warnIfMissed: false);
       await tester.pumpAndSettle();
@@ -443,6 +451,196 @@ void main() {
       expect(find.text('₹200.00'), findsWidgets);
       expect(find.text('Available offers'), findsWidgets);
       expect(find.text('Remove offer'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'manual secret promo applies without discovery and remove restores full pricing',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+      bookingRepository.previewResultsByPromoCode['secret50'] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 5000,
+        customerPaidPaise: 20000,
+        offerCampaignId: 'secret-offer-1',
+        appliedOffer: const AppliedBookingOffer(
+          id: 'secret-offer-1',
+          title: 'Private invitation',
+          description: 'Invitation offer',
+          couponCode: 'SECRET50',
+          discountType: 'flat',
+          discountValue: 50,
+        ),
+      );
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      final promoField = find.byType(TextField).first;
+      await tester.scrollUntilVisible(
+        promoField,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.enterText(promoField, ' secret50 ');
+      await tester.tap(find.text('Apply').first);
+      await tester.pumpAndSettle();
+
+      final removeOffer = find.text('Remove offer');
+      await tester.scrollUntilVisible(
+        removeOffer,
+        -200,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+      expect(bookingRepository.promoCodeRequests, ['secret50']);
+      expect(find.textContaining('Private invitation'), findsOneWidget);
+      expect(find.text('SECRET50 applied.'), findsOneWidget);
+      expect(find.text('-₹50.00'), findsOneWidget);
+      expect(find.text('Remove offer'), findsOneWidget);
+
+      await tester.tap(removeOffer);
+      await tester.pumpAndSettle();
+
+      expect(bookingRepository.previewRequests, ['', '']);
+      expect(find.text('₹250.00'), findsWidgets);
+      expect(find.textContaining('Private invitation'), findsNothing);
+    },
+  );
+
+  testWidgets('failed manual promo keeps the currently applied public offer', (
+    tester,
+  ) async {
+    useTallViewport(tester);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    const publicOfferId = 'public-offer-1';
+    bookingRepository.previewResultsByOfferId[''] = _previewResult(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 0,
+      customerPaidPaise: 25000,
+    );
+    bookingRepository.previewResultsByOfferId[publicOfferId] = _previewResult(
+      serviceSubtotalPaise: 25000,
+      couponDiscountPaise: 2500,
+      customerPaidPaise: 22500,
+      offerCampaignId: publicOfferId,
+    );
+    bookingRepository.previewErrorByPromoCode['wrong'] =
+        const CanonicalPaymentException(
+          code: CanonicalPaymentFailureCode.promoCodeInvalid,
+          message: 'This promo code is invalid or unavailable.',
+        );
+    offers = [
+      _buildAvailableOffer(
+        id: publicOfferId,
+        couponCode: 'PUBLIC25',
+        discountValue: 25,
+      ),
+    ];
+
+    await pumpScreen(tester);
+    await tester.pumpAndSettle();
+    final offersButton = _secondaryButtonFinder('Available offers').first;
+    await tester.scrollUntilVisible(
+      offersButton,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(offersButton);
+    await tester.tap(offersButton, warnIfMissed: false);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('PUBLIC25'));
+    await tester.pumpAndSettle();
+
+    final promoField = find.byType(TextField).first;
+    await tester.scrollUntilVisible(
+      promoField,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.enterText(promoField, 'wrong');
+    await tester.tap(find.text('Apply').first);
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Remove offer'),
+      -200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    expect(find.textContaining('Save on this walk'), findsOneWidget);
+    expect(find.text('-₹25.00'), findsOneWidget);
+    expect(
+      find.text('This promo code is invalid or unavailable.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'manual promo prevents duplicate Apply submissions while loading',
+    (tester) async {
+      useTallViewport(tester);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      bookingRepository.previewResultsByOfferId[''] = _previewResult(
+        serviceSubtotalPaise: 25000,
+        couponDiscountPaise: 0,
+        customerPaidPaise: 25000,
+      );
+      bookingRepository.pendingPromoPreview =
+          Completer<CanonicalPaymentPricingPreviewResult>();
+
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+      final promoField = find.byType(TextField).first;
+      await tester.scrollUntilVisible(
+        promoField,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.enterText(promoField, 'SECRET50');
+      final applyButton = tester.widget<SecondaryButton>(
+        _secondaryButtonFinder('Apply').first,
+      );
+      applyButton.onPressed!();
+      applyButton.onPressed!();
+      await tester.pump();
+
+      expect(bookingRepository.promoCodeRequests, ['SECRET50']);
+      expect(_secondaryButtonFinder('Applying...'), findsOneWidget);
+
+      bookingRepository.pendingPromoPreview!.complete(
+        _previewResult(
+          serviceSubtotalPaise: 25000,
+          couponDiscountPaise: 5000,
+          customerPaidPaise: 20000,
+          offerCampaignId: 'secret-offer-1',
+          appliedOffer: const AppliedBookingOffer(
+            id: 'secret-offer-1',
+            title: 'Private invitation',
+            description: '',
+            couponCode: 'SECRET50',
+            discountType: 'flat',
+            discountValue: 50,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(bookingRepository.promoCodeRequests, ['SECRET50']);
     },
   );
 
@@ -471,8 +669,12 @@ void main() {
     await pumpScreen(tester);
     await tester.pumpAndSettle();
 
-    final offersButton = _secondaryButtonFinder('Available offers');
-    await tester.scrollUntilVisible(offersButton, 300);
+    final offersButton = _secondaryButtonFinder('Available offers').first;
+    await tester.scrollUntilVisible(
+      offersButton,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.ensureVisible(offersButton);
     await tester.tap(offersButton, warnIfMissed: false);
     await tester.pumpAndSettle();
@@ -512,12 +714,17 @@ class _FakeBookingRepository extends BookingRepository {
   final Map<String, CanonicalPaymentPricingPreviewResult>
   previewResultsByOfferId = <String, CanonicalPaymentPricingPreviewResult>{};
   final Map<String, Object> previewErrorByOfferId = <String, Object>{};
+  final Map<String, CanonicalPaymentPricingPreviewResult>
+  previewResultsByPromoCode = <String, CanonicalPaymentPricingPreviewResult>{};
+  final Map<String, Object> previewErrorByPromoCode = <String, Object>{};
   final List<String> previewRequests = <String>[];
+  final List<String> promoCodeRequests = <String>[];
   final List<String> qrRequests = <String>[];
   int orderRequests = 0;
   Object? orderError;
   Object? qrError;
   Completer<CanonicalQrPaymentResult>? pendingQrResult;
+  Completer<CanonicalPaymentPricingPreviewResult>? pendingPromoPreview;
 
   void emitBooking(CanonicalBookingDocumentV3 booking) {
     _booking = CanonicalBookingReadModel(
@@ -553,7 +760,22 @@ class _FakeBookingRepository extends BookingRepository {
   Future<CanonicalPaymentPricingPreviewResult> previewPaymentPricingV3({
     required String bookingId,
     String? offerCampaignId,
+    String? promoCode,
   }) async {
+    final code = promoCode?.trim() ?? '';
+    if (code.isNotEmpty) {
+      promoCodeRequests.add(code);
+      final pending = pendingPromoPreview;
+      if (pending != null) return pending.future;
+      final error = previewErrorByPromoCode[code];
+      if (error is CanonicalPaymentException) throw error;
+      if (error != null) throw error;
+      final result = previewResultsByPromoCode[code];
+      if (result == null) {
+        throw StateError('Missing preview result for promo "$code".');
+      }
+      return result;
+    }
     final key = offerCampaignId?.trim() ?? '';
     previewRequests.add(key);
     final error = previewErrorByOfferId[key];
@@ -837,6 +1059,7 @@ CanonicalPaymentPricingPreviewResult _previewResult({
   required int couponDiscountPaise,
   required int customerPaidPaise,
   String offerCampaignId = '',
+  AppliedBookingOffer? appliedOffer,
   DateTime? payDeadlineAt,
 }) {
   return CanonicalPaymentPricingPreviewResult(
@@ -852,6 +1075,7 @@ CanonicalPaymentPricingPreviewResult _previewResult({
         payDeadlineAt ??
         DateTime.now().toUtc().add(const Duration(minutes: 30)),
     offerCampaignId: offerCampaignId,
+    appliedOffer: appliedOffer,
     idempotentReplay: false,
   );
 }
