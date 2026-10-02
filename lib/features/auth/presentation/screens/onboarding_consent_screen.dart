@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/services/legal_acceptance_session_service.dart';
+import '../../../../core/constants/signup_terms_communications.dart';
 import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
@@ -166,7 +167,7 @@ class _OnboardingConsentScreenState extends State<OnboardingConsentScreen> {
     return AuthShell(
       title: 'Before You Continue',
       subtitle:
-          'Please review and accept the Pettxo terms and privacy requirements to continue setting up your account.',
+          'Please review and accept Pettxo’s Terms & Communications to continue setting up your account.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -202,7 +203,7 @@ class _OnboardingConsentScreenState extends State<OnboardingConsentScreen> {
                         LegalPoliciesCatalog.termsAndConditions.routeName,
                   ),
                 ),
-                const LegalConsentSegment(text: ' and '),
+                const LegalConsentSegment(text: ', '),
                 LegalConsentSegment(
                   text: 'Privacy Policy',
                   onTap: () => PolicyLinkService.openPolicy(
@@ -213,7 +214,10 @@ class _OnboardingConsentScreenState extends State<OnboardingConsentScreen> {
                     fallbackRoute: LegalPoliciesCatalog.privacyPolicy.routeName,
                   ),
                 ),
-                const LegalConsentSegment(text: '.'),
+                const LegalConsentSegment(text: ' and Community Guidelines'),
+                const LegalConsentSegment(
+                  text: signupMarketingCommunicationsDisclosure,
+                ),
               ],
             ),
           ),

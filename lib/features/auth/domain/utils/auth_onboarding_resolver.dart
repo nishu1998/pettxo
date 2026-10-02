@@ -1,4 +1,5 @@
 import '../../../../core/identity/username_utils.dart';
+import '../../../../core/constants/signup_terms_communications.dart';
 
 enum AuthOnboardingState {
   signedOut,
@@ -56,6 +57,7 @@ class ProfileCompletionSnapshot {
   final DateTime? acceptedTermsAt;
   final DateTime? acceptedPrivacyAt;
   final DateTime? acceptedProviderAgreementAt;
+  final String termsCommunicationsPolicyVersion;
 
   const ProfileCompletionSnapshot({
     required this.uid,
@@ -75,10 +77,14 @@ class ProfileCompletionSnapshot {
     required this.acceptedTermsAt,
     required this.acceptedPrivacyAt,
     required this.acceptedProviderAgreementAt,
+    this.termsCommunicationsPolicyVersion = '',
   });
 
   bool get hasPersistedLegalAcceptance =>
-      acceptedTermsAt != null && acceptedPrivacyAt != null;
+      acceptedTermsAt != null &&
+      acceptedPrivacyAt != null &&
+      termsCommunicationsPolicyVersion ==
+          signupTermsCommunicationsPolicyVersion;
 }
 
 class AuthOnboardingResolution {

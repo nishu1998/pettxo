@@ -6,6 +6,7 @@ import '../../../../core/services/firebase_app_scope.dart';
 import '../../../../core/identity/username_availability.dart';
 import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/services/push_notification_service.dart';
+import '../../../../core/constants/signup_terms_communications.dart';
 import 'pending_email_change_service.dart';
 import '../../domain/models/auth_action_exception.dart';
 import '../../domain/models/password_reset_request_result.dart';
@@ -672,6 +673,8 @@ class AuthService {
         'city': city,
         'acceptedTerms': acceptedTerms,
         'acceptedPrivacy': acceptedPrivacy,
+        'termsCommunicationsPolicyVersion':
+            signupTermsCommunicationsPolicyVersion,
         'acceptedProviderAgreement': acceptedProviderAgreement,
       });
       final data = Map<String, dynamic>.from(result.data);

@@ -4,6 +4,7 @@ export * from "./accounts/accountFunctions";
 export * from "./identity/identityFunctions";
 export * from "./email/authEmailFunctions";
 export * from "./email/welcomeEmailFunctions";
+export * from "./marketingEmail/marketingEmailFunctions";
 export * from "./profile/profileFunctions";
 export {
   createSocialNotification,

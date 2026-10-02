@@ -293,7 +293,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         AppFeedback.show(
           context,
           message:
-              'Please review and accept the Pettxo terms before continuing.',
+              'Please review and accept Pettxo’s Terms & Communications before continuing.',
           tone: AppFeedbackTone.info,
         );
         Navigator.of(context).pushReplacement(

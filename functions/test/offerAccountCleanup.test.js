@@ -45,6 +45,16 @@ class FakeCollectionRef extends FakeQuery {
     return new FakeDocRef(this.firestore, `${this.path}/${id}`);
   }
 
+  where(field, operator, value) {
+    return new FakeFilteredCollectionQuery(
+      this.firestore,
+      this.path,
+      field,
+      operator,
+      value,
+    );
+  }
+
   async get() {
     const docs = [...this.firestore.store.keys()]
       .filter((path) => {
@@ -58,6 +68,24 @@ class FakeCollectionRef extends FakeQuery {
       empty: docs.length === 0,
       docs,
     };
+  }
+}
+
+class FakeFilteredCollectionQuery extends FakeCollectionRef {
+  constructor(firestore, path, field, operator, value) {
+    super(firestore, path);
+    this.field = field;
+    this.operator = operator;
+    this.value = value;
+  }
+
+  async get() {
+    assert.equal(this.operator, "==");
+    const all = await super.get();
+    const docs = all.docs.filter(
+      (snapshot) => this.firestore.store.get(snapshot.ref.path)?.[this.field] === this.value,
+    );
+    return {empty: docs.length === 0, docs};
   }
 }
 
@@ -120,6 +148,8 @@ test("cleanupAccountFirestoreData removes offerUsage with the existing user clea
     "users/user_1/offerUsage/campaign_1": {usedCount: 1},
     "users/user_1/offerUsage/campaign_2": {usedCount: 2},
     "users/user_1/providerVerification/check_1": {status: "approved"},
+    "marketingUnsubscribeTokens/token_user_1": {uid: "user_1"},
+    "marketingUnsubscribeTokens/token_user_2": {uid: "user_2"},
   });
 
   sharedFirebase.db.collection = firestore.collection.bind(firestore);
@@ -138,6 +168,9 @@ test("cleanupAccountFirestoreData removes offerUsage with the existing user clea
       false,
     );
     assert.equal(stats.firestoreDeleted.offerUsage, 2);
+    assert.equal(firestore.store.has("marketingUnsubscribeTokens/token_user_1"), false);
+    assert.equal(firestore.store.has("marketingUnsubscribeTokens/token_user_2"), true);
+    assert.equal(stats.firestoreDeleted.marketingUnsubscribeTokens, 1);
   } finally {
     sharedFirebase.db.collection = originalCollection;
     sharedFirebase.db.collectionGroup = originalCollectionGroup;

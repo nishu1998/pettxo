@@ -32,6 +32,11 @@ import {
 } from "./identity/username";
 import {isPersistedCompletedAccount} from "./identity/onboardingProfileUtils";
 import {
+  resolveSignupTermsCommunicationsContract,
+  signupMarketingEmailPreferencePatch,
+  signupTermsCommunicationsPolicyVersion,
+} from "./marketingEmail/marketingEmailDomain";
+import {
   evaluatePasswordResetEligibility,
   normalizePasswordResetEmail,
   validatePasswordResetEmail,
@@ -970,6 +975,13 @@ export async function cleanupAccountFirestoreData(
   );
   await deleteQueryDocumentTrees(
     db.collection("notifications").where("userId", "==", uid),
+    stats,
+  );
+  // Durable marketing unsubscribe links have no time-based expiry. Remove
+  // their hashed lookup records only when the associated account is
+  // permanently deleted.
+  await deleteQueryDocumentTrees(
+    db.collection("marketingUnsubscribeTokens").where("uid", "==", uid),
     stats,
   );
 
@@ -2409,6 +2421,7 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
   const city = asTrimmedString(request.data?.city);
   const acceptedTerms = request.data?.acceptedTerms === true;
   const acceptedPrivacy = request.data?.acceptedPrivacy === true;
+  const termsCommunicationsContract = resolveSignupTermsCommunicationsContract(request.data);
   const acceptedProviderAgreement = request.data?.acceptedProviderAgreement === true;
 
   if (!role) {
@@ -2562,9 +2575,19 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
       ...(!privateUser.acceptedPrivacyAt && acceptedPrivacy ?
         {acceptedPrivacyAt: now} :
         {}),
+      ...(termsCommunicationsContract === "current" &&
+      privateUser.termsCommunicationsPolicyVersion !== signupTermsCommunicationsPolicyVersion ? {
+        termsCommunicationsPolicyVersion: signupTermsCommunicationsPolicyVersion,
+        termsCommunicationsAcceptedAt: now,
+      } : {}),
       ...(!privateUser.acceptedProviderAgreementAt && acceptedProviderAgreement ?
         {acceptedProviderAgreementAt: now} :
         {}),
+      ...(termsCommunicationsContract === "current" ? signupMarketingEmailPreferencePatch(
+        privateUser,
+        signupTermsCommunicationsPolicyVersion,
+        now,
+      ) : {}),
       updatedAt: now,
     }, {merge: true});
 

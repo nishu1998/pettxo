@@ -5,6 +5,7 @@ import 'package:intl_phone_field/country_picker_dialog.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/constants/signup_terms_communications.dart';
 import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_snackbar.dart';
@@ -521,7 +522,7 @@ class _PhoneSignupConsentRow extends StatelessWidget {
                   text: TextSpan(
                     style: baseStyle,
                     children: [
-                      const TextSpan(text: 'I agree to the '),
+                      const TextSpan(text: 'I agree to Pettxo’s '),
                       TextSpan(
                         text: 'Terms of Service',
                         style: linkStyle,
@@ -546,7 +547,10 @@ class _PhoneSignupConsentRow extends StatelessWidget {
                           },
                       ),
                       const TextSpan(text: ' and '),
-                      TextSpan(text: 'Community Guidelines.', style: linkStyle),
+                      TextSpan(text: 'Community Guidelines', style: linkStyle),
+                      const TextSpan(
+                        text: signupMarketingCommunicationsDisclosure,
+                      ),
                     ],
                   ),
                 ),

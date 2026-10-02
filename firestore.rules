@@ -2447,5 +2447,27 @@ service cloud.firestore {
     match /notificationBroadcasts/{broadcastId} {
       allow read, write: if false;
     }
+
+    // Marketing campaigns, executions, deliveries, test throttles, and
+    // unsubscribe tokens are backend-owned. Admin clients use callables and
+    // users update only their own marketing preference through a callable.
+    match /marketingCampaigns/{campaignId} {
+      allow read, write: if false;
+      match /deliveries/{deliveryId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /marketingCampaignExecutions/{executionId} {
+      allow read, write: if false;
+    }
+
+    match /marketingUnsubscribeTokens/{tokenId} {
+      allow read, write: if false;
+    }
+
+    match /marketingEmailTestRateLimits/{userId} {
+      allow read, write: if false;
+    }
   }
 }

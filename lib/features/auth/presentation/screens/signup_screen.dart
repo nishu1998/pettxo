@@ -3,6 +3,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/constants/signup_terms_communications.dart';
 import '../../../../core/constants/validators.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/services/legal_acceptance_session_service.dart';
@@ -502,7 +503,7 @@ class _SignupConsentRow extends StatelessWidget {
                   text: TextSpan(
                     style: baseStyle,
                     children: [
-                      const TextSpan(text: 'I agree to the '),
+                      const TextSpan(text: 'I agree to Pettxo’s '),
                       TextSpan(
                         text: 'Terms of Service',
                         style: linkStyle,
@@ -527,7 +528,10 @@ class _SignupConsentRow extends StatelessWidget {
                           },
                       ),
                       const TextSpan(text: ' and '),
-                      TextSpan(text: 'Community Guidelines.', style: linkStyle),
+                      TextSpan(text: 'Community Guidelines', style: linkStyle),
+                      const TextSpan(
+                        text: signupMarketingCommunicationsDisclosure,
+                      ),
                     ],
                   ),
                 ),

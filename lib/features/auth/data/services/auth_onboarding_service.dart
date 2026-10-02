@@ -117,6 +117,9 @@ class AuthOnboardingService {
             privateMap['acceptedProviderAgreementAt'] is Timestamp
             ? (privateMap['acceptedProviderAgreementAt'] as Timestamp).toDate()
             : null,
+        termsCommunicationsPolicyVersion:
+            (privateMap['termsCommunicationsPolicyVersion'] as String? ?? '')
+                .trim(),
       );
     }
 

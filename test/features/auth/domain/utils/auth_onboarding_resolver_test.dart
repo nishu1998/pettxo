@@ -1,5 +1,6 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pettexo/core/constants/signup_terms_communications.dart';
 import 'package:pettexo/features/auth/domain/utils/auth_error_utils.dart';
 import 'package:pettexo/features/auth/domain/utils/auth_onboarding_resolver.dart';
 
@@ -113,6 +114,79 @@ void main() {
         );
 
         expect(resolution.state, AuthOnboardingState.roleSelectionRequired);
+      },
+    );
+
+    test(
+      'incomplete account with old persisted consent must accept current disclosure',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'uid_123',
+            email: '',
+            phoneNumber: '+919999999999',
+            emailVerified: false,
+            providerIds: ['phone'],
+          ),
+          profile: ProfileCompletionSnapshot(
+            uid: 'uid_123',
+            role: 'petParent',
+            displayName: '',
+            username: '',
+            usernameLowercase: '',
+            state: '',
+            city: '',
+            address: '',
+            legacyLocation: '',
+            usernameReservationMatchesUid: false,
+            hasPublicProfile: true,
+            hasPrivateProfile: true,
+            accountStatus: 'active',
+            scheduledDeletionAt: null,
+            acceptedTermsAt: DateTime(2026),
+            acceptedPrivacyAt: DateTime(2026),
+            acceptedProviderAgreementAt: null,
+            termsCommunicationsPolicyVersion: 'older_terms',
+          ),
+        );
+        expect(resolution.state, AuthOnboardingState.onboardingConsentRequired);
+      },
+    );
+
+    test(
+      'incomplete account with current persisted disclosure can continue',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'uid_123',
+            email: '',
+            phoneNumber: '+919999999999',
+            emailVerified: false,
+            providerIds: ['phone'],
+          ),
+          profile: ProfileCompletionSnapshot(
+            uid: 'uid_123',
+            role: 'petParent',
+            displayName: '',
+            username: '',
+            usernameLowercase: '',
+            state: '',
+            city: '',
+            address: '',
+            legacyLocation: '',
+            usernameReservationMatchesUid: false,
+            hasPublicProfile: true,
+            hasPrivateProfile: true,
+            accountStatus: 'active',
+            scheduledDeletionAt: null,
+            acceptedTermsAt: DateTime(2026),
+            acceptedPrivacyAt: DateTime(2026),
+            acceptedProviderAgreementAt: null,
+            termsCommunicationsPolicyVersion:
+                signupTermsCommunicationsPolicyVersion,
+          ),
+        );
+        expect(resolution.state, AuthOnboardingState.profileDetailsRequired);
       },
     );
 

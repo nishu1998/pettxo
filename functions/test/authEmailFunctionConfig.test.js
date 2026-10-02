@@ -7,6 +7,11 @@ const {
   sendWelcomeEmailOnUserCreated,
 } = require("../lib/index.js");
 
+const {
+  processMarketingEmailCampaignsV3,
+  sendMarketingEmailCampaignTestV3,
+} = require("../lib/index.js");
+
 for (const [name, callable] of Object.entries({
   requestPasswordResetV2,
   sendVerificationEmailV2,
@@ -38,4 +43,15 @@ test("welcome email is a retrying canonical-user create trigger with secret boun
     "users/{uid}",
   );
   assert.equal(endpoint.eventTrigger.retry, true);
+});
+
+test("marketing send surfaces bind only the marketing Resend secret", () => {
+  assert.deepEqual(
+    sendMarketingEmailCampaignTestV3.__endpoint.secretEnvironmentVariables,
+    [{key: "RESEND_MARKETING_API_KEY"}],
+  );
+  assert.deepEqual(
+    processMarketingEmailCampaignsV3.__endpoint.secretEnvironmentVariables,
+    [{key: "RESEND_MARKETING_API_KEY"}],
+  );
 });
