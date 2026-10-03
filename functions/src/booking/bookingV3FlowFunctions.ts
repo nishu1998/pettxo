@@ -110,6 +110,7 @@ import {
   resolveOfferCampaignByPromoCode,
 } from "../offers/data/offerRepository";
 import {PromoCodeValidationError} from "../offers/domain/promoCode";
+import {buildCustomerBookableSlotsV3} from "./application/serviceSlotAvailabilityV3";
 
 type CanonicalBookingRequestResponse = {
   bookingId: string;
@@ -123,6 +124,12 @@ type CanonicalBookingRequestResponse = {
   acceptDeadlineAt: string | null;
   wasQueuedOutsideWorkingHours: boolean;
   idempotentReplay: boolean;
+};
+
+type BookableServiceSlotsResponse = {
+  serviceId: string;
+  dateKey: string;
+  slots: ReturnType<typeof buildCustomerBookableSlotsV3>;
 };
 
 type CanonicalBookingCommandResponse = {
@@ -2240,6 +2247,57 @@ async function authorizeCanonicalPaymentCommand(params: {
     paymentAttemptState,
   };
 }
+
+export const listBookableServiceSlotsV3 = onCall(
+  {invoker: "private"},
+  async (request): Promise<BookableServiceSlotsResponse> => {
+    requireUid(request.auth);
+    const data = asRecord(request.data);
+    const serviceId = asString(data.serviceId);
+    const dateKey = asString(data.dateKey);
+    if (!serviceId || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+      throw new HttpsError("invalid-argument", "serviceId and a valid dateKey are required.");
+    }
+
+    const serviceRef = db.collection("services").doc(serviceId);
+    const [serviceSnapshot, slotsSnapshot] = await Promise.all([
+      serviceRef.get(),
+      serviceRef.collection("slots")
+        .where("dateKey", "==", dateKey)
+        .orderBy("startAt")
+        .limit(1441)
+        .get(),
+    ]);
+    if (!serviceSnapshot.exists) {
+      throw new HttpsError("not-found", "Service not found.");
+    }
+    if (slotsSnapshot.size > 1440) {
+      throw new HttpsError("failed-precondition", "Service slot configuration is invalid.");
+    }
+
+    const occupancySnapshots = slotsSnapshot.empty ? [] : await db.getAll(
+      ...slotsSnapshot.docs.map((slot) =>
+        serviceRef.collection("slotOccupancy").doc(slot.id)),
+    );
+    const occupancyBySlotId = new Map(
+      occupancySnapshots.map((snapshot) => [snapshot.id, snapshot.exists ? snapshot.data() ?? null : null]),
+    );
+    const service = buildCanonicalServiceSource({
+      ...(serviceSnapshot.data() ?? {}),
+      id: serviceId,
+    });
+    const slots = buildCustomerBookableSlotsV3({
+      serviceId,
+      service,
+      dateKey,
+      slots: slotsSnapshot.docs.map((slot) => ({...slot.data(), id: slot.id})),
+      occupancyBySlotId,
+      authoritativeNow: new Date(),
+    });
+
+    return {serviceId, dateKey, slots};
+  },
+);
 
 export const createBookingRequestV3 = onCall({invoker: "private"}, async (request) => {
   const authoritativeNow = new Date();

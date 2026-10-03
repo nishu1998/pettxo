@@ -1,5 +1,6 @@
 export {
   razorpayWebhook,
+  listBookableServiceSlotsV3,
   createBookingRequestV3,
   markBookingViewedByProviderV3,
   acceptBookingRequestV3,

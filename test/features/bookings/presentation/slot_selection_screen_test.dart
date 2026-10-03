@@ -72,10 +72,10 @@ void main() {
     },
   );
   testWidgets(
-    'fetched full slots remain disabled while available slots are displayed',
+    'full slots are hidden while partially available slots are displayed',
     (tester) async {
       await pump(tester);
-      ServiceSlotModel slot(String id, int acceptedCount) => ServiceSlotModel(
+      ServiceSlotModel slot(String id, int confirmedUnits) => ServiceSlotModel(
         id: id,
         serviceId: 'service',
         serviceOwnerId: 'provider',
@@ -83,29 +83,22 @@ void main() {
         endAt: now.add(const Duration(hours: 10, minutes: 30)),
         dateKey: '2026-09-14',
         capacity: 2,
-        acceptedCount: acceptedCount,
+        confirmedUnits: confirmedUnits,
         isBookable: true,
         status: 'open',
       );
       repository.changes.add([slot('full', 2), slot('open', 0)]);
       await tester.pumpAndSettle();
-      expect(find.text('Fully booked'), findsOneWidget);
+      expect(find.text('Fully booked'), findsNothing);
       expect(find.text('2 spots left'), findsOneWidget);
-      final fullTile = find
-          .ancestor(
-            of: find.text('Fully booked'),
-            matching: find.byType(GestureDetector),
-          )
-          .first;
-      expect(tester.widget<GestureDetector>(fullTile).onTap, isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
   testWidgets(
-    'a slot becomes unavailable on the next slot snapshot after confirmation',
+    'confirmation hides a slot and cancellation makes it visible after reload',
     (tester) async {
       await pump(tester);
-      ServiceSlotModel slot(int acceptedCount) => ServiceSlotModel(
+      ServiceSlotModel slot(int confirmedUnits) => ServiceSlotModel(
         id: 'last',
         serviceId: 'service',
         serviceOwnerId: 'provider',
@@ -113,7 +106,7 @@ void main() {
         endAt: now.add(const Duration(hours: 10, minutes: 30)),
         dateKey: '2026-09-14',
         capacity: 1,
-        acceptedCount: acceptedCount,
+        confirmedUnits: confirmedUnits,
         isBookable: true,
         status: 'open',
       );
@@ -122,14 +115,11 @@ void main() {
       expect(find.text('1 spot left'), findsOneWidget);
       repository.changes.add([slot(1)]);
       await tester.pumpAndSettle();
-      expect(find.text('Fully booked'), findsOneWidget);
-      final tile = find
-          .ancestor(
-            of: find.text('Fully booked'),
-            matching: find.byType(GestureDetector),
-          )
-          .first;
-      expect(tester.widget<GestureDetector>(tile).onTap, isNull);
+      expect(find.text('1 spot left'), findsNothing);
+      expect(find.text('No slots for this date'), findsOneWidget);
+      repository.changes.add([slot(0)]);
+      await tester.pumpAndSettle();
+      expect(find.text('1 spot left'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -51,7 +49,6 @@ class SlotSelectionScreen extends StatefulWidget {
 
 class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   static const Color _screenBackground = Color(0xFFFCF8F5);
-  static const Duration _availabilityRefreshInterval = Duration(minutes: 1);
   static const int _maxSelectedServiceDays = 10;
   late DateTime _selectedDate;
   late DateTime _focusedMonth;
@@ -59,8 +56,9 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       <String, List<ServiceSlotModel>>{};
   final BookingRequestAttemptIdController _requestAttemptIdController =
       BookingRequestAttemptIdController();
+  late final BookingRepository _bookingRepository;
+  late Stream<List<ServiceSlotModel>> _slotStream;
   String? _slotError;
-  Timer? _availabilityTicker;
 
   @override
   void initState() {
@@ -78,6 +76,8 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
         !normalizedSuggested.isAfter(lastSelectableDate);
     _selectedDate = canUseSuggestedDate ? normalizedSuggested : normalizedToday;
     _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
+    _bookingRepository = widget.bookingRepository ?? BookingRepository();
+    _slotStream = _watchSelectedDate();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final allowed =
@@ -86,10 +86,6 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       if (!allowed) {
         Navigator.maybePop(context);
       }
-    });
-    _availabilityTicker = Timer.periodic(_availabilityRefreshInterval, (_) {
-      if (!mounted) return;
-      setState(() {});
     });
   }
 
@@ -137,6 +133,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
     setState(() {
       _focusedMonth = next;
       _selectedDate = nextSelectedDate;
+      _slotStream = _watchSelectedDate();
       _slotError = null;
     });
   }
@@ -190,12 +187,6 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
   }
 
   @override
-  void dispose() {
-    _availabilityTicker?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
@@ -242,6 +233,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
                   setState(() {
                     _selectedDate = date;
                     _focusedMonth = DateTime(date.year, date.month);
+                    _slotStream = _watchSelectedDate();
                     _slotError = null;
                   });
                 },
@@ -269,11 +261,7 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
               ),
               const SizedBox(height: 12),
               StreamBuilder<List<ServiceSlotModel>>(
-                stream: (widget.bookingRepository ?? BookingRepository())
-                    .watchServiceSlotsForDate(
-                      serviceId: widget.serviceId,
-                      date: _selectedDate,
-                    ),
+                stream: _slotStream,
                 builder: (context, snapshot) =>
                     _buildSlotSelector(context, snapshot),
               ),
@@ -322,7 +310,9 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
       return const _SlotLoadingState();
     }
 
-    final slots = snapshot.data ?? const <ServiceSlotModel>[];
+    final slots = (snapshot.data ?? const <ServiceSlotModel>[])
+        .where(_isSlotBookable)
+        .toList(growable: false);
     _pruneInvalidSelection(slots);
     _selectSuggestedSlotIfNeeded(slots);
 
@@ -377,6 +367,13 @@ class _SlotSelectionScreenState extends State<SlotSelectionScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  Stream<List<ServiceSlotModel>> _watchSelectedDate() {
+    return _bookingRepository.watchServiceSlotsForDate(
+      serviceId: widget.serviceId,
+      date: _selectedDate,
     );
   }
 

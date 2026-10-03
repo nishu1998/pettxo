@@ -417,21 +417,34 @@ class BookingRepository {
   Stream<List<ServiceSlotModel>> watchServiceSlotsForDate({
     required String serviceId,
     required DateTime date,
-  }) {
+  }) async* {
     final id = serviceId.trim();
-    if (id.isEmpty) return Stream.value(const []);
+    if (id.isEmpty) {
+      yield const [];
+      return;
+    }
 
-    return _firestore
-        .collection('services')
-        .doc(id)
-        .collection('slots')
-        .where('dateKey', isEqualTo: _dateKey(date))
-        .orderBy('startAt')
-        .snapshots()
-        .map(
-          (snapshot) =>
-              snapshot.docs.map(ServiceSlotModel.fromDocument).toList(),
-        );
+    while (true) {
+      final result = await _functions
+          .httpsCallable('listBookableServiceSlotsV3')
+          .call<Map<String, dynamic>>({
+            'serviceId': id,
+            'dateKey': _dateKey(date),
+          });
+      final data = Map<String, dynamic>.from(result.data);
+      final rawSlots = data['slots'];
+      if (rawSlots is! List) {
+        throw const FormatException('Malformed slot availability response.');
+      }
+      yield rawSlots
+          .map(
+            (slot) => ServiceSlotModel.fromCallableMap(
+              Map<String, dynamic>.from(slot as Map),
+            ),
+          )
+          .toList(growable: false);
+      await Future<void>.delayed(const Duration(minutes: 1));
+    }
   }
 
   Future<CanonicalBookingRequestResult> createBookingRequestV3({

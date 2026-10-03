@@ -63,6 +63,7 @@ const expectedExportNames = [
   "listCanonicalNoShowCasesV3",
   "listCanonicalProviderPayoutsForAdminV3",
   "listCanonicalRefundsForAdminV3",
+  "listBookableServiceSlotsV3",
   "listManualSettlementObligationsV3",
   "listMarketingEmailCampaignsV3",
   "materializeManualSettlementObligationsForBookingV3",
