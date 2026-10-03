@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -12,18 +14,25 @@ import '../../data/services/auth_service.dart';
 import '../../domain/utils/auth_onboarding_resolver.dart';
 import '../widgets/auth_shell.dart';
 import 'auth_gateway_screen.dart';
+import 'signin_screen.dart';
 import 'signup_screen.dart';
 
 class EmailVerificationScreen extends StatefulWidget {
   final EmailVerificationMode mode;
   final String? displayEmailOverride;
   final String? expectedVerifiedEmail;
+  final String? expectedUid;
+  final EmailVerificationController? verificationController;
+  final WidgetBuilder? reauthenticationDestinationBuilder;
 
   const EmailVerificationScreen({
     super.key,
     this.mode = EmailVerificationMode.blockingOnboarding,
     this.displayEmailOverride,
     this.expectedVerifiedEmail,
+    this.expectedUid,
+    this.verificationController,
+    this.reauthenticationDestinationBuilder,
   });
 
   @override
@@ -34,9 +43,14 @@ class EmailVerificationScreen extends StatefulWidget {
 class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   static const int _cooldownSeconds = 30;
 
-  final AuthService _authService = AuthService();
-  final AuthOnboardingService _onboardingService = AuthOnboardingService();
+  AuthService? _authService;
+  AuthOnboardingService? _onboardingService;
   late final EmailVerificationController _verificationController;
+
+  AuthService get _authServiceInstance => _authService ??= AuthService();
+
+  AuthOnboardingService get _onboardingServiceInstance =>
+      _onboardingService ??= AuthOnboardingService();
 
   Timer? _timer;
   int _secondsLeft = 0;
@@ -46,7 +60,9 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
 
   String get _maskedEmail {
     final email =
-        (widget.displayEmailOverride ?? _authService.currentUser?.email ?? '')
+        (widget.displayEmailOverride ??
+                _authServiceInstance.currentUser?.email ??
+                '')
             .trim();
     final parts = email.split('@');
     if (parts.length != 2 || parts.first.isEmpty) return email;
@@ -60,21 +76,45 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   @override
   void initState() {
     super.initState();
-    _verificationController = EmailVerificationController(
-      reloadCurrentUser: () async {
-        await _authService.reloadCurrentUser();
-      },
-      isEmailVerified: () {
-        final currentUser = _authService.currentUser;
-        final expectedEmail = (widget.expectedVerifiedEmail ?? '').trim();
-        if (expectedEmail.isNotEmpty) {
-          return (currentUser?.email ?? '').trim() == expectedEmail &&
-              (currentUser?.emailVerified ?? false);
-        }
-        return currentUser?.emailVerified ?? false;
-      },
-      syncTrustedAuthIdentity: _authService.syncTrustedAuthIdentity,
-    );
+    final expectedUid =
+        (widget.expectedUid ?? _authServiceInstance.currentUser?.uid ?? '')
+            .trim();
+    _verificationController =
+        widget.verificationController ??
+        EmailVerificationController(
+          reloadCurrentUser: () async {
+            await _authServiceInstance.reloadCurrentUser();
+          },
+          refreshIdToken: _authServiceInstance.refreshCurrentUserIdToken,
+          currentUid: () => _authServiceInstance.currentUser?.uid ?? '',
+          isEmailVerified: () {
+            final currentUser = _authServiceInstance.currentUser;
+            final expectedEmail = (widget.expectedVerifiedEmail ?? '').trim();
+            if (expectedEmail.isNotEmpty) {
+              return (currentUser?.email ?? '').trim() == expectedEmail &&
+                  (currentUser?.emailVerified ?? false);
+            }
+            return currentUser?.emailVerified ?? false;
+          },
+          syncTrustedAuthIdentity: _authServiceInstance.syncTrustedAuthIdentity,
+          isSessionInvalidError: _isSessionInvalidError,
+          expectedUid: expectedUid,
+        );
+  }
+
+  bool _isSessionInvalidError(Object error) {
+    if (error is FirebaseAuthException) {
+      return const {
+        'invalid-user-token',
+        'user-token-expired',
+        'user-disabled',
+        'user-not-found',
+      }.contains(error.code);
+    }
+    if (error is FirebaseFunctionsException) {
+      return error.code == 'unauthenticated';
+    }
+    return false;
   }
 
   @override
@@ -88,19 +128,32 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     setState(() => _isChecking = true);
 
     try {
-      final isVerified = await _verificationController
-          .refreshVerificationStatus();
+      final result = await _verificationController.refreshVerificationStatus();
       if (!mounted) return;
 
-      if (!isVerified) {
+      if (result == EmailVerificationRefreshResult.pending) {
         AppFeedback.show(
           context,
           message: 'Your email is still unverified. Please check your inbox.',
           tone: AppFeedbackTone.info,
         );
+      } else if (result ==
+          EmailVerificationRefreshResult.reauthenticationRequired) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(
+            builder:
+                widget.reauthenticationDestinationBuilder ??
+                (_) => const SigninScreen(
+                  noticeMessage:
+                      'Your email was changed securely. Please sign in again with your new email or linked phone number.',
+                ),
+          ),
+          (route) => false,
+        );
       } else {
         if (widget.mode.blocksAppAccess) {
-          final resolution = await _onboardingService.resolveCurrentState();
+          final resolution = await _onboardingServiceInstance
+              .resolveCurrentState();
           if (!mounted) return;
           if (resolution.state ==
               AuthOnboardingState.emailVerificationRequired) {
@@ -147,7 +200,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     setState(() => _isResending = true);
 
     try {
-      await _authService.sendCurrentUserEmailVerification();
+      await _authServiceInstance.sendCurrentUserEmailVerification();
       _startCooldown();
       if (!mounted) return;
       AppFeedback.show(
@@ -173,7 +226,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     if (_isRestarting) return;
     setState(() => _isRestarting = true);
     try {
-      await _authService.logout();
+      await _authServiceInstance.logout();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const SignupScreen()),

@@ -18,7 +18,9 @@ import 'signin_with_phone_screen.dart';
 import 'signup_screen.dart';
 
 class SigninScreen extends StatefulWidget {
-  const SigninScreen({super.key});
+  final String? noticeMessage;
+
+  const SigninScreen({super.key, this.noticeMessage});
 
   @override
   State<SigninScreen> createState() => _SigninScreenState();
@@ -57,6 +59,14 @@ class _SigninScreenState extends State<SigninScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _analytics.logSignInViewed();
+      final noticeMessage = widget.noticeMessage?.trim() ?? '';
+      if (noticeMessage.isNotEmpty && mounted) {
+        AppFeedback.show(
+          context,
+          message: noticeMessage,
+          tone: AppFeedbackTone.info,
+        );
+      }
     });
   }
 

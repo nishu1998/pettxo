@@ -758,6 +758,11 @@ class AuthService {
     return _auth.currentUser;
   }
 
+  Future<void> refreshCurrentUserIdToken() async {
+    final currentUser = _requireCurrentUser();
+    await currentUser.getIdToken(true);
+  }
+
   Future<void> syncTrustedAuthIdentity() async {
     if (_auth.currentUser == null) return;
     try {

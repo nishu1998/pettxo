@@ -74,17 +74,22 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
       _currentPasswordController.clear();
       _emailController.clear();
       if (!mounted) return;
-      await Navigator.of(context).push<bool>(
+      final didVerify = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           builder: (_) => EmailVerificationScreen(
             mode: EmailVerificationMode.nonBlockingLinkedEmail,
             displayEmailOverride: newEmail,
             expectedVerifiedEmail: newEmail,
+            expectedUid: uid,
           ),
         ),
       );
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      if (didVerify == true) {
+        Navigator.of(context).pop(true);
+      } else {
+        setState(() => _isSubmitting = false);
+      }
     } catch (error) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
