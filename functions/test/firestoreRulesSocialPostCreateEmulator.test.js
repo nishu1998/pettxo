@@ -102,6 +102,44 @@ test("social post create accepts runtime payload without backend-owned feed defa
   }
 });
 
+test("social post hashtags enforce 30 characters each and retain the five-tag limit", async () => {
+  const testEnv = await initializeTestEnvironment({
+    projectId,
+    firestore: {rules},
+  });
+
+  try {
+    const uid = "user_123";
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", uid), {
+        uid,
+        accountStatus: "active",
+      });
+    });
+    const firestore = testEnv.authenticatedContext(uid).firestore();
+
+    const exact = buildRuntimePayload(uid, "post_hashtag_30");
+    exact.hashtags = ["a".repeat(30)];
+    await assertSucceeds(
+      setDoc(doc(firestore, "socialPosts", exact.id), exact),
+    );
+
+    const oversized = buildRuntimePayload(uid, "post_hashtag_31");
+    oversized.hashtags = ["b".repeat(31)];
+    await assertFails(
+      setDoc(doc(firestore, "socialPosts", oversized.id), oversized),
+    );
+
+    const tooMany = buildRuntimePayload(uid, "post_hashtag_6");
+    tooMany.hashtags = ["one", "two", "three", "four", "five", "six"];
+    await assertFails(
+      setDoc(doc(firestore, "socialPosts", tooMany.id), tooMany),
+    );
+  } finally {
+    await testEnv.cleanup();
+  }
+});
+
 test("social post and private creation-location intent are created atomically", async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,

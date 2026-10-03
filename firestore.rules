@@ -926,6 +926,28 @@ service cloud.firestore {
       request.resource.data.imageUrls.size() <= 5 &&
       request.resource.data.thumbnailUrls.size() == request.resource.data.imageUrls.size() &&
       request.resource.data.imageAspectRatio in ['square', 'portrait', 'landscape'] &&
+      request.resource.data.hashtags is list &&
+      request.resource.data.hashtags.size() <= 5 &&
+      (
+        request.resource.data.hashtags.size() < 1 ||
+        request.resource.data.hashtags[0].matches('^[a-z0-9_]{1,30}$')
+      ) &&
+      (
+        request.resource.data.hashtags.size() < 2 ||
+        request.resource.data.hashtags[1].matches('^[a-z0-9_]{1,30}$')
+      ) &&
+      (
+        request.resource.data.hashtags.size() < 3 ||
+        request.resource.data.hashtags[2].matches('^[a-z0-9_]{1,30}$')
+      ) &&
+      (
+        request.resource.data.hashtags.size() < 4 ||
+        request.resource.data.hashtags[3].matches('^[a-z0-9_]{1,30}$')
+      ) &&
+      (
+        request.resource.data.hashtags.size() < 5 ||
+        request.resource.data.hashtags[4].matches('^[a-z0-9_]{1,30}$')
+      ) &&
       request.resource.data.likeCount == 0 &&
       request.resource.data.commentCount == 0 &&
       request.resource.data.shareCount == 0 &&

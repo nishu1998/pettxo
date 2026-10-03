@@ -10,6 +10,7 @@ import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/services/post_publish_coordinator.dart';
 import '../../data/social_post_repository.dart';
+import '../../domain/hashtag_normalizer.dart' as hashtag_normalizer;
 import '../../domain/models/social_post_model.dart';
 
 class CreatePostScreen extends StatefulWidget {
@@ -21,7 +22,7 @@ class CreatePostScreen extends StatefulWidget {
 
 class _CreatePostScreenState extends State<CreatePostScreen> {
   static const int _maxPostImages = 5;
-  static const int _maxHashtags = 5;
+  static const int _maxHashtags = hashtag_normalizer.maxHashtagsPerPost;
   static const List<SocialPostAspectRatio> _supportedAspectRatios =
       <SocialPostAspectRatio>[
         SocialPostAspectRatio.square,
@@ -179,6 +180,14 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
 
     final normalized = _repository.normalizeHashtag(_hashtagController.text);
+    if (normalized.length > hashtag_normalizer.maxHashtagLength) {
+      AppFeedback.show(
+        context,
+        message: 'Each hashtag can contain up to 30 characters.',
+        tone: AppFeedbackTone.warning,
+      );
+      return;
+    }
     if (normalized.isEmpty) {
       AppFeedback.show(
         context,
@@ -313,7 +322,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     _SectionLabel(
                       label: 'HASHTAGS',
                       helper:
-                          'Add up to $_maxHashtags hashtags to help others find your post.',
+                          'Add up to $_maxHashtags hashtags, with up to 30 characters each.',
                     ),
                     const SizedBox(height: 10),
                     _HashtagInputRow(

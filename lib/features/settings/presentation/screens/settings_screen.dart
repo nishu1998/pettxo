@@ -11,7 +11,6 @@ import '../../../provider/presentation/screens/provider_verification_hub_screen.
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../data/services/settings_service.dart';
-import '../../data/services/marketing_email_preference_service.dart';
 import '../../domain/models/app_settings.dart';
 import 'account_security_screen.dart';
 import '../../../auth/presentation/screens/auth_gateway_screen.dart';
@@ -23,38 +22,26 @@ class SettingsScreen extends StatefulWidget {
     ProfileRepository? profileRepository,
     ProviderOnboardingRepository? providerOnboardingRepository,
     SettingsService? settingsService,
-    MarketingEmailPreferenceService? marketingEmailPreferenceService,
     Future<UserProfile> Function()? loadProfileOverride,
     Future<ProviderOnboardingSnapshot> Function()?
     loadProviderOnboardingOverride,
     Future<AppSettings> Function()? loadSettingsOverride,
-    Future<bool> Function()? loadMarketingEmailPreferenceOverride,
-    Future<bool> Function(bool enabled)? updateMarketingEmailPreferenceOverride,
     Future<void> Function()? signOutOverride,
   }) : _profileRepository = profileRepository,
        _providerOnboardingRepository = providerOnboardingRepository,
        _settingsService = settingsService,
-       _marketingEmailPreferenceService = marketingEmailPreferenceService,
        _loadProfileOverride = loadProfileOverride,
        _loadProviderOnboardingOverride = loadProviderOnboardingOverride,
        _loadSettingsOverride = loadSettingsOverride,
-       _loadMarketingEmailPreferenceOverride =
-           loadMarketingEmailPreferenceOverride,
-       _updateMarketingEmailPreferenceOverride =
-           updateMarketingEmailPreferenceOverride,
        _signOutOverride = signOutOverride;
 
   final ProfileRepository? _profileRepository;
   final ProviderOnboardingRepository? _providerOnboardingRepository;
   final SettingsService? _settingsService;
-  final MarketingEmailPreferenceService? _marketingEmailPreferenceService;
   final Future<UserProfile> Function()? _loadProfileOverride;
   final Future<ProviderOnboardingSnapshot> Function()?
   _loadProviderOnboardingOverride;
   final Future<AppSettings> Function()? _loadSettingsOverride;
-  final Future<bool> Function()? _loadMarketingEmailPreferenceOverride;
-  final Future<bool> Function(bool enabled)?
-  _updateMarketingEmailPreferenceOverride;
   final Future<void> Function()? _signOutOverride;
 
   @override
@@ -66,8 +53,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   UserProfile? _profile;
   ProviderOnboardingSnapshot? _providerOnboarding;
   bool _isLoading = true;
-  bool _marketingEmailEnabled = false;
-  bool _isUpdatingMarketingEmail = false;
   String? _loadError;
 
   @override
@@ -81,18 +66,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final settings =
           await widget._loadSettingsOverride?.call() ??
           await (widget._settingsService ?? SettingsService()).loadSettings();
-      var marketingEmailEnabled = false;
-      try {
-        marketingEmailEnabled =
-            await widget._loadMarketingEmailPreferenceOverride?.call() ??
-            await (widget._marketingEmailPreferenceService ??
-                    MarketingEmailPreferenceService())
-                .loadEnabled();
-      } catch (_) {
-        // The safe fallback is opted out. Other settings remain available if
-        // this optional preference cannot be read temporarily.
-        marketingEmailEnabled = false;
-      }
       final profile =
           await widget._loadProfileOverride?.call() ??
           await (widget._profileRepository ?? ProfileRepository())
@@ -111,7 +84,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       setState(() {
         _settings = settings;
-        _marketingEmailEnabled = marketingEmailEnabled;
         _profile = profile;
         _providerOnboarding = providerOnboarding;
         _loadError = null;
@@ -150,34 +122,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _updateSettings(AppSettings settings) async {
     setState(() => _settings = settings);
     await (widget._settingsService ?? SettingsService()).saveSettings(settings);
-  }
-
-  Future<void> _updateMarketingEmailPreference(bool enabled) async {
-    if (_isUpdatingMarketingEmail) return;
-    final previous = _marketingEmailEnabled;
-    setState(() {
-      _marketingEmailEnabled = enabled;
-      _isUpdatingMarketingEmail = true;
-    });
-    try {
-      final saved =
-          await widget._updateMarketingEmailPreferenceOverride?.call(enabled) ??
-          await (widget._marketingEmailPreferenceService ??
-                  MarketingEmailPreferenceService())
-              .updateEnabled(enabled);
-      if (!mounted) return;
-      setState(() => _marketingEmailEnabled = saved);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _marketingEmailEnabled = previous);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('We could not update your email preference.'),
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _isUpdatingMarketingEmail = false);
-    }
   }
 
   Future<void> _signOut() async {
@@ -383,20 +327,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           },
                         ),
                       ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _SectionLabel(title: 'EMAIL PREFERENCES'),
-                  _SettingsCard(
-                    child: _SwitchTile(
-                      icon: Icons.mark_email_read_outlined,
-                      title: 'Offers & Pettxo updates',
-                      subtitle:
-                          'Optional offers and news. Essential account and service emails are unaffected.',
-                      value: _marketingEmailEnabled,
-                      onChanged: _isUpdatingMarketingEmail
-                          ? null
-                          : _updateMarketingEmailPreference,
                     ),
                   ),
                   const SizedBox(height: 16),

@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   normalizePromoCode,
+  normalizePromoCodeForDefinition,
   promoCodeHash,
 } = require("../lib/offers/domain/promoCode.js");
 const sharedFirebase = require("../lib/shared/firebase.js");
@@ -32,6 +33,26 @@ test("promo code normalization rejects unsafe and ambiguous input", () => {
   ]) {
     assert.throws(() => normalizePromoCode(value), /invalid/i, value);
   }
+});
+
+test("new coupon definitions accept 20 characters and reject oversized pasted input", () => {
+  assert.equal(normalizePromoCodeForDefinition("a".repeat(20)), "A".repeat(20));
+  assert.equal(
+    normalizePromoCodeForDefinition(`  ${"b".repeat(20)}  `),
+    "B".repeat(20),
+  );
+  assert.throws(
+    () => normalizePromoCodeForDefinition("c".repeat(21)),
+    /invalid/i,
+  );
+  assert.throws(
+    () => normalizePromoCodeForDefinition(`  ${"d".repeat(21)}  `),
+    /invalid/i,
+  );
+});
+
+test("legacy redemption normalization still accepts existing 21-32 character codes", () => {
+  assert.equal(normalizePromoCode("a".repeat(32)), "A".repeat(32));
 });
 
 test("promo attempt limiter allows human retries and blocks the next attempt in the window", async () => {

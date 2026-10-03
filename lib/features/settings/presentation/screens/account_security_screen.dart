@@ -19,6 +19,7 @@ import 'change_password_screen.dart';
 import 'change_email_screen.dart';
 import 'change_phone_number_screen.dart';
 import 'change_username_screen.dart';
+import 'email_preferences_screen.dart';
 import 'link_email_password_screen.dart';
 
 class AccountSecurityScreen extends StatefulWidget {
@@ -176,6 +177,12 @@ class _AccountSecurityScreenState extends State<AccountSecurityScreen> {
       setState(() => _isLoading = true);
       await _refresh();
     }
+  }
+
+  void _openEmailPreferences() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const EmailPreferencesScreen()));
   }
 
   Future<void> _requestAccountDeletion() async {
@@ -362,6 +369,20 @@ class _AccountSecurityScreenState extends State<AccountSecurityScreen> {
                   _AccountSecurityCard(
                     child: Column(
                       children: [
+                        _ActionTile(
+                          icon: Icons.mark_email_read_outlined,
+                          title: 'Email Preferences',
+                          subtitle:
+                              'Choose whether to receive optional offers and Pettxo updates.',
+                          onTap: _openEmailPreferences,
+                        ),
+                        if (viewData.canChangeUsername ||
+                            viewData.canAddEmailPassword ||
+                            viewData.canManagePendingEmailVerification ||
+                            viewData.canChangeEmail ||
+                            viewData.canChangePhoneNumber ||
+                            viewData.canChangePassword)
+                          const Divider(height: 1),
                         if (viewData.canChangeUsername)
                           _ActionTile(
                             icon: Icons.alternate_email_rounded,

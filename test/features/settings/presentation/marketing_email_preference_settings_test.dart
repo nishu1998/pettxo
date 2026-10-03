@@ -2,14 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pettexo/features/profile/domain/models/user_profile.dart';
 import 'package:pettexo/features/settings/domain/models/app_settings.dart';
+import 'package:pettexo/features/settings/presentation/screens/email_preferences_screen.dart';
 import 'package:pettexo/features/settings/presentation/screens/settings_screen.dart';
 
 void main() {
-  testWidgets('Settings exposes an independent optional marketing email toggle', (
+  testWidgets('main Settings no longer renders marketing email controls', (
     tester,
   ) async {
-    var updateCount = 0;
-    bool? savedValue;
     final profile = UserProfile.fromMap({
       'uid': 'user-1',
       'displayName': 'Pet Parent',
@@ -23,8 +22,33 @@ void main() {
           loadSettingsOverride: () async => const AppSettings.defaults(),
           loadProfileOverride: () async => profile,
           loadProviderOnboardingOverride: () async => throw Exception('none'),
-          loadMarketingEmailPreferenceOverride: () async => false,
-          updateMarketingEmailPreferenceOverride: (enabled) async {
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Account & Security'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    expect(find.text('EMAIL PREFERENCES'), findsNothing);
+    expect(find.text('Offers & Pettxo updates'), findsNothing);
+    expect(find.text('Account & Security'), findsOneWidget);
+  });
+
+  testWidgets('Email Preferences preserves and saves the existing preference', (
+    tester,
+  ) async {
+    var updateCount = 0;
+    bool? savedValue;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EmailPreferencesScreen(
+          loadPreferenceOverride: () async => true,
+          updatePreferenceOverride: (enabled) async {
             updateCount++;
             savedValue = enabled;
             return enabled;
@@ -34,7 +58,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('EMAIL PREFERENCES'), findsOneWidget);
+    expect(find.text('Email Preferences'), findsOneWidget);
     expect(find.text('Offers & Pettxo updates'), findsOneWidget);
     expect(
       find.text(
@@ -42,12 +66,13 @@ void main() {
       ),
       findsOneWidget,
     );
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
 
-    final switchFinder = find.byType(Switch).last;
-    await tester.tap(switchFinder);
+    await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
 
     expect(updateCount, 1);
-    expect(savedValue, isTrue);
+    expect(savedValue, isFalse);
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
   });
 }

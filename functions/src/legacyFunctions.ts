@@ -73,6 +73,7 @@ import {
 } from "./offers/application/offerAdminContract";
 import {
   normalizePromoCode,
+  normalizePromoCodeForDefinition,
   promoCodeAuditId,
   PromoCodeValidationError,
 } from "./offers/domain/promoCode";
@@ -408,17 +409,22 @@ function writeOfferAuditLog(
 
 function normalizeOfferPayload(
   data: Record<string, unknown>,
-  options: {requireAllFields: boolean},
+  options: {
+    requireAllFields: boolean;
+    enforceCouponCodeDefinitionLimit: boolean;
+  },
 ): OfferPayload {
   const title = asTrimmedString(data.title);
   let couponCode: string;
   try {
-    couponCode = normalizePromoCode(data.couponCode);
+    couponCode = options.enforceCouponCodeDefinitionLimit ?
+      normalizePromoCodeForDefinition(data.couponCode) :
+      normalizePromoCode(data.couponCode);
   } catch (error) {
     if (error instanceof PromoCodeValidationError) {
       throw new HttpsError(
         "invalid-argument",
-        "couponCode must be 3-32 characters using A-Z, 0-9, underscore, or hyphen.",
+        "couponCode must be 3-20 characters using A-Z, 0-9, underscore, or hyphen.",
       );
     }
     throw error;
@@ -3731,7 +3737,10 @@ export const createOfferCampaign = onCall(async (request) => {
   const normalized = normalizeOfferPayload({
     ...mutation.payload,
     displayType: "offerWall",
-  }, {requireAllFields: true});
+  }, {
+    requireAllFields: true,
+    enforceCouponCodeDefinitionLimit: true,
+  });
 
   const campaignRef = db.collection("offerCampaigns").doc();
   await assertNoLegacyOfferCodeCollision(normalized.couponCode, campaignRef.id);
@@ -3816,7 +3825,13 @@ export const updateOfferCampaign = onCall(async (request) => {
       existingData.targeting :
       {...asRecord(existingData.targeting), ...asRecord(mutation.payload.targeting)},
   };
-  const normalized = normalizeOfferPayload(mergedData, {requireAllFields: true});
+  const normalized = normalizeOfferPayload(mergedData, {
+    requireAllFields: true,
+    enforceCouponCodeDefinitionLimit: Object.prototype.hasOwnProperty.call(
+      mutation.payload,
+      "couponCode",
+    ),
+  });
   await assertNoLegacyOfferCodeCollision(normalized.couponCode, campaignId);
   try {
     await db.runTransaction(async (transaction) => {

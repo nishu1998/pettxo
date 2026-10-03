@@ -367,6 +367,60 @@ test("createOfferCampaign rejects malformed visibility", async () => {
   });
 });
 
+test("createOfferCampaign accepts 20-character codes and rejects 21-character codes", async () => {
+  const payload = baseCampaign();
+  delete payload.isDeleted;
+  await withFakeFirestore({
+    "users/admin_1": {adminRole: "financeAdmin"},
+  }, async (firestore) => {
+    const accepted = await legacyFunctions.createOfferCampaign.run({
+      auth: {uid: "admin_1"},
+      data: {...payload, couponCode: "a".repeat(20)},
+    });
+    assert.equal(
+      firestore.store.get(`offerCampaigns/${accepted.campaignId}`).couponCode,
+      "A".repeat(20),
+    );
+
+    await assert.rejects(
+      legacyFunctions.createOfferCampaign.run({
+        auth: {uid: "admin_1"},
+        data: {...payload, couponCode: `  ${"b".repeat(21)}  `},
+      }),
+      /3-20 characters/i,
+    );
+  });
+});
+
+test("updateOfferCampaign enforces 20 characters only when defining a new code", async () => {
+  const legacyLongCode = "L".repeat(24);
+  await withFakeFirestore({
+    "users/admin_1": {adminRole: "financeAdmin"},
+    "offerCampaigns/campaign_1": baseCampaign({couponCode: legacyLongCode}),
+  }, async (firestore) => {
+    await legacyFunctions.updateOfferCampaign.run({
+      auth: {uid: "admin_1"},
+      data: {campaignId: "campaign_1", title: "Unrelated edit"},
+    });
+    assert.equal(
+      firestore.store.get("offerCampaigns/campaign_1").couponCode,
+      legacyLongCode,
+    );
+
+    await assert.rejects(
+      legacyFunctions.updateOfferCampaign.run({
+        auth: {uid: "admin_1"},
+        data: {campaignId: "campaign_1", couponCode: "c".repeat(21)},
+      }),
+      /3-20 characters/i,
+    );
+    assert.equal(
+      firestore.store.get("offerCampaigns/campaign_1").couponCode,
+      legacyLongCode,
+    );
+  });
+});
+
 test("updateOfferCampaign edits an old legacy document with the canonical payload and does not require claim fields", async () => {
   await withFakeFirestore({
     "users/admin_1": {

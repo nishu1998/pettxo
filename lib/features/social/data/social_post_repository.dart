@@ -423,7 +423,9 @@ class SocialPostRepository {
     final authorId = await _ensureAuthenticatedForStorageWrite();
     final profile = await _profileRepository.getCurrentUserProfile();
     final postRef = _postsCollection.doc();
-    final normalizedHashtags = hashtag_normalizer.normalizeHashtags(hashtags);
+    final normalizedHashtags = hashtag_normalizer.validatePostHashtags(
+      hashtags,
+    );
     final creationLocation = await _postLocationRepository
         .captureFreshPostLocation();
     final uploads = await _uploadImages(
