@@ -200,7 +200,19 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     setState(() => _isResending = true);
 
     try {
-      await _authServiceInstance.sendCurrentUserEmailVerification();
+      final expectedEmail = (widget.expectedVerifiedEmail ?? '').trim();
+      final currentEmail = (_authServiceInstance.currentUser?.email ?? '')
+          .trim();
+      if (widget.mode.requestsEmailChangeVerification(
+        currentEmail: currentEmail,
+        expectedEmail: expectedEmail,
+      )) {
+        await _authServiceInstance.beginCurrentUserEmailChange(
+          newEmail: expectedEmail,
+        );
+      } else {
+        await _authServiceInstance.sendCurrentUserEmailVerification();
+      }
       _startCooldown();
       if (!mounted) return;
       AppFeedback.show(

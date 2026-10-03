@@ -94,6 +94,7 @@ const expectedExportNames = [
   "replyToSupportTicket",
   "revealManualSettlementProviderDestinationV3",
   "requestAccountDeletion",
+  "requestEmailChangeV2",
   "requestPasswordReset",
   "requestPasswordResetV2",
   "resolveBookingDisputeV3",

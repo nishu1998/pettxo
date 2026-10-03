@@ -3,6 +3,17 @@ enum EmailVerificationMode { blockingOnboarding, nonBlockingLinkedEmail }
 extension EmailVerificationModeX on EmailVerificationMode {
   bool get blocksAppAccess => this == EmailVerificationMode.blockingOnboarding;
 
+  bool requestsEmailChangeVerification({
+    required String currentEmail,
+    required String expectedEmail,
+  }) {
+    final normalizedCurrent = currentEmail.trim().toLowerCase();
+    final normalizedExpected = expectedEmail.trim().toLowerCase();
+    return this == EmailVerificationMode.nonBlockingLinkedEmail &&
+        normalizedExpected.isNotEmpty &&
+        normalizedExpected != normalizedCurrent;
+  }
+
   String get title {
     return switch (this) {
       EmailVerificationMode.blockingOnboarding => 'Verify Your Email',

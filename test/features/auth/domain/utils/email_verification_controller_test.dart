@@ -11,6 +11,36 @@ void main() {
         isFalse,
       );
     });
+
+    test(
+      'routes only a pending changed address through email-change resend',
+      () {
+        expect(
+          EmailVerificationMode.nonBlockingLinkedEmail
+              .requestsEmailChangeVerification(
+                currentEmail: 'old@example.com',
+                expectedEmail: 'new@example.com',
+              ),
+          isTrue,
+        );
+        expect(
+          EmailVerificationMode.nonBlockingLinkedEmail
+              .requestsEmailChangeVerification(
+                currentEmail: 'linked@example.com',
+                expectedEmail: 'LINKED@example.com',
+              ),
+          isFalse,
+        );
+        expect(
+          EmailVerificationMode.blockingOnboarding
+              .requestsEmailChangeVerification(
+                currentEmail: 'old@example.com',
+                expectedEmail: 'new@example.com',
+              ),
+          isFalse,
+        );
+      },
+    );
   });
 
   group('EmailVerificationController', () {

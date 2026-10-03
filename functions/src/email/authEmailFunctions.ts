@@ -4,6 +4,7 @@ import {onCall} from "firebase-functions/v2/https";
 import {RESEND_API_KEY} from "../config/secrets";
 import {auth, db} from "../shared/firebase";
 import {
+  handleRequestEmailChangeV2,
   handleRequestPasswordResetV2,
   handleSendVerificationEmailV2,
   type AuthEmailDependencies,
@@ -77,11 +78,18 @@ function buildDependencies(): AuthEmailDependencies {
       const key = authEmailRateLimitKey(email);
       return reserveAuthEmailCooldown("passwordResetV2Requests", key);
     },
+    reserveEmailChangeCooldown(uid) {
+      const key = authEmailRateLimitKey(uid);
+      return reserveAuthEmailCooldown("emailChangeV2Requests", key);
+    },
     generateVerificationLink(email) {
       return auth.generateEmailVerificationLink(email);
     },
     generatePasswordResetLink(email) {
       return auth.generatePasswordResetLink(email);
+    },
+    generateVerifyAndChangeEmailLink(currentEmail, newEmail) {
+      return auth.generateVerifyAndChangeEmailLink(currentEmail, newEmail);
     },
     sendEmail(message) {
       return sendAuthEmail(RESEND_API_KEY.value(), message);
@@ -117,4 +125,28 @@ export const requestPasswordResetV2 = onCall(
     secrets: [RESEND_API_KEY],
   },
   (request) => handleRequestPasswordResetV2(request.data, buildDependencies()),
+);
+
+export const requestEmailChangeV2 = onCall(
+  {
+    invoker: "public",
+    region: "asia-south1",
+    secrets: [RESEND_API_KEY],
+  },
+  (request) =>
+    handleRequestEmailChangeV2(
+      request.data,
+      request.auth ? {
+        uid: request.auth.uid,
+        email:
+          typeof request.auth.token.email === "string" ?
+            request.auth.token.email :
+            undefined,
+        authTimeSeconds:
+          typeof request.auth.token.auth_time === "number" ?
+            request.auth.token.auth_time :
+            undefined,
+      } : undefined,
+      buildDependencies(),
+    ),
 );

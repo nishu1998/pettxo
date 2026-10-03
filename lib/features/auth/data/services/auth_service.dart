@@ -692,8 +692,9 @@ class AuthService {
     final expectedUid = currentUser.uid;
 
     try {
-      final dynamic user = currentUser;
-      await user.verifyBeforeUpdateEmail(newEmail.trim());
+      await currentUser.getIdToken(true);
+      final callable = _functions.httpsCallable('requestEmailChangeV2');
+      await callable.call<Map<String, dynamic>>({'newEmail': newEmail.trim()});
       await reloadCurrentUser();
       final refreshedUser = _requireCurrentUser();
       if (!linkedUidRemainsUnchanged(
@@ -708,6 +709,14 @@ class AuthService {
     } on FirebaseAuthException catch (e) {
       _logFirebaseAuthException('beginCurrentUserEmailChange:failed', e);
       throw mapFirebaseAuthException(e);
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'resource-exhausted') {
+        throw const AuthActionException(
+          code: 'resource-exhausted',
+          message: 'Please wait before requesting another email change.',
+        );
+      }
+      throw mapFunctionsActionException(e);
     }
   }
 

@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   requestPasswordResetV2,
+  requestEmailChangeV2,
   sendVerificationEmailV2,
   sendWelcomeEmailOnUserCreated,
 } = require("../lib/index.js");
@@ -14,6 +15,7 @@ const {
 
 for (const [name, callable] of Object.entries({
   requestPasswordResetV2,
+  requestEmailChangeV2,
   sendVerificationEmailV2,
 })) {
   test(`${name} is Gen 2 in asia-south1 with RESEND_API_KEY bound`, () => {

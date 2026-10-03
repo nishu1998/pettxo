@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  handleRequestEmailChangeV2,
   handleRequestPasswordResetV2,
   handleSendVerificationEmailV2,
 } = require("../lib/email/authEmailApplication.js");
@@ -27,6 +28,7 @@ function dependencies(overrides = {}) {
     uid: [],
     email: [],
     verificationLinks: [],
+    emailChangeLinks: [],
     resetLinks: [],
     resetFailures: [],
   };
@@ -54,6 +56,9 @@ function dependencies(overrides = {}) {
       async reservePasswordResetCooldown() {
         return true;
       },
+      async reserveEmailChangeCooldown() {
+        return true;
+      },
       async generateVerificationLink(email) {
         calls.verificationLinks.push(email);
         return "https://example.test/action?mode=verifyEmail&oobCode=secret";
@@ -61,6 +66,10 @@ function dependencies(overrides = {}) {
       async generatePasswordResetLink(email) {
         calls.resetLinks.push(email);
         return "https://example.test/action?mode=resetPassword&oobCode=secret";
+      },
+      async generateVerifyAndChangeEmailLink(currentEmail, newEmail) {
+        calls.emailChangeLinks.push({currentEmail, newEmail});
+        return "https://example.test/action?mode=verifyAndChangeEmail&oobCode=secret";
       },
       async sendEmail(message) {
         sent.push(message);
@@ -72,6 +81,121 @@ function dependencies(overrides = {}) {
     },
   };
 }
+
+function recentCaller(overrides = {}) {
+  return {
+    uid: "canonical-uid",
+    email: "person@example.com",
+    authTimeSeconds: 1_000,
+    ...overrides,
+  };
+}
+
+test("email change requires an authenticated recently signed-in caller", async () => {
+  const deps = dependencies();
+  await assert.rejects(
+    handleRequestEmailChangeV2(
+      {newEmail: "new@example.com"},
+      undefined,
+      deps.value,
+      1_010,
+    ),
+    (error) => error.code === "unauthenticated",
+  );
+  await assert.rejects(
+    handleRequestEmailChangeV2(
+      {newEmail: "new@example.com"},
+      recentCaller({authTimeSeconds: 600}),
+      deps.value,
+      1_010,
+    ),
+    (error) =>
+      error.code === "failed-precondition" &&
+      error.details?.appCode === "requires-recent-login",
+  );
+  assert.equal(deps.sent.length, 0);
+});
+
+test("email change sends the branded VERIFY_AND_CHANGE_EMAIL action to the new address", async () => {
+  const deps = dependencies();
+  const result = await handleRequestEmailChangeV2(
+    {newEmail: "  New@Example.COM "},
+    recentCaller(),
+    deps.value,
+    1_010,
+  );
+
+  assert.deepEqual(result, {success: true});
+  assert.deepEqual(deps.calls.uid, ["canonical-uid"]);
+  assert.deepEqual(deps.calls.emailChangeLinks, [{
+    currentEmail: "person@example.com",
+    newEmail: "new@example.com",
+  }]);
+  assert.equal(deps.sent.length, 1);
+  assert.equal(deps.sent[0].to, "new@example.com");
+  assert.equal(deps.sent[0].subject, "Verify your new email for Pettxo");
+  assert.match(deps.sent[0].html, /PETTXO/);
+  assert.match(deps.sent[0].html, />Verify new email<\/a>/);
+  assert.match(deps.sent[0].html, /mode=verifyAndChangeEmail&amp;oobCode=secret/);
+  assert.equal(JSON.stringify(result).includes("oobCode"), false);
+});
+
+test("email change rejects token-email mismatch and UID tampering", async () => {
+  const mismatch = dependencies();
+  await assert.rejects(
+    handleRequestEmailChangeV2(
+      {newEmail: "new@example.com"},
+      recentCaller({email: "attacker@example.com"}),
+      mismatch.value,
+      1_010,
+    ),
+    (error) => error.details?.appCode === "requires-recent-login",
+  );
+
+  const wrongUid = dependencies({getUserByUid: async () => user()});
+  await assert.rejects(
+    handleRequestEmailChangeV2(
+      {newEmail: "new@example.com"},
+      recentCaller({uid: "caller-uid", email: "person@example.com"}),
+      wrongUid.value,
+      1_010,
+    ),
+    (error) => error.code === "failed-precondition",
+  );
+  assert.equal(wrongUid.sent.length, 0);
+});
+
+test("email change cooldown prevents repeated branded sends", async () => {
+  const deps = dependencies({reserveEmailChangeCooldown: async () => false});
+  await assert.rejects(
+    handleRequestEmailChangeV2(
+      {newEmail: "new@example.com"},
+      recentCaller(),
+      deps.value,
+      1_010,
+    ),
+    (error) => error.code === "resource-exhausted",
+  );
+  assert.equal(deps.sent.length, 0);
+  assert.equal(deps.calls.emailChangeLinks.length, 0);
+});
+
+test("email change refuses a generic VERIFY_EMAIL action", async () => {
+  const deps = dependencies({
+    generateVerifyAndChangeEmailLink: async () =>
+      "https://example.test/action?mode=verifyEmail&oobCode=secret",
+  });
+  await assert.rejects(
+    handleRequestEmailChangeV2(
+      {newEmail: "new@example.com"},
+      recentCaller(),
+      deps.value,
+      1_010,
+    ),
+    (error) => error.code === "unavailable",
+  );
+  assert.equal(deps.sent.length, 0);
+});
 
 test("verification rejects unauthenticated requests", async () => {
   const deps = dependencies();

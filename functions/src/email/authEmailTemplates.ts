@@ -1,7 +1,11 @@
 export const verificationEmailSubject = "Verify your email for Pettxo";
+export const emailChangeVerificationSubject =
+  "Verify your new email for Pettxo";
 export const passwordResetEmailSubject = "Reset your Pettxo password";
 export const verificationEmailPreview =
   "One tap to confirm your email and secure your Pettxo account.";
+export const emailChangeVerificationPreview =
+  "Verify your new email address to complete your Pettxo account change.";
 export const passwordResetEmailPreview =
   "Use this link to choose a new password for your Pettxo account.";
 export const welcomeEmailPreview = "Here's how to get started with Pettxo.";
@@ -173,6 +177,25 @@ export function renderVerificationEmail(data: AuthEmailTemplateData): string {
     buttonLabel: "Verify email",
     safetyCopy:
       "<strong>Didn't sign up for Pettxo?</strong> You can ignore this email. The account won't be verified unless someone taps the button.",
+  });
+}
+
+export function renderEmailChangeVerification(
+  data: AuthEmailTemplateData,
+): string {
+  return renderApprovedAuthEmail({
+    title: emailChangeVerificationSubject,
+    preview: emailChangeVerificationPreview,
+    heading: "Verify your new email",
+    greetingName: safeGreetingName(data.name),
+    body:
+      "You requested to change the email address associated with your Pettxo account. Use the button below to verify your new email address and complete the change.",
+    accountLabel: "New email address",
+    email: escapeHtml(data.email),
+    actionLink: escapeHtml(data.actionLink),
+    buttonLabel: "Verify new email",
+    safetyCopy:
+      "<strong>Didn't request this change?</strong> You can safely ignore this email. Your account email will not be changed unless the verification is completed.",
   });
 }
 

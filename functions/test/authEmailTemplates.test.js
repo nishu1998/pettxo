@@ -2,8 +2,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  emailChangeVerificationPreview,
+  emailChangeVerificationSubject,
   passwordResetEmailPreview,
   passwordResetEmailSubject,
+  renderEmailChangeVerification,
   renderPasswordResetEmail,
   renderVerificationEmail,
   renderWelcomeEmail,
@@ -22,7 +25,15 @@ const actionLink =
 
 test("approved subjects and preheaders remain exact", () => {
   assert.equal(verificationEmailSubject, "Verify your email for Pettxo");
+  assert.equal(
+    emailChangeVerificationSubject,
+    "Verify your new email for Pettxo",
+  );
   assert.equal(passwordResetEmailSubject, "Reset your Pettxo password");
+  assert.equal(
+    emailChangeVerificationPreview,
+    "Verify your new email address to complete your Pettxo account change.",
+  );
   assert.equal(
     verificationEmailPreview,
     "One tap to confirm your email and secure your Pettxo account.",
@@ -31,6 +42,24 @@ test("approved subjects and preheaders remain exact", () => {
     passwordResetEmailPreview,
     "Use this link to choose a new password for your Pettxo account.",
   );
+});
+
+test("email change template reuses approved branding and preserves its secure action", () => {
+  const html = renderEmailChangeVerification({
+    name: "Priya & Co",
+    email: "new@example.com",
+    actionLink: actionLink.replace("verifyEmail", "verifyAndChangeEmail"),
+  });
+
+  assert.match(html, /Verify your new email/);
+  assert.match(html, />Verify new email<\/a>/);
+  assert.match(html, /Where pets and people connect\./);
+  assert.match(html, /Pettxo Private Limited/);
+  assert.match(html, /Hi Priya &amp; Co,/);
+  assert.match(html, /New email address/);
+  assert.ok(html.includes("mode=verifyAndChangeEmail&amp;oobCode=a%2Bb"));
+  assert.equal(html.includes("RESEND_API_KEY"), false);
+  assert.equal(html.includes("AIza"), false);
 });
 
 test("transactional sender identity remains exact", () => {
