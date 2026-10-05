@@ -7,12 +7,24 @@ export const offerWallAudienceValues = [
 
 export type OfferWallAudience = typeof offerWallAudienceValues[number];
 
+export const offerWallUserRoleValues = [
+  "petParent",
+  "petLover",
+  "serviceProvider",
+] as const;
+
+export type OfferWallUserRole = typeof offerWallUserRoleValues[number];
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
 export function isOfferWallAudience(value: string): value is OfferWallAudience {
   return offerWallAudienceValues.includes(value as OfferWallAudience);
+}
+
+export function isOfferWallUserRole(value: string): value is OfferWallUserRole {
+  return offerWallUserRoleValues.includes(value as OfferWallUserRole);
 }
 
 export function normalizeOfferWallAudiences(
@@ -48,6 +60,7 @@ export function matchesOfferWallAudience(params: {
   audiences: OfferWallAudience[];
   role: string;
 }): boolean {
+  if (!isOfferWallUserRole(params.role)) return false;
   if (params.audiences.includes("allUsers")) return true;
-  return isOfferWallAudience(params.role) && params.audiences.includes(params.role);
+  return params.audiences.includes(params.role);
 }

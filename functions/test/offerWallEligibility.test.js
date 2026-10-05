@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  selectRandomOfferWallCampaign,
   shouldDisplayOfferWallAfterCount,
   sortOfferWallCampaignsForEvaluation,
 } = require("../lib/offerWall/domain/offerWallEligibility.js");
@@ -39,5 +40,17 @@ test("offer wall campaign sort uses oldest createdAt then id", () => {
   assert.deepEqual(
     sortOfferWallCampaignsForEvaluation(campaigns).map((campaign) => campaign.id),
     ["a", "b", "c"],
+  );
+});
+
+test("offer wall random selection is deterministic with an injected source", () => {
+  const campaigns = [{id: "a"}, {id: "b"}];
+
+  assert.equal(selectRandomOfferWallCampaign(campaigns, () => 0).id, "a");
+  assert.equal(selectRandomOfferWallCampaign(campaigns, () => 0.999).id, "b");
+  assert.equal(selectRandomOfferWallCampaign([], () => 0), null);
+  assert.equal(
+    selectRandomOfferWallCampaign([campaigns[1]], () => 0),
+    campaigns[1],
   );
 });

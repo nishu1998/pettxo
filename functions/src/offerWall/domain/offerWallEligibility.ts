@@ -32,3 +32,21 @@ export function sortOfferWallCampaignsForEvaluation<
     return left.id.localeCompare(right.id);
   });
 }
+
+export function selectRandomOfferWallCampaign<T>(
+  campaigns: readonly T[],
+  randomSource: () => number = Math.random,
+): T | null {
+  if (campaigns.length === 0) return null;
+  if (campaigns.length === 1) return campaigns[0];
+
+  const randomValue = randomSource();
+  const boundedValue = Number.isFinite(randomValue) ?
+    Math.min(Math.max(randomValue, 0), 1) :
+    0;
+  const selectedIndex = Math.min(
+    Math.floor(boundedValue * campaigns.length),
+    campaigns.length - 1,
+  );
+  return campaigns[selectedIndex];
+}

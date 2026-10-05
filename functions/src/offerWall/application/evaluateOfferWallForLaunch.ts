@@ -10,6 +10,7 @@ import {
 } from "../domain/offerWallAudience";
 import {normalizeOfferWallCampaignInput} from "../domain/offerWallCampaign";
 import {
+  selectRandomOfferWallCampaign,
   shouldDisplayOfferWallAfterCount,
   sortOfferWallCampaignsForEvaluation,
 } from "../domain/offerWallEligibility";
@@ -67,9 +68,11 @@ function sessionRef(uid: string, sessionId: string) {
 export async function evaluateOfferWallForLaunch(params: {
   uid: string;
   sessionId: string;
+  randomSource?: () => number;
 }): Promise<OfferWallEvaluationPayload | null> {
   const uid = asTrimmedString(params.uid);
   const sessionId = asTrimmedString(params.sessionId);
+  const randomSource = params.randomSource ?? Math.random;
   if (!uid) {
     throw new HttpsError("unauthenticated", "Sign in to continue.");
   }
@@ -167,9 +170,13 @@ export async function evaluateOfferWallForLaunch(params: {
   }
 
   const launchSessionRef = sessionRef(uid, sessionId);
+  const campaignStateRefs = matchingCampaigns.map((campaign) =>
+    stateRef(uid, campaign.id),
+  );
 
   return db.runTransaction(async (transaction) => {
-    const sessionSnapshot = await transaction.get(launchSessionRef);
+    const [sessionSnapshot, ...campaignStateSnapshots] =
+      await transaction.getAll(launchSessionRef, ...campaignStateRefs);
     logDiag("session-check", {
       sessionId,
       alreadyProcessed: sessionSnapshot.exists,
@@ -216,16 +223,17 @@ export async function evaluateOfferWallForLaunch(params: {
       return null;
     }
 
-    let selectedPayload: OfferWallEvaluationPayload | null = null;
     let selectedReason = "no-threshold-match";
+    const evaluatedCampaigns = [];
+    const launchEligibleCampaigns = [];
 
-    for (const campaign of matchingCampaigns) {
+    for (const [index, campaign] of matchingCampaigns.entries()) {
       logDiag("eligible-campaign", {
         campaignId: campaign.id,
         createdAt: campaign.createdAt?.toISOString() ?? "",
       });
       const campaignStateRef = stateRef(uid, campaign.id);
-      const campaignStateSnapshot = await transaction.get(campaignStateRef);
+      const campaignStateSnapshot = campaignStateSnapshots[index];
       const currentState = normalizeOfferWallUserState({
         uid,
         campaignId: campaign.id,
@@ -294,45 +302,72 @@ export async function evaluateOfferWallForLaunch(params: {
         continue;
       }
 
-      if (!selectedPayload && dueForDisplay) {
-        const displayToken =
-          currentState.pendingDisplayToken ||
-          crypto.randomUUID().replace(/-/g, "");
-        selectedPayload = {
-          campaignId: campaign.id,
-          name: campaign.name,
-          creativeStoragePath: campaign.creativeStoragePath,
-          displayToken,
-          sessionId,
-        };
-        selectedReason = "selected";
-        logDiag("campaign-selected", {
-          campaignId: campaign.id,
-          selectionPolicy: "oldest-createdAt-then-id",
-        });
-        transaction.set(campaignStateRef, {
-          campaignId: campaign.id,
+      const evaluatedCampaign = {
+        campaign,
+        campaignStateRef,
+        campaignStateSnapshot,
+        currentState,
+        countedThisSession,
+        nextEligibleOpenCount,
+      };
+      evaluatedCampaigns.push(evaluatedCampaign);
+      if (dueForDisplay) {
+        launchEligibleCampaigns.push(evaluatedCampaign);
+      }
+    }
+
+    const selectedCampaign = selectRandomOfferWallCampaign(
+      launchEligibleCampaigns,
+      randomSource,
+    );
+    const displayToken = selectedCampaign ?
+      selectedCampaign.currentState.pendingDisplayToken ||
+        crypto.randomUUID().replace(/-/g, "") :
+      "";
+    const selectedPayload: OfferWallEvaluationPayload | null = selectedCampaign ? {
+      campaignId: selectedCampaign.campaign.id,
+      name: selectedCampaign.campaign.name,
+      creativeStoragePath: selectedCampaign.campaign.creativeStoragePath,
+      displayToken,
+      sessionId,
+    } : null;
+
+    if (selectedCampaign) {
+      selectedReason = "selected";
+      logDiag("campaign-selected", {
+        campaignId: selectedCampaign.campaign.id,
+        selectionPolicy: launchEligibleCampaigns.length === 1 ?
+          "only-launch-eligible" :
+          "random-after-eligibility",
+        launchEligibleCount: launchEligibleCampaigns.length,
+      });
+    }
+
+    for (const evaluatedCampaign of evaluatedCampaigns) {
+      const isSelected = evaluatedCampaign === selectedCampaign;
+      if (isSelected) {
+        transaction.set(evaluatedCampaign.campaignStateRef, {
+          campaignId: evaluatedCampaign.campaign.id,
           uid,
-          eligibleOpenCount: nextEligibleOpenCount,
-          impressionsShown: currentState.impressionsShown,
+          eligibleOpenCount: evaluatedCampaign.nextEligibleOpenCount,
+          impressionsShown: evaluatedCampaign.currentState.impressionsShown,
           lastCountedSessionId: sessionId,
           pendingDisplayToken: displayToken,
           pendingSessionId: sessionId,
           pendingIssuedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
-          ...(campaignStateSnapshot.exists ? {} : {createdAt: FieldValue.serverTimestamp()}),
+          ...(evaluatedCampaign.campaignStateSnapshot.exists ? {} :
+            {createdAt: FieldValue.serverTimestamp()}),
         }, {merge: true});
-        continue;
-      }
-
-      if (!countedThisSession) {
-        transaction.set(campaignStateRef, {
-          campaignId: campaign.id,
+      } else if (!evaluatedCampaign.countedThisSession) {
+        transaction.set(evaluatedCampaign.campaignStateRef, {
+          campaignId: evaluatedCampaign.campaign.id,
           uid,
-          eligibleOpenCount: nextEligibleOpenCount,
+          eligibleOpenCount: evaluatedCampaign.nextEligibleOpenCount,
           lastCountedSessionId: sessionId,
           updatedAt: FieldValue.serverTimestamp(),
-          ...(campaignStateSnapshot.exists ? {} : {createdAt: FieldValue.serverTimestamp()}),
+          ...(evaluatedCampaign.campaignStateSnapshot.exists ? {} :
+            {createdAt: FieldValue.serverTimestamp()}),
         }, {merge: true});
       }
     }
