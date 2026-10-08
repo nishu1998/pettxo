@@ -61,6 +61,12 @@ import {
   resolveCapturedRazorpayPaymentV3,
   type RazorpayPaymentRecord,
 } from "./razorpayGateway";
+import {
+  canonicalChatIdForUidPair,
+  canonicalDirectChatDocumentIdentity,
+  canonicalParticipantIds,
+  canonicalUserDocumentMatches,
+} from "../../chat/chatIdentity";
 
 const CAPTURE_DEADLINE_TOLERANCE_MS = 2 * 60 * 1000;
 const MAX_RANGE_OCCUPANCY_NIGHTS = 30;
@@ -898,10 +904,6 @@ function buildBookingFinancialWrite(params: {
   verificationSource: string;
 }): FinalizePaymentSuccess["financialWrites"] {
   const financials = params.booking.financials!;
-  const customerName = [
-    params.booking.participants.parent.displayFirstName,
-    params.booking.participants.parent.lastInitial,
-  ].filter((value) => value.trim().length > 0).join(" ").trim();
   return {
     bookingFinancial: {
       bookingId: params.bookingId,
@@ -989,29 +991,21 @@ function buildBookingFinancialWrite(params: {
     },
     bookingChat: {
       bookingId: params.bookingId,
-      chatType: "booking",
+      chatId: canonicalChatIdForUidPair(
+        params.booking.parentId,
+        params.booking.providerId,
+      ),
+      canonicalChatId: canonicalChatIdForUidPair(
+        params.booking.parentId,
+        params.booking.providerId,
+      ),
+      recordType: "bookingChatReference",
       customerId: params.booking.parentId,
       providerId: params.booking.providerId,
-      participantIds: [params.booking.parentId, params.booking.providerId],
-      customerName,
-      customerPhotoUrl: params.booking.participants.parent.photoUrl,
-      providerName: params.booking.participants.provider.displayName,
-      providerPhotoUrl: params.booking.participants.provider.photoUrl,
-      sourceServiceIds: [params.booking.serviceId],
-      lastServiceId: params.booking.serviceId,
-      lastServiceTitle: params.booking.service.serviceTitle,
-      lastServiceImageUrl: "",
-      lastMessage: "",
-      lastMessageAt: Timestamp.fromDate(params.paidAt),
-      lastSenderId: "",
-      unreadCountCustomer: 0,
-      unreadCountProvider: 0,
-      customerLastReadAt: null,
-      providerLastReadAt: null,
+      participantIds: [params.booking.parentId, params.booking.providerId].sort(),
+      serviceId: params.booking.serviceId,
       status: "unlocked",
       unlockedAt: Timestamp.fromDate(params.paidAt),
-      linkedBookingId: params.bookingId,
-      safetyNotice: "For your protection, keep payments and booking changes inside Pettxo.",
       createdBy: "system",
       createdAt: Timestamp.fromDate(params.paidAt),
       updatedAt: FieldValue.serverTimestamp(),
@@ -1849,6 +1843,29 @@ export async function persistFinalizePaymentResultV3(params: {
   result: FinalizePaymentResult;
   bookingId: string;
 }): Promise<void> {
+  const canonicalParticipants = params.result.ok ? canonicalParticipantIds(
+    params.result.booking.parentId,
+    params.result.booking.providerId,
+  ) : null;
+  if (params.result.ok && !canonicalParticipants) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Booking participants cannot form a canonical conversation.",
+    );
+  }
+  const canonicalChatId = canonicalParticipants ?
+    canonicalChatIdForUidPair(...canonicalParticipants) :
+    "";
+  const canonicalChatCreatedAt = params.result.ok ?
+    params.result.booking.lifecycle.paidAt :
+    null;
+  if (params.result.ok && !canonicalChatCreatedAt) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Confirmed booking is missing its paid timestamp.",
+    );
+  }
+
   await params.firestore.runTransaction(async (transaction) => {
     const currentBookingRef = params.firestore.collection("bookings").doc(params.bookingId);
     const currentAttemptRef = currentBookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId);
@@ -1858,16 +1875,28 @@ export async function persistFinalizePaymentResultV3(params: {
       ) : null;
     const couponUserRef = params.result.ok && params.result.couponWrite ?
       params.firestore.collection("users").doc(params.result.booking.parentId) : null;
+    const parentUserRef = params.result.ok ?
+      params.firestore.collection("users").doc(params.result.booking.parentId) : null;
+    const providerUserRef = params.result.ok ?
+      params.firestore.collection("users").doc(params.result.booking.providerId) : null;
+    const canonicalChatRef = params.result.ok ?
+      params.firestore.collection("chats").doc(canonicalChatId) : null;
     const [
       currentBookingSnapshot,
       currentAttemptSnapshot,
       couponCampaignSnapshot,
       couponUserSnapshot,
+      parentUserSnapshot,
+      providerUserSnapshot,
+      canonicalChatSnapshot,
     ] = await Promise.all([
       transaction.get(currentBookingRef),
       transaction.get(currentAttemptRef),
       couponCampaignRef ? transaction.get(couponCampaignRef) : Promise.resolve(null),
       couponUserRef ? transaction.get(couponUserRef) : Promise.resolve(null),
+      parentUserRef ? transaction.get(parentUserRef) : Promise.resolve(null),
+      providerUserRef ? transaction.get(providerUserRef) : Promise.resolve(null),
+      canonicalChatRef ? transaction.get(canonicalChatRef) : Promise.resolve(null),
     ]);
     const currentBooking = currentBookingSnapshot.data() ?? {};
     const currentAttempt = currentAttemptSnapshot.data() ?? {};
@@ -1894,6 +1923,37 @@ export async function persistFinalizePaymentResultV3(params: {
       )) : null;
     const existingInstruction = instructionRef ? await transaction.get(instructionRef) : null;
     if (params.result.ok) {
+      const parentUser = parentUserSnapshot?.data() as Record<string, unknown> | undefined;
+      const providerUser = providerUserSnapshot?.data() as Record<string, unknown> | undefined;
+      if (!parentUserSnapshot?.exists ||
+        !canonicalUserDocumentMatches(params.result.booking.parentId, parentUser)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "The booking customer does not have a canonical user identity.",
+        );
+      }
+      if (!providerUserSnapshot?.exists ||
+        !canonicalUserDocumentMatches(params.result.booking.providerId, providerUser)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "The booking provider does not have a canonical user identity.",
+        );
+      }
+      const existingChatIdentity = canonicalChatSnapshot?.exists ?
+        canonicalDirectChatDocumentIdentity(
+          canonicalChatId,
+          canonicalChatSnapshot.data() as Record<string, unknown>,
+        ) :
+        null;
+      if (canonicalChatSnapshot?.exists &&
+        (!existingChatIdentity ||
+          existingChatIdentity.participantIds[0] !== canonicalParticipants?.[0] ||
+          existingChatIdentity.participantIds[1] !== canonicalParticipants?.[1])) {
+        throw new HttpsError(
+          "failed-precondition",
+          "The canonical conversation has invalid participant identity.",
+        );
+      }
       if (params.result.couponWrite) {
         const failOfferCommit = () => {
           throw new HttpsError(
@@ -2006,7 +2066,10 @@ export async function persistFinalizePaymentResultV3(params: {
         writeBookingPrivate: true,
         writeBookingPrivateParticipants: true,
       };
-      transaction.set(bookingRef, serializeBookingForFirestore(params.result.booking), {merge: true});
+      transaction.set(bookingRef, {
+        ...serializeBookingForFirestore(params.result.booking),
+        chatId: canonicalChatId,
+      }, {merge: true});
       transaction.set(
         bookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId),
         serializePaymentAttemptForFirestore(params.result.paymentAttempt),
@@ -2049,7 +2112,58 @@ export async function persistFinalizePaymentResultV3(params: {
       transaction.set(params.firestore.collection("providerEarnings").doc(params.bookingId), params.result.financialWrites.providerEarning, {merge: true});
       transaction.set(params.firestore.collection("payoutReadiness").doc(params.bookingId), params.result.financialWrites.payoutReadiness, {merge: true});
       transaction.set(params.firestore.collection("bookingChats").doc(params.bookingId), params.result.financialWrites.bookingChat, {merge: true});
-      transaction.set(params.firestore.collection("chats").doc(params.bookingId), params.result.financialWrites.bookingChat, {merge: true});
+      if (!canonicalChatRef || !canonicalParticipants) {
+        throw new HttpsError("internal", "Canonical conversation state is missing.");
+      }
+      if (canonicalChatSnapshot?.exists) {
+        transaction.set(canonicalChatRef, {
+          sourceBookingIds: FieldValue.arrayUnion(params.bookingId),
+          sourceServiceIds: FieldValue.arrayUnion(params.result.booking.serviceId),
+          lastBookingId: params.bookingId,
+          lastServiceId: params.result.booking.serviceId,
+          lastServiceTitle: params.result.booking.service.serviceTitle,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+      } else {
+        const leftUid = canonicalParticipants[0];
+        const rightUid = canonicalParticipants[1];
+        const leftUser = leftUid === params.result.booking.parentId ? parentUser : providerUser;
+        const rightUser = rightUid === params.result.booking.parentId ? parentUser : providerUser;
+        const displayName = (user: Record<string, unknown> | undefined) =>
+          asString(user?.displayName) || asString(user?.name) || "Pettxo user";
+        const photoUrl = (user: Record<string, unknown> | undefined) =>
+          asString(user?.photoUrl) || asString(user?.profileImage);
+        transaction.set(canonicalChatRef, {
+          chatType: "directUser",
+          customerId: leftUid,
+          providerId: rightUid,
+          participantIds: canonicalParticipants,
+          participantSnapshots: [
+            {userId: leftUid, displayName: displayName(leftUser), photoUrl: photoUrl(leftUser)},
+            {userId: rightUid, displayName: displayName(rightUser), photoUrl: photoUrl(rightUser)},
+          ],
+          customerName: displayName(leftUser),
+          customerPhotoUrl: photoUrl(leftUser),
+          providerName: displayName(rightUser),
+          providerPhotoUrl: photoUrl(rightUser),
+          sourceBookingIds: [params.bookingId],
+          sourceServiceIds: [params.result.booking.serviceId],
+          lastBookingId: params.bookingId,
+          lastServiceId: params.result.booking.serviceId,
+          lastServiceTitle: params.result.booking.service.serviceTitle,
+          lastServiceImageUrl: "",
+          lastMessage: "",
+          lastMessageAt: Timestamp.fromDate(canonicalChatCreatedAt!),
+          lastSenderId: "",
+          unreadCountCustomer: 0,
+          unreadCountProvider: 0,
+          customerLastReadAt: null,
+          providerLastReadAt: null,
+          status: "active",
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
       for (const event of params.result.events) {
         transaction.set(
           params.firestore.collection("bookings").doc(params.bookingId).collection("events").doc(event.eventId),

@@ -286,6 +286,8 @@ function createRaceFixture(options = {}) {
   }
 
   const firestore = new FakeFirestore({
+    "users/parent-1": {uid: "parent-1", displayName: "Parent One"},
+    "users/provider-1": {uid: "provider-1", displayName: "Provider One"},
     [`bookings/${base.ids.bookingId}`]: {
       ...base.booking,
       bookingId: base.ids.bookingId,
@@ -523,7 +525,7 @@ function createRaceFixture(options = {}) {
       refund: firestore.store.get(`refunds/${base.ids.bookingId}`),
       bookingPrivate: firestore.store.get(`bookingPrivate/${base.ids.bookingId}`),
       bookingChat: firestore.store.get(`bookingChats/${base.ids.bookingId}`),
-      chat: firestore.store.get(`chats/${base.ids.bookingId}`),
+      chat: firestore.store.get("chats/chat_parent-1_provider-1"),
     };
   }
 
@@ -540,7 +542,7 @@ function createRaceFixture(options = {}) {
       payoutReadiness: countByPrefix(`payoutReadiness/${base.ids.bookingId}`),
       bookingPrivate: countByPrefix(`bookingPrivate/${base.ids.bookingId}`),
       bookingChats: countByPrefix(`bookingChats/${base.ids.bookingId}`),
-      chats: countByPrefix(`chats/${base.ids.bookingId}`),
+      chats: countByPrefix("chats/chat_parent-1_provider-1"),
       refunds: countByPrefix(`refunds/${base.ids.bookingId}`),
       events: countByPrefix(`bookings/${base.ids.bookingId}/events/`),
       notifications: [...firestore.store.keys()].filter((path) =>
@@ -586,10 +588,11 @@ function assertConfirmedExactlyOnce(fixture) {
   assert.equal(effects.refunds, 0);
   assert.ok(bookingPrivate.parentOtpCode);
   assert.equal(bookingChat.bookingId, fixture.ids.bookingId);
-  assert.equal(chat.bookingId, fixture.ids.bookingId);
+  assert.equal(bookingChat.chatId, "chat_parent-1_provider-1");
+  assert.equal(chat.chatType, "directUser");
   assert.deepEqual(bookingChat.participantIds, ["parent-1", "provider-1"]);
   assert.deepEqual(chat.participantIds, ["parent-1", "provider-1"]);
-  assert.equal(bookingChat.unreadCountCustomer, 0);
+  assert.equal(booking.chatId, "chat_parent-1_provider-1");
   assert.equal(chat.unreadCountProvider, 0);
   assertNoPrivateLeakage(booking);
   assertNoPrivateLeakage(paymentAttempt);

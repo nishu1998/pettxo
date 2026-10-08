@@ -109,12 +109,63 @@ void main() {
     await authorA.close();
     await authorB.close();
   });
+
+  testWidgets('profile changes update presentation without changing identity', (
+    tester,
+  ) async {
+    final profiles = StreamController<UserProfile>.broadcast();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LiveUserIdentityResolver(
+          userId: 'uid-b',
+          fallbackName: 'Pettxo Community',
+          fallbackUsername: 'pettxocommunity',
+          fallbackImageUrl: 'old-fallback.jpg',
+          profileStreamFactory: (_) => profiles.stream,
+          initialProfileProvider: (_) => null,
+          builder: (_, identity) => Text(
+            '${identity.displayName}|${identity.username}|${identity.imageUrl}',
+          ),
+        ),
+      ),
+    );
+
+    profiles.add(
+      _profile(
+        'uid-b',
+        'Pettxo Community',
+        username: 'pettxocommunity',
+        photoUrl: 'old.jpg',
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.text('Pettxo Community|pettxocommunity|old.jpg'),
+      findsOneWidget,
+    );
+
+    profiles.add(
+      _profile('uid-b', 'Pettxo', username: 'pettxo', photoUrl: 'new.jpg'),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Pettxo|pettxo|new.jpg'), findsOneWidget);
+
+    await profiles.close();
+  });
 }
 
-UserProfile _profile(String uid, String name) {
+UserProfile _profile(
+  String uid,
+  String name, {
+  String? username,
+  String photoUrl = '',
+}) {
   return UserProfile.fromMap(<String, dynamic>{
     'uid': uid,
     'displayName': name,
-    'username': name.toLowerCase(),
+    'username': username ?? name.toLowerCase(),
+    'photoUrl': photoUrl,
   });
 }

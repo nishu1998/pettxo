@@ -370,6 +370,14 @@ async function seedManualDisputeRefundScenario(overrides = {}) {
     verificationSource: "callable",
   });
   const firestore = new FakeFirestore({
+    [`users/${fixture.booking.parentId}`]: {
+      uid: fixture.booking.parentId,
+      displayName: "Parent One",
+    },
+    [`users/${fixture.booking.providerId}`]: {
+      uid: fixture.booking.providerId,
+      displayName: "Provider One",
+    },
     [`canonicalPaymentOrderMappings/${fixture.ids.razorpayOrderId}`]: {
       bookingId: fixture.ids.bookingId,
       paymentAttemptId: fixture.ids.paymentAttemptId,
@@ -1684,6 +1692,14 @@ test("refund.processed synchronizes cancellation refund status and persists safe
     verificationSource: "callable",
   });
   const firestore = new FakeFirestore({
+    [`users/${fixture.booking.parentId}`]: {
+      uid: fixture.booking.parentId,
+      displayName: "Parent One",
+    },
+    [`users/${fixture.booking.providerId}`]: {
+      uid: fixture.booking.providerId,
+      displayName: "Provider One",
+    },
     [`canonicalPaymentOrderMappings/${fixture.ids.razorpayOrderId}`]: {
       bookingId: fixture.ids.bookingId,
       paymentAttemptId: fixture.ids.paymentAttemptId,

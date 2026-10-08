@@ -27,11 +27,6 @@ const {
   assertNoPrivateLeakage,
 } = require("./helpers/canonicalPaymentRaceFixture.js");
 
-const BOOKING_CHAT_SAFETY_NOTICE =
-  "For your protection, keep payments and booking changes inside Pettxo.";
-const LEGACY_BOOKING_CHAT_SAFETY_NOTICE =
-  "Bookings made outside Pettxo are not covered by OTP verification, dispute protection, or refunds.";
-
 function parentIdentity() {
   return {
     uid: "parent-1",
@@ -441,25 +436,21 @@ function assertChatCompatibilityExactlyOnce(firestore, bookingId, {
   expectedProviderId,
 }) {
   const bookingChat = firestore.store.get(`bookingChats/${bookingId}`);
-  const inboxChat = firestore.store.get(`chats/${bookingId}`);
+  const canonicalChatId = `chat_${[...expectedParticipants].sort().join("_")}`;
+  const inboxChat = firestore.store.get(`chats/${canonicalChatId}`);
   assert.ok(bookingChat);
   assert.ok(inboxChat);
   assert.equal(bookingChat.bookingId, bookingId);
-  assert.equal(inboxChat.bookingId, bookingId);
+  assert.equal(bookingChat.chatId, canonicalChatId);
+  assert.equal(bookingChat.canonicalChatId, canonicalChatId);
+  assert.equal(bookingChat.recordType, "bookingChatReference");
   assert.deepEqual(bookingChat.participantIds, expectedParticipants);
   assert.deepEqual(inboxChat.participantIds, expectedParticipants);
   assert.equal(bookingChat.providerId, expectedProviderId);
-  assert.equal(inboxChat.providerId, expectedProviderId);
   assert.equal(bookingChat.status, "unlocked");
-  assert.equal(inboxChat.status, "unlocked");
-  assert.equal(bookingChat.unreadCountCustomer, 0);
-  assert.equal(bookingChat.unreadCountProvider, 0);
-  assert.equal(inboxChat.unreadCountCustomer, 0);
-  assert.equal(inboxChat.unreadCountProvider, 0);
-  assert.equal(bookingChat.safetyNotice, BOOKING_CHAT_SAFETY_NOTICE);
-  assert.equal(inboxChat.safetyNotice, BOOKING_CHAT_SAFETY_NOTICE);
-  assert.notEqual(bookingChat.safetyNotice, LEGACY_BOOKING_CHAT_SAFETY_NOTICE);
-  assert.notEqual(inboxChat.safetyNotice, LEGACY_BOOKING_CHAT_SAFETY_NOTICE);
+  assert.equal(inboxChat.status, "active");
+  assert.equal(inboxChat.chatType, "directUser");
+  assert.equal(firestore.store.has(`chats/${bookingId}`), false);
 }
 
 class FakeDocSnapshot {
@@ -588,7 +579,11 @@ class FakeTransaction {
 
 class FakeFirestore {
   constructor(seed = {}) {
-    this.store = new Map(Object.entries(seed));
+    this.store = new Map(Object.entries({
+      "users/parent-1": {uid: "parent-1", displayName: "Parent One"},
+      "users/provider-1": {uid: "provider-1", displayName: "Provider One"},
+      ...seed,
+    }));
     this.versions = new Map([...this.store.keys()].map((path) => [path, 0]));
   }
 
@@ -769,6 +764,7 @@ function seedLiveOfferFinalizationDocuments(firestore, result) {
   const coupon = result.paymentAttempt.couponSnapshot;
   assert.ok(coupon);
   firestore._set(`users/${result.booking.parentId}`, {
+    uid: result.booking.parentId,
     role: "petParent",
     completedBookingCount: 0,
   });
@@ -918,6 +914,7 @@ function buildPersistedFinalizationSeed({
     [`bookings/${bookingId}`]: persistedBooking,
     [`bookings/${bookingId}/paymentAttempts/${paymentAttemptId}`]: persistedAttempt,
     [`users/${booking.parentId}`]: {
+      uid: booking.parentId,
       displayName: "Nisha Gautam",
       photoUrl: "https://example.com/nisha.jpg",
       ratingAverage: 4.9,
@@ -1779,16 +1776,24 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
 
   assert.equal(result.ok, true);
   assert.equal(
-    result.financialWrites.bookingChat.safetyNotice,
-    BOOKING_CHAT_SAFETY_NOTICE,
-  );
-  assert.notEqual(
-    result.financialWrites.bookingChat.safetyNotice,
-    LEGACY_BOOKING_CHAT_SAFETY_NOTICE,
+    result.financialWrites.bookingChat.chatId,
+    "chat_parent-1_provider-1",
   );
   const slotId = booking.schedule.slots[0].slotId;
   const slotPath = `services/${booking.serviceId}/slots/${slotId}`;
-  const firestore = new FakeFirestore({[slotPath]: {capacity: 1, acceptedCount: 0, status: "open", isBookable: true}});
+  const firestore = new FakeFirestore({
+    [slotPath]: {capacity: 1, acceptedCount: 0, status: "open", isBookable: true},
+    "chats/chat_parent-1_provider-1": {
+      chatType: "directUser",
+      participantIds: ["parent-1", "provider-1"],
+      customerId: "parent-1",
+      providerId: "provider-1",
+      status: "active",
+      lastMessage: "Existing direct conversation",
+      unreadCountCustomer: 2,
+      unreadCountProvider: 1,
+    },
+  });
 
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
   await persistFinalizePaymentResultV3({firestore, result, bookingId});
@@ -1796,13 +1801,25 @@ test("persistFinalizePaymentResultV3 writes private, financial, and chat unlock 
   assert.equal(firestore.store.has(`bookingPrivate/${bookingId}`), true);
   assert.equal(firestore.store.has(`bookingPrivateParticipants/${bookingId}`), true);
   assert.equal(firestore.store.has(`bookingChats/${bookingId}`), true);
-  assert.equal(firestore.store.has(`chats/${bookingId}`), true);
+  assert.equal(firestore.store.has(`chats/${bookingId}`), false);
+  assert.equal(
+    firestore.store.has("chats/chat_parent-1_provider-1"),
+    true,
+  );
   assert.equal(firestore.store.has(`bookingFinancials/${bookingId}`), true);
   assert.equal(firestore.store.has(`payments/${bookingId}`), true);
   assert.equal(firestore.store.has(`invoices/${bookingId}`), true);
   assert.equal(firestore.store.has(`providerEarnings/${bookingId}`), true);
   assert.equal(firestore.store.has(`payoutReadiness/${bookingId}`), true);
   assert.equal(firestore.store.get(slotPath).acceptedCount, 1);
+  assert.equal(
+    firestore.store.get("chats/chat_parent-1_provider-1").lastMessage,
+    "Existing direct conversation",
+  );
+  assert.equal(
+    firestore.store.get("chats/chat_parent-1_provider-1").unreadCountCustomer,
+    2,
+  );
   assertChatCompatibilityExactlyOnce(firestore, bookingId, {
     expectedParticipants: ["parent-1", "provider-1"],
     expectedProviderId: "provider-1",
@@ -2312,6 +2329,51 @@ test("persistFinalizePaymentResultV3 respects multiple remaining uses during con
   assert.equal(usage.consumedBookingIds.length, 2);
 });
 
+test("three bookings reuse one canonical conversation", async () => {
+  const firestore = new FakeFirestore();
+  const bookingIds = ["booking-chat-1", "booking-chat-2", "booking-chat-3"];
+
+  for (const [index, bookingId] of bookingIds.entries()) {
+    const fixture = buildCanonicalPaymentRaceFixture({
+      ids: {
+        bookingId,
+        paymentAttemptId: `attempt-chat-${index + 1}`,
+        razorpayOrderId: `order_chat_${index + 1}`,
+        razorpayPaymentId: `pay_chat_${index + 1}`,
+      },
+    });
+    fixture.booking.serviceId = `service-chat-${index + 1}`;
+    const result = finalizeCapturedBookingPaymentV3({
+      bookingId,
+      booking: fixture.booking,
+      paymentAttempt: fixture.paymentAttempt,
+      parent: fixture.parent,
+      service: fixture.service,
+      slotOccupancy: fixture.slotOccupancy,
+      rangeOccupancy: fixture.rangeOccupancy,
+      razorpayPayment: fixture.razorpayPayment,
+      authoritativeNow: fixture.authoritativeNow,
+      verificationSource: "callable",
+    });
+    assert.equal(result.ok, true);
+    await persistFinalizePaymentResultV3({firestore, result, bookingId});
+  }
+
+  const canonicalChat = firestore.store.get("chats/chat_parent-1_provider-1");
+  assert.ok(canonicalChat);
+  assert.deepEqual(
+    new Set(canonicalChat.sourceBookingIds),
+    new Set(bookingIds),
+  );
+  for (const bookingId of bookingIds) {
+    assert.equal(firestore.store.get(`bookings/${bookingId}`).chatId,
+      "chat_parent-1_provider-1");
+    assert.equal(firestore.store.get(`bookingChats/${bookingId}`).chatId,
+      "chat_parent-1_provider-1");
+    assert.equal(firestore.store.has(`chats/${bookingId}`), false);
+  }
+});
+
 test("finalizer keeps bookingPrivate and OTP absent across pre-confirmation and refund states", () => {
   const preConfirmationStates = [
     "REQUESTED",
@@ -2434,7 +2496,7 @@ test("confirmed persistence keeps OTP and participant contact data in separate p
     firestore.store.get(`bookingChats/${fixture.ids.bookingId}`),
   );
   assertNoPrivateLeakage(
-    firestore.store.get(`chats/${fixture.ids.bookingId}`),
+    firestore.store.get("chats/chat_parent-1_provider-1"),
   );
   assertNoPrivateLeakage(
     [...firestore.store.entries()]

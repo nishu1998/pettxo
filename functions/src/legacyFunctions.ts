@@ -79,6 +79,14 @@ import {
 } from "./offers/domain/promoCode";
 import {reserveOfferCodeInTransaction} from "./offers/data/offerRepository";
 import {db, messaging, storage} from "./shared/firebase";
+import {
+  canonicalChatIdForUidPair,
+  canonicalDirectChatDocumentIdentity,
+  canonicalUserDocumentMatches,
+  chatStatusAllowsMessages,
+  otherDirectParticipantUid,
+  type CanonicalDirectChatIdentity,
+} from "./chat/chatIdentity";
 const defaultPushChannelId = "pettxo_general_notifications";
 const chatPushChannelId = "pettxo_chat_messages";
 const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
@@ -560,118 +568,42 @@ function safeText(value: unknown, fallback: string): string {
   return text || fallback;
 }
 
-function chatIdForPair(leftUid: string, rightUid: string): string {
-  return [leftUid.trim(), rightUid.trim()].sort().join("_");
-}
-
-function canonicalChatIdForPair(leftUid: string, rightUid: string): string {
-  return `chat_${chatIdForPair(leftUid, rightUid)}`;
-}
-
-function legacyChatIdsForPair(leftUid: string, rightUid: string): string[] {
-  const pairId = chatIdForPair(leftUid, rightUid);
-  return [pairId, `direct_${pairId}`];
-}
-
-function timestampMillis(value: unknown): number {
-  if (value instanceof Timestamp) {
-    return value.toMillis();
+function assertCanonicalUserSnapshot(
+  uid: string,
+  snapshot: DocumentSnapshot<DocumentData>,
+  message: string,
+): void {
+  if (!snapshot.exists || !canonicalUserDocumentMatches(uid, snapshot.data())) {
+    throw new HttpsError("failed-precondition", message);
   }
-  return 0;
 }
 
-function choosePreferredLegacyChat(
-  snapshots: Array<DocumentSnapshot<DocumentData>>,
-): DocumentSnapshot<DocumentData> | null {
-  let preferred: DocumentSnapshot<DocumentData> | null = null;
-  let preferredMillis = -1;
-
-  for (const snapshot of snapshots) {
-    if (!snapshot.exists) continue;
-    const data = snapshot.data() ?? {};
-    const millis = Math.max(
-      timestampMillis(data.lastMessageAt),
-      timestampMillis(data.updatedAt),
-      timestampMillis(data.createdAt),
+function requireCanonicalDirectChatIdentity(
+  chatId: string,
+  chat: Record<string, unknown>,
+): CanonicalDirectChatIdentity {
+  const identity = canonicalDirectChatDocumentIdentity(chatId, chat);
+  if (!identity) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This direct chat has invalid participant identity.",
     );
-    if (preferred == null || millis > preferredMillis) {
-      preferred = snapshot;
-      preferredMillis = millis;
-    }
   }
-
-  return preferred;
+  return identity;
 }
 
-async function migrateLegacyChatsToCanonical(params: {
-  canonicalChatRef: DocumentReference<DocumentData>;
-  legacySnapshots: Array<DocumentSnapshot<DocumentData>>;
-  extraServiceId?: string;
-  extraServiceTitle?: string;
-  extraServiceImageUrl?: string;
-}): Promise<void> {
-  const existingLegacySnapshots = params.legacySnapshots.filter((snapshot) => snapshot.exists);
-  if (existingLegacySnapshots.length === 0) return;
-
-  const preferredLegacySnapshot = choosePreferredLegacyChat(existingLegacySnapshots);
-  let batch = db.batch();
-  let writes = 0;
-  const commitBatchIfNeeded = async () => {
-    if (writes < 400) return;
-    await batch.commit();
-    batch = db.batch();
-    writes = 0;
-  };
-
-  const preferredLegacy = preferredLegacySnapshot?.data() ?? {};
-  const mergedServiceIds = new Set<string>();
-  for (const snapshot of existingLegacySnapshots) {
-    const data = snapshot.data() ?? {};
-    const serviceIds = Array.isArray(data.sourceServiceIds) ? data.sourceServiceIds : [];
-    for (const value of serviceIds) {
-      const serviceId = asTrimmedString(value);
-      if (serviceId) mergedServiceIds.add(serviceId);
-    }
-    const lastServiceId = asTrimmedString(data.lastServiceId);
-    if (lastServiceId) mergedServiceIds.add(lastServiceId);
-  }
-  if (params.extraServiceId) {
-    mergedServiceIds.add(params.extraServiceId);
-  }
-
-  batch.set(params.canonicalChatRef, {
-    lastMessage: safeText(preferredLegacy.lastMessage, ""),
-    lastMessageAt: preferredLegacy.lastMessageAt ?? FieldValue.serverTimestamp(),
-    lastSenderId: asTrimmedString(preferredLegacy.lastSenderId),
-    unreadCountCustomer: toInt(preferredLegacy.unreadCountCustomer, 0),
-    unreadCountProvider: toInt(preferredLegacy.unreadCountProvider, 0),
-    customerLastReadAt: preferredLegacy.customerLastReadAt ?? null,
-    providerLastReadAt: preferredLegacy.providerLastReadAt ?? null,
-    status: asTrimmedString(preferredLegacy.status) || "active",
-    createdAt: preferredLegacy.createdAt ?? FieldValue.serverTimestamp(),
-    updatedAt: preferredLegacy.updatedAt ?? preferredLegacy.lastMessageAt ?? FieldValue.serverTimestamp(),
-    sourceServiceIds: Array.from(mergedServiceIds),
-    lastServiceId: params.extraServiceId || asTrimmedString(preferredLegacy.lastServiceId),
-    lastServiceTitle: params.extraServiceTitle || safeText(preferredLegacy.lastServiceTitle, ""),
-    lastServiceImageUrl: params.extraServiceImageUrl || safeText(preferredLegacy.lastServiceImageUrl, ""),
-  }, {merge: true});
-  writes += 1;
-
-  for (const legacySnapshot of existingLegacySnapshots) {
-    const messagesSnapshot = await legacySnapshot.ref.collection("messages").get();
-    for (const messageDoc of messagesSnapshot.docs) {
-      batch.set(
-        params.canonicalChatRef.collection("messages").doc(messageDoc.id),
-        messageDoc.data(),
-        {merge: true},
-      );
-      writes += 1;
-      await commitBatchIfNeeded();
-    }
-  }
-
-  if (writes > 0) {
-    await batch.commit();
+async function assertCanonicalDirectParticipants(
+  identity: CanonicalDirectChatIdentity,
+): Promise<void> {
+  const snapshots = await Promise.all(identity.participantIds.map((uid) =>
+    db.collection("users").doc(uid).get(),
+  ));
+  for (let index = 0; index < identity.participantIds.length; index += 1) {
+    assertCanonicalUserSnapshot(
+      identity.participantIds[index],
+      snapshots[index],
+      "A direct chat participant is not a canonical Pettxo user.",
+    );
   }
 }
 
@@ -4157,15 +4089,8 @@ export const startProviderChat = onCall({
     throw new HttpsError("failed-precondition", "This service is not available for chat.");
   }
 
-  const canonicalChatId = canonicalChatIdForPair(customerId, providerId);
-  const legacyChatRefs = legacyChatIdsForPair(customerId, providerId)
-    .filter((chatId) => chatId !== canonicalChatId)
-    .map((chatId) => db.collection("chats").doc(chatId));
+  const canonicalChatId = canonicalChatIdForUidPair(customerId, providerId);
   const canonicalChatRef = db.collection("chats").doc(canonicalChatId);
-  const [canonicalBefore, ...legacySnapshots] = await Promise.all([
-    canonicalChatRef.get(),
-    ...legacyChatRefs.map((ref) => ref.get()),
-  ]);
 
   const result = await db.runTransaction(async (transaction) => {
     const serviceSnapshot = await transaction.get(serviceRef);
@@ -4181,6 +4106,12 @@ export const startProviderChat = onCall({
     if (providerId === customerId) {
       throw new HttpsError("failed-precondition", "You cannot message yourself.");
     }
+    if (canonicalChatIdForUidPair(customerId, providerId) !== canonicalChatId) {
+      throw new HttpsError(
+        "aborted",
+        "The service owner changed while the conversation was opening. Please retry.",
+      );
+    }
     if (!isChatEligibleService(service)) {
       throw new HttpsError("failed-precondition", "This service is not available for chat.");
     }
@@ -4190,9 +4121,16 @@ export const startProviderChat = onCall({
     const customerSnapshot = await transaction.get(customerRef);
     const providerSnapshot = await transaction.get(providerRef);
 
-    if (!customerSnapshot.exists || !providerSnapshot.exists) {
-      throw new HttpsError("failed-precondition", "User profile not found.");
-    }
+    assertCanonicalUserSnapshot(
+      customerId,
+      customerSnapshot,
+      "Your Pettxo profile does not have a canonical user identity.",
+    );
+    assertCanonicalUserSnapshot(
+      providerId,
+      providerSnapshot,
+      "The service owner does not have a canonical user identity.",
+    );
 
     const customer = customerSnapshot.data() ?? {};
     const provider = providerSnapshot.data() ?? {};
@@ -4214,10 +4152,28 @@ export const startProviderChat = onCall({
     );
 
     const chatSnapshot = await transaction.get(canonicalChatRef);
+    const expectedParticipantIds = [customerId, providerId].sort();
+    const existingIdentity = chatSnapshot.exists ?
+      canonicalDirectChatDocumentIdentity(
+        canonicalChatId,
+        chatSnapshot.data() ?? {},
+      ) :
+      null;
+    if (
+      chatSnapshot.exists &&
+      (!existingIdentity ||
+        existingIdentity.participantIds[0] !== expectedParticipantIds[0] ||
+        existingIdentity.participantIds[1] !== expectedParticipantIds[1])
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "The existing direct chat has invalid participant identity.",
+      );
+    }
     const now = FieldValue.serverTimestamp();
     const serviceTitle = safeText(service.title, "Service");
     const serviceImageUrl = chatServiceImage(service);
-    const orderedParticipantIds = [customerId, providerId].sort();
+    const orderedParticipantIds = expectedParticipantIds;
     const leftUserId = orderedParticipantIds[0];
     const rightUserId = orderedParticipantIds[1];
     const leftUser = leftUserId === customerId ? customer : provider;
@@ -4265,21 +4221,8 @@ export const startProviderChat = onCall({
 
     return {
       chatId: canonicalChatId,
-      createdCanonical: !chatSnapshot.exists,
-      serviceTitle,
-      serviceImageUrl,
     };
   });
-
-  if (!canonicalBefore.exists && legacySnapshots.some((snapshot) => snapshot.exists)) {
-    await migrateLegacyChatsToCanonical({
-      canonicalChatRef,
-      legacySnapshots,
-      extraServiceId: serviceId,
-      extraServiceTitle: result.serviceTitle,
-      extraServiceImageUrl: result.serviceImageUrl,
-    });
-  }
 
   return {chatId: result.chatId};
 });
@@ -4297,17 +4240,10 @@ export const startDirectUserChat = onCall({
     throw new HttpsError("failed-precondition", "You cannot message yourself.");
   }
 
-  const chatId = canonicalChatIdForPair(currentUserId, otherUserId);
+  const chatId = canonicalChatIdForUidPair(currentUserId, otherUserId);
   const chatRef = db.collection("chats").doc(chatId);
-  const legacyChatRefs = legacyChatIdsForPair(currentUserId, otherUserId)
-    .filter((legacyChatId) => legacyChatId !== chatId)
-    .map((legacyChatId) => db.collection("chats").doc(legacyChatId));
   const currentUserRef = db.collection("users").doc(currentUserId);
   const otherUserRef = db.collection("users").doc(otherUserId);
-  const [canonicalBefore, ...legacySnapshots] = await Promise.all([
-    chatRef.get(),
-    ...legacyChatRefs.map((ref) => ref.get()),
-  ]);
 
   const result = await db.runTransaction(async (transaction) => {
     const [currentUserSnapshot, otherUserSnapshot, chatSnapshot] =
@@ -4317,8 +4253,30 @@ export const startDirectUserChat = onCall({
         transaction.get(chatRef),
       ]);
 
-    if (!currentUserSnapshot.exists || !otherUserSnapshot.exists) {
-      throw new HttpsError("failed-precondition", "User profile not found.");
+    assertCanonicalUserSnapshot(
+      currentUserId,
+      currentUserSnapshot,
+      "Your Pettxo profile does not have a canonical user identity.",
+    );
+    assertCanonicalUserSnapshot(
+      otherUserId,
+      otherUserSnapshot,
+      "The selected profile does not have a canonical user identity.",
+    );
+    const expectedParticipantIds = [currentUserId, otherUserId].sort();
+    const existingIdentity = chatSnapshot.exists ?
+      canonicalDirectChatDocumentIdentity(chatId, chatSnapshot.data() ?? {}) :
+      null;
+    if (
+      chatSnapshot.exists &&
+      (!existingIdentity ||
+        existingIdentity.participantIds[0] !== expectedParticipantIds[0] ||
+        existingIdentity.participantIds[1] !== expectedParticipantIds[1])
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "The existing direct chat has invalid participant identity.",
+      );
     }
 
     const currentUser = currentUserSnapshot.data() ?? {};
@@ -4340,7 +4298,7 @@ export const startDirectUserChat = onCall({
       "This user is unavailable for chat right now.",
     );
 
-    const orderedParticipantIds = [currentUserId, otherUserId].sort();
+    const orderedParticipantIds = expectedParticipantIds;
     const leftUserId = orderedParticipantIds[0];
     const rightUserId = orderedParticipantIds[1];
     const leftUser = leftUserId == currentUserId ? currentUser : otherUser;
@@ -4359,9 +4317,6 @@ export const startDirectUserChat = onCall({
       customerPhotoUrl: photoUrlFromUser(leftUser),
       providerName: displayNameFromUser(rightUser, "User"),
       providerPhotoUrl: photoUrlFromUser(rightUser),
-      lastServiceId: "",
-      lastServiceTitle: "",
-      lastServiceImageUrl: "",
       updatedAt: now,
     };
 
@@ -4369,6 +4324,9 @@ export const startDirectUserChat = onCall({
       transaction.set(chatRef, {
         ...basePayload,
         sourceServiceIds: [],
+        lastServiceId: "",
+        lastServiceTitle: "",
+        lastServiceImageUrl: "",
         lastMessage: "",
         lastMessageAt: now,
         lastSenderId: "",
@@ -4383,15 +4341,8 @@ export const startDirectUserChat = onCall({
       transaction.set(chatRef, basePayload, {merge: true});
     }
 
-    return {chatId, createdCanonical: !chatSnapshot.exists};
+    return {chatId};
   });
-
-  if (!canonicalBefore.exists && legacySnapshots.some((snapshot) => snapshot.exists)) {
-    await migrateLegacyChatsToCanonical({
-      canonicalChatRef: chatRef,
-      legacySnapshots,
-    });
-  }
 
   return {chatId: result.chatId};
 });
@@ -4421,20 +4372,29 @@ export const sendChatMessage = onCall({
     throw new HttpsError("not-found", "Chat not found.");
   }
   const chat = chatSnapshot.data() ?? {};
-  const participantIds = Array.isArray(chat.participantIds) ?
-    chat.participantIds.map((value) => String(value)) :
-    [];
+  const chatType = asTrimmedString(chat.chatType);
+  if (chatType !== "directUser") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Messages must use the canonical user conversation.",
+    );
+  }
+  const directIdentity = requireCanonicalDirectChatIdentity(chatId, chat);
+  await assertCanonicalDirectParticipants(directIdentity);
+  const participantIds = directIdentity.participantIds;
   if (!participantIds.includes(senderId)) {
     throw new HttpsError("permission-denied", "You are not a participant in this chat.");
   }
-  if (asTrimmedString(chat.status) !== "active") {
+  if (!chatStatusAllowsMessages(chatType, asTrimmedString(chat.status))) {
     throw new HttpsError("failed-precondition", "This chat is closed.");
   }
 
   const senderSnapshot = await senderRef.get();
-  if (!senderSnapshot.exists) {
-    throw new HttpsError("failed-precondition", "Sender profile not found.");
-  }
+  assertCanonicalUserSnapshot(
+    senderId,
+    senderSnapshot,
+    "Your Pettxo profile does not have a canonical user identity.",
+  );
   const sender = senderSnapshot.data() ?? {};
   assertAccountAvailable(
     sender,
@@ -4445,9 +4405,7 @@ export const sendChatMessage = onCall({
     "Your account cannot send chat messages right now.",
   );
 
-  const customerId = asTrimmedString(chat.customerId);
-  const providerId = asTrimmedString(chat.providerId);
-  const receiverId = senderId === customerId ? providerId : customerId;
+  const receiverId = otherDirectParticipantUid(directIdentity, senderId) ?? "";
   if (!receiverId) {
     throw new HttpsError("failed-precondition", "Chat receiver is missing.");
   }
@@ -4476,9 +4434,7 @@ export const sendChatMessage = onCall({
   const notificationRef = db
     .collection("notifications")
     .doc(`chat_${receiverId}_${chatId}`);
-  const senderName = senderId === customerId ?
-    safeText(chat.customerName, "Customer") :
-    safeText(chat.providerName, "Service Provider");
+  const senderName = displayNameFromUser(sender, "Pettxo user");
 
   if (receiverId === senderId) {
     console.info("Notification skipped", {
@@ -4508,8 +4464,16 @@ export const sendChatMessage = onCall({
     }
 
     const latestChat = latestChatSnapshot.data() ?? {};
-    if (asTrimmedString(latestChat.status) !== "active") {
+    if (!chatStatusAllowsMessages(chatType, asTrimmedString(latestChat.status))) {
       throw new HttpsError("failed-precondition", "This chat is closed.");
+    }
+    const latestIdentity = requireCanonicalDirectChatIdentity(chatId, latestChat);
+    const latestReceiverId = otherDirectParticipantUid(latestIdentity, senderId);
+    if (latestReceiverId !== receiverId) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Direct chat participant identity changed unexpectedly.",
+      );
     }
 
     const existingNotification = receiverId !== senderId ?
@@ -4540,10 +4504,12 @@ export const sendChatMessage = onCall({
       chatUpdate.lastServiceTitle = sourceServiceTitle;
       chatUpdate.lastServiceImageUrl = lastServiceImageUrl;
     }
-    if (receiverId === customerId) {
+    const unreadCustomerId = directIdentity.participantIds[0];
+    const unreadProviderId = directIdentity.participantIds[1];
+    if (receiverId === unreadCustomerId) {
       chatUpdate.unreadCountCustomer = FieldValue.increment(1);
     }
-    if (receiverId === providerId) {
+    if (receiverId === unreadProviderId) {
       chatUpdate.unreadCountProvider = FieldValue.increment(1);
     }
     transaction.set(chatRef, chatUpdate, {merge: true});
@@ -4604,16 +4570,21 @@ export const markChatDelivered = onCall({invoker: "public"}, async (request) => 
     throw new HttpsError("not-found", "Chat not found.");
   }
   const chat = chatSnapshot.data() ?? {};
-  const participantIds = Array.isArray(chat.participantIds) ?
-    chat.participantIds.map((value) => String(value)) :
-    [];
+  const chatType = asTrimmedString(chat.chatType);
+  if (chatType !== "directUser") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Message delivery must use the canonical user conversation.",
+    );
+  }
+  const directIdentity = requireCanonicalDirectChatIdentity(chatId, chat);
+  await assertCanonicalDirectParticipants(directIdentity);
+  const participantIds = directIdentity.participantIds;
   if (!participantIds.includes(uid)) {
     throw new HttpsError("permission-denied", "You are not a participant in this chat.");
   }
 
-  const otherUid = uid === asTrimmedString(chat.customerId) ?
-    asTrimmedString(chat.providerId) :
-    asTrimmedString(chat.customerId);
+  const otherUid = otherDirectParticipantUid(directIdentity, uid) ?? "";
   if (!otherUid) return {updated: 0};
 
   const recentMessages = await chatRef
@@ -4658,8 +4629,17 @@ export const markChatRead = onCall({
     throw new HttpsError("not-found", "Chat not found.");
   }
   const chat = chatSnapshot.data() ?? {};
-  const customerId = asTrimmedString(chat.customerId);
-  const providerId = asTrimmedString(chat.providerId);
+  const chatType = asTrimmedString(chat.chatType);
+  if (chatType !== "directUser") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Read state must use the canonical user conversation.",
+    );
+  }
+  const directIdentity = requireCanonicalDirectChatIdentity(chatId, chat);
+  await assertCanonicalDirectParticipants(directIdentity);
+  const customerId = directIdentity.participantIds[0];
+  const providerId = directIdentity.participantIds[1];
   if (uid !== customerId && uid !== providerId) {
     throw new HttpsError("permission-denied", "You are not a participant in this chat.");
   }
@@ -4684,8 +4664,12 @@ export const markChatRead = onCall({
     ref: DocumentReference<DocumentData>,
     data: DocumentData,
   ) => {
-    const targetCustomerId = asTrimmedString(data.customerId);
-    const targetProviderId = asTrimmedString(data.providerId);
+    const targetChatType = asTrimmedString(data.chatType);
+    if (targetChatType !== chatType) return;
+    const targetDirectIdentity = canonicalDirectChatDocumentIdentity(id, data);
+    if (!targetDirectIdentity) return;
+    const targetCustomerId = targetDirectIdentity.participantIds[0];
+    const targetProviderId = targetDirectIdentity.participantIds[1];
     const targetPairKey = [targetCustomerId, targetProviderId].sort().join("_");
     if (targetPairKey !== expectedPairKey) return;
 

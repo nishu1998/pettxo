@@ -127,7 +127,19 @@ test("customer cancellation at exactly 24h creates one deterministic refund inst
   );
 
   const slotPath = `services/${booking.serviceId}/slots/${slotId}`;
-  const firestore = new FakeFirestore({[slotPath]: {capacity: 1, acceptedCount: 1, status: "open"}});
+  const canonicalChatPath = "chats/chat_parent-1_provider-1";
+  const canonicalChat = {
+    chatType: "directUser",
+    participantIds: ["parent-1", "provider-1"],
+    customerId: "parent-1",
+    providerId: "provider-1",
+    status: "active",
+    lastMessage: "Keep this conversation open",
+  };
+  const firestore = new FakeFirestore({
+    [slotPath]: {capacity: 1, acceptedCount: 1, status: "open"},
+    [canonicalChatPath]: canonicalChat,
+  });
   await persistConfirmedBookingCancellationV3({
     firestore,
     bookingId,
@@ -137,6 +149,8 @@ test("customer cancellation at exactly 24h creates one deterministic refund inst
   assert.equal(firestore.store.has(`refunds/${bookingId}`), true);
   assert.equal(firestore.store.has(`capacityReleases/${bookingId}`), true);
   assert.equal(firestore.store.get(slotPath).acceptedCount, 0);
+  assert.deepEqual(firestore.store.get(canonicalChatPath), canonicalChat);
+  assert.equal(firestore.store.has(`chats/${bookingId}`), false);
 });
 
 test("under-2-hours customer cancellation persists without a Razorpay refund instruction", () => {

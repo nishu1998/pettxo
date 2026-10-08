@@ -11,6 +11,14 @@ const gateway = require('../lib/booking/application/razorpayGateway');
 // Stage all writes so failures reproduce transaction rollback, including a
 // processor retry after a failed commit. Enforce Firestore's read-before-write rule.
 class AtomicFirestore extends FakeFirestore {
+  constructor(seed = {}) {
+    super({
+      "users/parent-1": {uid: "parent-1", displayName: "Parent One"},
+      "users/provider-1": {uid: "provider-1", displayName: "Provider One"},
+      ...seed,
+    });
+  }
+
   async runTransaction(handler) {
     const writes = [];
     const result = await handler({

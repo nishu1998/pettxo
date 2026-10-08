@@ -18,11 +18,16 @@ String normalizeProfileSearchQuery(String query) {
 }
 
 @visibleForTesting
-UserProfile profileFromSearchDocument(
+UserProfile? profileFromSearchDocument(
   String documentId,
   Map<String, dynamic> data,
 ) {
-  return UserProfile.fromMap({...data, 'uid': documentId.trim()});
+  final canonicalDocumentId = documentId.trim();
+  final embeddedUid = (data['uid'] as String? ?? '').trim();
+  if (canonicalDocumentId.isEmpty || embeddedUid != canonicalDocumentId) {
+    return null;
+  }
+  return UserProfile.fromMap(data);
 }
 
 @visibleForTesting
@@ -60,9 +65,17 @@ class ProfileRepository {
       if (publicData == null) {
         throw Exception('Profile not found');
       }
+      final canonicalProfile = profileFromSearchDocument(_uid, publicData);
+      if (canonicalProfile == null) {
+        throw Exception('Profile identity is invalid');
+      }
       final privateSnapshot = await _privateUserDoc(_uid).get();
       final privateData = privateSnapshot.data() ?? const <String, dynamic>{};
-      return UserProfile.fromMap({...publicData, ...privateData});
+      return UserProfile.fromMap({
+        ...publicData,
+        ...privateData,
+        'uid': canonicalProfile.uid,
+      });
     });
   }
 
@@ -75,8 +88,16 @@ class ProfileRepository {
     if (publicData == null) {
       throw Exception('Profile not found');
     }
+    final canonicalProfile = profileFromSearchDocument(_uid, publicData);
+    if (canonicalProfile == null) {
+      throw Exception('Profile identity is invalid');
+    }
     final privateData = snapshots[1].data() ?? const <String, dynamic>{};
-    return UserProfile.fromMap({...publicData, ...privateData});
+    return UserProfile.fromMap({
+      ...publicData,
+      ...privateData,
+      'uid': canonicalProfile.uid,
+    });
   }
 
   Stream<UserProfile> watchUserProfile(String userId) {
@@ -90,7 +111,11 @@ class ProfileRepository {
       if (data == null) {
         throw Exception('Profile not found');
       }
-      return UserProfile.fromMap({...data, 'uid': trimmedUserId});
+      final profile = profileFromSearchDocument(snapshot.id, data);
+      if (profile == null || profile.uid != trimmedUserId) {
+        throw Exception('Profile identity is invalid');
+      }
+      return profile;
     });
   }
 
@@ -108,7 +133,11 @@ class ProfileRepository {
       throw Exception('Profile not found');
     }
 
-    return UserProfile.fromMap(data);
+    final profile = profileFromSearchDocument(snapshot.id, data);
+    if (profile == null || profile.uid != trimmedUserId) {
+      throw Exception('Profile identity is invalid');
+    }
+    return profile;
   }
 
   Future<bool> isUserPubliclyVisible(String userId) async {
@@ -150,7 +179,8 @@ class ProfileRepository {
 
       final foundIds = <String>{};
       for (final doc in snapshot.docs) {
-        final profile = UserProfile.fromMap(doc.data());
+        final profile = profileFromSearchDocument(doc.id, doc.data());
+        if (profile == null) continue;
         final profileId = profile.uid.trim();
         if (profileId.isEmpty) continue;
         foundIds.add(profileId);
@@ -191,7 +221,8 @@ class ProfileRepository {
           .get();
 
       for (final doc in snapshot.docs) {
-        final profile = UserProfile.fromMap(doc.data());
+        final profile = profileFromSearchDocument(doc.id, doc.data());
+        if (profile == null) continue;
         if (!profile.isPubliclyVisible) continue;
         profilesById[profile.uid] = profile;
       }
@@ -221,7 +252,8 @@ class ProfileRepository {
     final excludedIds = Set<String>.from(followingIds)
       ..add(trimmedCurrentUserId);
     final profiles = snapshot.docs
-        .map((doc) => UserProfile.fromMap(doc.data()))
+        .map((doc) => profileFromSearchDocument(doc.id, doc.data()))
+        .whereType<UserProfile>()
         .where((profile) => profile.uid.isNotEmpty)
         .where((profile) => profile.isPubliclyVisible)
         .where((profile) => !excludedIds.contains(profile.uid))
@@ -292,6 +324,7 @@ class ProfileRepository {
       final snapshot = await loader();
       for (final doc in snapshot.docs) {
         final profile = profileFromSearchDocument(doc.id, doc.data());
+        if (profile == null) continue;
         final profileId = profile.uid.trim();
         if (profileId.isEmpty || profileId == exactExcludedId) continue;
         if (!profile.isPubliclyVisible) continue;

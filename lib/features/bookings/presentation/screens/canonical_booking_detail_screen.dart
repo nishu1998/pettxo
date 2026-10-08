@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
 import '../../../profile/presentation/screens/service_detail_screen.dart';
@@ -473,7 +474,7 @@ class _CanonicalBookingDetailScreenState
                         isUnlocked: booking.privacy.chatUnlockedAt != null,
                         isOpening: _isOpeningChat,
                         onOpenChat: booking.privacy.chatUnlockedAt != null
-                            ? () => _openBookingChat(widget.bookingId)
+                            ? () => _openBookingChat(booking)
                             : null,
                       ),
                       const SizedBox(height: 16),
@@ -929,7 +930,7 @@ class _CanonicalBookingDetailScreenState
             isOpening: _isOpeningChat,
             isUnlocked: booking.privacy.chatUnlockedAt != null,
             onOpenChat: booking.privacy.chatUnlockedAt != null
-                ? () => _openBookingChat(widget.bookingId)
+                ? () => _openBookingChat(booking)
                 : null,
           ),
           const SizedBox(height: 16),
@@ -1085,7 +1086,7 @@ class _CanonicalBookingDetailScreenState
             isOpening: _isOpeningChat,
             isUnlocked: booking.privacy.chatUnlockedAt != null,
             onOpenChat: booking.privacy.chatUnlockedAt != null
-                ? () => _openBookingChat(widget.bookingId)
+                ? () => _openBookingChat(booking)
                 : null,
           ),
           const SizedBox(height: 16),
@@ -1187,7 +1188,7 @@ class _CanonicalBookingDetailScreenState
             isOpening: _isOpeningChat,
             isUnlocked: booking.privacy.chatUnlockedAt != null,
             onOpenChat: booking.privacy.chatUnlockedAt != null
-                ? () => _openBookingChat(widget.bookingId)
+                ? () => _openBookingChat(booking)
                 : null,
           ),
           const SizedBox(height: 16),
@@ -1294,7 +1295,7 @@ class _CanonicalBookingDetailScreenState
             isOpening: _isOpeningChat,
             isUnlocked: booking.privacy.chatUnlockedAt != null,
             onOpenChat: booking.privacy.chatUnlockedAt != null
-                ? () => _openBookingChat(widget.bookingId)
+                ? () => _openBookingChat(booking)
                 : null,
           ),
           const SizedBox(height: 16),
@@ -3434,18 +3435,32 @@ class _CanonicalBookingDetailScreenState
     }
   }
 
-  Future<void> _openBookingChat(String bookingId) async {
+  Future<void> _openBookingChat(CanonicalBookingDocumentV3 booking) async {
     if (_isOpeningChat) return;
     setState(() => _isOpeningChat = true);
     try {
       if (widget.onOpenChatOverride != null) {
-        await widget.onOpenChatOverride!(bookingId);
+        await widget.onOpenChatOverride!(widget.bookingId);
         return;
       }
+      final currentUid = _currentUserId.trim();
+      final otherUid = currentUid == booking.parentId
+          ? booking.providerId.trim()
+          : currentUid == booking.providerId
+          ? booking.parentId.trim()
+          : '';
+      if (otherUid.isEmpty) {
+        throw StateError(
+          'Only booking participants can open its conversation.',
+        );
+      }
+      final chatId = await ChatRepository().startDirectUserChat(
+        otherUserId: otherUid,
+      );
       if (!mounted) return;
       await Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: bookingId)),
+        MaterialPageRoute(builder: (_) => ChatDetailScreen(chatId: chatId)),
       );
     } finally {
       if (mounted) {

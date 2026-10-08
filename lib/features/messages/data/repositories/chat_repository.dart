@@ -6,6 +6,55 @@ import 'package:flutter/foundation.dart';
 import '../../domain/models/chat_model.dart';
 import '../../domain/models/message_model.dart';
 
+@visibleForTesting
+List<ChatModel> dedupeChatsForInbox(Iterable<ChatModel> chats) {
+  final deduped = <String, ChatModel>{};
+
+  for (final chat in chats) {
+    final participants = [...chat.participantIds]..sort();
+    if (chat.chatType != 'directUser' ||
+        participants.length != 2 ||
+        participants[0].isEmpty ||
+        participants[1].isEmpty ||
+        participants[0] == participants[1]) {
+      continue;
+    }
+    final expectedChatId = 'chat_${participants.join('_')}';
+    if (chat.id != expectedChatId ||
+        chat.customerId != participants[0] ||
+        chat.providerId != participants[1]) {
+      continue;
+    }
+    final dedupeKey = 'direct:${participants.join('_')}';
+    final existing = deduped[dedupeKey];
+    if (existing == null) {
+      deduped[dedupeKey] = chat;
+      continue;
+    }
+
+    final currentTime = chat.lastMessageAt ?? chat.updatedAt ?? chat.createdAt;
+    final existingTime =
+        existing.lastMessageAt ?? existing.updatedAt ?? existing.createdAt;
+    final isNewer =
+        (currentTime?.millisecondsSinceEpoch ?? 0) >
+        (existingTime?.millisecondsSinceEpoch ?? 0);
+
+    if (isNewer) {
+      deduped[dedupeKey] = chat;
+    }
+  }
+
+  final result = deduped.values.toList(growable: false);
+  result.sort((a, b) {
+    final aTime = a.lastMessageAt ?? a.updatedAt ?? a.createdAt;
+    final bTime = b.lastMessageAt ?? b.updatedAt ?? b.createdAt;
+    return (bTime?.millisecondsSinceEpoch ?? 0).compareTo(
+      aTime?.millisecondsSinceEpoch ?? 0,
+    );
+  });
+  return result;
+}
+
 class ChatMessagePage {
   final List<MessageModel> messages;
   final DocumentSnapshot<Map<String, dynamic>>? cursor;
@@ -46,54 +95,21 @@ class ChatRepository {
       'ChatRepository watchChatsFor debug -> currentUserId=$uid, path=chats, arrayContains=participantIds, orderBy=lastMessageAt desc, limit=$limit',
     );
 
+    final resultLimit = limit.clamp(1, 200);
+    final fetchLimit = (resultLimit * 4).clamp(resultLimit, 200);
     return _firestore
         .collection('chats')
         .where('participantIds', arrayContains: uid)
         .orderBy('lastMessageAt', descending: true)
-        .limit(limit)
+        .limit(fetchLimit)
         .snapshots()
         .map((snapshot) {
           final chats = snapshot.docs
               .map(ChatModel.fromDocument)
               .toList(growable: false);
-          final dedupedByPair = <String, ChatModel>{};
-
-          for (final chat in chats) {
-            final pairKey = [...chat.participantIds]..sort();
-            final dedupeKey = pairKey.join('_');
-            final existing = dedupedByPair[dedupeKey];
-            if (existing == null) {
-              dedupedByPair[dedupeKey] = chat;
-              continue;
-            }
-
-            final preferCurrent =
-                chat.id.startsWith('chat_') && !existing.id.startsWith('chat_');
-            final currentTime =
-                chat.lastMessageAt ?? chat.updatedAt ?? chat.createdAt;
-            final existingTime =
-                existing.lastMessageAt ??
-                existing.updatedAt ??
-                existing.createdAt;
-            final isNewer =
-                (currentTime?.millisecondsSinceEpoch ?? 0) >
-                (existingTime?.millisecondsSinceEpoch ?? 0);
-
-            if (preferCurrent ||
-                (!existing.id.startsWith('chat_') && isNewer)) {
-              dedupedByPair[dedupeKey] = chat;
-            }
-          }
-
-          final result = dedupedByPair.values.toList(growable: false);
-          result.sort((a, b) {
-            final aTime = a.lastMessageAt ?? a.updatedAt ?? a.createdAt;
-            final bTime = b.lastMessageAt ?? b.updatedAt ?? b.createdAt;
-            return (bTime?.millisecondsSinceEpoch ?? 0).compareTo(
-              aTime?.millisecondsSinceEpoch ?? 0,
-            );
-          });
-          return result;
+          return dedupeChatsForInbox(
+            chats,
+          ).take(resultLimit).toList(growable: false);
         });
   }
 
@@ -101,11 +117,13 @@ class ChatRepository {
     final uid = currentUid.trim();
     if (uid.isEmpty) return;
 
+    final resultLimit = limit.clamp(1, 200);
+    final fetchLimit = (resultLimit * 4).clamp(resultLimit, 200);
     await _firestore
         .collection('chats')
         .where('participantIds', arrayContains: uid)
         .orderBy('lastMessageAt', descending: true)
-        .limit(limit)
+        .limit(fetchLimit)
         .get(const GetOptions(source: Source.server));
   }
 
@@ -117,22 +135,28 @@ class ChatRepository {
     if (!snapshot.exists) return id;
 
     final chat = ChatModel.fromDocument(snapshot);
-    final participants = <String>{
-      ...chat.participantIds.where((value) => value.isNotEmpty),
-      if (chat.customerId.isNotEmpty) chat.customerId,
-      if (chat.providerId.isNotEmpty) chat.providerId,
-    }.toList(growable: false)..sort();
+    final participants =
+        chat.participantIds
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toSet()
+            .toList(growable: false)
+          ..sort();
 
-    if (participants.length < 2) return id;
+    if (participants.length != 2) return id;
 
     final canonicalChatId = 'chat_${participants.join('_')}';
-    if (canonicalChatId == id) return id;
+    final isCanonicalConversation =
+        chat.chatType == 'directUser' &&
+        chat.customerId == participants[0] &&
+        chat.providerId == participants[1] &&
+        canonicalChatId == id;
+    if (isCanonicalConversation) return id;
 
-    final canonicalSnapshot = await _firestore
-        .collection('chats')
-        .doc(canonicalChatId)
-        .get();
-    return canonicalSnapshot.exists ? canonicalChatId : id;
+    final currentUid = _auth.currentUser?.uid.trim() ?? '';
+    if (!participants.contains(currentUid)) return id;
+    final otherUid = participants.firstWhere((uid) => uid != currentUid);
+    return startDirectUserChat(otherUserId: otherUid);
   }
 
   Stream<ChatModel?> watchChat(String chatId) {

@@ -1384,11 +1384,6 @@ export async function writeConfirmedBookingCancellationTransactionV3(params: {
       params.result.bookingChatWrite,
       {merge: true},
     );
-    params.transaction.set(
-      params.firestore.collection("chats").doc(params.bookingId),
-      params.result.bookingChatWrite,
-      {merge: true},
-    );
   }
   params.transaction.set(
     params.firestore.collection("payments").doc(params.bookingId),
