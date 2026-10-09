@@ -1594,6 +1594,7 @@ export const syncNotificationToken = onCall({invoker: "public"}, async (request)
   const uid = requireUid(request.auth);
   const token = asTrimmedString(request.data?.token);
   const platform = asTrimmedString(request.data?.platform) || "unknown";
+  const chatImageV1 = request.data?.chatImageV1 === true;
   if (!token) {
     throw new HttpsError("invalid-argument", "token is required.");
   }
@@ -1623,6 +1624,7 @@ export const syncNotificationToken = onCall({invoker: "public"}, async (request)
   const tokenPayload: Record<string, unknown> = {
     token,
     platform,
+    chatImageV1,
     disabled: false,
     disabledAt: FieldValue.delete(),
     errorCode: FieldValue.delete(),

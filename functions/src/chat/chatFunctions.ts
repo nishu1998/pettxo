@@ -6,3 +6,8 @@ export {
   markChatRead,
   closeChat,
 } from "../legacyFunctions";
+
+export {
+  getChatImageMessagingCapability,
+  sendChatImageMessage,
+} from "./chatImageFunctions";

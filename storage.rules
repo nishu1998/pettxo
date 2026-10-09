@@ -45,6 +45,44 @@ service firebase.storage {
         ).data.adminRole in ["superAdmin", "customerSupportAdmin"];
     }
 
+    function canMonitorChatMedia() {
+      return signedIn() &&
+        firestore.exists(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ) &&
+        firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ).data.keys().hasAny(["adminRole"]) &&
+        firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ).data.adminRole in ["superAdmin", "customerSupportAdmin"];
+    }
+
+    function chatForMedia(chatId) {
+      return firestore.get(
+        /databases/(default)/documents/chats/$(chatId)
+      );
+    }
+
+    function isChatMediaParticipant(chatId) {
+      return signedIn() &&
+        firestore.exists(/databases/(default)/documents/chats/$(chatId)) &&
+        chatForMedia(chatId).data.chatType == "directUser" &&
+        chatForMedia(chatId).data.participantIds is list &&
+        chatForMedia(chatId).data.participantIds.size() == 2 &&
+        chatForMedia(chatId).data.participantIds[0] is string &&
+        chatForMedia(chatId).data.participantIds[1] is string &&
+        chatForMedia(chatId).data.participantIds[0] !=
+          chatForMedia(chatId).data.participantIds[1] &&
+        chatForMedia(chatId).data.customerId ==
+          chatForMedia(chatId).data.participantIds[0] &&
+        chatForMedia(chatId).data.providerId ==
+          chatForMedia(chatId).data.participantIds[1] &&
+        chatId == "chat_" + chatForMedia(chatId).data.participantIds[0] +
+          "_" + chatForMedia(chatId).data.participantIds[1] &&
+        request.auth.uid in chatForMedia(chatId).data.participantIds;
+    }
+
     function isSupportedImage() {
       return request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
     }
@@ -153,6 +191,27 @@ service firebase.storage {
         isMaxFiveMb();
       allow delete: if isOwner(userId) &&
         folder in ['images', 'thumbs'];
+    }
+
+    match /chatMedia/{chatId}/{messageId}/image.jpg {
+      allow get: if isChatMediaParticipant(chatId) || canMonitorChatMedia();
+      allow list: if false;
+      allow create: if isChatMediaParticipant(chatId) &&
+        resource == null &&
+        messageId.matches('^[A-Za-z0-9]{20}$') &&
+        chatForMedia(chatId).data.status == "active" &&
+        request.resource.contentType == "image/jpeg" &&
+        request.resource.size > 0 &&
+        request.resource.size <= 3 * 1024 * 1024 &&
+        request.resource.metadata.chatId == chatId &&
+        request.resource.metadata.messageId == messageId &&
+        request.resource.metadata.senderId == request.auth.uid;
+      allow update: if false;
+      allow delete: if isChatMediaParticipant(chatId) &&
+        resource.metadata.senderId == request.auth.uid &&
+        !firestore.exists(
+          /databases/(default)/documents/chats/$(chatId)/messages/$(messageId)
+        );
     }
 
     match /providerVerification/{userId}/identity/{fileName} {
