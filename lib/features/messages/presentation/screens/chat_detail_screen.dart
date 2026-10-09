@@ -1,17 +1,24 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../data/repositories/chat_repository.dart';
+import '../../data/repositories/chat_media_repository.dart';
+import '../../data/services/chat_image_processing_service.dart';
+import '../../data/services/chat_image_selection_service.dart';
 import '../../domain/models/chat_model.dart';
+import '../../domain/models/chat_image_attachment.dart';
 import '../../domain/models/message_model.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/chat_image_preview_dialog.dart';
 
 class ChatDetailScreen extends StatefulWidget {
   const ChatDetailScreen({super.key, required this.chatId});
@@ -24,6 +31,11 @@ class ChatDetailScreen extends StatefulWidget {
 
 class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final ChatRepository _repository = ChatRepository();
+  final ChatMediaRepository _mediaRepository = ChatMediaRepository();
+  final ChatImageSelectionService _imageSelectionService =
+      ChatImageSelectionService();
+  final ChatImageProcessingService _imageProcessingService =
+      const ChatImageProcessingService();
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
@@ -36,6 +48,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   bool _isResolvingChatId = true;
   bool _isAcknowledgingChatState = false;
   String _resolvedChatId = '';
+  bool _imageMessagingEnabled = false;
+  ChatImageSendStage _imageSendStage = ChatImageSendStage.idle;
+  PendingChatImageSend? _pendingImageSend;
+  ChatImageUploadOperation? _uploadOperation;
+  StreamSubscription<ChatImageUploadProgress>? _uploadProgressSubscription;
+  int _imageSendAttempt = 0;
+  double _uploadProgress = 0;
+  String _imageSendError = '';
 
   String get _currentUid => FirebaseAuth.instance.currentUser?.uid ?? '';
   String get _activeChatId =>
@@ -51,6 +71,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   void dispose() {
+    _uploadProgressSubscription?.cancel();
     _messageController.dispose();
     _scrollController
       ..removeListener(_handleScroll)
@@ -113,10 +134,223 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         _isResolvingChatId = false;
       });
       unawaited(_markDeliveredAndRead());
+      unawaited(_loadImageMessagingCapability());
     } catch (_) {
       if (!mounted) return;
       setState(() => _isResolvingChatId = false);
     }
+  }
+
+  Future<void> _loadImageMessagingCapability() async {
+    try {
+      final enabled = await _mediaRepository.isImageMessagingEnabled(
+        _activeChatId,
+      );
+      if (mounted) setState(() => _imageMessagingEnabled = enabled);
+    } catch (_) {
+      if (mounted) setState(() => _imageMessagingEnabled = false);
+    }
+  }
+
+  bool get _imageSendBusy => switch (_imageSendStage) {
+    ChatImageSendStage.selecting ||
+    ChatImageSendStage.previewing ||
+    ChatImageSendStage.processing ||
+    ChatImageSendStage.uploading ||
+    ChatImageSendStage.committing => true,
+    _ => false,
+  };
+
+  Future<void> _selectAndPreviewImage(ChatModel? chat) async {
+    if (!_imageMessagingEnabled ||
+        _imageSendBusy ||
+        chat == null ||
+        chat.isClosed) {
+      return;
+    }
+    final attempt = ++_imageSendAttempt;
+    setState(() {
+      _imageSendStage = ChatImageSendStage.selecting;
+      _imageSendError = '';
+    });
+    try {
+      final selected = await _imageSelectionService.selectSingleImage();
+      if (!mounted || attempt != _imageSendAttempt) return;
+      if (selected == null) {
+        setState(() => _imageSendStage = ChatImageSendStage.idle);
+        return;
+      }
+      setState(() => _imageSendStage = ChatImageSendStage.previewing);
+      final approved = await Navigator.of(context).push<XFile>(
+        MaterialPageRoute<XFile>(
+          fullscreenDialog: true,
+          builder: (_) => ChatImagePreviewDialog(original: selected),
+        ),
+      );
+      if (!mounted || attempt != _imageSendAttempt) return;
+      if (approved == null) {
+        setState(() => _imageSendStage = ChatImageSendStage.idle);
+        return;
+      }
+      setState(() => _imageSendStage = ChatImageSendStage.processing);
+      ProcessedChatImage processed;
+      try {
+        processed = await _imageProcessingService.process(approved);
+      } finally {
+        if (approved.path.isNotEmpty && approved.path != selected.path) {
+          try {
+            await File(approved.path).delete();
+          } catch (_) {
+            // Cropper output cleanup is best effort.
+          }
+        }
+      }
+      if (!mounted || attempt != _imageSendAttempt) return;
+      final messageId = _mediaRepository.newMessageId(_activeChatId);
+      final pending = PendingChatImageSend(
+        messageId: messageId,
+        storagePath: _mediaRepository.storagePath(_activeChatId, messageId),
+        image: processed,
+      );
+      setState(() => _pendingImageSend = pending);
+      await _uploadAndCommit(pending, attempt: attempt);
+    } catch (error) {
+      if (!mounted || attempt != _imageSendAttempt) return;
+      setState(() {
+        _imageSendStage = ChatImageSendStage.failed;
+        _imageSendError = _humanizeImageError(error);
+      });
+    }
+  }
+
+  Future<void> _uploadAndCommit(
+    PendingChatImageSend pending, {
+    required int attempt,
+  }) async {
+    StreamSubscription<ChatImageUploadProgress>? progressSubscription;
+    try {
+      if (attempt != _imageSendAttempt) return;
+      var current = pending;
+      if (!current.uploaded) {
+        setState(() {
+          _imageSendStage = ChatImageSendStage.uploading;
+          _uploadProgress = 0;
+          _imageSendError = '';
+        });
+        final operation = _mediaRepository.upload(
+          chatId: _activeChatId,
+          messageId: current.messageId,
+          image: current.image,
+        );
+        _uploadOperation = operation;
+        await _uploadProgressSubscription?.cancel();
+        progressSubscription = operation.progress.listen((progress) {
+          if (mounted && attempt == _imageSendAttempt) {
+            setState(() => _uploadProgress = progress.fraction);
+          }
+        });
+        _uploadProgressSubscription = progressSubscription;
+        await operation.completed;
+        if (!mounted || attempt != _imageSendAttempt) return;
+        current = current.copyWith(uploaded: true);
+        setState(() => _pendingImageSend = current);
+      }
+
+      if (attempt != _imageSendAttempt) return;
+      setState(() => _imageSendStage = ChatImageSendStage.committing);
+      await _mediaRepository.commit(
+        chatId: _activeChatId,
+        messageId: current.messageId,
+        storagePath: current.storagePath,
+      );
+      if (!mounted || attempt != _imageSendAttempt) return;
+      setState(() {
+        _imageSendStage = ChatImageSendStage.complete;
+        _pendingImageSend = null;
+        _uploadOperation = null;
+        _uploadProgress = 1;
+        _imageSendError = '';
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      if (mounted && _imageSendStage == ChatImageSendStage.complete) {
+        setState(() => _imageSendStage = ChatImageSendStage.idle);
+      }
+    } catch (error) {
+      if (!mounted || attempt != _imageSendAttempt) return;
+      setState(() {
+        _imageSendStage = ChatImageSendStage.failed;
+        _imageSendError = _humanizeImageError(error);
+        _uploadOperation = null;
+      });
+    } finally {
+      await progressSubscription?.cancel();
+      if (identical(_uploadProgressSubscription, progressSubscription)) {
+        _uploadProgressSubscription = null;
+      }
+    }
+  }
+
+  Future<void> _retryImageSend() async {
+    var pending = _pendingImageSend;
+    if (pending == null || _imageSendBusy) return;
+    final attempt = ++_imageSendAttempt;
+    if (!pending.uploaded) {
+      try {
+        if (await _mediaRepository.uploadedObjectExists(pending.storagePath)) {
+          pending = pending.copyWith(uploaded: true);
+          if (mounted && attempt == _imageSendAttempt) {
+            setState(() => _pendingImageSend = pending);
+          }
+        }
+      } catch (_) {
+        // The normal retry below will surface any persistent Storage failure.
+      }
+    }
+    if (attempt == _imageSendAttempt) {
+      await _uploadAndCommit(pending!, attempt: attempt);
+    }
+  }
+
+  Future<void> _cancelImageSend() async {
+    if (_imageSendStage == ChatImageSendStage.committing) return;
+    _imageSendAttempt += 1;
+    final operation = _uploadOperation;
+    if (operation != null) await operation.cancel();
+    final pending = _pendingImageSend;
+    if (pending != null) {
+      await _mediaRepository.deleteUncommitted(pending.storagePath);
+    }
+    if (!mounted) return;
+    setState(() {
+      _imageSendStage = ChatImageSendStage.cancelled;
+      _pendingImageSend = null;
+      _uploadOperation = null;
+      _uploadProgress = 0;
+      _imageSendError = '';
+    });
+    setState(() => _imageSendStage = ChatImageSendStage.idle);
+  }
+
+  String _humanizeImageError(Object error) {
+    final value = error.toString();
+    if (value.contains('not enabled') || value.contains('must update')) {
+      return 'Photo messaging is not available for this conversation yet.';
+    }
+    if (value.contains('closed')) return 'This conversation is closed.';
+    if (value.contains('unauthorized') || value.contains('permission-denied')) {
+      return 'You do not have permission to send this photo.';
+    }
+    if (value.contains('canceled') || value.contains('cancelled')) {
+      return 'Photo upload was cancelled.';
+    }
+    if (error is ChatImageSelectionException ||
+        error is ChatImageProcessingException) {
+      return value;
+    }
+    if (error is FirebaseException && error.code == 'retry-limit-exceeded') {
+      return 'Photo upload timed out. Check your connection and retry.';
+    }
+    return 'Unable to send this photo. You can retry safely.';
   }
 
   Future<void> _markDeliveredAndRead({ChatModel? chat}) async {
@@ -446,6 +680,17 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     ],
                   ),
                 ),
+              if (_pendingImageSend != null ||
+                  _imageSendStage == ChatImageSendStage.processing ||
+                  _imageSendStage == ChatImageSendStage.failed)
+                _ImageSendStatusCard(
+                  pending: _pendingImageSend,
+                  stage: _imageSendStage,
+                  progress: _uploadProgress,
+                  error: _imageSendError,
+                  onRetry: _retryImageSend,
+                  onCancel: _cancelImageSend,
+                ),
               SafeArea(
                 top: false,
                 child: Container(
@@ -461,6 +706,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
+                      if (_imageMessagingEnabled) ...[
+                        SizedBox(
+                          width: 44,
+                          height: 52,
+                          child: IconButton(
+                            tooltip: 'Send photo',
+                            onPressed:
+                                _imageSendBusy || (chat?.isClosed ?? false)
+                                ? null
+                                : () => _selectAndPreviewImage(chat),
+                            icon: const Icon(
+                              Icons.add_photo_alternate_outlined,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
                       Expanded(
                         child: TextField(
                           controller: _messageController,
@@ -561,6 +824,98 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       return 'This conversation is closed.';
     }
     return 'Unable to send your message right now.';
+  }
+}
+
+class _ImageSendStatusCard extends StatelessWidget {
+  const _ImageSendStatusCard({
+    required this.pending,
+    required this.stage,
+    required this.progress,
+    required this.error,
+    required this.onRetry,
+    required this.onCancel,
+  });
+
+  final PendingChatImageSend? pending;
+  final ChatImageSendStage stage;
+  final double progress;
+  final String error;
+  final VoidCallback onRetry;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final isFailed = stage == ChatImageSendStage.failed;
+    final label = switch (stage) {
+      ChatImageSendStage.processing => 'Optimizing photo…',
+      ChatImageSendStage.uploading => 'Uploading ${(progress * 100).round()}%',
+      ChatImageSendStage.committing => 'Sending photo…',
+      ChatImageSendStage.failed => error,
+      _ => 'Preparing photo…',
+    };
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        children: [
+          if (pending != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(
+                pending!.image.bytes,
+                width: 52,
+                height: 52,
+                fit: BoxFit.cover,
+              ),
+            )
+          else
+            const SizedBox(
+              width: 52,
+              height: 52,
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (stage == ChatImageSendStage.uploading) ...[
+                  const SizedBox(height: 6),
+                  LinearProgressIndicator(value: progress),
+                ],
+              ],
+            ),
+          ),
+          if (isFailed && pending != null)
+            IconButton(
+              tooltip: 'Retry',
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          if (stage != ChatImageSendStage.committing)
+            IconButton(
+              tooltip: 'Cancel',
+              onPressed: onCancel,
+              icon: const Icon(Icons.close_rounded),
+            ),
+        ],
+      ),
+    );
   }
 }
 

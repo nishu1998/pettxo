@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../domain/models/message_model.dart';
 import 'message_delivery_tick.dart';
+import 'private_chat_image.dart';
 
 class ChatBubble extends StatelessWidget {
   const ChatBubble({
@@ -13,6 +14,7 @@ class ChatBubble extends StatelessWidget {
     this.showTick = false,
     this.isDelivered = false,
     this.isRead = false,
+    this.imageBuilder,
   });
 
   final MessageModel message;
@@ -21,6 +23,8 @@ class ChatBubble extends StatelessWidget {
   final bool showTick;
   final bool isDelivered;
   final bool isRead;
+  final Widget Function(BuildContext context, MessageModel message)?
+  imageBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +32,27 @@ class ChatBubble extends StatelessWidget {
         ? AppColors.primary
         : Colors.white.withValues(alpha: 0.98);
     final textColor = isMine ? Colors.white : AppColors.textDark;
+
+    final content = message.isText
+        ? Text(
+            message.text,
+            style: TextStyle(
+              color: textColor,
+              fontSize: 15,
+              height: 1.4,
+              fontWeight: FontWeight.w500,
+            ),
+          )
+        : message.isImage
+        ? _ImageMessageContent(message: message, imageBuilder: imageBuilder)
+        : Text(
+            'Unsupported message',
+            style: TextStyle(
+              color: textColor.withValues(alpha: 0.82),
+              fontSize: 14,
+              fontStyle: FontStyle.italic,
+            ),
+          );
 
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
@@ -37,7 +62,9 @@ class ChatBubble extends StatelessWidget {
         ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+          padding: message.isImage
+              ? const EdgeInsets.fromLTRB(5, 5, 8, 8)
+              : const EdgeInsets.fromLTRB(14, 12, 14, 10),
           decoration: BoxDecoration(
             color: bubbleColor,
             borderRadius: BorderRadius.only(
@@ -60,15 +87,7 @@ class ChatBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                message.text,
-                style: TextStyle(
-                  color: textColor,
-                  fontSize: 15,
-                  height: 1.4,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
+              content,
               const SizedBox(height: 8),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -95,6 +114,34 @@ class ChatBubble extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ImageMessageContent extends StatelessWidget {
+  const _ImageMessageContent({required this.message, this.imageBuilder});
+
+  final MessageModel message;
+  final Widget Function(BuildContext context, MessageModel message)?
+  imageBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = message.imageWidth / message.imageHeight;
+    final width = (MediaQuery.sizeOf(context).width * 0.68).clamp(180.0, 280.0);
+    final height = (width / ratio).clamp(120.0, 320.0);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        width: width,
+        height: height,
+        child:
+            imageBuilder?.call(context, message) ??
+            PrivateChatImage(
+              storagePath: message.storagePath,
+              aspectRatio: ratio,
+            ),
       ),
     );
   }
