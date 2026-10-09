@@ -390,6 +390,7 @@ class PushNotificationService {
     final result = await callable.call<Map<String, dynamic>>({
       'token': token,
       'platform': _platformName,
+      'chatImageV1': true,
     });
     final data = Map<String, dynamic>.from(result.data);
     final removedFromUserIds =

@@ -27,7 +27,7 @@
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
 		<key>NSPhotoLibraryUsageDescription</key>
-		<string>Pettxo needs photo library access so you can choose a profile picture.</string>
+		<string>Pettxo needs photo library access so you can choose photos for your profile, posts, and private chats.</string>
 		<key>NSLocationWhenInUseUsageDescription</key>
 		<string>Pettxo uses your location so you can set service availability and show nearby booking areas.</string>
 		<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
