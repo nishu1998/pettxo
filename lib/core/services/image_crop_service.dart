@@ -7,7 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../constants/app_colors.dart';
 
-enum ImageCropContext { post, profile, service }
+enum ImageCropContext { post, profile, service, chat }
 
 enum ImageCropRatio { square, portraitFourByFive }
 
@@ -84,11 +84,64 @@ class ImageCropService {
     }
   }
 
+  Future<File?> cropChatImage({required XFile source}) async {
+    _hadLastError = false;
+    try {
+      final cropped = await _cropper.cropImage(
+        sourcePath: source.path,
+        compressFormat: ImageCompressFormat.jpg,
+        compressQuality: 100,
+        uiSettings: [
+          AndroidUiSettings(
+            toolbarTitle: _toolbarTitle(ImageCropContext.chat),
+            toolbarColor: const Color(0xCCFCF8F5),
+            toolbarWidgetColor: AppColors.textDark,
+            // ignore: deprecated_member_use
+            statusBarColor: const Color(0xCCFCF8F5),
+            statusBarLight: true,
+            navBarLight: true,
+            activeControlsWidgetColor: AppColors.primary,
+            cropFrameColor: AppColors.primary,
+            cropGridColor: AppColors.primary.withValues(alpha: 0.4),
+            dimmedLayerColor: Colors.black.withValues(alpha: 0.55),
+            backgroundColor: Colors.black,
+            lockAspectRatio: false,
+            hideBottomControls: false,
+          ),
+          IOSUiSettings(
+            title: _toolbarTitle(ImageCropContext.chat),
+            doneButtonTitle: 'Done',
+            cancelButtonTitle: 'Cancel',
+            embedInNavigationController: true,
+            hidesNavigationBar: false,
+            aspectRatioLockEnabled: false,
+            resetAspectRatioEnabled: true,
+            rotateButtonsHidden: false,
+            rotateClockwiseButtonHidden: false,
+            aspectRatioPickerButtonHidden: false,
+          ),
+        ],
+      );
+      return cropped == null ? null : File(cropped.path);
+    } on PlatformException catch (error, stackTrace) {
+      _hadLastError = true;
+      debugPrint('ImageCropService chat crop failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return null;
+    } catch (error, stackTrace) {
+      _hadLastError = true;
+      debugPrint('ImageCropService chat crop failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return null;
+    }
+  }
+
   String _toolbarTitle(ImageCropContext context) {
     return switch (context) {
       ImageCropContext.post => 'Crop image',
       ImageCropContext.profile => 'Crop profile photo',
       ImageCropContext.service => 'Crop service photo',
+      ImageCropContext.chat => 'Crop photo',
     };
   }
 }
