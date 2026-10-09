@@ -3,8 +3,10 @@ const assert = require("node:assert/strict");
 
 const {
   collectCanonicalDisputeMetricState,
+  countCanonicalActiveServices,
   countCanonicalBookingMetrics,
   countCanonicalVisibleReviews,
+  getAdminDashboardMetricsDataV3,
   loadCanonicalBookingMetricCounts,
 } = require("../lib/booking/adminDashboardMetricsV3.js");
 const {
@@ -37,6 +39,61 @@ function bookingCounts(records, now = BEFORE_SERVICE, disputes = new Map()) {
   });
 }
 
+function activeService(overrides = {}) {
+  return {
+    status: "active",
+    isActive: true,
+    isDeleted: false,
+    isPaused: false,
+    isVisibleToMarketplace: true,
+    providerVerificationStatus: "approved",
+    isPausedByVerification: false,
+    ...overrides,
+  };
+}
+
+test("active services count uses every canonical service lifecycle condition", () => {
+  const count = countCanonicalActiveServices([
+    {id: "active", data: activeService()},
+    {id: "inactive", data: activeService({isActive: false})},
+    {id: "deleted", data: activeService({isDeleted: true})},
+    {id: "paused", data: activeService({isPaused: true})},
+    {id: "marketplace-hidden", data: activeService({isVisibleToMarketplace: false})},
+    {id: "status-inactive", data: activeService({status: "paused"})},
+    {id: "invalid", data: {isActive: true}},
+    {
+      id: "provider-verification-paused",
+      data: activeService({
+        providerVerificationStatus: "pending",
+        isPausedByVerification: true,
+      }),
+    },
+  ], BEFORE_SERVICE);
+
+  assert.equal(count, 1);
+});
+
+test("expired non-approved verification grace excludes an active service", () => {
+  const count = countCanonicalActiveServices([
+    {
+      id: "expired-grace",
+      data: activeService({
+        providerVerificationStatus: "pending",
+        providerVerificationGraceEndsAt: new Date(BEFORE_SERVICE.getTime() - 1),
+      }),
+    },
+    {
+      id: "future-grace",
+      data: activeService({
+        providerVerificationStatus: "pending",
+        providerVerificationGraceEndsAt: new Date(BEFORE_SERVICE.getTime() + 1),
+      }),
+    },
+  ], BEFORE_SERVICE);
+
+  assert.equal(count, 1);
+});
+
 function pagedQuery(records, afterId = null, pageSize = records.length) {
   return {
     orderBy() {
@@ -60,6 +117,37 @@ function pagedQuery(records, afterId = null, pageSize = records.length) {
     },
   };
 }
+
+test("dashboard response exposes activeServices in the existing metrics envelope", async () => {
+  const collections = {
+    services: [
+      {id: "active", data: activeService()},
+      {id: "inactive", data: activeService({isActive: false})},
+    ],
+    disputes: [],
+    bookings: [],
+  };
+  const firestore = {
+    collection(name) {
+      return pagedQuery(collections[name] ?? []);
+    },
+    collectionGroup(name) {
+      assert.equal(name, "reviews");
+      return pagedQuery([]);
+    },
+  };
+
+  const response = await getAdminDashboardMetricsDataV3({
+    firestore,
+    now: BEFORE_SERVICE,
+  });
+
+  assert.deepEqual(response.metrics.activeServices, {
+    available: true,
+    value: 1,
+  });
+  assert.equal(response.calculatedAt, BEFORE_SERVICE.toISOString());
+});
 
 test("active booking metrics count only effective CONFIRMED and IN_PROGRESS", () => {
   const confirmed = buildConfirmedSlotBookingFixture();
