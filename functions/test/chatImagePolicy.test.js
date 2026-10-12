@@ -5,13 +5,11 @@ const {
   allActiveDevicesSupportChatImages,
   anyActiveDeviceSupportsChatImages,
   buildChatImageMessageData,
-  canAccountUseChatImageMessaging,
   chatImageUnreadField,
   chatImageStoragePath,
   inspectJpegDimensions,
   isIdenticalCommittedImageMessage,
   isValidChatImageMessageId,
-  parseChatImageTesterUids,
   validateChatImageObjectMetadata,
 } = require("../lib/chat/chatImagePolicy.js");
 
@@ -117,20 +115,6 @@ test("sender capability accepts one current device and ignores stale recipient-s
   assert.equal(anyActiveDeviceSupportsChatImages([
     {disabled: true, chatImageV1: true},
   ]), false);
-});
-
-test("closed-testing allowlist overrides a disabled public gate without trusting request data", () => {
-  const testers = parseChatImageTesterUids(" uid-a,uid-b, uid-a ,, ");
-  assert.deepEqual([...testers], ["uid-a", "uid-b"]);
-  assert.equal(canAccountUseChatImageMessaging({
-    publicEnabled: false, testerUids: testers, uid: "uid-a",
-  }), true);
-  assert.equal(canAccountUseChatImageMessaging({
-    publicEnabled: false, testerUids: testers, uid: "ordinary-user",
-  }), false);
-  assert.equal(canAccountUseChatImageMessaging({
-    publicEnabled: true, testerUids: new Set(), uid: "ordinary-user",
-  }), true);
 });
 
 test("image commit data preserves delivery fields and selects the receiver unread counter", () => {
