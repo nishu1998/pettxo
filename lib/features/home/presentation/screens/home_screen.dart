@@ -15,6 +15,7 @@ import '../../../../core/services/network_status_service.dart';
 import '../../data/home_feed_repository.dart';
 import '../../domain/home_feed_refresh_policy.dart';
 import '../../domain/home_feed_session.dart';
+import '../widgets/home_feed_refresh_surface.dart';
 import '../../../notifications/domain/notification_visibility.dart';
 import '../../../offer_wall/data/services/offer_wall_coordinator.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
@@ -43,6 +44,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final FollowRepository _followRepository = FollowRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey<HomeFeedRefreshSurfaceState> _refreshSurfaceKey =
+      GlobalKey<HomeFeedRefreshSurfaceState>();
+  final HomeTabReselectCoordinator _homeTabReselectCoordinator =
+      HomeTabReselectCoordinator();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   late int _suggestionSeed;
 
@@ -236,6 +241,21 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() => _isRefreshing = false);
       }
     }
+  }
+
+  Future<void> _handleHomeTabRetap() {
+    return _homeTabReselectCoordinator.scrollToTopAndRefresh(
+      scrollController: _scrollController,
+      refresh: () async {
+        if (!mounted) return;
+        final refreshSurface = _refreshSurfaceKey.currentState;
+        if (refreshSurface != null) {
+          await refreshSurface.show();
+        } else {
+          await _refreshHome();
+        }
+      },
+    );
   }
 
   Future<void> _loadInitialPosts({bool forceRefresh = false}) async {
@@ -628,7 +648,9 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           // The feed is painted edge-to-edge first so it can scroll behind the
           // floating header and bottom nav overlays.
-          RefreshIndicator(
+          HomeFeedRefreshSurface(
+            key: _refreshSurfaceKey,
+            edgeOffset: topContentPadding,
             onRefresh: _refreshHome,
             child: ListView.separated(
               controller: _scrollController,
@@ -862,7 +884,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      bottomNavigationBar: const SocialBottomNav(activeTab: SocialAppTab.home),
+      bottomNavigationBar: SocialBottomNav(
+        activeTab: SocialAppTab.home,
+        onActiveTabTap: () => unawaited(_handleHomeTabRetap()),
+      ),
     );
   }
 

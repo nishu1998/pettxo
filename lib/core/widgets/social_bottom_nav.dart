@@ -6,8 +6,13 @@ import 'glass_surface.dart';
 
 class SocialBottomNav extends StatefulWidget {
   final SocialAppTab? activeTab;
+  final VoidCallback? onActiveTabTap;
 
-  const SocialBottomNav({super.key, required this.activeTab});
+  const SocialBottomNav({
+    super.key,
+    required this.activeTab,
+    this.onActiveTabTap,
+  });
 
   /// Keeps trailing content reachable while still allowing the body to paint
   /// behind the floating bottom bar.
@@ -52,7 +57,10 @@ class SocialTabBackScope extends StatelessWidget {
 
 class _SocialBottomNavState extends State<SocialBottomNav> {
   void _navigateTo(BuildContext context, SocialAppTab tab) {
-    if (tab == widget.activeTab) return;
+    if (tab == widget.activeTab) {
+      widget.onActiveTabTap?.call();
+      return;
+    }
 
     final route = switch (tab) {
       SocialAppTab.home => "/home",
