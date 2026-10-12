@@ -6,14 +6,87 @@ import 'package:pettexo/core/services/app_loader.dart';
 import 'package:pettexo/core/services/play_store_review_service.dart';
 import 'package:pettexo/core/services/remote_config_service.dart';
 import 'package:pettexo/features/social/data/services/post_publish_coordinator.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  group('PlayStoreListingNavigator', () {
+    test('uses the canonical Pettxo package and Play Store URLs', () {
+      expect(kPettxoAndroidPackageId, 'com.pettexo.app');
+      expect(
+        kPettxoPlayStoreNativeUri.toString(),
+        'market://details?id=com.pettexo.app',
+      );
+      expect(
+        kPettxoPlayStoreWebUri.toString(),
+        'https://play.google.com/store/apps/details?id=com.pettexo.app',
+      );
+    });
+
+    test('successful native launch does not open the web fallback', () async {
+      final calls = <Uri>[];
+      final navigator = PlayStoreListingNavigator(
+        launchUrlOverride: (uri, {required mode}) async {
+          calls.add(uri);
+          return true;
+        },
+      );
+
+      final result = await navigator.open();
+
+      expect(result, PlayStoreListingLaunchResult.openedNative);
+      expect(calls, [kPettxoPlayStoreNativeUri]);
+    });
+
+    test('native launch failure falls back to the HTTPS listing', () async {
+      final calls = <Uri>[];
+      final navigator = PlayStoreListingNavigator(
+        launchUrlOverride: (uri, {required mode}) async {
+          calls.add(uri);
+          return uri == kPettxoPlayStoreWebUri;
+        },
+      );
+
+      final result = await navigator.open();
+
+      expect(result, PlayStoreListingLaunchResult.openedWeb);
+      expect(calls, [kPettxoPlayStoreNativeUri, kPettxoPlayStoreWebUri]);
+    });
+
+    test('reports failure when native and HTTPS launches fail', () async {
+      final navigator = PlayStoreListingNavigator(
+        launchUrlOverride: (uri, {required mode}) async => false,
+      );
+
+      expect(await navigator.open(), PlayStoreListingLaunchResult.failed);
+    });
+
+    test('repeated taps cannot overlap navigation attempts', () async {
+      final nativeResult = Completer<bool>();
+      var launchCount = 0;
+      final navigator = PlayStoreListingNavigator(
+        launchUrlOverride: (uri, {required mode}) {
+          launchCount += 1;
+          return nativeResult.future;
+        },
+      );
+
+      final first = navigator.open();
+      final second = await navigator.open();
+      nativeResult.complete(true);
+
+      expect(second, PlayStoreListingLaunchResult.alreadyInFlight);
+      expect(await first, PlayStoreListingLaunchResult.openedNative);
+      expect(launchCount, 1);
+    });
+  });
+
   group('PlayStoreReviewService', () {
     late _FakeAuthSession authSession;
     late _MemoryPlayStoreReviewStateStore stateStore;
-    late _FakePlayReviewLauncher launcher;
+    late _FakePlayStoreUrlLauncher launcher;
+    late PlayStoreListingNavigator storeListingNavigator;
     late _FakeCompletedBookingStreamSource bookingStreamSource;
     late _FakeSocialPostCounter socialPostCounter;
     late _FakePlayStoreReviewConfigProvider configProvider;
@@ -21,6 +94,7 @@ void main() {
     late DateTime now;
     late List<PlayStoreReviewDialogAction?> dialogActions;
     late int dialogCount;
+    late int storeListingFailureCount;
 
     PlayStoreReviewService buildService({
       PlayStoreReviewDelayScheduler? delayScheduler,
@@ -28,7 +102,8 @@ void main() {
       return PlayStoreReviewService(
         authSession: authSession,
         stateStore: stateStore,
-        reviewLauncher: launcher,
+        storeListingNavigator: storeListingNavigator,
+        storeListingFailurePresenter: () => storeListingFailureCount += 1,
         completedBookingStreamSource: bookingStreamSource,
         socialPostCounter: socialPostCounter,
         configProvider: configProvider,
@@ -46,7 +121,10 @@ void main() {
     setUp(() {
       authSession = _FakeAuthSession();
       stateStore = _MemoryPlayStoreReviewStateStore(() => now);
-      launcher = _FakePlayReviewLauncher();
+      launcher = _FakePlayStoreUrlLauncher();
+      storeListingNavigator = PlayStoreListingNavigator(
+        launchUrlOverride: launcher.launch,
+      );
       bookingStreamSource = _FakeCompletedBookingStreamSource();
       socialPostCounter = _FakeSocialPostCounter();
       configProvider = _FakePlayStoreReviewConfigProvider();
@@ -56,6 +134,7 @@ void main() {
       now = DateTime(2026, 8, 8, 12);
       dialogActions = <PlayStoreReviewDialogAction?>[];
       dialogCount = 0;
+      storeListingFailureCount = 0;
     });
 
     tearDown(() {
@@ -344,7 +423,7 @@ void main() {
       unawaited(service.dispose());
     });
 
-    testWidgets('native review request increments request count', (
+    testWidgets('successful store listing launch increments request count', (
       tester,
     ) async {
       final service = buildService();
@@ -358,7 +437,7 @@ void main() {
       bookingStreamSource.emitCustomer('native-user', 'booking-1');
       await tester.pump();
 
-      expect(launcher.requestCount, 1);
+      expect(launcher.nativeLaunchCount, 1);
       expect(stateStore.stateFor('native-user').requestCount, 1);
       expect(stateStore.stateFor('native-user').pendingOpportunity, isFalse);
       unawaited(service.dispose());
@@ -451,8 +530,34 @@ void main() {
       expect(stateStore.stateFor('limit-user').requestCount, 2);
 
       expect(stateStore.stateFor('limit-user').requestCount, 2);
-      expect(launcher.requestCount, 2);
+      expect(launcher.nativeLaunchCount, 2);
       unawaited(secondSessionService.dispose());
+    });
+
+    testWidgets('failed store navigation is reported and not marked complete', (
+      tester,
+    ) async {
+      launcher.nativeResult = false;
+      launcher.webResult = false;
+      final service = buildService();
+      await pumpHost(tester);
+      await service.initialize();
+
+      authSession.emit('failed-navigation-user');
+      await tester.pump();
+
+      dialogActions.add(PlayStoreReviewDialogAction.rateOnPlayStore);
+      bookingStreamSource.emitCustomer('failed-navigation-user', 'booking-1');
+      await tester.pump();
+
+      final state = stateStore.stateFor('failed-navigation-user');
+      expect(storeListingFailureCount, 1);
+      expect(launcher.nativeLaunchCount, 1);
+      expect(launcher.webLaunchCount, 1);
+      expect(state.requestCount, 0);
+      expect(state.pendingOpportunity, isTrue);
+      expect(service.isSessionSuppressed, isTrue);
+      unawaited(service.dispose());
     });
 
     testWidgets(
@@ -632,16 +737,22 @@ class _MemoryPlayStoreReviewStateStore implements PlayStoreReviewStateStore {
   }
 }
 
-class _FakePlayReviewLauncher implements PlayReviewLauncher {
-  bool available = true;
-  int requestCount = 0;
+class _FakePlayStoreUrlLauncher {
+  bool nativeResult = true;
+  bool webResult = true;
+  int nativeLaunchCount = 0;
+  int webLaunchCount = 0;
 
-  @override
-  Future<bool> isAvailable() async => available;
-
-  @override
-  Future<void> requestReview() async {
-    requestCount += 1;
+  Future<bool> launch(Uri uri, {required LaunchMode mode}) async {
+    if (uri == kPettxoPlayStoreNativeUri) {
+      nativeLaunchCount += 1;
+      return nativeResult;
+    }
+    if (uri == kPettxoPlayStoreWebUri) {
+      webLaunchCount += 1;
+      return webResult;
+    }
+    return false;
   }
 }
 

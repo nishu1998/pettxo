@@ -4,9 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:in_app_review/in_app_review.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../features/social/data/services/post_publish_coordinator.dart';
+import '../widgets/app_snackbar.dart';
 import '../widgets/play_store_review_dialog.dart';
 import 'app_loader.dart';
 import 'remote_config_service.dart';
@@ -91,23 +92,69 @@ class PlayStoreReviewState {
 
 const Object _playStoreReviewSentinel = Object();
 
-abstract class PlayReviewLauncher {
-  Future<bool> isAvailable();
+const String kPettxoAndroidPackageId = 'com.pettexo.app';
+final Uri kPettxoPlayStoreNativeUri = Uri.parse(
+  'market://details?id=$kPettxoAndroidPackageId',
+);
+final Uri kPettxoPlayStoreWebUri = Uri.parse(
+  'https://play.google.com/store/apps/details?id=$kPettxoAndroidPackageId',
+);
 
-  Future<void> requestReview();
+enum PlayStoreListingLaunchResult {
+  openedNative,
+  openedWeb,
+  failed,
+  alreadyInFlight,
 }
 
-class InAppPlayReviewLauncher implements PlayReviewLauncher {
-  InAppPlayReviewLauncher({InAppReview? inAppReview})
-    : _inAppReview = inAppReview ?? InAppReview.instance;
+typedef PlayStoreUrlLauncher =
+    Future<bool> Function(Uri uri, {required LaunchMode mode});
 
-  final InAppReview _inAppReview;
+class PlayStoreListingNavigator {
+  PlayStoreListingNavigator({PlayStoreUrlLauncher? launchUrlOverride})
+    : _launchUrl = launchUrlOverride ?? _launch;
 
-  @override
-  Future<bool> isAvailable() => _inAppReview.isAvailable();
+  final PlayStoreUrlLauncher _launchUrl;
+  bool _launchInFlight = false;
 
-  @override
-  Future<void> requestReview() => _inAppReview.requestReview();
+  Future<PlayStoreListingLaunchResult> open() async {
+    if (_launchInFlight) {
+      return PlayStoreListingLaunchResult.alreadyInFlight;
+    }
+    _launchInFlight = true;
+    try {
+      try {
+        final openedNative = await _launchUrl(
+          kPettxoPlayStoreNativeUri,
+          mode: LaunchMode.externalNonBrowserApplication,
+        );
+        if (openedNative) {
+          return PlayStoreListingLaunchResult.openedNative;
+        }
+      } catch (_) {
+        // The Play Store app may be unavailable; use the public web listing.
+      }
+
+      try {
+        final openedWeb = await _launchUrl(
+          kPettxoPlayStoreWebUri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (openedWeb) {
+          return PlayStoreListingLaunchResult.openedWeb;
+        }
+      } catch (_) {
+        // The caller reports a user-facing error when both methods fail.
+      }
+
+      return PlayStoreListingLaunchResult.failed;
+    } finally {
+      _launchInFlight = false;
+    }
+  }
+
+  static Future<bool> _launch(Uri uri, {required LaunchMode mode}) =>
+      launchUrl(uri, mode: mode);
 }
 
 abstract class PlayStoreReviewAuthSession {
@@ -377,7 +424,8 @@ class PlayStoreReviewService with WidgetsBindingObserver {
   PlayStoreReviewService({
     PlayStoreReviewAuthSession? authSession,
     PlayStoreReviewStateStore? stateStore,
-    PlayReviewLauncher? reviewLauncher,
+    PlayStoreListingNavigator? storeListingNavigator,
+    VoidCallback? storeListingFailurePresenter,
     PlayStoreCompletedBookingMilestoneStreamSource?
     completedBookingStreamSource,
     PlayStoreReviewSocialPostCounter? socialPostCounter,
@@ -388,7 +436,10 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     DateTime Function()? now,
   }) : _authSession = authSession ?? FirebasePlayStoreReviewAuthSession(),
        _stateStore = stateStore ?? FirestorePlayStoreReviewStateStore(),
-       _reviewLauncher = reviewLauncher ?? InAppPlayReviewLauncher(),
+       _storeListingNavigator =
+           storeListingNavigator ?? PlayStoreListingNavigator(),
+       _storeListingFailurePresenter =
+           storeListingFailurePresenter ?? _showDefaultStoreListingFailure,
        _completedBookingStreamSource =
            completedBookingStreamSource ??
            FirestorePlayStoreCompletedBookingMilestoneStreamSource(),
@@ -412,7 +463,8 @@ class PlayStoreReviewService with WidgetsBindingObserver {
 
   final PlayStoreReviewAuthSession _authSession;
   final PlayStoreReviewStateStore _stateStore;
-  final PlayReviewLauncher _reviewLauncher;
+  final PlayStoreListingNavigator _storeListingNavigator;
+  final VoidCallback _storeListingFailurePresenter;
   final PlayStoreCompletedBookingMilestoneStreamSource
   _completedBookingStreamSource;
   final PlayStoreReviewSocialPostCounter _socialPostCounter;
@@ -427,7 +479,7 @@ class PlayStoreReviewService with WidgetsBindingObserver {
   StreamSubscription<String>? _providerCompletedBookingsSubscription;
   bool _initialized = false;
   bool _dialogVisible = false;
-  bool _nativeRequestInFlight = false;
+  bool _storeListingLaunchInFlight = false;
   bool _sessionSuppressed = false;
   bool _promptScheduled = false;
   String? _currentUid;
@@ -485,7 +537,7 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     _clearCachedState();
     _promptScheduled = false;
     _dialogVisible = false;
-    _nativeRequestInFlight = false;
+    _storeListingLaunchInFlight = false;
     _sessionSuppressed = false;
   }
 
@@ -573,7 +625,7 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     _clearCachedState();
     _promptScheduled = false;
     _dialogVisible = false;
-    _nativeRequestInFlight = false;
+    _storeListingLaunchInFlight = false;
     _sessionSuppressed = false;
     _currentUid = nextUid.isEmpty ? null : nextUid;
 
@@ -784,7 +836,9 @@ class PlayStoreReviewService with WidgetsBindingObserver {
   }) async {
     final config = _configProvider.currentConfig();
     if (!_canShowPromptForState(state, config: config)) return;
-    if (_promptScheduled || _dialogVisible || _nativeRequestInFlight) return;
+    if (_promptScheduled || _dialogVisible || _storeListingLaunchInFlight) {
+      return;
+    }
     if (!_isForegroundReady) return;
 
     _promptScheduled = true;
@@ -792,7 +846,7 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     _promptScheduled = false;
 
     if ((_currentUid ?? '') != uid) return;
-    if (!_isForegroundReady || _dialogVisible || _nativeRequestInFlight) {
+    if (!_isForegroundReady || _dialogVisible || _storeListingLaunchInFlight) {
       return;
     }
 
@@ -840,7 +894,7 @@ class PlayStoreReviewService with WidgetsBindingObserver {
   }) async {
     switch (action) {
       case PlayStoreReviewDialogAction.rateOnPlayStore:
-        await _attemptNativeReviewRequest(uid, currentState);
+        await _attemptStoreListingLaunch(uid, currentState);
         break;
       case PlayStoreReviewDialogAction.maybeLater:
       case PlayStoreReviewDialogAction.noThanks:
@@ -855,44 +909,52 @@ class PlayStoreReviewService with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _attemptNativeReviewRequest(
+  Future<void> _attemptStoreListingLaunch(
     String uid,
     PlayStoreReviewState currentState,
   ) async {
-    if (_nativeRequestInFlight) return;
+    if (_storeListingLaunchInFlight) return;
     final config = _configProvider.currentConfig();
     if (!_canShowPromptForState(currentState, config: config)) return;
 
-    _nativeRequestInFlight = true;
+    _storeListingLaunchInFlight = true;
     try {
-      final isAvailable = await _reviewLauncher.isAvailable();
-      if (!isAvailable) return;
-
-      var attempted = false;
-      try {
-        attempted = true;
-        await _reviewLauncher.requestReview();
-      } finally {
-        if (attempted) {
-          await _mutateState(
-            uid,
-            reason: 'mark-native-review-requested',
-            includeServerLastRequestedAt: true,
-            transform: (current) => current.copyWith(
-              requestCount: current.requestCount + 1,
-              pendingOpportunity: false,
-              pendingOpportunitySource: null,
-              lastRequestedAt: _now(),
-            ),
-          );
-        }
+      final result = await _storeListingNavigator.open();
+      if (result == PlayStoreListingLaunchResult.alreadyInFlight) return;
+      if (result == PlayStoreListingLaunchResult.failed) {
+        _sessionSuppressed = true;
+        _storeListingFailurePresenter();
+        return;
       }
+
+      await _mutateState(
+        uid,
+        reason: 'mark-store-listing-opened',
+        includeServerLastRequestedAt: true,
+        transform: (current) => current.copyWith(
+          requestCount: current.requestCount + 1,
+          pendingOpportunity: false,
+          pendingOpportunitySource: null,
+          lastRequestedAt: _now(),
+        ),
+      );
     } catch (error, stackTrace) {
-      debugPrint('PlayStoreReviewService requestReview failed: $error');
+      _sessionSuppressed = true;
+      _storeListingFailurePresenter();
+      debugPrint('PlayStoreReviewService store listing failed: $error');
       debugPrintStack(stackTrace: stackTrace);
     } finally {
-      _nativeRequestInFlight = false;
+      _storeListingLaunchInFlight = false;
     }
+  }
+
+  static void _showDefaultStoreListingFailure() {
+    final context = AppLoader.navigatorKey.currentContext;
+    if (context == null || !context.mounted) return;
+    AppSnackbar.showError(
+      context,
+      'We could not open the Play Store. Please try again.',
+    );
   }
 
   Future<PlayStoreReviewState> _loadCachedState(String uid) async {
