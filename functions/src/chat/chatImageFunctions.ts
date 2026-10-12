@@ -1,6 +1,6 @@
 import {FieldValue, type DocumentData, type DocumentSnapshot} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
-import {defineBoolean, defineSecret} from "firebase-functions/params";
+import {defineBoolean} from "firebase-functions/params";
 
 import {auth, db, storage} from "../shared/firebase";
 import {
@@ -13,13 +13,11 @@ import {
 import {
   anyActiveDeviceSupportsChatImages,
   buildChatImageMessageData,
-  canAccountUseChatImageMessaging,
   chatImageUnreadField,
   chatImageStoragePath,
   inspectJpegDimensions,
   isIdenticalCommittedImageMessage,
   isValidChatImageMessageId,
-  parseChatImageTesterUids,
   validateChatImageObjectMetadata,
 } from "./chatImagePolicy";
 
@@ -27,10 +25,6 @@ const CHAT_IMAGE_MESSAGING_ENABLED = defineBoolean(
   "CHAT_IMAGE_MESSAGING_ENABLED",
   {default: false, description: "Enables canonical direct-chat image messages."},
 );
-
-// Server-owned Secret Manager configuration. Never accept tester eligibility
-// from callable data or a user-writable Firestore document.
-const CHAT_IMAGE_TESTER_UIDS = defineSecret("CHAT_IMAGE_TESTER_UIDS");
 
 function trimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -98,14 +92,6 @@ function publicFeatureEnabled(): boolean {
   return CHAT_IMAGE_MESSAGING_ENABLED.value() === true;
 }
 
-function accountFeatureEnabled(uid: string): boolean {
-  return canAccountUseChatImageMessaging({
-    publicEnabled: publicFeatureEnabled(),
-    testerUids: parseChatImageTesterUids(CHAT_IMAGE_TESTER_UIDS.value()),
-    uid,
-  });
-}
-
 function mapObjectValidationError(error: unknown): HttpsError {
   const code = error instanceof Error ? error.message : "invalid-image";
   switch (code) {
@@ -131,7 +117,7 @@ function mapObjectValidationError(error: unknown): HttpsError {
 }
 
 export const getChatImageMessagingCapability = onCall(
-  {invoker: "public", secrets: [CHAT_IMAGE_TESTER_UIDS]},
+  {invoker: "public"},
   async (request) => {
     const uid = requireUid(request.auth);
     const chatId = trimmedString(request.data?.chatId);
@@ -143,7 +129,7 @@ export const getChatImageMessagingCapability = onCall(
     if (!identity.participantIds.includes(uid)) {
       throw new HttpsError("permission-denied", "You are not a participant in this chat.");
     }
-    if (!accountFeatureEnabled(uid)) {
+    if (!publicFeatureEnabled()) {
       return {enabled: false, reason: "sender-not-allowed"};
     }
     const compatible = await userSupportsChatImages(uid);
@@ -159,7 +145,6 @@ export const sendChatImageMessage = onCall(
     invoker: "public",
     timeoutSeconds: 60,
     memory: "256MiB",
-    secrets: [CHAT_IMAGE_TESTER_UIDS],
   },
   async (request) => {
     const senderId = requireUid(request.auth);
@@ -191,7 +176,7 @@ export const sendChatImageMessage = onCall(
     const receiverId = otherDirectParticipantUid(identity, senderId) ?? "";
     if (!receiverId) throw new HttpsError("failed-precondition", "Chat receiver is missing.");
 
-    if (!accountFeatureEnabled(senderId)) {
+    if (!publicFeatureEnabled()) {
       throw new HttpsError("failed-precondition", "Image messaging is not enabled yet.");
     }
     if (!await userSupportsChatImages(senderId)) {

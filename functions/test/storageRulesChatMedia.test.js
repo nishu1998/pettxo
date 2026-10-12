@@ -14,6 +14,7 @@ const hasEmulators = Boolean(
 );
 let environment;
 const chatId = "chat_uid-a_uid-b";
+const closedChatId = "chat_uid-a_uid-c";
 const messageId = "AbCdEfGhIjKlMnOpQrSt";
 const imagePath = `chatMedia/${chatId}/${messageId}/image.jpg`;
 const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
@@ -48,6 +49,10 @@ test.before(async () => {
     await setDoc(doc(firestore, "chats/not-canonical"), {
       chatType: "directUser", status: "active",
       customerId: "uid-a", providerId: "uid-b", participantIds: ["uid-a", "uid-b"],
+    });
+    await setDoc(doc(firestore, `chats/${closedChatId}`), {
+      chatType: "directUser", status: "closed",
+      customerId: "uid-a", providerId: "uid-c", participantIds: ["uid-a", "uid-c"],
     });
   });
 });
@@ -97,6 +102,18 @@ test("metadata, MIME, size, overwrite, and listing restrictions are enforced", {
     bytes,
     {contentType: "image/jpeg", customMetadata: {
       chatId: "not-canonical", messageId: "GhIjKlMnOpQrStUvWxYz", senderId: "uid-a",
+    }},
+  ));
+});
+
+test("participants cannot upload new media to a closed conversation", {skip: !hasEmulators}, async () => {
+  const closedMessageId = "HiJkLmNoPqRsTuVwXyZa";
+  await assertFails(uploadBytes(
+    ref(environment.authenticatedContext("uid-a").storage(),
+      `chatMedia/${closedChatId}/${closedMessageId}/image.jpg`),
+    bytes,
+    {contentType: "image/jpeg", customMetadata: {
+      chatId: closedChatId, messageId: closedMessageId, senderId: "uid-a",
     }},
   ));
 });

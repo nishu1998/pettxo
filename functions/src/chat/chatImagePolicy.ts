@@ -189,20 +189,3 @@ export function anyActiveDeviceSupportsChatImages(
     (token) => token.disabled !== true && token[CHAT_IMAGE_CAPABILITY] === true,
   );
 }
-
-export function parseChatImageTesterUids(value: string): ReadonlySet<string> {
-  return new Set(
-    value
-      .split(",")
-      .map((uid) => uid.trim())
-      .filter((uid) => uid.length > 0),
-  );
-}
-
-export function canAccountUseChatImageMessaging(params: {
-  publicEnabled: boolean;
-  testerUids: ReadonlySet<string>;
-  uid: string;
-}): boolean {
-  return params.publicEnabled || params.testerUids.has(params.uid);
-}

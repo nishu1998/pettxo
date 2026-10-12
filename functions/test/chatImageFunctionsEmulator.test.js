@@ -18,10 +18,13 @@ const receiverId = "chat-image-call-b";
 const outsiderId = "chat-image-call-c";
 const closedReceiverId = "chat-image-call-d";
 const oldRecipientId = "chat-image-call-e";
+const publicCustomerId = "chat-image-call-f";
+const publicProviderId = "chat-image-call-g";
 const chatId = `chat_${senderId}_${receiverId}`;
 const closedChatId = `chat_${senderId}_${closedReceiverId}`;
 const outsiderChatId = `chat_${receiverId}_${outsiderId}`;
 const oldRecipientChatId = `chat_${senderId}_${oldRecipientId}`;
+const publicChatId = `chat_${publicCustomerId}_${publicProviderId}`;
 
 function jpeg(width = 1200, height = 800) {
   return Buffer.from([
@@ -68,14 +71,21 @@ async function expectCode(promise, code) {
 
 test.before(async () => {
   if (!hasEmulators) return;
-  process.env.CHAT_IMAGE_MESSAGING_ENABLED = "false";
-  process.env.CHAT_IMAGE_TESTER_UIDS = `${senderId},${receiverId}`;
+  process.env.CHAT_IMAGE_MESSAGING_ENABLED = "true";
   ({auth, db, storage} = require("../lib/shared/firebase.js"));
   ({sendChatImageMessage, getChatImageMessagingCapability} =
     require("../lib/chat/chatImageFunctions.js"));
   auth.getUser = async (uid) => ({uid, disabled: disabledAuthUids.has(uid)});
 
-  for (const uid of [senderId, receiverId, outsiderId, closedReceiverId, oldRecipientId]) {
+  for (const uid of [
+    senderId,
+    receiverId,
+    outsiderId,
+    closedReceiverId,
+    oldRecipientId,
+    publicCustomerId,
+    publicProviderId,
+  ]) {
     await db.collection("users").doc(uid).set({
       uid,
       displayName: uid,
@@ -119,29 +129,69 @@ test.before(async () => {
     unreadCountCustomer: 0,
     unreadCountProvider: 0,
   });
+  await db.collection("chats").doc(publicChatId).set({
+    chatType: "directUser",
+    status: "active",
+    customerId: publicCustomerId,
+    providerId: publicProviderId,
+    participantIds: [publicCustomerId, publicProviderId],
+    unreadCountCustomer: 0,
+    unreadCountProvider: 0,
+  });
 });
 
-test("public gate stays disabled while approved testers alone receive capability", {skip: !hasEmulators}, async () => {
-  const approved = await getChatImageMessagingCapability.run({
+test("public gate grants capability to every eligible compatible participant", {skip: !hasEmulators}, async () => {
+  const sender = await getChatImageMessagingCapability.run({
     auth: {uid: senderId}, data: {chatId},
   });
-  const ordinary = await getChatImageMessagingCapability.run({
+  const otherParticipant = await getChatImageMessagingCapability.run({
     auth: {uid: outsiderId}, data: {chatId: outsiderChatId},
   });
-  assert.deepEqual(approved, {enabled: true, reason: "enabled"});
-  assert.deepEqual(ordinary, {enabled: false, reason: "sender-not-allowed"});
+  assert.deepEqual(sender, {enabled: true, reason: "enabled"});
+  assert.deepEqual(otherParticipant, {enabled: true, reason: "enabled"});
 });
 
-test("non-tester cannot send even with a current capable token", {skip: !hasEmulators}, async () => {
+test("an ordinary compatible participant can send when the public gate is enabled", {skip: !hasEmulators}, async () => {
   const messageId = "ZzYyXxWwVvUuTtSsRrQq";
-  await upload(outsiderChatId, messageId, outsiderId);
-  await expectCode(
-    sendChatImageMessage.run(request(outsiderId, outsiderChatId, messageId)),
-    "failed-precondition",
+  const storagePath = await upload(outsiderChatId, messageId, outsiderId);
+  const result = await sendChatImageMessage.run(
+    request(outsiderId, outsiderChatId, messageId),
   );
+  assert.equal(result.idempotent, false);
+  const message = (await db.collection("chats").doc(outsiderChatId)
+    .collection("messages").doc(messageId).get()).data();
+  assert.equal(message.senderId, outsiderId);
+  assert.equal(message.receiverId, receiverId);
+  assert.equal(message.storagePath, storagePath);
+  assert.equal(message.type, "image");
 });
 
-test("approved tester can send to an old recipient and stale recipient tokens do not block", {skip: !hasEmulators}, async () => {
+test("newly eligible customers and providers can both send in the canonical chat", {skip: !hasEmulators}, async () => {
+  const customerMessageId = "HhIiJjKkLlMmNnOoPpQq";
+  const providerMessageId = "IiJjKkLlMmNnOoPpQqRr";
+  await upload(publicChatId, customerMessageId, publicCustomerId);
+  await upload(publicChatId, providerMessageId, publicProviderId);
+
+  const customerResult = await sendChatImageMessage.run(
+    request(publicCustomerId, publicChatId, customerMessageId),
+  );
+  const providerResult = await sendChatImageMessage.run(
+    request(publicProviderId, publicChatId, providerMessageId),
+  );
+
+  assert.equal(customerResult.idempotent, false);
+  assert.equal(providerResult.idempotent, false);
+  const customerMessage = (await db.collection("chats").doc(publicChatId)
+    .collection("messages").doc(customerMessageId).get()).data();
+  const providerMessage = (await db.collection("chats").doc(publicChatId)
+    .collection("messages").doc(providerMessageId).get()).data();
+  assert.equal(customerMessage.senderId, publicCustomerId);
+  assert.equal(customerMessage.receiverId, publicProviderId);
+  assert.equal(providerMessage.senderId, publicProviderId);
+  assert.equal(providerMessage.receiverId, publicCustomerId);
+});
+
+test("a previously approved sender can still send to an old recipient", {skip: !hasEmulators}, async () => {
   const messageId = "YyXxWwVvUuTtSsRrQqPp";
   await db.collection("users").doc(oldRecipientId).collection("notificationTokens")
     .doc("device").set({token: `${oldRecipientId}-old-token`, disabled: false});
