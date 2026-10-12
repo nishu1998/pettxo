@@ -1,4 +1,8 @@
-import {normalizeUsername, validateNormalizedUsername} from "./username";
+import {
+  isProtectedUsername,
+  normalizeUsername,
+  validateNormalizedUsername,
+} from "./username";
 
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -26,6 +30,12 @@ function hasPersistedLocation(user: Record<string, unknown>): boolean {
 export function isPersistedCompletedAccount(params: {
   uid: string;
   publicUser: Record<string, unknown> | null | undefined;
+  reservedUsernameOwnership?: {
+    username: string;
+    reservationExists: boolean;
+    reservationUid: string;
+    authorizedByTrustedIdentity: boolean;
+  };
 }): boolean {
   const user = params.publicUser ?? {};
   if (asTrimmedString(user.uid) !== asTrimmedString(params.uid)) {
@@ -44,5 +54,12 @@ export function isPersistedCompletedAccount(params: {
   const normalizedUsername = normalizeUsername(
     asTrimmedString(user.usernameLowercase || user.username),
   );
-  return validateNormalizedUsername(normalizedUsername) == null;
+  const ownership = params.reservedUsernameOwnership;
+  const allowReserved =
+    isProtectedUsername(normalizedUsername) &&
+    ownership?.authorizedByTrustedIdentity === true &&
+    normalizeUsername(ownership.username) === normalizedUsername &&
+    ownership.reservationExists === true &&
+    asTrimmedString(ownership.reservationUid) === asTrimmedString(params.uid);
+  return validateNormalizedUsername(normalizedUsername, {allowReserved}) == null;
 }

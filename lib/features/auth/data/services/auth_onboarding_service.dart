@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../../../core/identity/username_utils.dart';
 import '../../../../core/services/firestore_cache_service.dart';
 import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../domain/utils/auth_onboarding_resolver.dart';
@@ -57,28 +58,25 @@ class AuthOnboardingService {
 
     ProfileCompletionSnapshot? profile;
     if (publicSnapshot.exists || privateSnapshot.exists) {
-      final normalizedUsername =
-          (publicMap['usernameLowercase'] as String? ??
-                  publicMap['username'] as String? ??
-                  '')
-              .trim();
+      final normalizedUsername = normalizeUsername(
+        publicMap['usernameLowercase'] as String? ??
+            publicMap['username'] as String? ??
+            '',
+      );
       var usernameReservationMatchesUid = false;
 
-      if (normalizedUsername.isNotEmpty) {
-        try {
-          final usernameSnapshot = await FirestoreCacheService.getDocCacheFirst(
-            _firestore.collection('usernames').doc(normalizedUsername),
-          );
-          final reservedUid = (usernameSnapshot.data()?['uid'] as String? ?? '')
-              .trim();
-          usernameReservationMatchesUid = reservedUid == user.uid;
-        } catch (error) {
-          if (kDebugMode) {
-            debugPrint(
-              'AuthRouteResolver username reservation lookup skipped uid=${user.uid} username=$normalizedUsername error=$error',
-            );
-          }
-        }
+      if (normalizedUsername == kOfficialPettxoUsername) {
+        // A persisted protected username is accepted only after a fresh read of
+        // the canonical reservation. A failed lookup must surface as a retryable
+        // resolver error instead of routing the account back through onboarding.
+        final usernameSnapshot = await _firestore
+            .collection('usernames')
+            .doc(normalizedUsername)
+            .get(const GetOptions(source: Source.server));
+        final reservedUid = (usernameSnapshot.data()?['uid'] as String? ?? '')
+            .trim();
+        usernameReservationMatchesUid =
+            usernameSnapshot.exists && reservedUid == user.uid;
       }
 
       profile = ProfileCompletionSnapshot(

@@ -52,4 +52,28 @@ void main() {
     );
     expect(validateUsernameClaimInput('admin'), 'This username is reserved');
   });
+
+  test('persisted official username requires verified canonical ownership', () {
+    expect(
+      isPersistedUsernameValid(
+        username: ' @Pettxo ',
+        canonicalReservationMatchesAuthenticatedUid: true,
+      ),
+      isTrue,
+    );
+    expect(
+      isPersistedUsernameValid(
+        username: 'pettxo',
+        canonicalReservationMatchesAuthenticatedUid: false,
+      ),
+      isFalse,
+    );
+    expect(
+      isPersistedUsernameValid(
+        username: 'admin',
+        canonicalReservationMatchesAuthenticatedUid: true,
+      ),
+      isFalse,
+    );
+  });
 }

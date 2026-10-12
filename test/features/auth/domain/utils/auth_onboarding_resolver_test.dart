@@ -25,6 +25,32 @@ void main() {
       acceptedPrivacyAt: null,
       acceptedProviderAgreementAt: null,
     );
+    const officialProfile = ProfileCompletionSnapshot(
+      uid: 'Yo5HtRbusBNl9NkPhelXp5naNF93',
+      role: 'petLover',
+      displayName: 'Pettxo',
+      username: 'pettxo',
+      usernameLowercase: 'pettxo',
+      state: 'Maharashtra',
+      city: 'Mumbai',
+      address: '',
+      legacyLocation: '',
+      usernameReservationMatchesUid: true,
+      hasPublicProfile: true,
+      hasPrivateProfile: true,
+      accountStatus: 'active',
+      scheduledDeletionAt: null,
+      acceptedTermsAt: null,
+      acceptedPrivacyAt: null,
+      acceptedProviderAgreementAt: null,
+    );
+    const officialAuth = AuthIdentitySnapshot(
+      uid: 'Yo5HtRbusBNl9NkPhelXp5naNF93',
+      email: 'hello@pettxo.com',
+      phoneNumber: '+919999999999',
+      emailVerified: true,
+      providerIds: ['password', 'phone'],
+    );
 
     test('returns signedOut when auth is missing', () {
       final resolution = resolveAuthOnboardingState(auth: null, profile: null);
@@ -255,6 +281,135 @@ void main() {
       );
 
       expect(resolution.state, AuthOnboardingState.authenticated);
+    });
+
+    test(
+      'official reserved username resolves authenticated with verified ownership',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: officialAuth,
+          profile: officialProfile,
+        );
+
+        expect(isPersistedAccountComplete(officialProfile), isTrue);
+        expect(profileNeedsDetails(officialProfile), isFalse);
+        expect(resolution.state, AuthOnboardingState.authenticated);
+        expect(resolution.persistedAccountComplete, isTrue);
+      },
+    );
+
+    test(
+      'official reserved username stays incomplete without verified ownership',
+      () {
+        const unverifiedProfile = ProfileCompletionSnapshot(
+          uid: 'Yo5HtRbusBNl9NkPhelXp5naNF93',
+          role: 'petLover',
+          displayName: 'Pettxo',
+          username: 'pettxo',
+          usernameLowercase: 'pettxo',
+          state: 'Maharashtra',
+          city: 'Mumbai',
+          address: '',
+          legacyLocation: '',
+          usernameReservationMatchesUid: false,
+          hasPublicProfile: true,
+          hasPrivateProfile: true,
+          accountStatus: 'active',
+          scheduledDeletionAt: null,
+          acceptedTermsAt: null,
+          acceptedPrivacyAt: null,
+          acceptedProviderAgreementAt: null,
+        );
+
+        final resolutions = List.generate(
+          2,
+          (_) => resolveAuthOnboardingState(
+            auth: officialAuth,
+            profile: unverifiedProfile,
+            hasPendingSignupConsent: true,
+          ),
+        );
+
+        expect(isPersistedAccountComplete(unverifiedProfile), isFalse);
+        expect(profileNeedsDetails(unverifiedProfile), isTrue);
+        for (final resolution in resolutions) {
+          expect(resolution.state, AuthOnboardingState.profileDetailsRequired);
+          expect(resolution.persistedAccountComplete, isFalse);
+        }
+      },
+    );
+
+    test(
+      'verified ownership cannot override an authenticated UID mismatch',
+      () {
+        final resolution = resolveAuthOnboardingState(
+          auth: const AuthIdentitySnapshot(
+            uid: 'another_uid',
+            email: 'another@example.com',
+            phoneNumber: '+919999999999',
+            emailVerified: true,
+            providerIds: ['password', 'phone'],
+          ),
+          profile: officialProfile,
+          hasPendingSignupConsent: true,
+        );
+
+        expect(resolution.state, AuthOnboardingState.profileDetailsRequired);
+        expect(resolution.persistedAccountComplete, isFalse);
+        expect(resolution.reason, 'profile-uid-mismatch');
+      },
+    );
+
+    test('other reserved usernames remain incomplete', () {
+      const reservedProfile = ProfileCompletionSnapshot(
+        uid: 'uid_123',
+        role: 'petParent',
+        displayName: 'Administrator',
+        username: 'admin',
+        usernameLowercase: 'admin',
+        state: 'Maharashtra',
+        city: 'Mumbai',
+        address: '',
+        legacyLocation: '',
+        usernameReservationMatchesUid: true,
+        hasPublicProfile: true,
+        hasPrivateProfile: true,
+        accountStatus: 'active',
+        scheduledDeletionAt: null,
+        acceptedTermsAt: null,
+        acceptedPrivacyAt: null,
+        acceptedProviderAgreementAt: null,
+      );
+
+      expect(isPersistedAccountComplete(reservedProfile), isFalse);
+      expect(profileNeedsDetails(reservedProfile), isTrue);
+    });
+
+    test('missing and malformed usernames remain incomplete', () {
+      for (final username in ['', 'bad username']) {
+        final profile = ProfileCompletionSnapshot(
+          uid: 'uid_123',
+          role: 'petParent',
+          displayName: 'Nishant',
+          username: username,
+          usernameLowercase: username,
+          state: 'Maharashtra',
+          city: 'Mumbai',
+          address: '',
+          legacyLocation: '',
+          usernameReservationMatchesUid: true,
+          hasPublicProfile: true,
+          hasPrivateProfile: true,
+          accountStatus: 'active',
+          scheduledDeletionAt: null,
+          acceptedTermsAt: null,
+          acceptedPrivacyAt: null,
+          acceptedProviderAgreementAt: null,
+        );
+
+        expect(isPersistedAccountComplete(profile), isFalse);
+        expect(profileNeedsDetails(profile), isTrue);
+      }
     });
 
     test('returns accountRecoveryRequired for pending deletion profile', () {

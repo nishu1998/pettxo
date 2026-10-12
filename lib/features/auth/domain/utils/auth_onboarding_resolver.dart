@@ -147,7 +147,11 @@ bool isPersistedAccountComplete(ProfileCompletionSnapshot? profile) {
         ? profile.usernameLowercase
         : profile.username,
   );
-  if (validateNormalizedUsername(normalizedUsername) != null) {
+  if (!isPersistedUsernameValid(
+    username: normalizedUsername,
+    canonicalReservationMatchesAuthenticatedUid:
+        profile.usernameReservationMatchesUid,
+  )) {
     return false;
   }
 
@@ -179,7 +183,11 @@ bool profileNeedsDetails(ProfileCompletionSnapshot? profile) {
         ? profile.usernameLowercase
         : profile.username,
   );
-  return validateNormalizedUsername(normalizedUsername) != null;
+  return !isPersistedUsernameValid(
+    username: normalizedUsername,
+    canonicalReservationMatchesAuthenticatedUid:
+        profile.usernameReservationMatchesUid,
+  );
 }
 
 AuthOnboardingResolution resolveAuthOnboardingState({
@@ -254,6 +262,18 @@ AuthOnboardingResolution resolveAuthOnboardingState({
       reason: ignoredStaleOnboardingState
           ? 'authenticated-persisted-account'
           : 'authenticated',
+    );
+  }
+
+  if (profile != null && profile.uid.trim() != auth.uid.trim()) {
+    return AuthOnboardingResolution(
+      state: AuthOnboardingState.profileDetailsRequired,
+      auth: auth,
+      profile: profile,
+      hasPendingSignupConsent: hasPendingSignupConsent,
+      persistedAccountComplete: false,
+      ignoredStaleOnboardingState: false,
+      reason: 'profile-uid-mismatch',
     );
   }
 

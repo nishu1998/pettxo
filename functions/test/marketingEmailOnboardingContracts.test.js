@@ -35,3 +35,13 @@ test("signup preference initialization does not send marketing email or alter we
   assert.doesNotMatch(onboardingBlock, /sendMarketingEmail|RESEND_MARKETING_API_KEY/);
   assert.doesNotMatch(onboardingBlock, /sendWelcomeEmail/);
 });
+
+test("completed protected profiles require trusted identity and canonical reservation ownership", () => {
+  const onboardingBlock = legacySource.match(/export const completeOnboardingProfile[\s\S]*?export const syncAuthIdentity/)?.[0] || "";
+  assert.match(onboardingBlock, /canClaimProtectedUsername\(currentUsername, authUser\)/);
+  assert.match(onboardingBlock, /reservationExists: targetUsernameSnapshot\.exists/);
+  assert.match(onboardingBlock, /reservationUid: reservedUid/);
+  assert.match(onboardingBlock, /authorizedByTrustedIdentity: trustedProtectedUsernameClaim/);
+  assert.match(onboardingBlock, /status: "alreadyComplete" as const/);
+  assert.match(onboardingBlock, /username-reservation-mismatch/);
+});

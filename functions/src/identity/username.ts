@@ -51,6 +51,10 @@ export function isReservedUsername(value: string): boolean {
   return reservedUsernames.has(value);
 }
 
+export function isProtectedUsername(value: string): boolean {
+  return protectedUsernameOwners.has(value);
+}
+
 export function canClaimProtectedUsername(
   username: string,
   claimant: AuthenticatedUsernameClaimant,

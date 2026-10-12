@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   canClaimProtectedUsername,
   classifyUsernameReservation,
+  isProtectedUsername,
   normalizeUsername,
   usernameReservationConflicts,
   validateNormalizedUsername,
@@ -30,6 +31,8 @@ test("normalization does not hide unsupported Unicode or interior characters", (
 
 test("pettxo stays reserved unless the exact verified official identity claims it", () => {
   assert.equal(validateNormalizedUsername("pettxo"), "This username is reserved.");
+  assert.equal(isProtectedUsername("pettxo"), true);
+  assert.equal(isProtectedUsername("admin"), false);
   assert.equal(canClaimProtectedUsername("pettxo", officialClaimant), true);
   assert.equal(
     validateNormalizedUsername("pettxo", {

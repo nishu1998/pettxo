@@ -2503,12 +2503,28 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
     ]);
 
     const user = userSnapshot.data() ?? {};
+    const currentUsername = normalizeUsername(
+      asTrimmedString(user.usernameLowercase || user.username),
+    );
+    const reservedUid = asTrimmedString(targetUsernameSnapshot.data()?.uid);
+    const trustedProtectedUsernameClaim =
+      currentUsername === requestedUsername &&
+      canClaimProtectedUsername(currentUsername, authUser);
     if (userSnapshot.exists) {
       assertAccountAvailable(
         user,
         "This account cannot complete onboarding right now.",
       );
-      if (isPersistedCompletedAccount({uid, publicUser: user})) {
+      if (isPersistedCompletedAccount({
+        uid,
+        publicUser: user,
+        reservedUsernameOwnership: {
+          username: currentUsername,
+          reservationExists: targetUsernameSnapshot.exists,
+          reservationUid: reservedUid,
+          authorizedByTrustedIdentity: trustedProtectedUsernameClaim,
+        },
+      })) {
         return {
           username: normalizeUsername(
             asTrimmedString(user.usernameLowercase || user.username),
@@ -2516,15 +2532,18 @@ export const completeOnboardingProfile = onCall({invoker: "public"}, async (requ
           status: "alreadyComplete" as const,
         };
       }
+      if (trustedProtectedUsernameClaim && !targetUsernameSnapshot.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Protected username ownership could not be verified.",
+          {appCode: "username-reservation-mismatch"},
+        );
+      }
     }
 
-    const currentUsername = normalizeUsername(
-      asTrimmedString(user.usernameLowercase || user.username),
-    );
     const currentPhotoUrl = asTrimmedString(user.photoUrl || user.profileImage);
     const currentBio = asTrimmedString(user.bio);
 
-    const reservedUid = asTrimmedString(targetUsernameSnapshot.data()?.uid);
     if (usernameReservationConflicts({
       reservationExists: targetUsernameSnapshot.exists,
       reservationUid: reservedUid,

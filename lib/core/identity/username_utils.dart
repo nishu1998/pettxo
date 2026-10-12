@@ -34,6 +34,8 @@ const Set<String> kReservedUsernames = {
   'username',
 };
 
+const String kOfficialPettxoUsername = 'pettxo';
+
 String normalizeUsername(String value) {
   return value.trim().replaceAll('@', '').toLowerCase();
 }
@@ -45,8 +47,18 @@ String? validateNormalizedUsername(String normalized) {
 String? validateUsernameClaimInput(String normalized) {
   return _validateNormalizedUsername(
     normalized,
-    allowReserved: normalized == 'pettxo',
+    allowReserved: normalized == kOfficialPettxoUsername,
   );
+}
+
+bool isPersistedUsernameValid({
+  required String username,
+  required bool canonicalReservationMatchesAuthenticatedUid,
+}) {
+  final normalized = normalizeUsername(username);
+  if (validateNormalizedUsername(normalized) == null) return true;
+  return normalized == kOfficialPettxoUsername &&
+      canonicalReservationMatchesAuthenticatedUid;
 }
 
 String? _validateNormalizedUsername(
