@@ -16,6 +16,7 @@ import {
 import {
   CANONICAL_BOOKING_STATES,
 } from "./domain/bookingContracts";
+import {isServiceVerificationPaused} from "./application/workingHours";
 import {parseCanonicalBookingDocumentV3} from "./schema/bookingDocumentV3";
 import {isCanonicalBookingDocumentCandidate} from "./schema/bookingReadModel";
 
@@ -74,6 +75,26 @@ export type BookingMetricScanAnomaly = {
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+export function isCanonicalActiveService(
+  data: Record<string, unknown>,
+  now: Date,
+): boolean {
+  return asString(data.status) === "active" &&
+    data.isActive === true &&
+    data.isDeleted === false &&
+    data.isPaused === false &&
+    data.isVisibleToMarketplace === true &&
+    !isServiceVerificationPaused(data, now.getTime());
+}
+
+export function countCanonicalActiveServices(
+  records: ReadonlyArray<DashboardDocumentRecord>,
+  now: Date,
+): number {
+  return records.filter((record) =>
+    isCanonicalActiveService(record.data, now)).length;
 }
 
 function safeVersion(value: unknown): string | number | null {
@@ -315,6 +336,25 @@ async function loadCanonicalVisibleReviewCount(
   return count;
 }
 
+async function loadCanonicalActiveServiceCount(
+  firestore: Firestore,
+  now: Date,
+): Promise<number> {
+  let count = 0;
+  await forEachQueryDocument({
+    query: firestore.collection("services"),
+    visit: (document) => {
+      if (isCanonicalActiveService(
+        document.data() as Record<string, unknown>,
+        now,
+      )) {
+        count += 1;
+      }
+    },
+  });
+  return count;
+}
+
 function available(value: number): DashboardMetricResult {
   return {available: true, value};
 }
@@ -342,6 +382,10 @@ export async function getAdminDashboardMetricsDataV3(params: {
 }) {
   const now = params.now ?? new Date();
   const reviewPromise = loadCanonicalVisibleReviewCount(params.firestore);
+  const activeServicesPromise = loadCanonicalActiveServiceCount(
+    params.firestore,
+    now,
+  );
 
   let activeBookings: DashboardMetricResult;
   let completedBookings: DashboardMetricResult;
@@ -374,8 +418,16 @@ export async function getAdminDashboardMetricsDataV3(params: {
     visibleReviews = failedMetric("visibleReviews", error);
   }
 
+  let activeServices: DashboardMetricResult;
+  try {
+    activeServices = available(await activeServicesPromise);
+  } catch (error) {
+    activeServices = failedMetric("activeServices", error);
+  }
+
   return {
     metrics: {
+      activeServices,
       activeBookings,
       completedBookings,
       openDisputes,
