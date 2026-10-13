@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
-import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/foreground_location_manager.dart';
 import '../../../../core/utils/service_duration.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/app_buttons.dart';
@@ -73,6 +73,8 @@ class _AddServiceBookingSetupScreenState
   final GlobalKey _availabilitySectionKey = GlobalKey();
   final GlobalKey _serviceTypeFieldKey = GlobalKey();
   final GlobalKey _locationFieldKey = GlobalKey();
+  final ForegroundLocationManager _locationManager =
+      ForegroundLocationManager.instance;
 
   _DurationOption? _selectedDurationOption;
   int _capacity = 1;
@@ -288,8 +290,11 @@ class _AddServiceBookingSetupScreenState
     });
 
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
+      final result = await _locationManager.getLocation(
+        requestPermission: true,
+      );
+      final currentLocation = result.location;
+      if (currentLocation == null) {
         if (!mounted) return;
         setState(() {
           _isLoadingLocation = false;
@@ -299,26 +304,9 @@ class _AddServiceBookingSetupScreenState
         return;
       }
 
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) {
-        if (!mounted) return;
-        setState(() {
-          _isLoadingLocation = false;
-          _locationStatusMessage =
-              'Location access required. Please enable location or select manually.';
-        });
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition();
       final location = await _reverseGeocode(
-        position.latitude,
-        position.longitude,
+        currentLocation.latitude,
+        currentLocation.longitude,
       );
 
       if (!mounted) return;

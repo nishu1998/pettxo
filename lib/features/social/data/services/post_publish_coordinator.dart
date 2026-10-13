@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../../explore/domain/models/explore_location_snapshot.dart';
 import '../../domain/models/social_post_model.dart';
 import '../social_post_repository.dart';
 
@@ -24,12 +25,16 @@ class PostPublishDraft {
     required this.aspectRatio,
     required this.caption,
     required this.hashtags,
+    required this.includeLocation,
+    this.creationLocation,
   });
 
   final List<String> imagePaths;
   final SocialPostAspectRatio aspectRatio;
   final String caption;
   final List<String> hashtags;
+  final bool includeLocation;
+  final ExploreLocationSnapshot? creationLocation;
 
   List<XFile> toImages() =>
       imagePaths.map((path) => XFile(path)).toList(growable: false);
@@ -122,6 +127,8 @@ class PostPublishCoordinator {
     required SocialPostAspectRatio aspectRatio,
     required String caption,
     required List<String> hashtags,
+    required bool includeLocation,
+    ExploreLocationSnapshot? creationLocation,
   }) {
     if (isPublishing) {
       _showInfo('A post is already being published. Please wait a moment.');
@@ -133,6 +140,8 @@ class PostPublishCoordinator {
       aspectRatio: aspectRatio,
       caption: caption.trim(),
       hashtags: List<String>.from(hashtags),
+      includeLocation: includeLocation,
+      creationLocation: creationLocation,
     );
 
     final eventId = ++_eventCounter;
@@ -158,6 +167,7 @@ class PostPublishCoordinator {
         aspectRatio: draft.aspectRatio,
         caption: draft.caption,
         hashtags: draft.hashtags,
+        creationLocation: draft.includeLocation ? draft.creationLocation : null,
         onProgress: (progress) {
           if (state.eventId != eventId) return;
           stateListenable.value = state.copyWith(
@@ -169,15 +179,18 @@ class PostPublishCoordinator {
       );
 
       if (state.eventId != eventId) return;
+      final successMessage = draft.includeLocation
+          ? 'Post shared. Nearby location is being processed.'
+          : 'Post shared successfully.';
       stateListenable.value = state.copyWith(
         phase: PostPublishPhase.success,
         progress: 1,
-        message: 'Post shared successfully.',
+        message: successMessage,
         post: post,
         errorMessage: null,
         recoverableDraft: null,
       );
-      _showSuccess('Post shared successfully.');
+      _showSuccess(successMessage);
     } catch (error, stackTrace) {
       debugPrint('PostPublishCoordinator publish failed: $error');
       debugPrintStack(stackTrace: stackTrace);

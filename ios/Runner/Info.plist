@@ -29,9 +29,7 @@
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>Pettxo needs photo library access so you can choose photos for your profile, posts, and private chats.</string>
 		<key>NSLocationWhenInUseUsageDescription</key>
-		<string>Pettxo uses your location so you can set service availability and show nearby booking areas.</string>
-		<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-		<string>Pettxo uses your location so you can set service availability and show nearby booking areas.</string>
+		<string>Pettxo uses your location while you use the app to show nearby posts and pet services, and to add an approximate location to posts when you choose.</string>
 		<key>GMSApiKey</key>
 		<string>$(MAPS_API_KEY)</string>
 		<key>UIApplicationSceneManifest</key>

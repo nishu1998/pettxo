@@ -1,8 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geocoding/geocoding.dart';
-import 'package:geolocator/geolocator.dart';
 
+import '../../../core/services/foreground_location_manager.dart';
 import '../../../core/utils/geohash.dart';
 import '../../../core/utils/service_distance_utils.dart';
 import '../domain/models/explore_location_snapshot.dart';
@@ -32,14 +32,19 @@ class ExploreLocationState {
 }
 
 class ExploreLocationRepository {
-  ExploreLocationRepository({FirebaseFirestore? firestore, FirebaseAuth? auth})
-    : _firestore = firestore ?? FirebaseFirestore.instance,
-      _auth = auth ?? FirebaseAuth.instance;
+  ExploreLocationRepository({
+    FirebaseFirestore? firestore,
+    FirebaseAuth? auth,
+    ForegroundLocationManager? locationManager,
+  }) : _firestore = firestore ?? FirebaseFirestore.instance,
+       _auth = auth ?? FirebaseAuth.instance,
+       _locationManager = locationManager ?? ForegroundLocationManager.instance;
 
   static const String _privateCollection = 'userPrivate';
   static const String _locationField = 'exploreLocation';
   final FirebaseFirestore _firestore;
   final FirebaseAuth _auth;
+  final ForegroundLocationManager _locationManager;
 
   String get _uid => _auth.currentUser?.uid.trim() ?? '';
 
@@ -68,58 +73,33 @@ class ExploreLocationRepository {
       );
     }
 
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      return ExploreLocationState(
-        availability: ExploreLocationAvailability.serviceDisabled,
-        snapshot: stored,
-      );
-    }
-
-    var permission = await Geolocator.checkPermission();
-    if (requestPermission && permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-
-    if (permission == LocationPermission.denied) {
-      return ExploreLocationState(
-        availability: requestPermission
-            ? ExploreLocationAvailability.permissionDenied
-            : ExploreLocationAvailability.permissionNotRequested,
-        snapshot: stored,
-      );
-    }
-    if (permission == LocationPermission.deniedForever) {
-      return ExploreLocationState(
-        availability: ExploreLocationAvailability.permissionPermanentlyDenied,
-        snapshot: stored,
-      );
-    }
-
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-        ),
-      );
-      final nextSnapshot = await _buildSnapshotFromPosition(position);
+    final result = await _locationManager.getLocation(
+      requestPermission: requestPermission,
+      forceRefresh: refreshDeviceLocation,
+    );
+    final location = result.location;
+    if (location != null) {
+      final nextSnapshot = await _buildSnapshotFromLocation(location);
       await _persistSnapshot(nextSnapshot);
       return ExploreLocationState(
         availability: ExploreLocationAvailability.ready,
         snapshot: nextSnapshot,
       );
-    } catch (_) {
-      if (stored.hasCoordinates) {
-        return ExploreLocationState(
-          availability: ExploreLocationAvailability.ready,
-          snapshot: stored,
-        );
-      }
+    }
+
+    if (stored.hasCoordinates) {
       return ExploreLocationState(
-        availability: ExploreLocationAvailability.unavailable,
+        availability: ExploreLocationAvailability.ready,
         snapshot: stored,
       );
     }
+    return ExploreLocationState(
+      availability: _mapAvailability(
+        result.availability,
+        requestedPermission: requestPermission,
+      ),
+      snapshot: stored,
+    );
   }
 
   /// Captures the device's current position for an immutable, post-specific
@@ -128,36 +108,55 @@ class ExploreLocationRepository {
   Future<ExploreLocationSnapshot> captureFreshPostLocation({
     bool requestPermission = true,
   }) async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return ExploreLocationSnapshot.empty;
-
-    var permission = await Geolocator.checkPermission();
-    if (requestPermission && permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      return ExploreLocationSnapshot.empty;
-    }
-
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-        ),
-      );
-      final snapshot = await _buildSnapshotFromPosition(position);
-      if (!snapshot.hasCoordinates) return ExploreLocationSnapshot.empty;
-      await _persistSnapshot(snapshot);
-      return snapshot;
-    } catch (_) {
-      return ExploreLocationSnapshot.empty;
-    }
+    final state = await captureFreshPostLocationState(
+      requestPermission: requestPermission,
+    );
+    return state.snapshot;
   }
 
-  Future<void> openAppSettings() => Geolocator.openAppSettings();
+  Future<ExploreLocationState> captureFreshPostLocationState({
+    bool requestPermission = true,
+  }) async {
+    final result = await _locationManager.getLocation(
+      requestPermission: requestPermission,
+      forceRefresh: true,
+    );
+    final location = result.location;
+    if (location == null) {
+      return ExploreLocationState(
+        availability: _mapAvailability(
+          result.availability,
+          requestedPermission: requestPermission,
+        ),
+      );
+    }
 
-  Future<void> openLocationSettings() => Geolocator.openLocationSettings();
+    final snapshot = await _buildSnapshotFromLocation(location);
+    if (!snapshot.hasCoordinates) {
+      return const ExploreLocationState(
+        availability: ExploreLocationAvailability.unavailable,
+      );
+    }
+    try {
+      await _persistSnapshot(snapshot);
+    } catch (_) {
+      // A post-specific intent can still be committed atomically with the
+      // post. Failure to refresh the reusable viewer snapshot must not discard
+      // a valid fresh reading.
+    }
+    return ExploreLocationState(
+      availability: ExploreLocationAvailability.ready,
+      snapshot: snapshot,
+    );
+  }
+
+  Future<void> openAppSettings() async {
+    await _locationManager.openAppSettings();
+  }
+
+  Future<void> openLocationSettings() async {
+    await _locationManager.openLocationSettings();
+  }
 
   Future<void> clearStoredSnapshot() async {
     final uid = _uid;
@@ -189,11 +188,11 @@ class ExploreLocationRepository {
     );
   }
 
-  Future<ExploreLocationSnapshot> _buildSnapshotFromPosition(
-    Position position,
+  Future<ExploreLocationSnapshot> _buildSnapshotFromLocation(
+    ForegroundDeviceLocation location,
   ) async {
-    final latitude = position.latitude;
-    final longitude = position.longitude;
+    final latitude = location.latitude;
+    final longitude = location.longitude;
     if (!ServiceDistanceUtils.hasUsableCoordinates(latitude, longitude)) {
       return ExploreLocationSnapshot.empty;
     }
@@ -223,8 +222,28 @@ class ExploreLocationRepository {
       geohash3: fullGeohash.length >= 3 ? fullGeohash.substring(0, 3) : '',
       geohash4: fullGeohash.length >= 4 ? fullGeohash.substring(0, 4) : '',
       geohash5: fullGeohash,
-      updatedAt: DateTime.now(),
+      updatedAt: location.capturedAt,
     );
+  }
+
+  ExploreLocationAvailability _mapAvailability(
+    ForegroundLocationAvailability availability, {
+    required bool requestedPermission,
+  }) {
+    return switch (availability) {
+      ForegroundLocationAvailability.granted =>
+        ExploreLocationAvailability.unavailable,
+      ForegroundLocationAvailability.denied =>
+        requestedPermission
+            ? ExploreLocationAvailability.permissionDenied
+            : ExploreLocationAvailability.permissionNotRequested,
+      ForegroundLocationAvailability.permanentlyDenied =>
+        ExploreLocationAvailability.permissionPermanentlyDenied,
+      ForegroundLocationAvailability.serviceDisabled =>
+        ExploreLocationAvailability.serviceDisabled,
+      ForegroundLocationAvailability.unavailable =>
+        ExploreLocationAvailability.unavailable,
+    };
   }
 
   Future<void> _persistSnapshot(ExploreLocationSnapshot snapshot) async {

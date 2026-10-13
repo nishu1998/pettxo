@@ -1290,7 +1290,7 @@ class _ExploreScreenState extends State<ExploreScreen>
       final radiusText = _nearbyRadiusKm == null
           ? ''
           : ' within ${_nearbyRadiusKm!.toStringAsFixed(0)} km';
-      return _ExploreEmptyState(
+      final emptyState = _ExploreEmptyState(
         title: _nearbyLocationMode == NearbyLocationMode.savedCityState
             ? 'No posts in your area yet'
             : 'No nearby posts yet',
@@ -1300,12 +1300,28 @@ class _ExploreScreenState extends State<ExploreScreen>
             ? 'Enable location to see nearby posts.'
             : 'There are no nearby posts$radiusText yet. Try again after more pet parents post nearby.',
       );
+      if (_nearbyLocationMode != NearbyLocationMode.savedCityState) {
+        return emptyState;
+      }
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSavedAreaLocationNotice(),
+          const SizedBox(height: 12),
+          emptyState,
+        ],
+      );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_nearbyLocationMode != NearbyLocationMode.unavailable)
+        if (_nearbyLocationMode == NearbyLocationMode.savedCityState)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _buildSavedAreaLocationNotice(),
+          )
+        else if (_nearbyLocationMode != NearbyLocationMode.unavailable)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Text(
@@ -1332,6 +1348,43 @@ class _ExploreScreenState extends State<ExploreScreen>
             child: Center(child: CircularProgressIndicator(strokeWidth: 2.4)),
           ),
       ],
+    );
+  }
+
+  Widget _buildSavedAreaLocationNotice() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              _nearbyLocationMode.bannerText(_nearbyRadiusKm) ??
+                  'Using your saved city and state.',
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                height: 1.35,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: () => _loadNearbyPosts(
+              forceRefresh: true,
+              requestPermission: true,
+              refreshLocation: true,
+            ),
+            child: const Text('Use current location'),
+          ),
+        ],
+      ),
     );
   }
 

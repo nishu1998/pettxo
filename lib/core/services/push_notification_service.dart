@@ -18,6 +18,7 @@ import '../../features/profile/presentation/screens/profile_screen.dart';
 import '../constants/app_colors.dart';
 import 'app_loader.dart';
 import 'network_status_service.dart';
+import 'permission_prompt_coordinator.dart';
 
 @pragma('vm:entry-point')
 Future<void> pettxoFirebaseMessagingBackgroundHandler(
@@ -252,14 +253,16 @@ class PushNotificationService {
       );
       return;
     }
-    final settings = await _messaging.requestPermission(
-      alert: true,
-      announcement: false,
-      badge: true,
-      carPlay: false,
-      criticalAlert: false,
-      provisional: false,
-      sound: true,
+    final settings = await PermissionPromptCoordinator.instance.run(
+      () => _messaging.requestPermission(
+        alert: true,
+        announcement: false,
+        badge: true,
+        carPlay: false,
+        criticalAlert: false,
+        provisional: false,
+        sound: true,
+      ),
     );
     _debugLog(
       'PushNotificationService permission debug -> status=${settings.authorizationStatus.name}, '

@@ -7,9 +7,13 @@ import 'package:flutter/rendering.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/services/authenticated_location_permission_service.dart';
+import '../../../../core/services/foreground_location_manager.dart';
+import '../../../../core/services/permission_prompt_coordinator.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/location_permission_dialog.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../../core/services/network_status_service.dart';
 import '../../data/home_feed_repository.dart';
@@ -37,7 +41,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final HomeFeedRepository _homeFeedRepository = HomeFeedRepository();
   final HomeFeedSession _homeFeedSession = HomeFeedSession();
   final SocialPostRepository _socialPostRepository = SocialPostRepository();
@@ -49,6 +53,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final HomeTabReselectCoordinator _homeTabReselectCoordinator =
       HomeTabReselectCoordinator();
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final ForegroundLocationManager _locationManager =
+      ForegroundLocationManager.instance;
+  final AuthenticatedLocationPermissionService _locationPermissionService =
+      AuthenticatedLocationPermissionService();
   late int _suggestionSeed;
 
   bool _isLoadingFeed = true;
@@ -90,6 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _viewerUid = _auth.currentUser?.uid.trim() ?? '';
     _authStateSubscription = _auth.authStateChanges().listen(
       _handleAuthChanged,
@@ -122,11 +131,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadInitialPosts();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(OfferWallCoordinator.instance.handleAuthenticatedShellReady());
+      unawaited(_offerInitialLocationPermission());
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _authStateSubscription?.cancel();
     PostPublishCoordinator.instance.stateListenable.removeListener(
       _postPublishListener,
@@ -136,6 +147,40 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_locationManager.refreshPermissionStatus());
+    }
+  }
+
+  Future<void> _offerInitialLocationPermission() async {
+    final uid = _auth.currentUser?.uid.trim() ?? '';
+    final decision = await _locationPermissionService.prepareForUser(uid);
+    if (!mounted ||
+        decision != AuthenticatedLocationPromptDecision.showExplanation) {
+      return;
+    }
+
+    await PermissionPromptCoordinator.instance.run(() async {
+      if (!mounted) return;
+      try {
+        await _locationPermissionService.recordPromptShown(uid);
+      } catch (_) {
+        // The permission flow can still proceed. A local persistence failure
+        // may show the explanation again on a later launch, but never blocks
+        // authenticated app startup.
+      }
+      if (!mounted) return;
+      final shouldRequest = await LocationPermissionDialog.show(
+        context: context,
+      );
+      if (shouldRequest) {
+        await _locationManager.requestForegroundPermission();
+      }
+    });
   }
 
   void _handleAuthChanged(User? user) {
@@ -174,6 +219,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     if (nextUid.isNotEmpty) {
       unawaited(_loadInitialPosts(forceRefresh: true));
+      unawaited(_offerInitialLocationPermission());
     }
   }
 

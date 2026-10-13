@@ -512,6 +512,44 @@ test("post intent public GeoHash is derived from the persisted private bucket", 
   assert.equal(resolved.metadata.feedGeohash5, expected);
 });
 
+test("missing location intent keeps a new post out of Nearby without inventing coordinates", () => {
+  const resolved = resolvePostSpecificLocationMetadata({
+    postData: buildPost({id: "missing-intent", authorId: "viewer"}),
+    privateData: undefined,
+    intentData: undefined,
+    authorId: "viewer",
+  });
+
+  assert.equal(resolved.intent, null);
+  assert.equal(resolved.privateLocation, null);
+  assert.equal(resolved.metadata.nearbyEligible, false);
+});
+
+test("invalid or mismatched location intent is rejected without location metadata", () => {
+  for (const intentData of [
+    {
+      ownerUid: "another-user",
+      source: "freshDeviceAtPublish",
+      location: {latitude: 18.5204, longitude: 73.8567},
+    },
+    {
+      ownerUid: "viewer",
+      source: "freshDeviceAtPublish",
+      location: {latitude: 181, longitude: 73.8567},
+    },
+  ]) {
+    const resolved = resolvePostSpecificLocationMetadata({
+      postData: buildPost({id: "invalid-intent", authorId: "viewer"}),
+      privateData: undefined,
+      intentData,
+      authorId: "viewer",
+    });
+    assert.equal(resolved.intent, null);
+    assert.equal(resolved.privateLocation, null);
+    assert.equal(resolved.metadata.nearbyEligible, false);
+  }
+});
+
 test("ranking input guard ignores metadata-only changes and metadata match prevents duplicate writes", () => {
   const nowMs = new Date("2026-07-31T12:00:00.000Z").getTime();
   const before = buildPost();

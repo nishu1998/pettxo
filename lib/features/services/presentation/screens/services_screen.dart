@@ -1,10 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/services/foreground_location_manager.dart';
 import '../../../../core/services/network_status_service.dart';
 import '../../../../core/utils/service_distance_utils.dart';
 import '../../../../core/utils/service_ranking.dart';
@@ -27,6 +27,8 @@ class ServicesScreen extends StatefulWidget {
 }
 
 class _ServicesScreenState extends State<ServicesScreen> {
+  final ForegroundLocationManager _locationManager =
+      ForegroundLocationManager.instance;
   final ServicesRepository _servicesRepository = ServicesRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
   final TextEditingController _searchController = TextEditingController();
@@ -146,29 +148,18 @@ class _ServicesScreenState extends State<ServicesScreen> {
 
   Future<void> _primeUserLocation() async {
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) return;
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) {
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition();
+      final result = await _locationManager.getLocation(
+        requestPermission: true,
+      );
+      final location = result.location;
+      if (location == null) return;
       if (!mounted) return;
       setState(() {
-        _userLatitude = position.latitude;
-        _userLongitude = position.longitude;
+        _userLatitude = location.latitude;
+        _userLongitude = location.longitude;
       });
       if (kDebugMode) {
-        debugPrint(
-          'Services discovery debug -> user location available: true (${position.latitude}, ${position.longitude})',
-        );
+        debugPrint('Services discovery debug -> user location available: true');
       }
     } catch (_) {
       // Discovery can still rank organically without location, so failures are

@@ -7,7 +7,9 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
+import '../../../explore/data/explore_location_repository.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
+import '../../application/post_location_publish_resolver.dart';
 import '../../data/services/post_publish_coordinator.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/hashtag_normalizer.dart' as hashtag_normalizer;
@@ -30,6 +32,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       ];
 
   final SocialPostRepository _repository = SocialPostRepository();
+  final ExploreLocationRepository _locationRepository =
+      ExploreLocationRepository();
+  final PostLocationPublishResolver _postLocationResolver =
+      const PostLocationPublishResolver();
   final ImagePicker _imagePicker = ImagePicker();
   final ImageCropService _imageCropService = ImageCropService();
   final PostPublishCoordinator _publishCoordinator =
@@ -43,6 +49,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   bool _isPublishing = false;
   int _previewIndex = 0;
   bool _restoredRecoverableDraft = false;
+  bool _addLocationToPost = true;
 
   @override
   void initState() {
@@ -79,6 +86,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       ..clear()
       ..addAll(draft.hashtags);
     _aspectRatio = draft.aspectRatio;
+    _addLocationToPost = draft.includeLocation;
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -210,19 +218,113 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   Future<void> _publish() async {
     if (_selectedImages.isEmpty || _isPublishing) return;
 
+    setState(() => _isPublishing = true);
+    final locationResolution = await _postLocationResolver.resolve(
+      includeLocation: _addLocationToPost,
+      capture: _locationRepository.captureFreshPostLocationState,
+      chooseAfterFailure: _chooseAfterLocationFailure,
+    );
+    if (!locationResolution.shouldPublish) {
+      if (mounted) setState(() => _isPublishing = false);
+      return;
+    }
+    if (mounted && _addLocationToPost != locationResolution.includeLocation) {
+      setState(() => _addLocationToPost = locationResolution.includeLocation);
+    }
+
     final started = _publishCoordinator.startPublish(
       images: List<XFile>.from(_selectedImages),
       aspectRatio: _aspectRatio,
       caption: _captionController.text,
       hashtags: _hashtags,
+      includeLocation: locationResolution.includeLocation,
+      creationLocation: locationResolution.location,
     );
     if (!started) {
+      if (mounted) setState(() => _isPublishing = false);
       return;
     }
 
-    setState(() => _isPublishing = true);
     if (!mounted) return;
     Navigator.pop(context);
+  }
+
+  Future<PostLocationFailureChoice> _chooseAfterLocationFailure(
+    ExploreLocationState state,
+  ) async {
+    if (!mounted) return PostLocationFailureChoice.cancel;
+    final requiresAppSettings =
+        state.availability ==
+        ExploreLocationAvailability.permissionPermanentlyDenied;
+    final requiresLocationSettings =
+        state.availability == ExploreLocationAvailability.serviceDisabled;
+    return await showDialog<PostLocationFailureChoice>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Location is unavailable'),
+            content: Text(_postLocationFailureMessage(state.availability)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(
+                  dialogContext,
+                ).pop(PostLocationFailureChoice.cancel),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(
+                  dialogContext,
+                ).pop(PostLocationFailureChoice.continueWithoutLocation),
+                child: const Text('Continue without location'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  if (requiresAppSettings || requiresLocationSettings) {
+                    Navigator.of(
+                      dialogContext,
+                    ).pop(PostLocationFailureChoice.cancel);
+                    if (requiresAppSettings) {
+                      await _locationRepository.openAppSettings();
+                    } else {
+                      await _locationRepository.openLocationSettings();
+                    }
+                    return;
+                  }
+                  Navigator.of(
+                    dialogContext,
+                  ).pop(PostLocationFailureChoice.retry);
+                },
+                child: Text(
+                  requiresAppSettings
+                      ? 'Open app settings'
+                      : requiresLocationSettings
+                      ? 'Turn on location'
+                      : 'Retry location',
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        PostLocationFailureChoice.cancel;
+  }
+
+  String _postLocationFailureMessage(ExploreLocationAvailability availability) {
+    return switch (availability) {
+      ExploreLocationAvailability.permissionPermanentlyDenied =>
+        'Location permission is disabled in system settings. Open settings '
+            'to enable it, then retry, or continue without location.',
+      ExploreLocationAvailability.serviceDisabled =>
+        'Turn on device location services, then retry, or continue without '
+            'location.',
+      ExploreLocationAvailability.permissionDenied ||
+      ExploreLocationAvailability.permissionNotRequested =>
+        'Allow foreground location access to add an approximate location, '
+            'or continue without location.',
+      ExploreLocationAvailability.ready ||
+      ExploreLocationAvailability.unavailable =>
+        'Pettxo could not get a fresh location. Retry, or continue without '
+            'location.',
+    };
   }
 
   void _selectAspectRatio(SocialPostAspectRatio ratio) {
@@ -337,6 +439,13 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                             setState(() => _hashtags.remove(tag)),
                       ),
                     ],
+                    const SizedBox(height: 24),
+                    PostLocationOption(
+                      value: _addLocationToPost,
+                      enabled: !_isPublishing,
+                      onChanged: (value) =>
+                          setState(() => _addLocationToPost = value),
+                    ),
                   ],
                 ),
               ),
@@ -345,6 +454,48 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         ),
       ),
       bottomNavigationBar: const SocialBottomNav(activeTab: null),
+    );
+  }
+}
+
+class PostLocationOption extends StatelessWidget {
+  const PostLocationOption({
+    super.key,
+    this.value = true,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final bool value;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SoftCard(
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      child: SwitchListTile.adaptive(
+        key: const Key('create-post-location-toggle'),
+        contentPadding: EdgeInsets.zero,
+        value: value,
+        onChanged: enabled ? onChanged : null,
+        title: const Text(
+          'Add location to this post',
+          style: TextStyle(
+            color: AppColors.textDark,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        subtitle: const Text(
+          'Adds an approximate location so this post can appear in Nearby You. '
+          'Your exact GPS coordinates are not shown publicly.',
+          style: TextStyle(
+            color: AppColors.textGrey,
+            fontSize: 12.5,
+            height: 1.4,
+          ),
+        ),
+      ),
     );
   }
 }

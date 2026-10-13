@@ -5,10 +5,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/foreground_location_manager.dart';
 import '../../../../core/utils/service_duration.dart';
 import '../../../../core/utils/service_distance_utils.dart';
 import '../../../../core/widgets/app_feedback.dart';
@@ -49,6 +49,8 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
   static const double _topBarTopResetOffset = 8;
 
   final ScrollController _scrollController = ScrollController();
+  final ForegroundLocationManager _locationManager =
+      ForegroundLocationManager.instance;
   bool _isTopBarVisible = true;
   bool _isResolvingBookingFlow = false;
   double _lastScrollOffset = 0;
@@ -125,23 +127,14 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
     }
 
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) return;
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) {
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition();
+      final result = await _locationManager.getLocation(
+        requestPermission: true,
+      );
+      final location = result.location;
+      if (location == null) return;
       final distanceKm = ServiceDistanceUtils.calculateDistanceKm(
-        userLatitude: position.latitude,
-        userLongitude: position.longitude,
+        userLatitude: location.latitude,
+        userLongitude: location.longitude,
         serviceLatitude: service.latitude,
         serviceLongitude: service.longitude,
       );

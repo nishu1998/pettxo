@@ -8,7 +8,6 @@ import 'package:image/image.dart' as img;
 
 import '../../../core/services/firestore_cache_service.dart';
 import '../../notifications/data/repositories/notification_repository.dart';
-import '../../explore/data/explore_location_repository.dart';
 import '../../explore/domain/models/explore_location_snapshot.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../profile/domain/models/user_profile.dart';
@@ -102,22 +101,18 @@ class SocialPostRepository {
     FirebaseAuth? auth,
     ProfileRepository? profileRepository,
     NotificationRepository? notificationRepository,
-    ExploreLocationRepository? postLocationRepository,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
        _storage = storage ?? FirebaseStorage.instance,
        _auth = auth ?? FirebaseAuth.instance,
        _profileRepository = profileRepository ?? ProfileRepository(),
        _notificationRepository =
-           notificationRepository ?? NotificationRepository(),
-       _postLocationRepository =
-           postLocationRepository ?? ExploreLocationRepository();
+           notificationRepository ?? NotificationRepository();
 
   final FirebaseFirestore _firestore;
   final FirebaseStorage _storage;
   final FirebaseAuth _auth;
   final ProfileRepository _profileRepository;
   final NotificationRepository _notificationRepository;
-  final ExploreLocationRepository _postLocationRepository;
   final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
   static const Set<String> _backendOwnedCreateFields = <String>{
@@ -404,6 +399,7 @@ class SocialPostRepository {
     required SocialPostAspectRatio aspectRatio,
     required String caption,
     required List<String> hashtags,
+    ExploreLocationSnapshot? creationLocation,
     SocialPostUploadProgressCallback? onProgress,
   }) async {
     if (images.isEmpty) {
@@ -426,8 +422,6 @@ class SocialPostRepository {
     final normalizedHashtags = hashtag_normalizer.validatePostHashtags(
       hashtags,
     );
-    final creationLocation = await _postLocationRepository
-        .captureFreshPostLocation();
     final uploads = await _uploadImages(
       authorId: authorId,
       postId: postRef.id,
@@ -458,12 +452,12 @@ class SocialPostRepository {
         ),
       );
       final batch = _firestore.batch()..set(postRef, payload);
-      if (creationLocation.hasCoordinates) {
+      if (creationLocation?.hasCoordinates == true) {
         batch.set(
           _postLocationIntentsCollection.doc(postRef.id),
           buildPostLocationIntentPayload(
             authorId: authorId,
-            location: creationLocation,
+            location: creationLocation!,
           ),
         );
       }
