@@ -81,10 +81,10 @@ class PettxoFullScreenLoader extends StatelessWidget {
                   ),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 520),
-                    child: PettxoLoadingAnimation(
+                    child: PettxoLoader.fullScreen(
                       controller: animationController,
                       message: message,
-                      backgroundColor: Colors.transparent,
+                      semanticLabel: message,
                     ),
                   ),
                 ),
