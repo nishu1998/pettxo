@@ -35,6 +35,7 @@ class SocialPostCard extends StatefulWidget {
   final void Function(String postId, int newCommentCount)?
   onCommentCountChanged;
   final void Function(String authorId, bool isFollowing)? onFollowChanged;
+  final Widget Function(Widget child)? mediaWrapper;
 
   const SocialPostCard({
     super.key,
@@ -51,6 +52,7 @@ class SocialPostCard extends StatefulWidget {
     this.onLikePendingChanged,
     this.onCommentCountChanged,
     this.onFollowChanged,
+    this.mediaWrapper,
   });
 
   @override
@@ -526,12 +528,7 @@ class _SocialPostCardState extends State<SocialPostCard> {
                   ],
                 ),
               ),
-              PostImageCarousel(
-                imageUrls: _post.imageUrls,
-                thumbnailUrls: _post.thumbnailUrls,
-                aspectRatio: _post.aspectRatioValue,
-                onImageDoubleTap: _handleImageDoubleTap,
-              ),
+              _buildMediaCarousel(),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
                 child: Row(
@@ -627,6 +624,16 @@ class _SocialPostCardState extends State<SocialPostCard> {
         );
       },
     );
+  }
+
+  Widget _buildMediaCarousel() {
+    final carousel = PostImageCarousel(
+      imageUrls: _post.imageUrls,
+      thumbnailUrls: _post.thumbnailUrls,
+      aspectRatio: _post.aspectRatioValue,
+      onImageDoubleTap: _handleImageDoubleTap,
+    );
+    return widget.mediaWrapper?.call(carousel) ?? carousel;
   }
 }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -20,6 +21,7 @@ import '../../data/home_feed_repository.dart';
 import '../../domain/home_feed_refresh_policy.dart';
 import '../../domain/home_feed_session.dart';
 import '../widgets/home_feed_refresh_surface.dart';
+import '../widgets/home_guided_tour.dart';
 import '../../../notifications/domain/notification_visibility.dart';
 import '../../../offer_wall/data/services/offer_wall_coordinator.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
@@ -50,6 +52,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<HomeFeedRefreshSurfaceState> _refreshSurfaceKey =
       GlobalKey<HomeFeedRefreshSurfaceState>();
+  final HomeTourTargetHandle _homeTourFeedTarget = HomeTourTargetHandle();
+  final GlobalKey _homeTourCreatePostTargetKey = GlobalKey();
+  final GlobalKey _homeTourNotificationsTargetKey = GlobalKey();
+  final HomeGuidedTourController _homeTourController =
+      HomeGuidedTourController();
   final HomeTabReselectCoordinator _homeTabReselectCoordinator =
       HomeTabReselectCoordinator();
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -130,13 +137,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
     _loadInitialPosts();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(OfferWallCoordinator.instance.handleAuthenticatedShellReady());
-      unawaited(_offerInitialLocationPermission());
+      unawaited(_handleAuthenticatedHomeReady(includeOfferWall: true));
     });
   }
 
   @override
   void dispose() {
+    _homeTourController.dispose();
+    _homeTourFeedTarget.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _authStateSubscription?.cancel();
     PostPublishCoordinator.instance.stateListenable.removeListener(
@@ -147,6 +155,85 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleAuthenticatedHomeReady({
+    required bool includeOfferWall,
+  }) async {
+    final uid = _auth.currentUser?.uid.trim() ?? '';
+    if (uid.isEmpty) return;
+
+    final readinessTasks = <Future<void>>[_offerInitialLocationPermission()];
+    if (includeOfferWall) {
+      readinessTasks.add(
+        OfferWallCoordinator.instance.handleAuthenticatedShellReady(),
+      );
+    }
+    await Future.wait(readinessTasks);
+    if (!mounted || uid != (_auth.currentUser?.uid.trim() ?? '')) return;
+
+    await PermissionPromptCoordinator.instance.run(() async {
+      if (!mounted || uid != (_auth.currentUser?.uid.trim() ?? '')) return;
+      await _homeTourController.start(
+        context: context,
+        uid: uid,
+        targets: HomeTourTargets(
+          feed: _homeTourFeedTarget,
+          createPost: _homeTourCreatePostTargetKey,
+          notifications: _homeTourNotificationsTargetKey,
+        ),
+        beforeShow: _prepareHomeTourTargets,
+      );
+    });
+  }
+
+  Future<bool> _prepareHomeTourTargets() async {
+    if (!mounted) return false;
+    if (_scrollController.hasClients && _scrollController.offset > 0) {
+      _scrollController.jumpTo(0);
+    }
+    if (!_isTopBarVisible) {
+      setState(() => _isTopBarVisible = true);
+    }
+    await WidgetsBinding.instance.endOfFrame;
+    final ready = await waitForStableHomeTourTarget(
+      target: _homeTourFeedTarget,
+      canContinue: () => mounted,
+    );
+    if (!ready || !mounted) return false;
+
+    final targetRect = _homeTourFeedTarget.rect;
+    if (targetRect == null || !_scrollController.hasClients) return true;
+    final mediaQuery = MediaQuery.of(context);
+    final compact = mediaQuery.size.height < 650 || mediaQuery.size.width < 350;
+    final textScale = (mediaQuery.textScaler.scale(14) / 14).clamp(1.0, 1.6);
+    final panelHeight = (compact ? 144.0 : 154.0) + ((textScale - 1) * 44);
+    final panelBottom = math.max(
+      mediaQuery.padding.bottom + (compact ? 84 : 92),
+      compact ? 88.0 : 96.0,
+    );
+    final usableTop = mediaQuery.padding.top + 76;
+    final usableBottom =
+        mediaQuery.size.height - panelBottom - panelHeight - 16;
+    final scrollDelta = calculateHomeTourRevealScrollDelta(
+      targetRect: targetRect,
+      usableTop: usableTop,
+      usableBottom: usableBottom,
+    );
+    if (scrollDelta.abs() >= 0.5) {
+      final position = _scrollController.position;
+      final destination = (_scrollController.offset + scrollDelta).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      _scrollController.jumpTo(destination.toDouble());
+      await WidgetsBinding.instance.endOfFrame;
+      return waitForStableHomeTourTarget(
+        target: _homeTourFeedTarget,
+        canContinue: () => mounted,
+      );
+    }
+    return true;
   }
 
   @override
@@ -186,6 +273,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _handleAuthChanged(User? user) {
     final nextUid = user?.uid.trim() ?? '';
     if (nextUid == _viewerUid) return;
+    _homeTourController.cancel();
     _viewerUid = nextUid;
     _feedRequestTracker.startRequest();
     _latestPaginationRequestId += 1;
@@ -219,7 +307,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     });
     if (nextUid.isNotEmpty) {
       unawaited(_loadInitialPosts(forceRefresh: true));
-      unawaited(_offerInitialLocationPermission());
+      unawaited(_handleAuthenticatedHomeReady(includeOfferWall: false));
     }
   }
 
@@ -714,24 +802,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               separatorBuilder: (context, index) => const SizedBox(height: 18),
               itemBuilder: (context, index) {
                 if (_isLoadingFeed) {
-                  return const _FeedLoadingCard();
+                  return HomeTourTarget(
+                    handle: _homeTourFeedTarget,
+                    child: const _FeedLoadingCard(),
+                  );
                 }
                 if (_feedError != null) {
-                  return _FeedStatusCard(
-                    title: 'Could not load the feed',
-                    message: _feedError!,
-                    actionLabel: 'Try Again',
-                    onPressed: _loadInitialPosts,
+                  return HomeTourTarget(
+                    handle: _homeTourFeedTarget,
+                    child: _FeedStatusCard(
+                      title: 'Could not load the feed',
+                      message: _feedError!,
+                      actionLabel: 'Try Again',
+                      onPressed: _loadInitialPosts,
+                    ),
                   );
                 }
                 if (_feedEntries.isEmpty) {
-                  return _FeedStatusCard(
-                    title: NetworkStatusService.instance.isOffline
-                        ? 'You’re offline'
-                        : 'No posts yet',
-                    message: NetworkStatusService.instance.isOffline
-                        ? 'Connect to the internet to load latest content.'
-                        : 'The home feed will start filling up once the first Pettxo posts are published.',
+                  return HomeTourTarget(
+                    handle: _homeTourFeedTarget,
+                    child: _FeedStatusCard(
+                      title: NetworkStatusService.instance.isOffline
+                          ? 'You’re offline'
+                          : 'No posts yet',
+                      message: NetworkStatusService.instance.isOffline
+                          ? 'Connect to the internet to load latest content.'
+                          : 'The home feed will start filling up once the first Pettxo posts are published.',
+                    ),
                   );
                 }
                 if (_shouldShowSuggestions &&
@@ -762,7 +859,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   return const HomeFeedCaughtUpFooter();
                 }
                 final entry = _feedEntries[_postIndexForFeedIndex(index)];
-                return SocialPostCard(
+                final postCard = SocialPostCard(
                   key: ValueKey(entry.post.id),
                   post: entry.post,
                   rankingReason: entry.rankingReason,
@@ -779,7 +876,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   onLikePendingChanged: _handleLikePendingChanged,
                   onCommentCountChanged: _handleCommentCountChanged,
                   onFollowChanged: _handleFollowChanged,
+                  mediaWrapper: index == 0
+                      ? (child) => HomeTourTarget(
+                          handle: _homeTourFeedTarget,
+                          child: child,
+                        )
+                      : null,
                 );
+                return postCard;
               },
             ),
           ),
@@ -842,6 +946,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               Row(
                                 children: [
                                   Container(
+                                    key: _homeTourCreatePostTargetKey,
                                     width: 48,
                                     height: 48,
                                     decoration: BoxDecoration(
@@ -886,6 +991,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                   ),
                                   const Spacer(),
                                   Container(
+                                    key: _homeTourNotificationsTargetKey,
                                     width: 48,
                                     height: 48,
                                     decoration: BoxDecoration(
