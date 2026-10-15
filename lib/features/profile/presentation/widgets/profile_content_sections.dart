@@ -10,6 +10,7 @@ import '../../domain/models/pet_profile.dart';
 import '../../domain/models/profile_service_listing.dart';
 import '../screens/pet_detail_screen.dart';
 import '../screens/service_detail_screen.dart';
+import 'profile_guided_tour.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
@@ -24,6 +25,8 @@ class ProfileSectionTabs extends StatelessWidget {
   final bool showServices;
   final int serviceCount;
   final ValueChanged<int> onChanged;
+  final ProfileTourTargetHandle? postsTargetKey;
+  final ProfileTourTargetHandle? servicesTargetKey;
 
   const ProfileSectionTabs({
     super.key,
@@ -31,6 +34,8 @@ class ProfileSectionTabs extends StatelessWidget {
     required this.showServices,
     required this.serviceCount,
     required this.onChanged,
+    this.postsTargetKey,
+    this.servicesTargetKey,
   });
 
   @override
@@ -46,6 +51,7 @@ class ProfileSectionTabs extends StatelessWidget {
         children: [
           Expanded(
             child: _ProfileTabButton(
+              targetKey: postsTargetKey,
               label: 'Posts',
               isActive: selectedIndex == 0,
               onTap: () => onChanged(0),
@@ -54,6 +60,7 @@ class ProfileSectionTabs extends StatelessWidget {
           if (showServices)
             Expanded(
               child: _ProfileTabButton(
+                targetKey: servicesTargetKey,
                 label: 'Services ($serviceCount)',
                 isActive: selectedIndex == 1,
                 onTap: () => onChanged(1),
@@ -69,38 +76,43 @@ class _ProfileTabButton extends StatelessWidget {
   final String label;
   final bool isActive;
   final VoidCallback onTap;
+  final ProfileTourTargetHandle? targetKey;
 
   const _ProfileTabButton({
     required this.label,
     required this.isActive,
     required this.onTap,
+    this.targetKey,
   });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-        padding: const EdgeInsets.symmetric(vertical: 9),
-        decoration: BoxDecoration(
-          color: _profileSectionSurfaceColor,
-          borderRadius: BorderRadius.circular(22),
-          border: isActive
-              ? Border.all(color: AppColors.primary, width: 1.6)
-              : null,
-        ),
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: isActive ? AppColors.primary : AppColors.textGrey,
-            fontWeight: FontWeight.w800,
-            fontSize: 15,
-          ),
+    final button = AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      decoration: BoxDecoration(
+        color: _profileSectionSurfaceColor,
+        borderRadius: BorderRadius.circular(22),
+        border: isActive
+            ? Border.all(color: AppColors.primary, width: 1.6)
+            : null,
+      ),
+      child: Text(
+        label,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: isActive ? AppColors.primary : AppColors.textGrey,
+          fontWeight: FontWeight.w800,
+          fontSize: 15,
         ),
       ),
+    );
+    return GestureDetector(
+      onTap: onTap,
+      child: targetKey == null
+          ? button
+          : ProfileTourTarget(handle: targetKey!, child: button),
     );
   }
 }
@@ -154,12 +166,16 @@ class ProfilePetsSection extends StatelessWidget {
   final List<PetProfile> pets;
   final bool canAddPet;
   final VoidCallback onAddPet;
+  final ProfileTourTargetHandle? addPetTargetKey;
+  final ScrollController? scrollController;
 
   const ProfilePetsSection({
     super.key,
     required this.pets,
     required this.canAddPet,
     required this.onAddPet,
+    this.addPetTargetKey,
+    this.scrollController,
   });
 
   @override
@@ -190,18 +206,22 @@ class ProfilePetsSection extends StatelessWidget {
         SizedBox(
           height: cardSize + labelGap + labelHeight,
           child: ListView.separated(
+            controller: scrollController,
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 2),
             itemCount: pets.length + (canAddPet ? 1 : 0),
             separatorBuilder: (_, _) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               if (index >= pets.length) {
-                return _AddPetTile(
+                final tile = _AddPetTile(
                   size: cardSize,
                   labelGap: labelGap,
                   labelHeight: labelHeight,
                   onTap: onAddPet,
                 );
+                return addPetTargetKey == null
+                    ? tile
+                    : ProfileTourTarget(handle: addPetTargetKey!, child: tile);
               }
               final pet = pets[index];
               return _ProfilePetTile(
@@ -972,6 +992,7 @@ class ProfileServicesSection extends StatelessWidget {
   final ValueChanged<ProfileServiceListing> onPauseService;
   final ValueChanged<ProfileServiceListing> onResumeService;
   final ValueChanged<ProfileServiceListing> onDeleteService;
+  final ProfileTourTargetHandle? addServiceTargetKey;
 
   const ProfileServicesSection({
     super.key,
@@ -984,6 +1005,7 @@ class ProfileServicesSection extends StatelessWidget {
     required this.onPauseService,
     required this.onResumeService,
     required this.onDeleteService,
+    this.addServiceTargetKey,
   });
 
   _ServicesGlobalState get _globalState {
@@ -1012,11 +1034,20 @@ class ProfileServicesSection extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: _ProfileOutlineActionButton(
-                  label: 'Add service',
-                  icon: Icons.add_rounded,
-                  onPressed: onAdd,
-                ),
+                child: addServiceTargetKey == null
+                    ? _ProfileOutlineActionButton(
+                        label: 'Add service',
+                        icon: Icons.add_rounded,
+                        onPressed: onAdd,
+                      )
+                    : ProfileTourTarget(
+                        handle: addServiceTargetKey!,
+                        child: _ProfileOutlineActionButton(
+                          label: 'Add service',
+                          icon: Icons.add_rounded,
+                          onPressed: onAdd,
+                        ),
+                      ),
               ),
               if (services.isNotEmpty) ...[
                 const SizedBox(width: 12),
