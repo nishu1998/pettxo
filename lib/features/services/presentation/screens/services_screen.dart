@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -6,6 +9,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/services/foreground_location_manager.dart';
 import '../../../../core/services/network_status_service.dart';
+import '../../../../core/services/permission_prompt_coordinator.dart';
 import '../../../../core/utils/service_distance_utils.dart';
 import '../../../../core/utils/service_ranking.dart';
 import '../../../../core/widgets/app_buttons.dart';
@@ -18,6 +22,7 @@ import '../../../profile/domain/models/user_profile.dart';
 import '../../data/repositories/services_repository.dart';
 import '../../domain/models/service_model.dart';
 import '../../../profile/presentation/screens/service_detail_screen.dart';
+import '../widgets/services_guided_tour.dart';
 
 class ServicesScreen extends StatefulWidget {
   const ServicesScreen({super.key});
@@ -33,7 +38,16 @@ class _ServicesScreenState extends State<ServicesScreen> {
   final ProfileRepository _profileRepository = ProfileRepository();
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final GlobalKey _servicesTourFiltersTargetKey = GlobalKey();
+  final GlobalKey _servicesTourSearchTargetKey = GlobalKey();
+  final GlobalKey _servicesTourFirstCardTargetKey = GlobalKey();
+  final GlobalKey _servicesTourContentFallbackKey = GlobalKey();
+  final ServicesGuidedTourController _servicesTourController =
+      ServicesGuidedTourController();
   late Stream<List<ServiceModel>> _activeServicesStream;
+  StreamSubscription<User?>? _authStateSubscription;
+  String _tourUid = '';
   String _selectedAnimal = 'All';
   String _selectedCategory = 'All';
   String _searchQuery = '';
@@ -94,16 +108,127 @@ class _ServicesScreenState extends State<ServicesScreen> {
   void initState() {
     super.initState();
     _refreshServicesStream();
+    _tourUid = _auth.currentUser?.uid.trim() ?? '';
+    _authStateSubscription = _auth.authStateChanges().listen(
+      _handleAuthChanged,
+    );
     _scrollController.addListener(_handleScroll);
     _primeUserLocation();
     _primeCurrentUserProfile();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_startServicesTour());
+    });
   }
 
   @override
   void dispose() {
+    _servicesTourController.dispose();
+    _authStateSubscription?.cancel();
     _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _handleAuthChanged(User? user) {
+    final nextUid = user?.uid.trim() ?? '';
+    if (nextUid == _tourUid) return;
+    _tourUid = nextUid;
+    _servicesTourController.cancel();
+    if (nextUid.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_startServicesTour());
+      });
+    }
+  }
+
+  ServicesTourTargets get _servicesTourTargets => ServicesTourTargets(
+    filters: _servicesTourFiltersTargetKey,
+    search: _servicesTourSearchTargetKey,
+    firstCard: _servicesTourFirstCardTargetKey,
+    contentFallback: _servicesTourContentFallbackKey,
+  );
+
+  Future<void> _startServicesTour() async {
+    final uid = _auth.currentUser?.uid.trim() ?? '';
+    if (!mounted || uid.isEmpty) return;
+    await PermissionPromptCoordinator.instance.run(() async {
+      if (!mounted || uid != (_auth.currentUser?.uid.trim() ?? '')) return;
+      if (!await _waitForServicesRouteReady(uid)) return;
+      if (!mounted || uid != (_auth.currentUser?.uid.trim() ?? '')) return;
+      await _servicesTourController.start(
+        context: context,
+        uid: uid,
+        targets: _servicesTourTargets,
+        beforeShow: _prepareServicesTour,
+        prepareStep: _prepareServicesTourStep,
+      );
+    });
+  }
+
+  Future<bool> _waitForServicesRouteReady(String uid) async {
+    for (var attempt = 0; attempt < 40; attempt += 1) {
+      if (!mounted || uid != (_auth.currentUser?.uid.trim() ?? '')) {
+        return false;
+      }
+      final route = ModalRoute.of(context);
+      if (route == null || route.isCurrent) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    return false;
+  }
+
+  Future<void> _prepareServicesTour() async {
+    if (!mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (!_isTopBarVisible) {
+      setState(() => _isTopBarVisible = true);
+    }
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
+  Future<void> _prepareServicesTourStep(int stepIndex) async {
+    if (!mounted) return;
+    if (stepIndex == 1) {
+      if (_scrollController.hasClients && _scrollController.offset > 0) {
+        _scrollController.jumpTo(0);
+      }
+      if (!_isTopBarVisible) setState(() => _isTopBarVisible = true);
+      await WidgetsBinding.instance.endOfFrame;
+      return;
+    }
+    if (stepIndex != 2 || !_scrollController.hasClients) return;
+    for (var attempt = 0; attempt < 2; attempt += 1) {
+      if (!mounted) return;
+      final targetObject = _servicesTourFirstCardTargetKey.currentContext
+          ?.findRenderObject();
+      final searchObject = _servicesTourSearchTargetKey.currentContext
+          ?.findRenderObject();
+      if (targetObject is! RenderBox || !targetObject.hasSize) return;
+      final targetRect =
+          targetObject.localToGlobal(Offset.zero) & targetObject.size;
+      final headerBottom = searchObject is RenderBox && searchObject.hasSize
+          ? searchObject.localToGlobal(Offset.zero).dy +
+                searchObject.size.height
+          : MediaQuery.paddingOf(context).top + 126;
+      final viewportHeight = MediaQuery.sizeOf(context).height;
+      final desiredOffset = calculateServicesTourCardScrollOffset(
+        currentOffset: _scrollController.offset,
+        minScrollExtent: _scrollController.position.minScrollExtent,
+        maxScrollExtent: _scrollController.position.maxScrollExtent,
+        targetRect: targetRect,
+        headerBottom: headerBottom,
+        viewportHeight: viewportHeight,
+        bottomObstruction: viewportHeight < 650 ? 278 : 292,
+      );
+      if ((desiredOffset - _scrollController.offset).abs() < 0.5) return;
+      await _scrollController.animateTo(
+        desiredOffset,
+        duration: Duration(milliseconds: attempt == 0 ? 240 : 120),
+        curve: Curves.easeInOutCubic,
+      );
+      if (!mounted) return;
+      await WidgetsBinding.instance.endOfFrame;
+    }
   }
 
   void _handleScroll() {
@@ -148,8 +273,8 @@ class _ServicesScreenState extends State<ServicesScreen> {
 
   Future<void> _primeUserLocation() async {
     try {
-      final result = await _locationManager.getLocation(
-        requestPermission: true,
+      final result = await PermissionPromptCoordinator.instance.run(
+        () => _locationManager.getLocation(requestPermission: true),
       );
       final location = result.location;
       if (location == null) return;
@@ -576,6 +701,16 @@ class _ServicesScreenState extends State<ServicesScreen> {
                 final discoveryPresentation = _buildDiscoveryPresentation(
                   services,
                 );
+                final firstVisibleServiceId =
+                    discoveryPresentation.primaryServices.isNotEmpty
+                    ? discoveryPresentation.primaryServices.first.service.id
+                    : (discoveryPresentation.secondaryServices.isNotEmpty
+                          ? discoveryPresentation
+                                .secondaryServices
+                                .first
+                                .service
+                                .id
+                          : null);
                 if (kDebugMode) {
                   debugPrint(
                     'Services discovery debug -> loaded service count: ${services.length}',
@@ -595,6 +730,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                   ),
                   children: [
                     _ServiceFilterSections(
+                      key: _servicesTourFiltersTargetKey,
                       selectedAnimal: _selectedAnimal,
                       animals: _animals,
                       onAnimalSelected: (animal) {
@@ -611,7 +747,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                         });
                       },
                     ),
-                    const SizedBox(height: 18),
+                    SizedBox(key: _servicesTourContentFallbackKey, height: 18),
                     if (snapshot.connectionState == ConnectionState.waiting &&
                         !NetworkStatusService.instance.isOffline)
                       const Padding(
@@ -681,9 +817,11 @@ class _ServicesScreenState extends State<ServicesScreen> {
                         ),
                       ...discoveryPresentation.primaryServices.map((entry) {
                         return Padding(
-                          key: ValueKey(
-                            'marketplace-service-${entry.service.id}',
-                          ),
+                          key: entry.service.id == firstVisibleServiceId
+                              ? _servicesTourFirstCardTargetKey
+                              : ValueKey(
+                                  'marketplace-service-${entry.service.id}',
+                                ),
                           padding: const EdgeInsets.only(bottom: 16),
                           child: _MarketplaceServiceCard(
                             service: entry.service,
@@ -708,9 +846,11 @@ class _ServicesScreenState extends State<ServicesScreen> {
                           ),
                         ...discoveryPresentation.secondaryServices.map((entry) {
                           return Padding(
-                            key: ValueKey(
-                              'marketplace-service-${entry.service.id}',
-                            ),
+                            key: entry.service.id == firstVisibleServiceId
+                                ? _servicesTourFirstCardTargetKey
+                                : ValueKey(
+                                    'marketplace-service-${entry.service.id}',
+                                  ),
                             padding: const EdgeInsets.only(bottom: 16),
                             child: _MarketplaceServiceCard(
                               service: entry.service,
@@ -761,6 +901,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                       ignoring: !_isTopBarVisible,
                       child: _ServicesCollapsibleHeader(
                         topInset: topInset,
+                        searchTargetKey: _servicesTourSearchTargetKey,
                         searchController: _searchController,
                         onSearchChanged: (value) {
                           setState(() => _searchQuery = value);
@@ -841,6 +982,7 @@ class _DiscoveryPresentation {
 
 class _ServicesCollapsibleHeader extends StatelessWidget {
   final double topInset;
+  final GlobalKey searchTargetKey;
   final TextEditingController searchController;
   final ValueChanged<String> onSearchChanged;
   final VoidCallback? onClearSearch;
@@ -849,6 +991,7 @@ class _ServicesCollapsibleHeader extends StatelessWidget {
 
   const _ServicesCollapsibleHeader({
     required this.topInset,
+    required this.searchTargetKey,
     required this.searchController,
     required this.onSearchChanged,
     required this.onClearSearch,
@@ -901,6 +1044,7 @@ class _ServicesCollapsibleHeader extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Container(
+            key: searchTargetKey,
             height: 44,
             padding: const EdgeInsets.symmetric(horizontal: 14),
             decoration: BoxDecoration(
@@ -985,6 +1129,7 @@ class _ServiceFilterSections extends StatelessWidget {
   final ValueChanged<String> onCategorySelected;
 
   const _ServiceFilterSections({
+    super.key,
     required this.selectedAnimal,
     required this.animals,
     required this.onAnimalSelected,
