@@ -12,6 +12,7 @@ import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../auth/data/services/user_service.dart';
 import '../../data/repositories/provider_onboarding_repository.dart';
 import '../../domain/models/provider_onboarding_models.dart';
@@ -295,7 +296,11 @@ class _ProviderVerificationScreenState
         title: const Text('Provider Verification'),
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(
+              child: PettxoLoader.fullScreen(
+                semanticLabel: 'Loading provider verification',
+              ),
+            )
           : _loadError != null
           ? _ErrorState(message: _loadError!, onRetry: _load)
           : ListView(

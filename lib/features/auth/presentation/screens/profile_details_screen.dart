@@ -12,6 +12,7 @@ import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_onboarding_service.dart';
 import '../../data/services/user_service.dart';
@@ -376,7 +377,13 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isCheckingAccess) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: Center(
+          child: PettxoLoader.fullScreen(
+            semanticLabel: 'Loading profile details',
+          ),
+        ),
+      );
     }
     if (_accessError != null) {
       return AuthShell(

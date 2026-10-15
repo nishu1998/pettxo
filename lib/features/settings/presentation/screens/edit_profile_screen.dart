@@ -9,6 +9,7 @@ import '../../../../core/services/location_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../auth/domain/models/profile_type.dart';
 import '../../../auth/presentation/widgets/profile_type_selector_dialog.dart';
 import '../../../auth/presentation/widgets/searchable_selection_field.dart';
@@ -278,7 +279,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
+            ? const Center(
+                child: PettxoLoader(semanticLabel: 'Loading profile'),
+              )
             : _loadError != null || profile == null
             ? Center(
                 child: Padding(

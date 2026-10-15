@@ -6,6 +6,7 @@ import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../auth/data/services/user_service.dart';
 import '../../data/repositories/provider_onboarding_repository.dart';
 import '../../domain/models/provider_onboarding_models.dart';
@@ -274,7 +275,11 @@ class _ProviderBankDetailsScreenState extends State<ProviderBankDetailsScreen> {
         title: const Text('Payout Details'),
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(
+              child: PettxoLoader.fullScreen(
+                semanticLabel: 'Loading payout details',
+              ),
+            )
           : _loadError != null
           ? _PayoutErrorState(message: _loadError!, onRetry: _load)
           : ListView(

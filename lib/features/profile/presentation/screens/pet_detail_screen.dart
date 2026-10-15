@@ -6,6 +6,7 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/repositories/pet_repository.dart';
 import '../../domain/models/pet_profile.dart';
 import 'add_edit_pet_screen.dart';
@@ -127,7 +128,11 @@ class _PetDetailScreenState extends State<PetDetailScreen> {
             pet == null) {
           return const Scaffold(
             backgroundColor: AppColors.background,
-            body: Center(child: CircularProgressIndicator()),
+            body: Center(
+              child: PettxoLoader.fullScreen(
+                semanticLabel: 'Loading pet details',
+              ),
+            ),
           );
         }
         if (pet == null) {

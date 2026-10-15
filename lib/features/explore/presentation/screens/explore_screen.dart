@@ -14,6 +14,7 @@ import '../../../../core/services/permission_prompt_coordinator.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/explore_feed_repository.dart';
 import '../../data/explore_location_repository.dart';
@@ -1299,7 +1300,9 @@ class _ExploreScreenState extends State<ExploreScreen>
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 18),
                     child: Center(
-                      child: CircularProgressIndicator(strokeWidth: 2.4),
+                      child: PettxoLoader.compact(
+                        semanticLabel: 'Loading more Explore posts',
+                      ),
                     ),
                   )
                 else if (_discoverLoadMoreError != null)
@@ -1468,7 +1471,11 @@ class _ExploreScreenState extends State<ExploreScreen>
         if (_isLoadingMoreNearbyPosts)
           const Padding(
             padding: EdgeInsets.only(top: 16),
-            child: Center(child: CircularProgressIndicator(strokeWidth: 2.4)),
+            child: Center(
+              child: PettxoLoader.compact(
+                semanticLabel: 'Loading more nearby posts',
+              ),
+            ),
           ),
       ],
     );

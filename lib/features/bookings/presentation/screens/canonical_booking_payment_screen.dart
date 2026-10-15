@@ -12,6 +12,7 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
 import '../../../../core/widgets/pettxo_full_screen_loader.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../offers/data/services/offer_service.dart';
 import '../../../offers/domain/models/available_offer.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
@@ -1158,7 +1159,11 @@ class _CanonicalBookingPaymentScreenState
                 if (_isLoadingAvailableOffers)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 24),
-                    child: Center(child: CircularProgressIndicator()),
+                    child: Center(
+                      child: PettxoLoader(
+                        semanticLabel: 'Loading available coupons',
+                      ),
+                    ),
                   )
                 else if (offers.isEmpty)
                   const Padding(

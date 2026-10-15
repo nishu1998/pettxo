@@ -16,6 +16,7 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -752,7 +753,11 @@ class _ServicesScreenState extends State<ServicesScreen> {
                         !NetworkStatusService.instance.isOffline)
                       const Padding(
                         padding: EdgeInsets.only(top: 48),
-                        child: Center(child: CircularProgressIndicator()),
+                        child: Center(
+                          child: PettxoLoader(
+                            semanticLabel: 'Loading services',
+                          ),
+                        ),
                       )
                     else if (snapshot.connectionState ==
                             ConnectionState.waiting &&

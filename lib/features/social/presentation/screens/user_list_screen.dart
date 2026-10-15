@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
@@ -182,7 +183,7 @@ class _UserListScreenState extends State<UserListScreen> {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: PettxoLoader(semanticLabel: 'Loading people'));
     }
     if (_error != null) {
       return Center(
@@ -237,7 +238,9 @@ class _UserListScreenState extends State<UserListScreen> {
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Center(
               child: _isLoadingMore
-                  ? const CircularProgressIndicator()
+                  ? const PettxoLoader.compact(
+                      semanticLabel: 'Loading more people',
+                    )
                   : OutlinedButton(
                       onPressed: _loadMore,
                       child: const Text('Load more'),

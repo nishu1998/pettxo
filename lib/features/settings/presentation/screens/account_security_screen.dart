@@ -5,6 +5,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../auth/data/services/auth_service.dart';
 import '../../../auth/data/services/pending_email_change_service.dart';
 import '../../../auth/data/services/recent_login_service.dart';
@@ -283,7 +284,9 @@ class _AccountSecurityScreenState extends State<AccountSecurityScreen> {
       backgroundColor: const Color(0xFFFBF6EF),
       body: SafeArea(
         child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
+            ? const Center(
+                child: PettxoLoader(semanticLabel: 'Loading account security'),
+              )
             : profile == null || viewData == null
             ? _AccountSecurityErrorState(
                 message: _loadError ?? 'Account details are unavailable.',

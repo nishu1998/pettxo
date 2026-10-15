@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/services/auth_onboarding_service.dart';
 import '../../domain/models/profile_type.dart';
 import '../../domain/utils/auth_onboarding_resolver.dart';
@@ -145,7 +146,13 @@ class _ProfileTypeScreenState extends State<ProfileTypeScreen> {
   @override
   Widget build(BuildContext context) {
     if (_checkingAccess) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: Center(
+          child: PettxoLoader.fullScreen(
+            semanticLabel: 'Loading profile options',
+          ),
+        ),
+      );
     }
     if (_accessError != null) {
       return AuthShell(

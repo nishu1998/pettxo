@@ -7,6 +7,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/pettxo_full_screen_loader.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
@@ -1578,11 +1579,7 @@ class _LoadingState extends StatelessWidget {
       ),
       child: const Column(
         children: [
-          SizedBox(
-            width: 26,
-            height: 26,
-            child: CircularProgressIndicator(strokeWidth: 2.5),
-          ),
+          PettxoLoader.compact(semanticLabel: 'Loading bookings'),
           SizedBox(height: 14),
           Text(
             'Loading bookings...',

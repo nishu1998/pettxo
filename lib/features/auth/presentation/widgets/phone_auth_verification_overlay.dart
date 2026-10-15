@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 
 class PhoneAuthVerificationOverlay extends StatelessWidget {
   const PhoneAuthVerificationOverlay({super.key, required this.message});
@@ -31,10 +32,8 @@ class PhoneAuthVerificationOverlay extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: CircularProgressIndicator(strokeWidth: 2.8),
+                  const PettxoLoader.compact(
+                    semanticLabel: 'Verifying phone number',
                   ),
                   const SizedBox(height: 14),
                   Text(

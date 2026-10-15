@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../bookings/domain/models/booking_flow_models.dart';
 import '../../../bookings/presentation/navigation/booking_navigation_resolver.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
@@ -186,8 +187,8 @@ class NotificationsScreen extends StatelessWidget {
                           if (snapshot.connectionState ==
                               ConnectionState.waiting) {
                             return const Center(
-                              child: CircularProgressIndicator(
-                                color: AppColors.primary,
+                              child: PettxoLoader(
+                                semanticLabel: 'Loading notifications',
                               ),
                             );
                           }

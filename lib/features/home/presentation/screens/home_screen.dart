@@ -15,6 +15,7 @@ import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/location_permission_dialog.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../../core/services/network_status_service.dart';
 import '../../data/home_feed_repository.dart';
@@ -35,6 +36,22 @@ import '../../../social/domain/social_post_like_state.dart';
 import '../../../social/domain/social_feed_pagination.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 import '../../../social/presentation/widgets/suggested_users_section.dart';
+
+const Key kHomeInitialFeedLoaderKey = ValueKey<String>(
+  'home-initial-feed-loader',
+);
+
+Rect calculateHomeInitialLoaderArea({
+  required Size viewportSize,
+  required double topContentPadding,
+  required double bottomContentPadding,
+}) {
+  final top = topContentPadding.clamp(0.0, viewportSize.height).toDouble();
+  final bottom = (viewportSize.height - bottomContentPadding)
+      .clamp(top, viewportSize.height)
+      .toDouble();
+  return Rect.fromLTRB(0, top, viewportSize.width, bottom);
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -774,6 +791,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     const topBarHeight = 68.0;
     final topContentPadding = topInset + topBarHeight + 8;
     final bottomContentPadding = SocialBottomNav.contentBottomPadding(context);
+    final initialLoaderArea = calculateHomeInitialLoaderArea(
+      viewportSize: MediaQuery.sizeOf(context),
+      topContentPadding: topContentPadding,
+      bottomContentPadding: bottomContentPadding,
+    );
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -782,111 +804,125 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         children: [
           // The feed is painted edge-to-edge first so it can scroll behind the
           // floating header and bottom nav overlays.
-          HomeFeedRefreshSurface(
-            key: _refreshSurfaceKey,
-            edgeOffset: topContentPadding,
-            onRefresh: _refreshHome,
-            child: ListView.separated(
-              controller: _scrollController,
-              cacheExtent: 720,
-              padding: EdgeInsets.fromLTRB(
-                16,
-                topContentPadding,
-                16,
-                bottomContentPadding,
-              ),
-              physics: const BouncingScrollPhysics(
-                parent: AlwaysScrollableScrollPhysics(),
-              ),
-              itemCount: _feedItemCount,
-              separatorBuilder: (context, index) => const SizedBox(height: 18),
-              itemBuilder: (context, index) {
-                if (_isLoadingFeed) {
-                  return HomeTourTarget(
-                    handle: _homeTourFeedTarget,
-                    child: const _FeedLoadingCard(),
-                  );
-                }
-                if (_feedError != null) {
-                  return HomeTourTarget(
-                    handle: _homeTourFeedTarget,
-                    child: _FeedStatusCard(
-                      title: 'Could not load the feed',
-                      message: _feedError!,
-                      actionLabel: 'Try Again',
-                      onPressed: _loadInitialPosts,
-                    ),
-                  );
-                }
-                if (_feedEntries.isEmpty) {
-                  return HomeTourTarget(
-                    handle: _homeTourFeedTarget,
-                    child: _FeedStatusCard(
-                      title: NetworkStatusService.instance.isOffline
-                          ? 'You’re offline'
-                          : 'No posts yet',
-                      message: NetworkStatusService.instance.isOffline
-                          ? 'Connect to the internet to load latest content.'
-                          : 'The home feed will start filling up once the first Pettxo posts are published.',
-                    ),
-                  );
-                }
-                if (_shouldShowSuggestions &&
-                    index == _suggestionsInsertIndex) {
-                  return SuggestedUsersSection(
-                    users: _suggestedUsers,
-                    currentUserId: currentUserId,
-                    followRepository: _followRepository,
-                    onFollowed: (userId) => _handleFollowChanged(userId, true),
-                  );
-                }
-                if (index >= _baseFeedItemCount) {
-                  final footerState = _feedFooterState;
-                  if (footerState == HomeFeedFooterState.retry) {
-                    return _FeedStatusCard(
-                      title: 'Could not load more posts',
-                      message: _loadMoreError!,
-                      actionLabel: 'Try Again',
-                      onPressed: _loadMorePosts,
-                    );
-                  }
-                  if (footerState == HomeFeedFooterState.loading) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  return const HomeFeedCaughtUpFooter();
-                }
-                final entry = _feedEntries[_postIndexForFeedIndex(index)];
-                final postCard = SocialPostCard(
-                  key: ValueKey(entry.post.id),
-                  post: entry.post,
-                  rankingReason: entry.rankingReason,
-                  currentUserId: currentUserId,
-                  initiallyLiked: _likedPostIds.contains(entry.post.id),
-                  initiallyFollowing: _followingIds.contains(
-                    entry.post.authorId,
+          if (_isLoadingFeed)
+            Positioned.fromRect(
+              rect: initialLoaderArea,
+              child: HomeTourTarget(
+                handle: _homeTourFeedTarget,
+                child: const Center(
+                  key: kHomeInitialFeedLoaderKey,
+                  child: PettxoLoader.fullScreen(
+                    semanticLabel: 'Loading home feed',
                   ),
-                  repository: _socialPostRepository,
-                  followRepository: _followRepository,
-                  onPostUpdated: _handlePostUpdated,
-                  onPostDeleted: _handlePostDeleted,
-                  onLikeChanged: _handleLikeChanged,
-                  onLikePendingChanged: _handleLikePendingChanged,
-                  onCommentCountChanged: _handleCommentCountChanged,
-                  onFollowChanged: _handleFollowChanged,
-                  mediaWrapper: index == 0
-                      ? (child) => HomeTourTarget(
-                          handle: _homeTourFeedTarget,
-                          child: child,
-                        )
-                      : null,
-                );
-                return postCard;
-              },
+                ),
+              ),
+            )
+          else
+            HomeFeedRefreshSurface(
+              key: _refreshSurfaceKey,
+              edgeOffset: topContentPadding,
+              onRefresh: _refreshHome,
+              child: ListView.separated(
+                controller: _scrollController,
+                cacheExtent: 720,
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  topContentPadding,
+                  16,
+                  bottomContentPadding,
+                ),
+                physics: const BouncingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics(),
+                ),
+                itemCount: _feedItemCount,
+                separatorBuilder: (context, index) =>
+                    const SizedBox(height: 18),
+                itemBuilder: (context, index) {
+                  if (_feedError != null) {
+                    return HomeTourTarget(
+                      handle: _homeTourFeedTarget,
+                      child: _FeedStatusCard(
+                        title: 'Could not load the feed',
+                        message: _feedError!,
+                        actionLabel: 'Try Again',
+                        onPressed: _loadInitialPosts,
+                      ),
+                    );
+                  }
+                  if (_feedEntries.isEmpty) {
+                    return HomeTourTarget(
+                      handle: _homeTourFeedTarget,
+                      child: _FeedStatusCard(
+                        title: NetworkStatusService.instance.isOffline
+                            ? 'You’re offline'
+                            : 'No posts yet',
+                        message: NetworkStatusService.instance.isOffline
+                            ? 'Connect to the internet to load latest content.'
+                            : 'The home feed will start filling up once the first Pettxo posts are published.',
+                      ),
+                    );
+                  }
+                  if (_shouldShowSuggestions &&
+                      index == _suggestionsInsertIndex) {
+                    return SuggestedUsersSection(
+                      users: _suggestedUsers,
+                      currentUserId: currentUserId,
+                      followRepository: _followRepository,
+                      onFollowed: (userId) =>
+                          _handleFollowChanged(userId, true),
+                    );
+                  }
+                  if (index >= _baseFeedItemCount) {
+                    final footerState = _feedFooterState;
+                    if (footerState == HomeFeedFooterState.retry) {
+                      return _FeedStatusCard(
+                        title: 'Could not load more posts',
+                        message: _loadMoreError!,
+                        actionLabel: 'Try Again',
+                        onPressed: _loadMorePosts,
+                      );
+                    }
+                    if (footerState == HomeFeedFooterState.loading) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Center(
+                          child: PettxoLoader.compact(
+                            semanticLabel: 'Loading more posts',
+                          ),
+                        ),
+                      );
+                    }
+                    return const HomeFeedCaughtUpFooter();
+                  }
+                  final entry = _feedEntries[_postIndexForFeedIndex(index)];
+                  final postCard = SocialPostCard(
+                    key: ValueKey(entry.post.id),
+                    post: entry.post,
+                    rankingReason: entry.rankingReason,
+                    currentUserId: currentUserId,
+                    initiallyLiked: _likedPostIds.contains(entry.post.id),
+                    initiallyFollowing: _followingIds.contains(
+                      entry.post.authorId,
+                    ),
+                    repository: _socialPostRepository,
+                    followRepository: _followRepository,
+                    onPostUpdated: _handlePostUpdated,
+                    onPostDeleted: _handlePostDeleted,
+                    onLikeChanged: _handleLikeChanged,
+                    onLikePendingChanged: _handleLikePendingChanged,
+                    onCommentCountChanged: _handleCommentCountChanged,
+                    onFollowChanged: _handleFollowChanged,
+                    mediaWrapper: index == 0
+                        ? (child) => HomeTourTarget(
+                            handle: _homeTourFeedTarget,
+                            child: child,
+                          )
+                        : null,
+                  );
+                  return postCard;
+                },
+              ),
             ),
-          ),
           // Safe-area spacing is applied to the overlay itself instead of the
           // whole body, which keeps the status bar clear while still letting
           // content pass underneath the bar as the user scrolls.
@@ -1133,28 +1169,6 @@ class _FeedStatusCard extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-class _FeedLoadingCard extends StatelessWidget {
-  const _FeedLoadingCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
-      ),
-      child: const Center(
-        child: Padding(
-          padding: EdgeInsets.symmetric(vertical: 24),
-          child: CircularProgressIndicator(),
-        ),
       ),
     );
   }

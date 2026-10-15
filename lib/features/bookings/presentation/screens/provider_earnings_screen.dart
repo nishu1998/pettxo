@@ -308,11 +308,7 @@ class _EarningsContentState extends State<_EarningsContent> {
     child: Semantics(
       label: message,
       liveRegion: true,
-      child: PettxoLoadingAnimation(
-        size: 100,
-        message: message,
-        backgroundColor: Theme.of(context).colorScheme.surface,
-      ),
+      child: PettxoLoader.section(message: message, semanticLabel: message),
     ),
   );
 

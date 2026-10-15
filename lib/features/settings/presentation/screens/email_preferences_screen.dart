@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/services/marketing_email_preference_service.dart';
 
 class EmailPreferencesScreen extends StatefulWidget {
@@ -135,7 +136,11 @@ class _EmailPreferencesScreenState extends State<EmailPreferencesScreen> {
               child: _isLoading
                   ? const Padding(
                       padding: EdgeInsets.all(20),
-                      child: Center(child: CircularProgressIndicator()),
+                      child: Center(
+                        child: PettxoLoader(
+                          semanticLabel: 'Loading email preferences',
+                        ),
+                      ),
                     )
                   : _loadError != null
                   ? Padding(

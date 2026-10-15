@@ -6,6 +6,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../data/repositories/booking_repository.dart';
 import '../../domain/models/booking_read_model.dart';
@@ -221,7 +222,9 @@ class _SummaryCard extends StatelessWidget {
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
       ),
       child: booking == null
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(
+              child: PettxoLoader(semanticLabel: 'Loading booking summary'),
+            )
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

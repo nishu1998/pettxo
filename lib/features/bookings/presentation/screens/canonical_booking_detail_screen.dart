@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
@@ -217,7 +218,9 @@ class _CanonicalBookingDetailScreenState
               : null;
           if (booking == null) {
             return const Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
+              child: PettxoLoader.fullScreen(
+                semanticLabel: 'Loading booking details',
+              ),
             );
           }
 

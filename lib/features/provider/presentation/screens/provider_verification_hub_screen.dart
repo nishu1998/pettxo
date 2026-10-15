@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_buttons.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/repositories/provider_onboarding_repository.dart';
 import '../../domain/models/provider_onboarding_models.dart';
 import 'provider_bank_details_screen.dart';
@@ -105,7 +106,11 @@ class _ProviderVerificationHubScreenState
         title: const Text('Provider Verification & Payout Details'),
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(
+              child: PettxoLoader.fullScreen(
+                semanticLabel: 'Loading provider details',
+              ),
+            )
           : _loadError != null
           ? Center(
               child: Padding(

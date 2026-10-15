@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/support_repository.dart';
 import '../../domain/models/support_models.dart';
 import '../widgets/support_widgets.dart';
@@ -40,8 +41,8 @@ class MySupportTicketsScreen extends StatelessWidget {
                   }
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return const Center(
-                      child: CircularProgressIndicator(
-                        color: AppColors.primary,
+                      child: PettxoLoader(
+                        semanticLabel: 'Loading support tickets',
                       ),
                     );
                   }

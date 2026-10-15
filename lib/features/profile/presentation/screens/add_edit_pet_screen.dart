@@ -8,6 +8,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/repositories/pet_repository.dart';
 import '../../domain/models/pet_profile.dart';
 
@@ -289,7 +290,11 @@ class _AddEditPetScreenState extends State<AddEditPetScreen> {
               _loadedPet == null) {
             return const Scaffold(
               backgroundColor: AppColors.background,
-              body: Center(child: CircularProgressIndicator()),
+              body: Center(
+                child: PettxoLoader.fullScreen(
+                  semanticLabel: 'Loading pet details',
+                ),
+              ),
             );
           }
           if (pet == null && _loadedPet == null) {

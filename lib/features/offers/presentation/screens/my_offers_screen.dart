@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/services/offer_service.dart';
 import '../../domain/models/available_offer.dart';
 import '../widgets/available_offer_card.dart';
@@ -95,7 +96,11 @@ class _MyOffersScreenState extends State<MyOffersScreen> {
                   if (availableSnapshot.connectionState ==
                           ConnectionState.waiting &&
                       !availableSnapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator());
+                    return const Center(
+                      child: PettxoLoader.fullScreen(
+                        semanticLabel: 'Loading offers',
+                      ),
+                    );
                   }
 
                   if (availableSnapshot.hasError && availableOffers.isEmpty) {

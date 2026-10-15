@@ -4,6 +4,7 @@ import '../../../../core/services/legal_acceptance_session_service.dart';
 import '../../../../core/constants/signup_terms_communications.dart';
 import '../../../../core/services/policy_link_service.dart';
 import '../../../../core/widgets/legal_consent_checkbox.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../settings/presentation/screens/legal_policies_screen.dart';
 import '../../../../widgets/custom_button.dart';
 import '../../data/services/auth_onboarding_service.dart';
@@ -162,7 +163,13 @@ class _OnboardingConsentScreenState extends State<OnboardingConsentScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isCheckingAccess) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: Center(
+          child: PettxoLoader.fullScreen(
+            semanticLabel: 'Checking onboarding access',
+          ),
+        ),
+      );
     }
     return AuthShell(
       title: 'Before You Continue',

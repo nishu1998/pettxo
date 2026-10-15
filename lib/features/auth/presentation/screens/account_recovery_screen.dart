@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/services/auth_service.dart';
 import 'auth_gateway_screen.dart';
 
@@ -184,7 +185,11 @@ class _AccountRecoveryScreenState extends State<AccountRecoveryScreen> {
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
+            ? const Center(
+                child: PettxoLoader.fullScreen(
+                  semanticLabel: 'Loading account recovery',
+                ),
+              )
             : Center(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),

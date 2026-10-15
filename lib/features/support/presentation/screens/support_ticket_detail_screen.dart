@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_snackbar.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/support_repository.dart';
 import '../../domain/models/support_models.dart';
 import '../widgets/support_widgets.dart';
@@ -194,7 +195,9 @@ class _SupportTicketDetailScreenState extends State<SupportTicketDetailScreen> {
                   ticketSnapshot.connectionState == ConnectionState.waiting)
                 const Expanded(
                   child: Center(
-                    child: CircularProgressIndicator(color: AppColors.primary),
+                    child: PettxoLoader(
+                      semanticLabel: 'Loading support ticket',
+                    ),
                   ),
                 )
               else if (ticket == null)
@@ -224,8 +227,8 @@ class _SupportTicketDetailScreenState extends State<SupportTicketDetailScreen> {
                       if (snapshot.connectionState == ConnectionState.waiting &&
                           (snapshot.data?.docs.isEmpty ?? true)) {
                         return const Center(
-                          child: CircularProgressIndicator(
-                            color: AppColors.primary,
+                          child: PettxoLoader(
+                            semanticLabel: 'Loading ticket messages',
                           ),
                         );
                       }
@@ -273,8 +276,9 @@ class _SupportTicketDetailScreenState extends State<SupportTicketDetailScreen> {
                                         0,
                                       ),
                                       child: Center(
-                                        child: CircularProgressIndicator(
-                                          color: AppColors.primary,
+                                        child: PettxoLoader.compact(
+                                          semanticLabel:
+                                              'Loading earlier messages',
                                         ),
                                       ),
                                     ),

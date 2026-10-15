@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/support_faq_content.dart';
 import '../../data/support_repository.dart';
 import '../../domain/models/support_models.dart';
@@ -168,8 +169,8 @@ class HelpSupportScreen extends StatelessWidget {
                               const Center(
                                 child: Padding(
                                   padding: EdgeInsets.all(16),
-                                  child: CircularProgressIndicator(
-                                    color: AppColors.primary,
+                                  child: PettxoLoader.compact(
+                                    semanticLabel: 'Loading recent tickets',
                                   ),
                                 ),
                               )

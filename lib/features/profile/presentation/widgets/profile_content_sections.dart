@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/repositories/profile_content_repository.dart';
 import '../../domain/models/pet_profile.dart';
 import '../../domain/models/profile_service_listing.dart';
@@ -641,7 +642,7 @@ class _ProfilePostLoaderScreen extends StatelessWidget {
             }
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(
-                child: CircularProgressIndicator(color: AppColors.primary),
+                child: PettxoLoader(semanticLabel: 'Loading post'),
               );
             }
 
@@ -684,7 +685,9 @@ class _ProfilePostLoaderScreen extends StatelessWidget {
           return const Scaffold(
             backgroundColor: AppColors.background,
             body: Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
+              child: PettxoLoader.fullScreen(
+                semanticLabel: 'Loading post details',
+              ),
             ),
           );
         }

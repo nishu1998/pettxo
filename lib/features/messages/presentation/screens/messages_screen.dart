@@ -8,6 +8,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -271,8 +272,8 @@ class _MessagesScreenState extends State<MessagesScreen> {
                                 children: const [
                                   SizedBox(height: 160),
                                   Center(
-                                    child: CircularProgressIndicator(
-                                      color: AppColors.primary,
+                                    child: PettxoLoader(
+                                      semanticLabel: 'Loading messages',
                                     ),
                                   ),
                                 ],

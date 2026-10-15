@@ -10,6 +10,7 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../../data/repositories/chat_media_repository.dart';
 import '../../data/services/chat_image_processing_service.dart';
@@ -424,7 +425,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           elevation: 0,
         ),
         body: const Center(
-          child: CircularProgressIndicator(color: AppColors.primary),
+          child: PettxoLoader.fullScreen(semanticLabel: 'Loading conversation'),
         ),
       );
     }
@@ -507,7 +508,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               else if (chat == null)
                 const Expanded(
                   child: Center(
-                    child: CircularProgressIndicator(color: AppColors.primary),
+                    child: PettxoLoader(semanticLabel: 'Loading conversation'),
                   ),
                 )
               else
@@ -604,8 +605,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
                             if (messages.isEmpty && !snapshot.hasData) {
                               return const Center(
-                                child: CircularProgressIndicator(
-                                  color: AppColors.primary,
+                                child: PettxoLoader(
+                                  semanticLabel: 'Loading messages',
                                 ),
                               );
                             }
@@ -643,13 +644,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                                     padding: const EdgeInsets.only(top: 12),
                                     child: Center(
                                       child: _isLoadingOlder
-                                          ? const SizedBox(
-                                              width: 22,
-                                              height: 22,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2.2,
-                                                color: AppColors.primary,
-                                              ),
+                                          ? const PettxoLoader.compact(
+                                              semanticLabel:
+                                                  'Loading earlier messages',
                                             )
                                           : const SizedBox.shrink(),
                                     ),
@@ -875,10 +872,14 @@ class _ImageSendStatusCard extends StatelessWidget {
               ),
             )
           else
-            const SizedBox(
-              width: 52,
-              height: 52,
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox.square(
+              dimension: 52,
+              child: Center(
+                child: PettxoLoader.compact(
+                  size: 44,
+                  semanticLabel: 'Preparing image',
+                ),
+              ),
             ),
           const SizedBox(width: 10),
           Expanded(

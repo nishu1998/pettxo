@@ -15,6 +15,7 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../bookings/data/repositories/booking_review_repository.dart';
 import '../../../bookings/domain/models/booking_review_model.dart';
@@ -1501,7 +1502,9 @@ class _ServiceReviewsSection extends StatelessWidget {
                 approvedReviews.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
-                child: Center(child: CircularProgressIndicator()),
+                child: Center(
+                  child: PettxoLoader.compact(semanticLabel: 'Loading reviews'),
+                ),
               )
             else if (latestReviews.isEmpty)
               const Text(

@@ -9,6 +9,7 @@ import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/social_post_repository.dart';
@@ -571,7 +572,9 @@ class _CommentSheetState extends State<CommentSheet> {
 
   Widget _buildCommentsList() {
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(
+        child: PettxoLoader(semanticLabel: 'Loading comments'),
+      );
     }
     if (_error != null) {
       return SingleChildScrollView(
@@ -631,7 +634,9 @@ class _CommentSheetState extends State<CommentSheet> {
             padding: const EdgeInsets.symmetric(vertical: 12),
             child: Center(
               child: _isLoadingMore
-                  ? const CircularProgressIndicator()
+                  ? const PettxoLoader.compact(
+                      semanticLabel: 'Loading more comments',
+                    )
                   : OutlinedButton(
                       onPressed: _loadMoreComments,
                       child: const Text('Load more comments'),

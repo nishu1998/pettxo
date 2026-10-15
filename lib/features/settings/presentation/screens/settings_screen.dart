@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_confirmation_dialog.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../auth/data/services/auth_service.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
 import '../../../provider/domain/models/provider_onboarding_models.dart';
@@ -158,7 +159,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: const Color(0xFFFBF6EF),
       body: SafeArea(
         child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
+            ? const Center(
+                child: PettxoLoader(semanticLabel: 'Loading settings'),
+              )
             : _loadError != null || profile == null
             ? Center(
                 child: Padding(

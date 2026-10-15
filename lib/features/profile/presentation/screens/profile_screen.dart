@@ -10,6 +10,7 @@ import '../../../../core/services/permission_prompt_coordinator.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_buttons.dart';
 import '../../../../core/widgets/glass_surface.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
@@ -932,7 +933,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
             future: _settingsFuture,
             builder: (context, settingsSnapshot) {
               if (!settingsSnapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
+                return const Center(
+                  child: PettxoLoader(semanticLabel: 'Loading profile'),
+                );
               }
 
               return StreamBuilder<UserProfile>(
@@ -942,7 +945,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 builder: (context, profileSnapshot) {
                   if (profileSnapshot.connectionState ==
                       ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
+                    return const Center(
+                      child: PettxoLoader(semanticLabel: 'Loading profile'),
+                    );
                   }
 
                   if (profileSnapshot.hasError || !profileSnapshot.hasData) {
