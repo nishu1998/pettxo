@@ -10,6 +10,7 @@ import 'package:flutter/rendering.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/navigation/social_app_tab.dart';
+import '../../../../core/services/permission_prompt_coordinator.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/glass_surface.dart';
@@ -23,6 +24,7 @@ import '../../domain/models/nearby_location_mode.dart';
 import '../../domain/utils/explore_request_guard.dart';
 import '../../domain/utils/explore_search_policy.dart';
 import '../../domain/utils/nearby_error_message.dart';
+import '../widgets/explore_guided_tour.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
@@ -57,6 +59,13 @@ class _ExploreScreenState extends State<ExploreScreen>
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey _exploreTourSearchTargetKey = GlobalKey();
+  final GlobalKey _exploreTourTrendingTargetKey = GlobalKey();
+  final GlobalKey _exploreTourFeedSwitcherTargetKey = GlobalKey();
+  final GlobalKey _exploreTourFirstPostTargetKey = GlobalKey();
+  final GlobalKey _exploreTourContentFallbackKey = GlobalKey();
+  final ExploreGuidedTourController _exploreTourController =
+      ExploreGuidedTourController();
 
   Timer? _searchDebounce;
   final ExploreSearchRequestTracker _searchRequestTracker =
@@ -135,6 +144,9 @@ class _ExploreScreenState extends State<ExploreScreen>
     } else {
       _loadExploreSections();
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_startExploreTour());
+    });
   }
 
   Future<void> _logExploreAuthSnapshot() async {
@@ -154,6 +166,7 @@ class _ExploreScreenState extends State<ExploreScreen>
 
   @override
   void dispose() {
+    _exploreTourController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _authStateSubscription?.cancel();
     _searchDebounce?.cancel();
@@ -184,6 +197,7 @@ class _ExploreScreenState extends State<ExploreScreen>
     _searchRequestTracker.invalidate();
     _searchDebounce?.cancel();
     _memoryCache = null;
+    _exploreTourController.cancel();
     if (!mounted) return;
     setState(() {
       _viewerContext = ExploreFeedViewerContext.empty;
@@ -216,6 +230,100 @@ class _ExploreScreenState extends State<ExploreScreen>
     }
     if (nextUid.isNotEmpty) {
       unawaited(_loadExploreSections(forceRefresh: true));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_startExploreTour());
+      });
+    }
+  }
+
+  ExploreTourTargets get _exploreTourTargets => ExploreTourTargets(
+    search: _exploreTourSearchTargetKey,
+    trending: _exploreTourTrendingTargetKey,
+    feedSwitcher: _exploreTourFeedSwitcherTargetKey,
+    firstPost: _exploreTourFirstPostTargetKey,
+    contentFallback: _exploreTourContentFallbackKey,
+  );
+
+  Future<void> _startExploreTour() async {
+    final uid = _currentUserId;
+    if (!mounted || uid.isEmpty) return;
+    await PermissionPromptCoordinator.instance.run(() async {
+      if (!mounted || uid != _currentUserId) return;
+      if (!await _waitForExploreRouteReady(uid)) return;
+      if (!mounted || uid != _currentUserId) return;
+      await _exploreTourController.start(
+        context: context,
+        uid: uid,
+        targets: _exploreTourTargets,
+        beforeShow: _prepareExploreTour,
+        prepareStep: _prepareExploreTourStep,
+      );
+    });
+  }
+
+  Future<bool> _waitForExploreRouteReady(String uid) async {
+    for (var attempt = 0; attempt < 40; attempt += 1) {
+      if (!mounted || uid != _currentUserId) return false;
+      final route = ModalRoute.of(context);
+      if (route == null || route.isCurrent) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    return false;
+  }
+
+  Future<void> _prepareExploreTour() async {
+    if (!mounted) return;
+    _searchFocusNode.unfocus();
+    if (_scrollController.hasClients && _scrollController.offset > 0) {
+      _scrollController.jumpTo(0);
+    }
+    if (!_isSearchBarVisible) {
+      setState(() => _isSearchBarVisible = true);
+    }
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
+  Future<void> _prepareExploreTourStep(int stepIndex) async {
+    if (!mounted || stepIndex != 3) return;
+    for (var attempt = 0; attempt < 2; attempt += 1) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final targetRenderObject = _exploreTourFirstPostTargetKey.currentContext
+          ?.findRenderObject();
+      final headerRenderObject = _exploreTourSearchTargetKey.currentContext
+          ?.findRenderObject();
+      if (targetRenderObject is! RenderBox ||
+          !targetRenderObject.attached ||
+          !targetRenderObject.hasSize) {
+        return;
+      }
+      final targetRect =
+          targetRenderObject.localToGlobal(Offset.zero) &
+          targetRenderObject.size;
+      final headerBottom =
+          headerRenderObject is RenderBox &&
+              headerRenderObject.attached &&
+              headerRenderObject.hasSize
+          ? headerRenderObject.localToGlobal(Offset.zero).dy +
+                headerRenderObject.size.height
+          : MediaQuery.paddingOf(context).top + 72;
+      final viewportHeight = MediaQuery.sizeOf(context).height;
+      final desiredOffset = calculateExploreTourPostScrollOffset(
+        currentOffset: _scrollController.offset,
+        minScrollExtent: _scrollController.position.minScrollExtent,
+        maxScrollExtent: _scrollController.position.maxScrollExtent,
+        targetRect: targetRect,
+        headerBottom: headerBottom,
+        viewportHeight: viewportHeight,
+        bottomObstruction: viewportHeight < 650 ? 280 : 292,
+      );
+      if ((desiredOffset - _scrollController.offset).abs() < 0.5) return;
+      await _scrollController.animateTo(
+        desiredOffset,
+        duration: Duration(milliseconds: attempt == 0 ? 240 : 120),
+        curve: Curves.easeInOutCubic,
+      );
+      if (!mounted) return;
+      await WidgetsBinding.instance.endOfFrame;
     }
   }
 
@@ -1053,7 +1161,10 @@ class _ExploreScreenState extends State<ExploreScreen>
                                 )
                               : KeyedSubtree(
                                   key: const ValueKey<String>('discovery'),
-                                  child: _buildDiscoveryContent(),
+                                  child: KeyedSubtree(
+                                    key: _exploreTourContentFallbackKey,
+                                    child: _buildDiscoveryContent(),
+                                  ),
                                 ),
                         ),
                       ),
@@ -1112,6 +1223,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                             ),
                           ),
                           child: _SearchBar(
+                            key: _exploreTourSearchTargetKey,
                             controller: _searchController,
                             focusNode: _searchFocusNode,
                             isSearching: _isSearching,
@@ -1152,18 +1264,24 @@ class _ExploreScreenState extends State<ExploreScreen>
         if (_activeFeedKind == ExploreFeedKind.discover) ...[
           if (_trendingHashtags.isNotEmpty) ...[
             _FadeInSection(
-              child: _HashtagSection(
-                title: 'Trending Hashtags',
-                hashtags: _trendingHashtags,
-                onTapHashtag: _applyHashtagSearch,
+              child: KeyedSubtree(
+                key: _exploreTourTrendingTargetKey,
+                child: _HashtagSection(
+                  title: 'Trending Hashtags',
+                  hashtags: _trendingHashtags,
+                  onTapHashtag: _applyHashtagSearch,
+                ),
               ),
             ),
             const SizedBox(height: 18),
           ],
           _FadeInSection(
-            child: _ExploreFeedSwitcher(
-              activeKind: _activeFeedKind,
-              onChanged: _handleFeedChanged,
+            child: KeyedSubtree(
+              key: _exploreTourFeedSwitcherTargetKey,
+              child: _ExploreFeedSwitcher(
+                activeKind: _activeFeedKind,
+                onChanged: _handleFeedChanged,
+              ),
             ),
           ),
           _FadeInSection(
@@ -1175,6 +1293,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                   title: null,
                   posts: discoverPosts,
                   onOpenPost: _openPostDetail,
+                  firstPostKey: _exploreTourFirstPostTargetKey,
                 ),
                 if (_isLoadingMoreDiscoverPosts)
                   const Padding(
@@ -1202,9 +1321,12 @@ class _ExploreScreenState extends State<ExploreScreen>
             ),
         ] else ...[
           _FadeInSection(
-            child: _ExploreFeedSwitcher(
-              activeKind: _activeFeedKind,
-              onChanged: _handleFeedChanged,
+            child: KeyedSubtree(
+              key: _exploreTourFeedSwitcherTargetKey,
+              child: _ExploreFeedSwitcher(
+                activeKind: _activeFeedKind,
+                onChanged: _handleFeedChanged,
+              ),
             ),
           ),
           _buildNearbyContent(),
@@ -1340,6 +1462,7 @@ class _ExploreScreenState extends State<ExploreScreen>
             posts: _nearbyPosts,
             onOpenPost: _openPostDetail,
             showLocationLabel: true,
+            firstPostKey: _exploreTourFirstPostTargetKey,
           ),
         ),
         if (_isLoadingMoreNearbyPosts)
@@ -1728,6 +1851,7 @@ class _SearchBar extends StatelessWidget {
   final bool isSearching;
 
   const _SearchBar({
+    super.key,
     required this.controller,
     required this.focusNode,
     required this.isSearching,
@@ -1951,12 +2075,14 @@ class _DiscoverSection extends StatelessWidget {
   final List<SocialPostModel> posts;
   final ValueChanged<SocialPostModel> onOpenPost;
   final bool showLocationLabel;
+  final GlobalKey? firstPostKey;
 
   const _DiscoverSection({
     required this.title,
     required this.posts,
     required this.onOpenPost,
     this.showLocationLabel = false,
+    this.firstPostKey,
   });
 
   @override
@@ -2009,7 +2135,7 @@ class _DiscoverSection extends StatelessWidget {
                 itemBuilder: (context, index) {
                   final post = posts[index];
                   return _CompactPostCard(
-                    key: ValueKey<String>(post.id),
+                    key: index == 0 ? firstPostKey : ValueKey<String>(post.id),
                     post: post,
                     onTap: () => onOpenPost(post),
                     expandToAvailableWidth: true,
