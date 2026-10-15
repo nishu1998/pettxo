@@ -522,7 +522,7 @@ class _PhoneSignupConsentRow extends StatelessWidget {
                   text: TextSpan(
                     style: baseStyle,
                     children: [
-                      const TextSpan(text: 'I agree to Pettxo’s '),
+                      const TextSpan(text: signupConsentLeadingText),
                       TextSpan(
                         text: 'Terms of Service',
                         style: linkStyle,
@@ -547,9 +547,19 @@ class _PhoneSignupConsentRow extends StatelessWidget {
                           },
                       ),
                       const TextSpan(text: ' and '),
-                      TextSpan(text: 'Community Guidelines', style: linkStyle),
+                      TextSpan(
+                        text: 'Community Guidelines',
+                        style: linkStyle,
+                        recognizer: TapGestureRecognizer()
+                          ..onTap = () {
+                            PolicyLinkService.openExternalPolicyUrlWithFeedback(
+                              context,
+                              PolicyLinkService.communityGuidelinesKey,
+                            );
+                          },
+                      ),
                       const TextSpan(
-                        text: signupMarketingCommunicationsDisclosure,
+                        text: signupMarketingCommunicationsShortDisclosure,
                       ),
                     ],
                   ),

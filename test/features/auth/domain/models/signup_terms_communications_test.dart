@@ -16,4 +16,11 @@ void main() {
     expect(signupMarketingCommunicationsDisclosure, contains('unsubscribe'));
     expect(signupMarketingCommunicationsDisclosure, contains('Settings'));
   });
+
+  test('email and phone signup use the shortened consent wording', () {
+    expect(
+      signupConsentDisplayText,
+      "I agree to Pettxo's Terms of Service, Privacy Policy and Community Guidelines, including promotional emails (opt out anytime in Settings).",
+    );
+  });
 }

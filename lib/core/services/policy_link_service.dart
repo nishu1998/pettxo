@@ -15,6 +15,7 @@ class PolicyLinkService {
   static const String refundPolicyKey = 'refund_policy_url';
   static const String termsConditionsKey = 'terms_conditions_url';
   static const String privacyPolicyKey = 'privacy_policy_url';
+  static const String communityGuidelinesKey = 'community_guidelines_url';
   static const String providerPolicyKey = 'provider_policy_url';
 
   static const Map<String, String> _defaultUrls = {
@@ -22,6 +23,7 @@ class PolicyLinkService {
     refundPolicyKey: 'https://pettxo.com/refund-policy',
     termsConditionsKey: 'https://pettxo.com/terms-and-conditions',
     privacyPolicyKey: 'https://pettxo.com/privacy-policy',
+    communityGuidelinesKey: 'https://pettxo.com/community-guidelines',
     providerPolicyKey: 'https://pettxo.com/provider-policy',
   };
 
