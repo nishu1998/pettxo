@@ -188,7 +188,10 @@ service firebase.storage {
       allow create, update: if isOwner(userId) &&
         folder in ['images', 'thumbs'] &&
         isSupportedImage() &&
-        isMaxFiveMb();
+        (
+          (folder == 'images' && isMaxTenMb()) ||
+          (folder == 'thumbs' && isMaxFiveMb())
+        );
       allow delete: if isOwner(userId) &&
         folder in ['images', 'thumbs'];
     }
