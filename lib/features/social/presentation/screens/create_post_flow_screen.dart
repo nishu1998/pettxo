@@ -44,15 +44,12 @@ class CreatePostFlowScreen extends StatefulWidget {
     this.checkRestrictions = true,
     this.composerBuilder,
     this.hasRecoverableDraft,
-    this.aspectRatioChooser,
   });
 
   final SocialPostMediaPreparationService? preparationService;
   final bool checkRestrictions;
   final Widget Function(List<XFile> images)? composerBuilder;
   final bool Function()? hasRecoverableDraft;
-  final Future<SocialPostAspectRatio?> Function(BuildContext context)?
-  aspectRatioChooser;
 
   @override
   State<CreatePostFlowScreen> createState() => _CreatePostFlowScreenState();
@@ -61,6 +58,8 @@ class CreatePostFlowScreen extends StatefulWidget {
 class _CreatePostFlowScreenState extends State<CreatePostFlowScreen> {
   late final SocialPostMediaPreparationService _preparationService;
   bool _started = false;
+  SocialPostMediaPreparationStage _preparationStage =
+      SocialPostMediaPreparationStage.idle;
 
   @override
   void initState() {
@@ -99,30 +98,37 @@ class _CreatePostFlowScreenState extends State<CreatePostFlowScreen> {
       Navigator.of(context).pop();
       return;
     }
-    final aspectRatio =
-        await (widget.aspectRatioChooser?.call(context) ??
-            _chooseInitialAspectRatio(context));
-    if (!mounted) return;
-    if (aspectRatio == null) {
-      Navigator.of(context).pop();
-      return;
-    }
     final result = await _preparationService.preparePickedImages(
       picked: picked,
       maxImages: 5,
-      aspectRatio: aspectRatio,
+      aspectRatio: SocialPostAspectRatio.square,
+      allowFirstCropRatioSelection: true,
+      transactionalBatch: true,
+      onStageChanged: _setPreparationStage,
     );
     if (!mounted) {
-      await SocialPostMediaPreparationService.deletePreparedImages(
-        result.images,
-      );
+      if (result.media.isNotEmpty) {
+        await SocialPostMediaPreparationService.deletePreparedMedia(
+          result.media,
+        );
+      } else {
+        await SocialPostMediaPreparationService.deletePreparedImages(
+          result.images,
+        );
+      }
       return;
     }
-    _showPreparationFeedback(context, result);
     if (result.images.isEmpty) {
+      if (result.cropCancellationCount == 0) {
+        _showPreparationFeedback(context, result);
+      }
       Navigator.of(context).pop();
       return;
     }
+    _showPreparationFeedback(context, result);
+
+    final selectedAspectRatio =
+        result.selectedAspectRatio ?? SocialPostAspectRatio.square;
 
     unawaited(
       Navigator.of(context).pushReplacement(
@@ -130,8 +136,11 @@ class _CreatePostFlowScreenState extends State<CreatePostFlowScreen> {
           builder: (_) =>
               widget.composerBuilder?.call(result.images) ??
               CreatePostScreen(
-                initialImages: result.images,
-                initialAspectRatio: aspectRatio,
+                initialMedia: result.media,
+                initialImages: result.media.isEmpty
+                    ? result.images
+                    : const <XFile>[],
+                initialAspectRatio: selectedAspectRatio,
               ),
           settings: const RouteSettings(name: '/create/composer'),
         ),
@@ -141,62 +150,40 @@ class _CreatePostFlowScreenState extends State<CreatePostFlowScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFFFFF8F1),
+    final showLoader =
+        _preparationStage == SocialPostMediaPreparationStage.copying ||
+        _preparationStage == SocialPostMediaPreparationStage.processing;
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF8F1),
       body: Center(
-        child: PettxoLoader.fullScreen(
-          semanticLabel: 'Preparing selected photos',
-          message: 'Preparing your photos…',
-        ),
+        child: showLoader
+            ? const PettxoLoader.fullScreen(
+                key: Key('create-post-preparation-loader'),
+                semanticLabel: 'Preparing selected photos',
+                message: 'Preparing your photos…',
+              )
+            : const SizedBox.shrink(),
       ),
     );
   }
-}
 
-Future<SocialPostAspectRatio?> _chooseInitialAspectRatio(BuildContext context) {
-  return showModalBottomSheet<SocialPostAspectRatio>(
-    context: context,
-    showDragHandle: true,
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Choose photo shape',
-              style: Theme.of(
-                sheetContext,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 10),
-            ListTile(
-              key: const Key('create-post-square-ratio'),
-              leading: const Icon(Icons.crop_square_rounded),
-              title: const Text('Square 1:1'),
-              onTap: () =>
-                  Navigator.pop(sheetContext, SocialPostAspectRatio.square),
-            ),
-            ListTile(
-              key: const Key('create-post-portrait-ratio'),
-              leading: const Icon(Icons.crop_portrait_rounded),
-              title: const Text('Portrait 4:5'),
-              onTap: () =>
-                  Navigator.pop(sheetContext, SocialPostAspectRatio.portrait),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
+  void _setPreparationStage(SocialPostMediaPreparationStage stage) {
+    if (!mounted || _preparationStage == stage) return;
+    setState(() => _preparationStage = stage);
+  }
 }
 
 void _showPreparationFeedback(
   BuildContext context,
   SocialPostMediaPreparationResult result,
 ) {
-  if (result.oversizedFailureCount > 0) {
+  if (result.failures.isNotEmpty) {
+    AppFeedback.show(
+      context,
+      message: result.failures.first.userMessage,
+      tone: AppFeedbackTone.error,
+    );
+  } else if (result.oversizedFailureCount > 0) {
     AppFeedback.show(
       context,
       message:

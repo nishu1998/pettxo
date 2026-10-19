@@ -23,6 +23,8 @@ enum PostPublishPhase {
 class PostPublishDraft {
   const PostPublishDraft({
     required this.imagePaths,
+    this.sourceImagePaths = const <String>[],
+    this.sourceFormats = const <String>[],
     required this.aspectRatio,
     required this.caption,
     required this.hashtags,
@@ -31,6 +33,8 @@ class PostPublishDraft {
   });
 
   final List<String> imagePaths;
+  final List<String> sourceImagePaths;
+  final List<String> sourceFormats;
   final SocialPostAspectRatio aspectRatio;
   final String caption;
   final List<String> hashtags;
@@ -39,6 +43,23 @@ class PostPublishDraft {
 
   List<XFile> toImages() =>
       imagePaths.map((path) => XFile(path)).toList(growable: false);
+
+  List<SocialPostPreparedMedia> toMedia() =>
+      List<SocialPostPreparedMedia>.generate(
+        imagePaths.length,
+        (index) => SocialPostPreparedMedia(
+          prepared: XFile(imagePaths[index], mimeType: 'image/jpeg'),
+          source: XFile(
+            index < sourceImagePaths.length
+                ? sourceImagePaths[index]
+                : imagePaths[index],
+          ),
+          sourceFormat: index < sourceFormats.length
+              ? sourceFormats[index]
+              : 'jpeg',
+        ),
+        growable: false,
+      );
 }
 
 @immutable
@@ -125,6 +146,7 @@ class PostPublishCoordinator {
 
   bool startPublish({
     required List<XFile> images,
+    List<SocialPostPreparedMedia>? media,
     required SocialPostAspectRatio aspectRatio,
     required String caption,
     required List<String> hashtags,
@@ -138,6 +160,12 @@ class PostPublishCoordinator {
 
     final draft = PostPublishDraft(
       imagePaths: images.map((image) => image.path).toList(growable: false),
+      sourceImagePaths:
+          media?.map((item) => item.source.path).toList(growable: false) ??
+          const <String>[],
+      sourceFormats:
+          media?.map((item) => item.sourceFormat).toList(growable: false) ??
+          const <String>[],
       aspectRatio: aspectRatio,
       caption: caption.trim(),
       hashtags: List<String>.from(hashtags),
@@ -192,7 +220,10 @@ class PostPublishCoordinator {
         recoverableDraft: null,
       );
       unawaited(
-        SocialPostMediaPreparationService.deletePreparedPaths(draft.imagePaths),
+        SocialPostMediaPreparationService.deletePreparedPaths(<String>{
+          ...draft.imagePaths,
+          ...draft.sourceImagePaths,
+        }),
       );
       _showSuccess(successMessage);
     } catch (error, stackTrace) {

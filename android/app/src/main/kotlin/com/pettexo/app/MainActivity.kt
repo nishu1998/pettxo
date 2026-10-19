@@ -14,6 +14,8 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private var deepLinkEventSink: EventChannel.EventSink? = null
+    private var pendingPostCropResult = false
+    private var lastPostCropAspectRatio: Double? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +47,26 @@ class MainActivity : FlutterActivity() {
                 deepLinkEventSink = null
             }
         })
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.pettexo.app/post_crop_result",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "beginPostCrop" -> {
+                    pendingPostCropResult = true
+                    lastPostCropAspectRatio = null
+                    result.success(null)
+                }
+                "takePostCropAspectRatio" -> {
+                    val ratio = lastPostCropAspectRatio
+                    lastPostCropAspectRatio = null
+                    pendingPostCropResult = false
+                    result.success(ratio)
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -52,6 +74,21 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
         val link = intent.dataString ?: return
         deepLinkEventSink?.success(link)
+    }
+
+    @Deprecated("Deprecated in Android")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (
+            pendingPostCropResult &&
+            resultCode == RESULT_OK &&
+            data?.hasExtra("com.yalantis.ucrop.CropAspectRatio") == true
+        ) {
+            lastPostCropAspectRatio =
+                data.getFloatExtra("com.yalantis.ucrop.CropAspectRatio", 0f)
+                    .takeIf { it > 0f }
+                    ?.toDouble()
+        }
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun createNotificationChannels() {

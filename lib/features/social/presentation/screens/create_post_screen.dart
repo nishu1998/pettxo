@@ -8,13 +8,11 @@ import 'package:image_picker/image_picker.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
-import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../explore/data/explore_location_repository.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../application/post_location_publish_resolver.dart';
 import '../../application/social_post_media_preparation_service.dart';
 import '../../data/services/post_publish_coordinator.dart';
-import '../../data/social_post_repository.dart';
 import '../../domain/hashtag_normalizer.dart' as hashtag_normalizer;
 import '../../domain/models/social_post_model.dart';
 
@@ -22,13 +20,23 @@ class CreatePostScreen extends StatefulWidget {
   const CreatePostScreen({
     super.key,
     this.initialImages = const <XFile>[],
+    this.initialMedia = const <SocialPostPreparedMedia>[],
     this.initialAspectRatio = SocialPostAspectRatio.square,
     this.preparationService,
+    this.publishCoordinator,
+    this.locationRepository,
+    this.checkRestrictions = true,
+    this.restoreRecoverableDraft = true,
   });
 
   final List<XFile> initialImages;
+  final List<SocialPostPreparedMedia> initialMedia;
   final SocialPostAspectRatio initialAspectRatio;
   final SocialPostMediaPreparationService? preparationService;
+  final PostPublishCoordinator? publishCoordinator;
+  final ExploreLocationRepository? locationRepository;
+  final bool checkRestrictions;
+  final bool restoreRecoverableDraft;
 
   @override
   State<CreatePostScreen> createState() => _CreatePostScreenState();
@@ -43,18 +51,20 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         SocialPostAspectRatio.portrait,
       ];
 
-  final SocialPostRepository _repository = SocialPostRepository();
-  final ExploreLocationRepository _locationRepository =
-      ExploreLocationRepository();
+  ExploreLocationRepository? _defaultLocationRepository;
+  ExploreLocationRepository get _locationRepository =>
+      widget.locationRepository ??
+      (_defaultLocationRepository ??= ExploreLocationRepository());
   final PostLocationPublishResolver _postLocationResolver =
       const PostLocationPublishResolver();
   late final SocialPostMediaPreparationService _preparationService;
-  final PostPublishCoordinator _publishCoordinator =
-      PostPublishCoordinator.instance;
+  PostPublishCoordinator get _publishCoordinator =>
+      widget.publishCoordinator ?? PostPublishCoordinator.instance;
   final TextEditingController _captionController = TextEditingController();
   final TextEditingController _hashtagController = TextEditingController();
 
-  final List<XFile> _selectedImages = <XFile>[];
+  final List<SocialPostPreparedMedia> _selectedMedia =
+      <SocialPostPreparedMedia>[];
   final List<String> _hashtags = <String>[];
   SocialPostAspectRatio _aspectRatio = SocialPostAspectRatio.square;
   bool _isPublishing = false;
@@ -62,7 +72,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   bool _restoredRecoverableDraft = false;
   bool _addLocationToPost = true;
   bool _isPreparingImages = false;
+  SocialPostMediaPreparationStage _preparationStage =
+      SocialPostMediaPreparationStage.idle;
   bool _imagesHandedToPublisher = false;
+  bool _disposedDuringPreparation = false;
 
   @override
   void initState() {
@@ -70,13 +83,27 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     _preparationService =
         widget.preparationService ?? SocialPostMediaPreparationService();
     _aspectRatio = widget.initialAspectRatio;
-    _selectedImages.addAll(widget.initialImages.take(_maxPostImages));
+    _selectedMedia.addAll(widget.initialMedia.take(_maxPostImages));
+    if (_selectedMedia.isEmpty) {
+      _selectedMedia.addAll(
+        widget.initialImages
+            .take(_maxPostImages)
+            .map(
+              (image) => SocialPostPreparedMedia(
+                source: image,
+                prepared: image,
+                sourceFormat: 'jpeg',
+              ),
+            ),
+      );
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _restoreRecoverableDraft();
-      if (!UserRestrictionService.instance.ensureCanUseSocialFeatures(
-        context,
-      )) {
+      if (widget.restoreRecoverableDraft) _restoreRecoverableDraft();
+      if (widget.checkRestrictions &&
+          !UserRestrictionService.instance.ensureCanUseSocialFeatures(
+            context,
+          )) {
         Navigator.pushReplacementNamed(context, '/home');
       }
     });
@@ -84,9 +111,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   @override
   void dispose() {
-    if (!_imagesHandedToPublisher) {
+    if (_isPreparingImages) {
+      _disposedDuringPreparation = true;
+    } else if (!_imagesHandedToPublisher) {
       unawaited(
-        SocialPostMediaPreparationService.deletePreparedImages(_selectedImages),
+        SocialPostMediaPreparationService.deletePreparedMedia(_selectedMedia),
       );
     }
     _captionController.dispose();
@@ -101,9 +130,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     if (draft == null) return;
 
     _captionController.text = draft.caption;
-    _selectedImages
+    _selectedMedia
       ..clear()
-      ..addAll(draft.toImages());
+      ..addAll(draft.toMedia());
     _hashtags
       ..clear()
       ..addAll(draft.hashtags);
@@ -117,7 +146,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   }
 
   Future<void> _pickImages() async {
-    final remainingSlots = _maxPostImages - _selectedImages.length;
+    if (_isPreparingImages) return;
+    final remainingSlots = _maxPostImages - _selectedMedia.length;
     if (remainingSlots <= 0) {
       AppFeedback.show(
         context,
@@ -131,10 +161,33 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     final result = await _preparationService.pickCropAndPrepare(
       maxImages: remainingSlots,
       aspectRatio: _aspectRatio,
+      onStageChanged: _setPreparationStage,
     );
-    if (!mounted) return;
+    if (!mounted) {
+      if (result.media.isNotEmpty) {
+        await SocialPostMediaPreparationService.deletePreparedMedia(
+          result.media,
+        );
+      } else {
+        await SocialPostMediaPreparationService.deletePreparedImages(
+          result.images,
+        );
+      }
+      if (_disposedDuringPreparation && !_imagesHandedToPublisher) {
+        await SocialPostMediaPreparationService.deletePreparedMedia(
+          _selectedMedia,
+        );
+      }
+      return;
+    }
     setState(() => _isPreparingImages = false);
-    if (result.oversizedFailureCount > 0) {
+    if (result.failures.isNotEmpty) {
+      AppFeedback.show(
+        context,
+        message: result.failures.first.userMessage,
+        tone: AppFeedbackTone.error,
+      );
+    } else if (result.oversizedFailureCount > 0) {
       AppFeedback.show(
         context,
         message:
@@ -168,23 +221,35 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     if (result.images.isEmpty) return;
 
     setState(() {
-      _selectedImages.addAll(result.images);
+      if (result.media.isNotEmpty) {
+        _selectedMedia.addAll(result.media);
+      } else {
+        _selectedMedia.addAll(
+          result.images.map(
+            (image) => SocialPostPreparedMedia(
+              source: image,
+              prepared: image,
+              sourceFormat: 'jpeg',
+            ),
+          ),
+        );
+      }
       _previewIndex = 0;
     });
   }
 
   void _removeImage(int index) {
-    final removed = _selectedImages[index];
+    final removed = _selectedMedia[index];
     setState(() {
-      _selectedImages.removeAt(index);
-      if (_previewIndex >= _selectedImages.length) {
-        _previewIndex = _selectedImages.isEmpty
-            ? 0
-            : _selectedImages.length - 1;
+      _selectedMedia.removeAt(index);
+      if (_previewIndex >= _selectedMedia.length) {
+        _previewIndex = _selectedMedia.isEmpty ? 0 : _selectedMedia.length - 1;
       }
     });
     unawaited(
-      SocialPostMediaPreparationService.deletePreparedImages(<XFile>[removed]),
+      SocialPostMediaPreparationService.deletePreparedMedia(
+        <SocialPostPreparedMedia>[removed],
+      ),
     );
   }
 
@@ -198,7 +263,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       return;
     }
 
-    final normalized = _repository.normalizeHashtag(_hashtagController.text);
+    final normalized = hashtag_normalizer.normalizeHashtag(
+      _hashtagController.text,
+    );
     if (normalized.length > hashtag_normalizer.maxHashtagLength) {
       AppFeedback.show(
         context,
@@ -227,7 +294,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   }
 
   Future<void> _publish() async {
-    if (_selectedImages.isEmpty || _isPublishing) return;
+    if (_selectedMedia.isEmpty || _isPublishing || _isPreparingImages) return;
 
     setState(() => _isPublishing = true);
     if (kDebugMode) {
@@ -261,7 +328,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
 
     final started = _publishCoordinator.startPublish(
-      images: List<XFile>.from(_selectedImages),
+      images: _selectedMedia
+          .map((item) => item.prepared)
+          .toList(growable: false),
+      media: List<SocialPostPreparedMedia>.from(_selectedMedia),
       aspectRatio: _aspectRatio,
       caption: _captionController.text,
       hashtags: _hashtags,
@@ -356,19 +426,49 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     };
   }
 
-  void _selectAspectRatio(SocialPostAspectRatio ratio) {
-    if (ratio == _aspectRatio) return;
-    if (_selectedImages.isNotEmpty) {
-      AppFeedback.show(
-        context,
-        message:
-            'Remove selected images before switching between Square 1:1 and Portrait 4:5.',
-        tone: AppFeedbackTone.info,
-      );
+  Future<void> _selectAspectRatio(SocialPostAspectRatio ratio) async {
+    if (ratio == _aspectRatio || _isPreparingImages || _isPublishing) return;
+    if (_selectedMedia.isEmpty) {
+      setState(() => _aspectRatio = ratio);
       return;
     }
 
-    setState(() => _aspectRatio = ratio);
+    setState(() => _isPreparingImages = true);
+    final result = await _preparationService.recropPreparedMedia(
+      current: List<SocialPostPreparedMedia>.from(_selectedMedia),
+      aspectRatio: ratio,
+      onStageChanged: _setPreparationStage,
+    );
+    if (!mounted) {
+      if (result.succeeded) {
+        await SocialPostMediaPreparationService.deletePreparedMedia(
+          result.media,
+        );
+      }
+      if (_disposedDuringPreparation && !_imagesHandedToPublisher) {
+        await SocialPostMediaPreparationService.deletePreparedMedia(
+          _selectedMedia,
+        );
+      }
+      return;
+    }
+    setState(() => _isPreparingImages = false);
+    if (result.cancelled) return;
+    if (result.failure case final failure?) {
+      AppFeedback.show(
+        context,
+        message: failure.userMessage,
+        tone: AppFeedbackTone.error,
+      );
+      return;
+    }
+    setState(() {
+      _selectedMedia
+        ..clear()
+        ..addAll(result.media);
+      _aspectRatio = ratio;
+      if (_previewIndex >= _selectedMedia.length) _previewIndex = 0;
+    });
   }
 
   double get _previewAspectRatio {
@@ -382,13 +482,21 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
   }
 
+  void _setPreparationStage(SocialPostMediaPreparationStage stage) {
+    if (!mounted || _preparationStage == stage) return;
+    setState(() => _preparationStage = stage);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final canPublish = _selectedImages.isNotEmpty && !_isPublishing;
+    final selectedImages = _selectedMedia
+        .map((item) => item.prepared)
+        .toList(growable: false);
+    final canPublish =
+        _selectedMedia.isNotEmpty && !_isPublishing && !_isPreparingImages;
 
     return Scaffold(
       backgroundColor: const Color(0xFFFFF8F1),
-      extendBody: true,
       body: Stack(
         children: [
           SafeArea(
@@ -407,13 +515,19 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                   child: SingleChildScrollView(
                     keyboardDismissBehavior:
                         ScrollViewKeyboardDismissBehavior.onDrag,
-                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 132),
+                    padding: EdgeInsets.fromLTRB(
+                      20,
+                      10,
+                      20,
+                      32 + MediaQuery.viewInsetsOf(context).bottom,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         _SectionLabel(
                           label: 'ASPECT RATIO',
-                          helper: 'Choose once before selecting images.',
+                          helper:
+                              'Changing the shape lets you re-crop every photo.',
                         ),
                         const SizedBox(height: 10),
                         _AspectRatioSelector(
@@ -424,11 +538,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                         const SizedBox(height: 24),
                         _SectionLabel(
                           label:
-                              'PHOTOS · ${_selectedImages.length}/$_maxPostImages',
+                              'PHOTOS · ${_selectedMedia.length}/$_maxPostImages',
                         ),
                         const SizedBox(height: 10),
                         _ImagePreview(
-                          images: _selectedImages,
+                          images: selectedImages,
                           maxImages: _maxPostImages,
                           aspectRatio: _previewAspectRatio,
                           previewIndex: _previewIndex,
@@ -436,7 +550,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                               setState(() => _previewIndex = value),
                           onRemove: _removeImage,
                           onSelectImages:
-                              _selectedImages.length >= _maxPostImages
+                              _selectedMedia.length >= _maxPostImages ||
+                                  _isPreparingImages
                               ? null
                               : _pickImages,
                         ),
@@ -477,7 +592,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               ],
             ),
           ),
-          if (_isPreparingImages)
+          if (_isPreparingImages &&
+              (_preparationStage == SocialPostMediaPreparationStage.copying ||
+                  _preparationStage ==
+                      SocialPostMediaPreparationStage.processing))
             const Positioned.fill(
               child: ColoredBox(
                 color: Color(0x99FFF8F1),
@@ -491,7 +609,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
         ],
       ),
-      bottomNavigationBar: const SocialBottomNav(activeTab: null),
     );
   }
 }
@@ -727,41 +844,46 @@ class _AspectRatioSelector extends StatelessWidget {
             .map((ratio) {
               final selected = ratio == selectedRatio;
               return Expanded(
-                child: Material(
-                  color: selected
-                      ? AppColors.primary.withValues(alpha: 0.1)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(17),
-                  child: InkWell(
-                    onTap: () => onSelected(ratio),
+                child: Semantics(
+                  button: true,
+                  selected: selected,
+                  label: _ratioLabel(ratio),
+                  child: Material(
+                    color: selected
+                        ? AppColors.primary.withValues(alpha: 0.1)
+                        : Colors.transparent,
                     borderRadius: BorderRadius.circular(17),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 160),
-                      constraints: const BoxConstraints(minHeight: 46),
-                      alignment: Alignment.center,
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(17),
-                        border: Border.all(
-                          color: selected
-                              ? AppColors.primary
-                              : Colors.transparent,
-                          width: 1.2,
+                    child: InkWell(
+                      onTap: () => onSelected(ratio),
+                      borderRadius: BorderRadius.circular(17),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        constraints: const BoxConstraints(minHeight: 46),
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(17),
+                          border: Border.all(
+                            color: selected
+                                ? AppColors.primary
+                                : Colors.transparent,
+                            width: 1.2,
+                          ),
                         ),
-                      ),
-                      child: Text(
-                        _ratioLabel(ratio),
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: selected
-                              ? AppColors.primary
-                              : AppColors.textDark,
-                          fontWeight: selected
-                              ? FontWeight.w800
-                              : FontWeight.w600,
-                          fontSize: 13,
+                        child: Text(
+                          _ratioLabel(ratio),
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: selected
+                                ? AppColors.primary
+                                : AppColors.textDark,
+                            fontWeight: selected
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
                     ),
