@@ -19,9 +19,15 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
-            android:name="com.yalantis.ucrop.UCropActivity"
+            android:name=".PettxoUCropActivity"
+            android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/UCropTheme" />
+        <!-- image_cropper 9.1.0 explicitly launches this uCrop component name. -->
+        <activity-alias
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:exported="false"
+            android:targetActivity=".PettxoUCropActivity" />
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="${MAPS_API_KEY}" />
