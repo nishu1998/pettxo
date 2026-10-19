@@ -198,6 +198,35 @@ function servicePrivatePayload(uid, serviceId, overrides = {}) {
   };
 }
 
+function socialPostPayload(uid, postId, overrides = {}) {
+  return {
+    id: postId,
+    authorId: uid,
+    authorType: 'user',
+    authorDisplayName: 'Synthetic User',
+    authorUsername: uid,
+    authorPhotoUrl: '',
+    authorCategoryLabel: '',
+    authorCity: 'Mumbai',
+    authorState: 'Maharashtra',
+    imageUrls: ['https://example.test/image.jpg'],
+    thumbnailUrls: ['https://example.test/thumb.jpg'],
+    imageAspectRatio: 'square',
+    caption: 'Synthetic rules test',
+    hashtags: ['pets'],
+    likeCount: 0,
+    commentCount: 0,
+    shareCount: 0,
+    reportCount: 0,
+    visibilityStatus: 'visible',
+    moderationStatus: 'approved',
+    createdAtEpoch: 1,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    ...overrides,
+  };
+}
+
 async function seedPendingProvider(uid) {
   await seedUser(uid);
   await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -478,6 +507,381 @@ test('authorization: legal acceptance remains private and profile edits preserve
   const data = (await getDoc(doc(db, 'users', uid))).data();
   assert.deepEqual(data.providers, ['phone']);
   assert.equal(data.emailVerified, true);
+});
+
+const existingConsentAndMarketingFields = {
+  termsCommunicationsAcceptedAt: new Date('2026-01-02T03:04:05Z'),
+  termsCommunicationsPolicyVersion: '2026-01',
+  marketingEmailEnabled: true,
+  marketingEmailPreferenceSource: 'onboarding',
+  marketingEmailPreferenceUpdatedAt: new Date('2026-01-02T03:04:05Z'),
+};
+
+async function seedPrivateUserDocument(uid, overrides = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'userPrivate', uid), {
+      uid,
+      email: `${uid}@example.test`,
+      accountStatus: 'active',
+      createdAt: new Date('2025-01-01T00:00:00Z'),
+      updatedAt: new Date('2025-01-01T00:00:00Z'),
+      ...existingConsentAndMarketingFields,
+      ...overrides,
+    });
+  });
+}
+
+async function seedPrivateUserDocumentWithoutProtectedConsent(uid) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'userPrivate', uid), {
+      uid,
+      email: `${uid}@example.test`,
+      accountStatus: 'active',
+      createdAt: new Date('2025-01-01T00:00:00Z'),
+      updatedAt: new Date('2025-01-01T00:00:00Z'),
+    });
+  });
+}
+
+async function seedProductionShapedPrivateUserDocument(uid) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'userPrivate', uid), {
+      uid,
+      email: `${uid}@example.test`,
+      emailVerified: true,
+      phoneNumber: '+910000000000',
+      phone: '+910000000000',
+      mobileNumber: '+910000000000',
+      phoneVerified: true,
+      providers: ['password', 'phone'],
+      acceptedTermsAt: new Date('2025-01-01T00:00:00Z'),
+      acceptedPrivacyAt: new Date('2025-01-01T00:00:00Z'),
+      ...existingConsentAndMarketingFields,
+      exploreLocation: {
+        latitude: 19.076,
+        longitude: 72.8777,
+        city: 'Mumbai',
+        state: 'Maharashtra',
+        country: 'India',
+        geohash3: 'te7',
+        geohash4: 'te7u',
+        geohash5: 'te7ud',
+        updatedAt: new Date('2026-01-02T03:04:05Z'),
+      },
+      createdAt: new Date('2025-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-02T03:04:05Z'),
+    });
+  });
+}
+
+test('authorization: provider agreement update accepts production-shaped private document with historical explore location', async () => {
+  const uid = 'agreement_production_shape';
+  await seedUser(uid);
+  await seedProductionShapedPrivateUserDocument(uid);
+
+  await assertSucceeds(setDoc(doc(authedDb(uid), 'userPrivate', uid), {
+    uid,
+    acceptedProviderAgreementAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: explore location changes still require a fresh nested timestamp', async () => {
+  const uid = 'agreement_location_freshness';
+  await seedUser(uid);
+  await seedProductionShapedPrivateUserDocument(uid);
+  const db = authedDb(uid);
+
+  await assertFails(setDoc(doc(db, 'userPrivate', uid), {
+    exploreLocation: {
+      latitude: 18.5204,
+      longitude: 73.8567,
+      city: 'Pune',
+      state: 'Maharashtra',
+      country: 'India',
+      geohash3: 'tek',
+      geohash4: 'tek1',
+      geohash5: 'tek1x',
+      updatedAt: new Date('2026-01-02T03:04:05Z'),
+    },
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+
+  await assertSucceeds(setDoc(doc(db, 'userPrivate', uid), {
+    exploreLocation: {
+      latitude: 18.5204,
+      longitude: 73.8567,
+      city: 'Pune',
+      state: 'Maharashtra',
+      country: 'India',
+      geohash3: 'tek',
+      geohash4: 'tek1',
+      geohash5: 'tek1x',
+      updatedAt: serverTimestamp(),
+    },
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+
+  await assertSucceeds(setDoc(doc(db, 'userPrivate', uid), {
+    exploreLocation: deleteField(),
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: adding explore location requires a fresh nested timestamp', async () => {
+  const uid = 'agreement_location_addition';
+  await seedUser(uid);
+  await seedPrivateUserDocument(uid);
+  const db = authedDb(uid);
+  const location = {
+    latitude: 18.5204,
+    longitude: 73.8567,
+    city: 'Pune',
+    state: 'Maharashtra',
+    country: 'India',
+    geohash3: 'tek',
+    geohash4: 'tek1',
+    geohash5: 'tek1x',
+  };
+
+  await assertFails(setDoc(doc(db, 'userPrivate', uid), {
+    exploreLocation: {
+      ...location,
+      updatedAt: new Date('2026-01-02T03:04:05Z'),
+    },
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+
+  await assertSucceeds(setDoc(doc(db, 'userPrivate', uid), {
+    exploreLocation: {...location, updatedAt: serverTimestamp()},
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: null or missing optional explore location is accepted', async () => {
+  for (const [uid, privateOverrides] of [
+    ['agreement_location_missing', {}],
+    ['agreement_location_null', {exploreLocation: null}],
+  ]) {
+    await seedUser(uid);
+    await seedPrivateUserDocument(uid, privateOverrides);
+    await assertSucceeds(setDoc(doc(authedDb(uid), 'userPrivate', uid), {
+      acceptedProviderAgreementAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, {merge: true}));
+  }
+});
+
+test('authorization: malformed explore location maps and invalid types are denied', async () => {
+  const uid = 'agreement_location_malformed';
+  await seedUser(uid);
+  await seedPrivateUserDocument(uid);
+  const db = authedDb(uid);
+
+  for (const exploreLocation of [
+    {},
+    {
+      latitude: '18.5204',
+      longitude: 73.8567,
+      city: 'Pune',
+      state: 'Maharashtra',
+      country: 'India',
+      geohash3: 'tek',
+      geohash4: 'tek1',
+      geohash5: 'tek1x',
+      updatedAt: serverTimestamp(),
+    },
+    {
+      latitude: 18.5204,
+      longitude: 73.8567,
+      city: 'Pune',
+      state: 'Maharashtra',
+      country: 'India',
+      geohash3: 'tek',
+      geohash4: 'tek1',
+      geohash5: 'tek1x',
+      updatedAt: serverTimestamp(),
+      injected: true,
+    },
+  ]) {
+    await assertFails(setDoc(doc(db, 'userPrivate', uid), {
+      exploreLocation,
+      updatedAt: serverTimestamp(),
+    }, {merge: true}));
+  }
+});
+
+for (const uid of ['official_account_shape', 'normal_account_shape']) {
+  test(`authorization: provider agreement update accepts legitimate consent field shape for ${uid}`, async () => {
+    await seedUser(uid);
+    await seedPrivateUserDocument(uid);
+
+    await assertSucceeds(setDoc(doc(authedDb(uid), 'userPrivate', uid), {
+      acceptedProviderAgreementAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, {merge: true}));
+
+    const data = (await getDoc(doc(authedDb(uid), 'userPrivate', uid))).data();
+    assert.equal(data.marketingEmailEnabled, true);
+    assert.equal(data.marketingEmailPreferenceSource, 'onboarding');
+  });
+}
+
+test('authorization: provider agreement update cannot target another user', async () => {
+  const ownerUid = 'agreement_owner';
+  const attackerUid = 'agreement_attacker';
+  await seedUser(ownerUid);
+  await seedUser(attackerUid);
+  await seedPrivateUserDocument(ownerUid);
+
+  await assertFails(setDoc(doc(authedDb(attackerUid), 'userPrivate', ownerUid), {
+    acceptedProviderAgreementAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: inactive account cannot update provider agreement', async () => {
+  const uid = 'agreement_inactive_owner';
+  await seedUser(uid, {accountStatus: 'suspended'});
+  await seedPrivateUserDocument(uid);
+
+  await assertFails(setDoc(doc(authedDb(uid), 'userPrivate', uid), {
+    acceptedProviderAgreementAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: provider agreement update cannot change consent or marketing fields', async () => {
+  const uid = 'agreement_protected_fields';
+  await seedUser(uid);
+  await seedPrivateUserDocument(uid);
+  const db = authedDb(uid);
+
+  for (const protectedChange of [
+    {termsCommunicationsAcceptedAt: serverTimestamp()},
+    {termsCommunicationsPolicyVersion: 'attacker-version'},
+    {marketingEmailEnabled: false},
+    {marketingEmailPreferenceSource: 'agreement-update'},
+    {marketingEmailPreferenceUpdatedAt: serverTimestamp()},
+  ]) {
+    await assertFails(setDoc(doc(db, 'userPrivate', uid), {
+      acceptedProviderAgreementAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      ...protectedChange,
+    }, {merge: true}));
+  }
+});
+
+test('authorization: provider agreement update cannot add protected consent or marketing fields', async () => {
+  const uid = 'agreement_protected_field_additions';
+  await seedUser(uid);
+  await seedPrivateUserDocumentWithoutProtectedConsent(uid);
+  const db = authedDb(uid);
+
+  for (const protectedAddition of [
+    {termsCommunicationsAcceptedAt: serverTimestamp()},
+    {termsCommunicationsPolicyVersion: '2026-01'},
+    {marketingEmailEnabled: true},
+    {marketingEmailPreferenceSource: 'agreement-update'},
+    {marketingEmailPreferenceUpdatedAt: serverTimestamp()},
+  ]) {
+    await assertFails(setDoc(doc(db, 'userPrivate', uid), {
+      acceptedProviderAgreementAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      ...protectedAddition,
+    }, {merge: true}));
+  }
+});
+
+test('authorization: provider agreement update cannot remove protected consent or marketing fields', async () => {
+  const uid = 'agreement_protected_field_removals';
+  await seedUser(uid);
+  await seedPrivateUserDocument(uid);
+  const db = authedDb(uid);
+
+  for (const protectedField of Object.keys(existingConsentAndMarketingFields)) {
+    await assertFails(setDoc(doc(db, 'userPrivate', uid), {
+      acceptedProviderAgreementAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      [protectedField]: deleteField(),
+    }, {merge: true}));
+  }
+});
+
+test('authorization: mixed permitted and prohibited private update is denied', async () => {
+  const uid = 'agreement_mixed_update';
+  await seedUser(uid);
+  await seedPrivateUserDocument(uid);
+
+  await assertFails(setDoc(doc(authedDb(uid), 'userPrivate', uid), {
+    acceptedProviderAgreementAt: serverTimestamp(),
+    marketingEmailEnabled: false,
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: provider agreement update still rejects unknown document fields', async () => {
+  const uid = 'agreement_unknown_field';
+  await seedUser(uid);
+  await seedPrivateUserDocument(uid, {unexpectedPrivateField: 'blocked'});
+
+  await assertFails(setDoc(doc(authedDb(uid), 'userPrivate', uid), {
+    acceptedProviderAgreementAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, {merge: true}));
+});
+
+test('authorization: social post and location intent remain owner-bound', async () => {
+  const ownerUid = 'social_owner';
+  const otherUid = 'social_other';
+  const postId = 'social-post-1';
+  await seedUser(ownerUid);
+  await seedUser(otherUid);
+  const ownerDb = authedDb(ownerUid);
+  const ownerBatch = writeBatch(ownerDb);
+  ownerBatch.set(
+    doc(ownerDb, 'socialPosts', postId),
+    socialPostPayload(ownerUid, postId),
+  );
+  ownerBatch.set(doc(ownerDb, 'socialPostLocationIntents', postId), {
+    ownerUid,
+    source: 'freshDeviceAtPublish',
+    location: {
+      latitude: 19.076,
+      longitude: 72.8777,
+      city: 'Mumbai',
+      state: 'Maharashtra',
+      country: 'India',
+    },
+    capturedAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+  });
+  await assertSucceeds(ownerBatch.commit());
+
+  await assertFails(setDoc(
+    doc(authedDb(otherUid), 'socialPosts', 'forged-social-post'),
+    socialPostPayload(ownerUid, 'forged-social-post'),
+  ));
+  await assertFails(updateDoc(
+    doc(authedDb(otherUid), 'socialPosts', postId),
+    {caption: 'Hijacked'},
+  ));
+  await assertFails(setDoc(
+    doc(authedDb(otherUid), 'socialPostLocationIntents', 'forged-intent'),
+    {
+      ownerUid,
+      source: 'freshDeviceAtPublish',
+      location: {
+        latitude: 19.076,
+        longitude: 72.8777,
+        city: 'Mumbai',
+        state: 'Maharashtra',
+        country: 'India',
+      },
+      capturedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    },
+  ));
 });
 
 test('authorization: username changes stay server-owned after profile completion', async () => {

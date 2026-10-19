@@ -719,6 +719,11 @@ service cloud.firestore {
         'acceptedTermsAt',
         'acceptedPrivacyAt',
         'acceptedProviderAgreementAt',
+        'termsCommunicationsAcceptedAt',
+        'termsCommunicationsPolicyVersion',
+        'marketingEmailEnabled',
+        'marketingEmailPreferenceSource',
+        'marketingEmailPreferenceUpdatedAt',
         'exploreLocation',
         'createdAt',
         'updatedAt',
@@ -820,7 +825,7 @@ service cloud.firestore {
           ) &&
           (
             !request.resource.data.exploreLocation.keys().hasAny(['updatedAt']) ||
-            request.resource.data.exploreLocation.updatedAt == request.time
+            request.resource.data.exploreLocation.updatedAt is timestamp
           )
         )
       ) &&
@@ -842,18 +847,29 @@ service cloud.firestore {
 
     function safeUserPrivateOwnerCreate(userId) {
       return safeUserPrivateOwnerWrite(userId) &&
+        (
+          !request.resource.data.keys().hasAny(['exploreLocation']) ||
+          request.resource.data.exploreLocation == null ||
+          request.resource.data.exploreLocation.updatedAt == request.time
+        ) &&
         request.resource.data.createdAt == request.time;
     }
 
     function safeUserPrivateOwnerUpdate(userId) {
       return safeUserPrivateOwnerWrite(userId) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'acceptedTermsAt',
           'acceptedPrivacyAt',
           'acceptedProviderAgreementAt',
           'exploreLocation',
           'updatedAt'
         ]) &&
+        (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['exploreLocation']) ||
+          !request.resource.data.keys().hasAny(['exploreLocation']) ||
+          request.resource.data.exploreLocation == null ||
+          request.resource.data.exploreLocation.updatedAt == request.time
+        ) &&
         request.resource.data.createdAt == resource.data.createdAt;
     }
 
