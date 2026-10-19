@@ -31,6 +31,7 @@ import '../../../settings/data/services/settings_service.dart';
 import '../../../settings/domain/models/app_settings.dart';
 import '../../../social/data/follow_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
+import '../../../social/presentation/screens/create_post_flow_screen.dart';
 import '../../../social/presentation/screens/user_list_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -1524,9 +1525,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                                 )) {
                                                               return;
                                                             }
-                                                            await Navigator.pushNamed(
+                                                            await CreatePostFlowLauncher.open(
                                                               context,
-                                                              "/create",
                                                             );
                                                           }
                                                         : () {

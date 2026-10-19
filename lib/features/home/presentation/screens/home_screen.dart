@@ -34,6 +34,7 @@ import '../../../social/data/social_post_repository.dart';
 import '../../../social/domain/models/social_post_model.dart';
 import '../../../social/domain/social_post_like_state.dart';
 import '../../../social/domain/social_feed_pagination.dart';
+import '../../../social/presentation/screens/create_post_flow_screen.dart';
 import '../../../social/presentation/widgets/social_post_card.dart';
 import '../../../social/presentation/widgets/suggested_users_section.dart';
 
@@ -1013,9 +1014,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                             )) {
                                           return;
                                         }
-                                        await Navigator.pushNamed(
+                                        await CreatePostFlowLauncher.open(
                                           context,
-                                          "/create",
                                         );
                                       },
                                       icon: const Icon(

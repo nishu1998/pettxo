@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../../core/services/app_loader.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../explore/domain/models/explore_location_snapshot.dart';
+import '../../application/social_post_media_preparation_service.dart';
 import '../../domain/models/social_post_model.dart';
 import '../social_post_repository.dart';
 
@@ -190,10 +191,25 @@ class PostPublishCoordinator {
         errorMessage: null,
         recoverableDraft: null,
       );
+      unawaited(
+        SocialPostMediaPreparationService.deletePreparedPaths(draft.imagePaths),
+      );
       _showSuccess(successMessage);
     } catch (error, stackTrace) {
-      debugPrint('PostPublishCoordinator publish failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
+      if (kDebugMode) {
+        if (error is SocialPostPublishException) {
+          debugPrint(
+            'PostPublishCoordinator publish failed: '
+            '${error.diagnostics.toDebugLog()}',
+          );
+        } else {
+          debugPrint(
+            'PostPublishCoordinator publish failed: '
+            'stage=${state.phase.name}, errorType=${error.runtimeType}',
+          );
+        }
+        debugPrintStack(stackTrace: stackTrace);
+      }
       if (state.eventId != eventId) return;
       final message = _friendlyErrorMessage(error);
       stateListenable.value = state.copyWith(
@@ -216,6 +232,9 @@ class PostPublishCoordinator {
   }
 
   String _friendlyErrorMessage(Object error) {
+    if (error is SocialPostPublishException) {
+      return error.userMessage;
+    }
     final message = error.toString().replaceFirst('Exception: ', '').trim();
     if (message.isEmpty) {
       return 'We could not publish your post right now. Your draft is still available.';

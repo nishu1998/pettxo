@@ -1,5 +1,8 @@
+import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
@@ -93,6 +96,111 @@ class SocialPostUploadProgress {
 
 typedef SocialPostUploadProgressCallback =
     void Function(SocialPostUploadProgress progress);
+
+enum SocialPostFirestoreBatchStatus {
+  notStarted,
+  committing,
+  committed,
+  failed,
+}
+
+enum SocialPostLocationIntentStatus {
+  notRequested,
+  pending,
+  queuedInBatch,
+  committed,
+  failedWithBatch,
+}
+
+@immutable
+class SocialPostPublishDiagnostics {
+  const SocialPostPublishDiagnostics({
+    required this.failedStage,
+    required this.firebasePlugin,
+    required this.firebaseCode,
+    required this.sanitizedMessage,
+    required this.sanitizedStoragePath,
+    required this.originalUploadsCompleted,
+    required this.thumbnailUploadsCompleted,
+    required this.expectedImageCount,
+    required this.firestoreBatchStatus,
+    required this.locationIntentStatus,
+    required this.imageIndex,
+    required this.originalFileExists,
+    required this.originalFileReadable,
+    required this.originalByteSize,
+    required this.processedByteSize,
+    required this.thumbnailByteSize,
+    required this.processedFormat,
+    required this.thumbnailCreated,
+    required this.storageTaskState,
+    required this.uploadStarted,
+    required this.bytesTransferred,
+    required this.networkClassification,
+    required this.failureDurationMs,
+    required this.originalErrorType,
+  });
+
+  final String failedStage;
+  final String firebasePlugin;
+  final String firebaseCode;
+  final String sanitizedMessage;
+  final String sanitizedStoragePath;
+  final int originalUploadsCompleted;
+  final int thumbnailUploadsCompleted;
+  final int expectedImageCount;
+  final SocialPostFirestoreBatchStatus firestoreBatchStatus;
+  final SocialPostLocationIntentStatus locationIntentStatus;
+  final int? imageIndex;
+  final bool? originalFileExists;
+  final bool? originalFileReadable;
+  final int? originalByteSize;
+  final int? processedByteSize;
+  final int? thumbnailByteSize;
+  final String processedFormat;
+  final bool thumbnailCreated;
+  final String storageTaskState;
+  final bool uploadStarted;
+  final int? bytesTransferred;
+  final String networkClassification;
+  final int failureDurationMs;
+  final String originalErrorType;
+
+  String toDebugLog() =>
+      'stage=$failedStage, plugin=$firebasePlugin, code=$firebaseCode, '
+      'message=$sanitizedMessage, storagePath=$sanitizedStoragePath, '
+      'originalUploads=$originalUploadsCompleted/$expectedImageCount, '
+      'thumbnailUploads=$thumbnailUploadsCompleted/$expectedImageCount, '
+      'firestoreBatch=${firestoreBatchStatus.name}, '
+      'locationIntent=${locationIntentStatus.name}, image=$imageIndex/'
+      '$expectedImageCount, fileExists=$originalFileExists, '
+      'fileReadable=$originalFileReadable, originalBytes=$originalByteSize, '
+      'processedBytes=$processedByteSize, thumbnailBytes=$thumbnailByteSize, '
+      'format=$processedFormat, thumbnailCreated=$thumbnailCreated, '
+      'storageTask=$storageTaskState, uploadStarted=$uploadStarted, '
+      'bytesTransferred=$bytesTransferred, network=$networkClassification, '
+      'durationMs=$failureDurationMs, errorType=$originalErrorType';
+}
+
+class SocialPostPublishException implements Exception {
+  const SocialPostPublishException({
+    required this.userMessage,
+    required this.originalException,
+    required this.diagnostics,
+  });
+
+  final String userMessage;
+  final Object originalException;
+  final SocialPostPublishDiagnostics diagnostics;
+
+  FirebaseException? get firebaseException =>
+      originalException is FirebaseException
+      ? originalException as FirebaseException
+      : null;
+
+  @override
+  String toString() => 'Exception: $userMessage';
+}
 
 class SocialPostRepository {
   SocialPostRepository({
@@ -409,41 +517,48 @@ class SocialPostRepository {
       throw Exception('You can upload up to 5 images.');
     }
 
-    onProgress?.call(
-      const SocialPostUploadProgress(
-        stage: SocialPostUploadStage.preparing,
-        fraction: 0.04,
-        message: 'Preparing your post...',
-      ),
+    final diagnostics = _SocialPostPublishDiagnosticsTracker(
+      expectedImageCount: images.length,
+      locationIntentRequested: creationLocation?.hasCoordinates == true,
     );
-    final authorId = await _ensureAuthenticatedForStorageWrite();
-    final profile = await _profileRepository.getCurrentUserProfile();
-    final postRef = _postsCollection.doc();
-    final normalizedHashtags = hashtag_normalizer.validatePostHashtags(
-      hashtags,
-    );
-    final uploads = await _uploadImages(
-      authorId: authorId,
-      postId: postRef.id,
-      images: images,
-      aspectRatio: aspectRatio,
-      onProgress: onProgress,
-    );
-
-    final payload = buildCreatePostPayload(
-      postId: postRef.id,
-      authorId: authorId,
-      profile: profile,
-      imageUrls: uploads.fullSizeUrls,
-      thumbnailUrls: uploads.thumbnailUrls,
-      aspectRatio: aspectRatio,
-      caption: caption,
-      hashtags: normalizedHashtags,
-      createdAtEpoch: DateTime.now().millisecondsSinceEpoch,
-    );
-    _debugLogCreatePayload(payload);
-
     try {
+      onProgress?.call(
+        const SocialPostUploadProgress(
+          stage: SocialPostUploadStage.preparing,
+          fraction: 0.04,
+          message: 'Preparing your post...',
+        ),
+      );
+      diagnostics.failedStage = 'authentication';
+      final authorId = await _ensureAuthenticatedForStorageWrite();
+      diagnostics.failedStage = 'profile-load';
+      final profile = await _profileRepository.getCurrentUserProfile();
+      final postRef = _postsCollection.doc();
+      final normalizedHashtags = hashtag_normalizer.validatePostHashtags(
+        hashtags,
+      );
+      final uploads = await _uploadImages(
+        authorId: authorId,
+        postId: postRef.id,
+        images: images,
+        aspectRatio: aspectRatio,
+        diagnostics: diagnostics,
+        onProgress: onProgress,
+      );
+
+      final payload = buildCreatePostPayload(
+        postId: postRef.id,
+        authorId: authorId,
+        profile: profile,
+        imageUrls: uploads.fullSizeUrls,
+        thumbnailUrls: uploads.thumbnailUrls,
+        aspectRatio: aspectRatio,
+        caption: caption,
+        hashtags: normalizedHashtags,
+        createdAtEpoch: DateTime.now().millisecondsSinceEpoch,
+      );
+      _debugLogCreatePayload(payload);
+
       onProgress?.call(
         const SocialPostUploadProgress(
           stage: SocialPostUploadStage.finalizing,
@@ -451,8 +566,13 @@ class SocialPostRepository {
           message: 'Publishing your post...',
         ),
       );
+      diagnostics.failedStage = 'firestore-batch';
+      diagnostics.firestoreBatchStatus =
+          SocialPostFirestoreBatchStatus.committing;
       final batch = _firestore.batch()..set(postRef, payload);
       if (creationLocation?.hasCoordinates == true) {
+        diagnostics.locationIntentStatus =
+            SocialPostLocationIntentStatus.queuedInBatch;
         batch.set(
           _postLocationIntentsCollection.doc(postRef.id),
           buildPostLocationIntentPayload(
@@ -461,53 +581,83 @@ class SocialPostRepository {
           ),
         );
       }
-      await batch.commit();
-    } on FirebaseException catch (error) {
-      await _cleanupUploadedImages(uploads);
-      throw Exception(_mapCreatePostError(error));
-    }
+      try {
+        await batch.commit();
+        diagnostics.firestoreBatchStatus =
+            SocialPostFirestoreBatchStatus.committed;
+        if (diagnostics.locationIntentStatus ==
+            SocialPostLocationIntentStatus.queuedInBatch) {
+          diagnostics.locationIntentStatus =
+              SocialPostLocationIntentStatus.committed;
+        }
+      } on FirebaseException catch (error, stackTrace) {
+        diagnostics.firestoreBatchStatus =
+            SocialPostFirestoreBatchStatus.failed;
+        if (diagnostics.locationIntentStatus ==
+            SocialPostLocationIntentStatus.queuedInBatch) {
+          diagnostics.locationIntentStatus =
+              SocialPostLocationIntentStatus.failedWithBatch;
+        }
+        await _cleanupUploadedImages(uploads);
+        Error.throwWithStackTrace(
+          diagnostics.toException(error, _mapCreatePostError(error)),
+          stackTrace,
+        );
+      }
 
-    try {
-      await _updateHashtagDocuments(
-        hashtags: normalizedHashtags,
-        postId: postRef.id,
-      );
+      try {
+        await _updateHashtagDocuments(
+          hashtags: normalizedHashtags,
+          postId: postRef.id,
+        );
+      } on FirebaseException catch (error, stackTrace) {
+        if (kDebugMode) {
+          debugPrint(
+            'SocialPostRepository hashtag update skipped: '
+            'plugin=${error.plugin}, code=${error.code}, '
+            'message=${sanitizeSocialPublishDiagnosticMessage(error.message)}',
+          );
+          debugPrintStack(stackTrace: stackTrace);
+        }
+      } catch (error, stackTrace) {
+        if (kDebugMode) {
+          debugPrint('SocialPostRepository hashtag update skipped.');
+          debugPrintStack(stackTrace: stackTrace);
+        }
+      }
+
+      try {
+        final createdSnapshot = await postRef.get();
+        return SocialPostModel.fromDocument(createdSnapshot);
+      } on FirebaseException catch (error, stackTrace) {
+        if (kDebugMode) {
+          debugPrint(
+            'SocialPostRepository readback skipped: plugin=${error.plugin}, '
+            'code=${error.code}, '
+            'message=${sanitizeSocialPublishDiagnosticMessage(error.message)}',
+          );
+          debugPrintStack(stackTrace: stackTrace);
+        }
+      } catch (error, stackTrace) {
+        if (kDebugMode) {
+          debugPrint('SocialPostRepository readback skipped.');
+          debugPrintStack(stackTrace: stackTrace);
+        }
+      }
+
+      return SocialPostModel.fromMap({
+        ...payload,
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      }, fallbackId: postRef.id);
+    } on SocialPostPublishException {
+      rethrow;
     } on FirebaseException catch (error, stackTrace) {
-      debugPrint(
-        'SocialPostRepository createPost hashtag update skipped for '
-        'postId=${postRef.id}: ${error.code}',
+      Error.throwWithStackTrace(
+        diagnostics.toException(error, _mapCreatePostError(error)),
+        stackTrace,
       );
-      debugPrintStack(stackTrace: stackTrace);
-    } catch (error, stackTrace) {
-      debugPrint(
-        'SocialPostRepository createPost hashtag update skipped for '
-        'postId=${postRef.id}: $error',
-      );
-      debugPrintStack(stackTrace: stackTrace);
     }
-
-    try {
-      final createdSnapshot = await postRef.get();
-      return SocialPostModel.fromDocument(createdSnapshot);
-    } on FirebaseException catch (error, stackTrace) {
-      debugPrint(
-        'SocialPostRepository createPost readback skipped for '
-        'postId=${postRef.id}: ${error.code}',
-      );
-      debugPrintStack(stackTrace: stackTrace);
-    } catch (error, stackTrace) {
-      debugPrint(
-        'SocialPostRepository createPost readback skipped for '
-        'postId=${postRef.id}: $error',
-      );
-      debugPrintStack(stackTrace: stackTrace);
-    }
-
-    return SocialPostModel.fromMap({
-      ...payload,
-      'createdAt': Timestamp.now(),
-      'updatedAt': Timestamp.now(),
-    }, fallbackId: postRef.id);
   }
 
   Future<String> _ensureAuthenticatedForStorageWrite() async {
@@ -1150,6 +1300,7 @@ class SocialPostRepository {
     required String postId,
     required List<XFile> images,
     required SocialPostAspectRatio aspectRatio,
+    required _SocialPostPublishDiagnosticsTracker diagnostics,
     SocialPostUploadProgressCallback? onProgress,
   }) async {
     final fullSizeUrls = <String>[];
@@ -1158,6 +1309,7 @@ class SocialPostRepository {
     final thumbnailRefs = <Reference>[];
     final totalUploads = images.length * 2;
     var completedUploads = 0;
+    UploadTask? activeUploadTask;
 
     try {
       for (var index = 0; index < images.length; index++) {
@@ -1170,13 +1322,36 @@ class SocialPostRepository {
             message: 'Uploading image ${index + 1} of ${images.length}...',
           ),
         );
-        final originalSize = await images[index].length();
-        if (originalSize > 5 * 1024 * 1024) {
-          throw Exception('Each image must be 5 MB or smaller before upload.');
+        diagnostics
+          ..failedStage = 'image-file-inspection'
+          ..imageIndex = index + 1
+          ..resetImageAttempt();
+        if (kDebugMode) {
+          try {
+            diagnostics.originalFileExists = await File(
+              images[index].path,
+            ).exists();
+          } catch (_) {
+            diagnostics.originalFileExists = false;
+          }
         }
+        final originalSize = await images[index].length();
+        diagnostics.originalByteSize = originalSize;
 
+        diagnostics.failedStage = 'image-read';
         final bytes = await images[index].readAsBytes();
+        diagnostics.originalFileReadable = true;
+        diagnostics.failedStage = 'image-processing';
         final processed = await _processImage(bytes, aspectRatio: aspectRatio);
+        diagnostics
+          ..processedByteSize = processed.feedBytes.length
+          ..thumbnailByteSize = processed.thumbnailBytes.length
+          ..processedFormat = 'jpeg'
+          ..thumbnailCreated = processed.thumbnailBytes.isNotEmpty;
+        validateProcessedUploadSizes(
+          feedByteLength: processed.feedBytes.length,
+          thumbnailByteLength: processed.thumbnailBytes.length,
+        );
 
         final imageRef = _storage.ref().child(
           'socialPosts/$authorId/$postId/images/$index.jpg',
@@ -1185,11 +1360,21 @@ class SocialPostRepository {
           'socialPosts/$authorId/$postId/thumbs/$index.jpg',
         );
 
-        await imageRef.putData(
+        diagnostics
+          ..failedStage = 'original-image-upload'
+          ..sanitizedStoragePath =
+              'socialPosts/{uid}/{postId}/images/{index}.jpg'
+          ..uploadStarted = true
+          ..storageTaskState = 'running';
+        activeUploadTask = imageRef.putData(
           processed.feedBytes,
           SettableMetadata(contentType: 'image/jpeg'),
         );
+        final imageSnapshot = await activeUploadTask;
+        diagnostics.captureTaskSnapshot(imageSnapshot);
+        activeUploadTask = null;
         fullSizeRefs.add(imageRef);
+        diagnostics.originalUploadsCompleted += 1;
         completedUploads += 1;
         onProgress?.call(
           SocialPostUploadProgress(
@@ -1198,11 +1383,20 @@ class SocialPostRepository {
             message: 'Uploading image ${index + 1} of ${images.length}...',
           ),
         );
-        await thumbRef.putData(
+        diagnostics
+          ..failedStage = 'thumbnail-upload'
+          ..sanitizedStoragePath =
+              'socialPosts/{uid}/{postId}/thumbs/{index}.jpg'
+          ..storageTaskState = 'running';
+        activeUploadTask = thumbRef.putData(
           processed.thumbnailBytes,
           SettableMetadata(contentType: 'image/jpeg'),
         );
+        final thumbnailSnapshot = await activeUploadTask;
+        diagnostics.captureTaskSnapshot(thumbnailSnapshot);
+        activeUploadTask = null;
         thumbnailRefs.add(thumbRef);
+        diagnostics.thumbnailUploadsCompleted += 1;
         completedUploads += 1;
         onProgress?.call(
           SocialPostUploadProgress(
@@ -1212,11 +1406,25 @@ class SocialPostRepository {
           ),
         );
 
+        diagnostics
+          ..failedStage = 'download-url-resolution'
+          ..sanitizedStoragePath =
+              'socialPosts/{uid}/{postId}/{images|thumbs}/{index}.jpg';
         fullSizeUrls.add(await imageRef.getDownloadURL());
         thumbnailUrls.add(await thumbRef.getDownloadURL());
       }
-    } on FirebaseException catch (error) {
-      throw Exception(_mapStorageUploadError(error));
+    } catch (error, stackTrace) {
+      if (activeUploadTask != null) {
+        diagnostics.captureTaskSnapshot(activeUploadTask.snapshot);
+      }
+      await diagnostics.captureFailureEnvironment();
+      final userMessage = error is FirebaseException
+          ? _mapStorageUploadError(error)
+          : _localPublishErrorMessage(error);
+      Error.throwWithStackTrace(
+        diagnostics.toException(error, userMessage),
+        stackTrace,
+      );
     }
 
     return _SocialUploadResult(
@@ -1227,19 +1435,46 @@ class SocialPostRepository {
     );
   }
 
+  @visibleForTesting
+  static void validateProcessedUploadSizes({
+    required int feedByteLength,
+    required int thumbnailByteLength,
+  }) {
+    const maxImageUploadBytes = 10 * 1024 * 1024;
+    const maxThumbnailUploadBytes = 5 * 1024 * 1024;
+    if (feedByteLength > maxImageUploadBytes ||
+        thumbnailByteLength > maxThumbnailUploadBytes) {
+      throw Exception('The processed post image is too large to upload.');
+    }
+  }
+
+  String _localPublishErrorMessage(Object error) {
+    final message = error.toString().replaceFirst('Exception: ', '').trim();
+    return message.isEmpty
+        ? 'Unable to upload post images right now. Please try again.'
+        : message;
+  }
+
   Future<void> _cleanupUploadedImages(_SocialUploadResult uploads) async {
     final refs = <Reference>[...uploads.fullSizeRefs, ...uploads.thumbnailRefs];
     for (final ref in refs) {
       try {
         await ref.delete();
       } on FirebaseException catch (error) {
-        debugPrint(
-          'SocialPostRepository cleanup debug -> failed deleting ${ref.fullPath}: ${error.code}',
-        );
+        if (kDebugMode) {
+          debugPrint(
+            'SocialPostRepository cleanup failed: plugin=${error.plugin}, '
+            'code=${error.code}, path=${_sanitizeStoragePath(ref.fullPath)}, '
+            'message=${sanitizeSocialPublishDiagnosticMessage(error.message)}',
+          );
+        }
       } catch (error) {
-        debugPrint(
-          'SocialPostRepository cleanup debug -> failed deleting ${ref.fullPath}: $error',
-        );
+        if (kDebugMode) {
+          debugPrint(
+            'SocialPostRepository cleanup failed: '
+            'path=${_sanitizeStoragePath(ref.fullPath)}',
+          );
+        }
       }
     }
   }
@@ -1420,6 +1655,153 @@ class SocialPostRepository {
     final resolved = fetchedVisibility[trimmedUserId] ?? false;
     _authorVisibilityCache[trimmedUserId] = resolved;
     return resolved;
+  }
+}
+
+@visibleForTesting
+String sanitizeSocialPublishDiagnosticMessage(String? message) {
+  var sanitized = (message ?? '').replaceAll(RegExp(r'[\r\n]+'), ' ').trim();
+  sanitized = sanitized
+      .replaceAll(
+        RegExp(r'https?://\S+', caseSensitive: false),
+        '<redacted-url>',
+      )
+      .replaceAll(
+        RegExp(r'gs://\S+', caseSensitive: false),
+        '<redacted-storage-url>',
+      )
+      .replaceAll(
+        RegExp(r'(?:file|content)://\S+', caseSensitive: false),
+        '<redacted-local-path>',
+      )
+      .replaceAll(
+        RegExp(
+          r'/(?:data|storage|sdcard|mnt|private|Users)(?:/[^\s,:]+)+',
+          caseSensitive: false,
+        ),
+        '<redacted-local-path>',
+      )
+      .replaceAll(
+        RegExp(
+          r'socialPosts/[^/\s]+/[^/\s]+/(images|thumbs)/[^\s]+',
+          caseSensitive: false,
+        ),
+        'socialPosts/{uid}/{postId}/{asset}/{file}',
+      )
+      .replaceAll(RegExp(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}'), '<redacted-email>')
+      .replaceAll(RegExp(r'\+?\d[\d\s().-]{7,}\d'), '<redacted-phone>')
+      .replaceAll(RegExp(r'\b[A-Za-z0-9_-]{24,}\b'), '<redacted-identifier>');
+  if (sanitized.isEmpty) return '<no-message>';
+  return sanitized.length <= 240
+      ? sanitized
+      : '${sanitized.substring(0, 240)}…';
+}
+
+String _sanitizeStoragePath(String path) {
+  if (path.startsWith('socialPosts/')) {
+    final segments = path.split('/');
+    if (segments.length >= 5) {
+      return 'socialPosts/{uid}/{postId}/${segments[3]}/{file}';
+    }
+  }
+  return '<redacted-storage-path>';
+}
+
+class _SocialPostPublishDiagnosticsTracker {
+  _SocialPostPublishDiagnosticsTracker({
+    required this.expectedImageCount,
+    required bool locationIntentRequested,
+  }) : locationIntentStatus = locationIntentRequested
+           ? SocialPostLocationIntentStatus.pending
+           : SocialPostLocationIntentStatus.notRequested,
+       _stopwatch = Stopwatch()..start();
+
+  String failedStage = 'preparing';
+  String sanitizedStoragePath = 'not-started';
+  int originalUploadsCompleted = 0;
+  int thumbnailUploadsCompleted = 0;
+  int? imageIndex;
+  bool? originalFileExists;
+  bool? originalFileReadable;
+  int? originalByteSize;
+  int? processedByteSize;
+  int? thumbnailByteSize;
+  String processedFormat = 'not-created';
+  bool thumbnailCreated = false;
+  String storageTaskState = 'not-started';
+  bool uploadStarted = false;
+  int? bytesTransferred;
+  String networkClassification = 'not-checked';
+  final int expectedImageCount;
+  final Stopwatch _stopwatch;
+  SocialPostFirestoreBatchStatus firestoreBatchStatus =
+      SocialPostFirestoreBatchStatus.notStarted;
+  SocialPostLocationIntentStatus locationIntentStatus;
+
+  void resetImageAttempt() {
+    originalFileExists = null;
+    originalFileReadable = null;
+    originalByteSize = null;
+    processedByteSize = null;
+    thumbnailByteSize = null;
+    processedFormat = 'not-created';
+    thumbnailCreated = false;
+    storageTaskState = 'not-started';
+    uploadStarted = false;
+    bytesTransferred = null;
+  }
+
+  void captureTaskSnapshot(TaskSnapshot snapshot) {
+    storageTaskState = snapshot.state.name;
+    bytesTransferred = snapshot.bytesTransferred;
+  }
+
+  Future<void> captureFailureEnvironment() async {
+    if (!kDebugMode) return;
+    try {
+      final results = await Connectivity().checkConnectivity();
+      final names = results.map((result) => result.name).toSet().toList()
+        ..sort();
+      networkClassification = names.isEmpty ? 'unknown' : names.join('+');
+    } catch (_) {
+      networkClassification = 'unavailable';
+    }
+  }
+
+  SocialPostPublishException toException(Object error, String userMessage) {
+    final firebaseError = error is FirebaseException ? error : null;
+    return SocialPostPublishException(
+      userMessage: userMessage,
+      originalException: error,
+      diagnostics: SocialPostPublishDiagnostics(
+        failedStage: failedStage,
+        firebasePlugin: firebaseError?.plugin ?? 'not-firebase',
+        firebaseCode: firebaseError?.code ?? 'local-error',
+        sanitizedMessage: sanitizeSocialPublishDiagnosticMessage(
+          firebaseError?.message ?? error.toString(),
+        ),
+        sanitizedStoragePath: sanitizedStoragePath,
+        originalUploadsCompleted: originalUploadsCompleted,
+        thumbnailUploadsCompleted: thumbnailUploadsCompleted,
+        expectedImageCount: expectedImageCount,
+        firestoreBatchStatus: firestoreBatchStatus,
+        locationIntentStatus: locationIntentStatus,
+        imageIndex: imageIndex,
+        originalFileExists: originalFileExists,
+        originalFileReadable: originalFileReadable,
+        originalByteSize: originalByteSize,
+        processedByteSize: processedByteSize,
+        thumbnailByteSize: thumbnailByteSize,
+        processedFormat: processedFormat,
+        thumbnailCreated: thumbnailCreated,
+        storageTaskState: storageTaskState,
+        uploadStarted: uploadStarted,
+        bytesTransferred: bytesTransferred,
+        networkClassification: networkClassification,
+        failureDurationMs: _stopwatch.elapsedMilliseconds,
+        originalErrorType: error.runtimeType.toString(),
+      ),
+    );
   }
 }
 

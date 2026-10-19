@@ -1,22 +1,34 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/services/image_crop_service.dart';
 import '../../../../core/widgets/app_feedback.dart';
+import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../explore/data/explore_location_repository.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../application/post_location_publish_resolver.dart';
+import '../../application/social_post_media_preparation_service.dart';
 import '../../data/services/post_publish_coordinator.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/hashtag_normalizer.dart' as hashtag_normalizer;
 import '../../domain/models/social_post_model.dart';
 
 class CreatePostScreen extends StatefulWidget {
-  const CreatePostScreen({super.key});
+  const CreatePostScreen({
+    super.key,
+    this.initialImages = const <XFile>[],
+    this.initialAspectRatio = SocialPostAspectRatio.square,
+    this.preparationService,
+  });
+
+  final List<XFile> initialImages;
+  final SocialPostAspectRatio initialAspectRatio;
+  final SocialPostMediaPreparationService? preparationService;
 
   @override
   State<CreatePostScreen> createState() => _CreatePostScreenState();
@@ -36,8 +48,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       ExploreLocationRepository();
   final PostLocationPublishResolver _postLocationResolver =
       const PostLocationPublishResolver();
-  final ImagePicker _imagePicker = ImagePicker();
-  final ImageCropService _imageCropService = ImageCropService();
+  late final SocialPostMediaPreparationService _preparationService;
   final PostPublishCoordinator _publishCoordinator =
       PostPublishCoordinator.instance;
   final TextEditingController _captionController = TextEditingController();
@@ -50,10 +61,16 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   int _previewIndex = 0;
   bool _restoredRecoverableDraft = false;
   bool _addLocationToPost = true;
+  bool _isPreparingImages = false;
+  bool _imagesHandedToPublisher = false;
 
   @override
   void initState() {
     super.initState();
+    _preparationService =
+        widget.preparationService ?? SocialPostMediaPreparationService();
+    _aspectRatio = widget.initialAspectRatio;
+    _selectedImages.addAll(widget.initialImages.take(_maxPostImages));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _restoreRecoverableDraft();
@@ -67,6 +84,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   @override
   void dispose() {
+    if (!_imagesHandedToPublisher) {
+      unawaited(
+        SocialPostMediaPreparationService.deletePreparedImages(_selectedImages),
+      );
+    }
     _captionController.dispose();
     _hashtagController.dispose();
     super.dispose();
@@ -95,10 +117,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   }
 
   Future<void> _pickImages() async {
-    final picked = await _imagePicker.pickMultiImage(imageQuality: 100);
-    if (!mounted) return;
-    if (picked.isEmpty) return;
-
     final remainingSlots = _maxPostImages - _selectedImages.length;
     if (remainingSlots <= 0) {
       AppFeedback.show(
@@ -109,7 +127,37 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       return;
     }
 
-    if (picked.length > remainingSlots) {
+    setState(() => _isPreparingImages = true);
+    final result = await _preparationService.pickCropAndPrepare(
+      maxImages: remainingSlots,
+      aspectRatio: _aspectRatio,
+    );
+    if (!mounted) return;
+    setState(() => _isPreparingImages = false);
+    if (result.oversizedFailureCount > 0) {
+      AppFeedback.show(
+        context,
+        message:
+            "This photo is too large. We couldn't reduce it below 10 MB. Please choose another photo.",
+        tone: AppFeedbackTone.error,
+      );
+    } else if (result.failureCount > 0) {
+      AppFeedback.show(
+        context,
+        message: result.failureCount == 1
+            ? 'One photo could not be prepared. Please choose another photo.'
+            : '${result.failureCount} photos could not be prepared.',
+        tone: AppFeedbackTone.error,
+      );
+    } else if (result.cropCancellationCount > 0) {
+      AppFeedback.show(
+        context,
+        message: result.images.isEmpty
+            ? 'Image cropping was cancelled.'
+            : '${result.cropCancellationCount} photo(s) were skipped.',
+        tone: AppFeedbackTone.info,
+      );
+    } else if (result.selectionTruncated) {
       AppFeedback.show(
         context,
         message:
@@ -117,56 +165,16 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         tone: AppFeedbackTone.info,
       );
     }
-
-    final croppedImages = <XFile>[];
-    var cancelledCount = 0;
-    var failedCropCount = 0;
-    for (final file in picked.take(remainingSlots)) {
-      final croppedImage = await _imageCropService.cropImage(
-        source: file,
-        context: ImageCropContext.post,
-        ratio: _cropRatioForPost(_aspectRatio),
-      );
-      if (!mounted) return;
-      if (croppedImage == null) {
-        if (_imageCropService.hadLastError) {
-          failedCropCount += 1;
-        } else {
-          cancelledCount += 1;
-        }
-        continue;
-      }
-      croppedImages.add(XFile(croppedImage.path));
-    }
-
-    if (!mounted) return;
-    if (cancelledCount > 0) {
-      AppFeedback.show(
-        context,
-        message: croppedImages.isEmpty
-            ? 'Image cropping was cancelled.'
-            : '$cancelledCount image ${cancelledCount == 1 ? 'was' : 'were'} skipped because cropping was cancelled.',
-        tone: AppFeedbackTone.info,
-      );
-    }
-    if (failedCropCount > 0) {
-      AppFeedback.show(
-        context,
-        message: failedCropCount == 1
-            ? 'Image crop failed. Please try again.'
-            : '$failedCropCount images failed to crop. Please try again.',
-        tone: AppFeedbackTone.error,
-      );
-    }
-    if (croppedImages.isEmpty) return;
+    if (result.images.isEmpty) return;
 
     setState(() {
-      _selectedImages.addAll(croppedImages);
+      _selectedImages.addAll(result.images);
       _previewIndex = 0;
     });
   }
 
   void _removeImage(int index) {
+    final removed = _selectedImages[index];
     setState(() {
       _selectedImages.removeAt(index);
       if (_previewIndex >= _selectedImages.length) {
@@ -175,6 +183,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             : _selectedImages.length - 1;
       }
     });
+    unawaited(
+      SocialPostMediaPreparationService.deletePreparedImages(<XFile>[removed]),
+    );
   }
 
   void _addHashtag() {
@@ -219,11 +230,28 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     if (_selectedImages.isEmpty || _isPublishing) return;
 
     setState(() => _isPublishing = true);
+    if (kDebugMode) {
+      debugPrint(
+        'CreatePostScreen location resolution: '
+        'status=${_addLocationToPost ? 'requested' : 'notRequested'}',
+      );
+    }
     final locationResolution = await _postLocationResolver.resolve(
       includeLocation: _addLocationToPost,
       capture: _locationRepository.captureFreshPostLocationState,
       chooseAfterFailure: _chooseAfterLocationFailure,
     );
+    if (kDebugMode) {
+      final locationStatus = !locationResolution.shouldPublish
+          ? 'cancelled'
+          : locationResolution.includeLocation &&
+                locationResolution.location?.hasCoordinates == true
+          ? 'readyForIntent'
+          : 'publishingWithoutLocation';
+      debugPrint(
+        'CreatePostScreen location resolution: status=$locationStatus',
+      );
+    }
     if (!locationResolution.shouldPublish) {
       if (mounted) setState(() => _isPublishing = false);
       return;
@@ -244,6 +272,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       if (mounted) setState(() => _isPublishing = false);
       return;
     }
+    _imagesHandedToPublisher = true;
 
     if (!mounted) return;
     Navigator.pop(context);
@@ -353,14 +382,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
   }
 
-  ImageCropRatio _cropRatioForPost(SocialPostAspectRatio ratio) {
-    return switch (ratio) {
-      SocialPostAspectRatio.square => ImageCropRatio.square,
-      SocialPostAspectRatio.portrait => ImageCropRatio.portraitFourByFive,
-      SocialPostAspectRatio.landscape => ImageCropRatio.square,
-    };
-  }
-
   @override
   Widget build(BuildContext context) {
     final canPublish = _selectedImages.isNotEmpty && !_isPublishing;
@@ -368,90 +389,107 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFFFF8F1),
       extendBody: true,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
-              child: _CreatePostHeader(
-                isPublishing: _isPublishing,
-                canPublish: canPublish,
-                onBack: () => Navigator.pop(context),
-                onPublish: canPublish ? _publish : null,
-              ),
+      body: Stack(
+        children: [
+          SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+                  child: _CreatePostHeader(
+                    isPublishing: _isPublishing,
+                    canPublish: canPublish,
+                    onBack: () => Navigator.pop(context),
+                    onPublish: canPublish ? _publish : null,
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 132),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _SectionLabel(
+                          label: 'ASPECT RATIO',
+                          helper: 'Choose once before selecting images.',
+                        ),
+                        const SizedBox(height: 10),
+                        _AspectRatioSelector(
+                          ratios: _supportedAspectRatios,
+                          selectedRatio: _aspectRatio,
+                          onSelected: _selectAspectRatio,
+                        ),
+                        const SizedBox(height: 24),
+                        _SectionLabel(
+                          label:
+                              'PHOTOS · ${_selectedImages.length}/$_maxPostImages',
+                        ),
+                        const SizedBox(height: 10),
+                        _ImagePreview(
+                          images: _selectedImages,
+                          maxImages: _maxPostImages,
+                          aspectRatio: _previewAspectRatio,
+                          previewIndex: _previewIndex,
+                          onPageChanged: (value) =>
+                              setState(() => _previewIndex = value),
+                          onRemove: _removeImage,
+                          onSelectImages:
+                              _selectedImages.length >= _maxPostImages
+                              ? null
+                              : _pickImages,
+                        ),
+                        const SizedBox(height: 24),
+                        _SectionLabel(label: 'CAPTION'),
+                        const SizedBox(height: 10),
+                        _CaptionInputCard(controller: _captionController),
+                        const SizedBox(height: 24),
+                        _SectionLabel(
+                          label: 'HASHTAGS',
+                          helper:
+                              'Add up to $_maxHashtags hashtags, with up to 30 characters each.',
+                        ),
+                        const SizedBox(height: 10),
+                        _HashtagInputRow(
+                          controller: _hashtagController,
+                          onAdd: _addHashtag,
+                        ),
+                        if (_hashtags.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          _HashtagChips(
+                            hashtags: _hashtags,
+                            onRemoved: (tag) =>
+                                setState(() => _hashtags.remove(tag)),
+                          ),
+                        ],
+                        const SizedBox(height: 24),
+                        PostLocationOption(
+                          value: _addLocationToPost,
+                          enabled: !_isPublishing,
+                          onChanged: (value) =>
+                              setState(() => _addLocationToPost = value),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
-            Expanded(
-              child: SingleChildScrollView(
-                keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: const EdgeInsets.fromLTRB(20, 10, 20, 132),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _SectionLabel(
-                      label: 'ASPECT RATIO',
-                      helper: 'Choose once before selecting images.',
-                    ),
-                    const SizedBox(height: 10),
-                    _AspectRatioSelector(
-                      ratios: _supportedAspectRatios,
-                      selectedRatio: _aspectRatio,
-                      onSelected: _selectAspectRatio,
-                    ),
-                    const SizedBox(height: 24),
-                    _SectionLabel(
-                      label:
-                          'PHOTOS · ${_selectedImages.length}/$_maxPostImages',
-                    ),
-                    const SizedBox(height: 10),
-                    _ImagePreview(
-                      images: _selectedImages,
-                      maxImages: _maxPostImages,
-                      aspectRatio: _previewAspectRatio,
-                      previewIndex: _previewIndex,
-                      onPageChanged: (value) =>
-                          setState(() => _previewIndex = value),
-                      onRemove: _removeImage,
-                      onSelectImages: _selectedImages.length >= _maxPostImages
-                          ? null
-                          : _pickImages,
-                    ),
-                    const SizedBox(height: 24),
-                    _SectionLabel(label: 'CAPTION'),
-                    const SizedBox(height: 10),
-                    _CaptionInputCard(controller: _captionController),
-                    const SizedBox(height: 24),
-                    _SectionLabel(
-                      label: 'HASHTAGS',
-                      helper:
-                          'Add up to $_maxHashtags hashtags, with up to 30 characters each.',
-                    ),
-                    const SizedBox(height: 10),
-                    _HashtagInputRow(
-                      controller: _hashtagController,
-                      onAdd: _addHashtag,
-                    ),
-                    if (_hashtags.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      _HashtagChips(
-                        hashtags: _hashtags,
-                        onRemoved: (tag) =>
-                            setState(() => _hashtags.remove(tag)),
-                      ),
-                    ],
-                    const SizedBox(height: 24),
-                    PostLocationOption(
-                      value: _addLocationToPost,
-                      enabled: !_isPublishing,
-                      onChanged: (value) =>
-                          setState(() => _addLocationToPost = value),
-                    ),
-                  ],
+          ),
+          if (_isPreparingImages)
+            const Positioned.fill(
+              child: ColoredBox(
+                color: Color(0x99FFF8F1),
+                child: Center(
+                  child: PettxoLoader(
+                    semanticLabel: 'Preparing selected photos',
+                    message: 'Preparing your photos…',
+                  ),
                 ),
               ),
             ),
-          ],
-        ),
+        ],
       ),
       bottomNavigationBar: const SocialBottomNav(activeTab: null),
     );
