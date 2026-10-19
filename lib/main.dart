@@ -39,7 +39,7 @@ import 'features/services/presentation/screens/services_screen.dart';
 import 'features/settings/presentation/screens/edit_profile_screen.dart';
 import 'features/settings/presentation/screens/legal_policies_screen.dart';
 import 'features/settings/presentation/screens/settings_screen.dart';
-import 'features/social/presentation/screens/create_post_screen.dart';
+import 'features/social/presentation/screens/create_post_flow_screen.dart';
 import 'features/social/presentation/widgets/post_publish_status_host.dart';
 import 'features/splash/presentation/screens/splash_screen.dart';
 import 'firebase_options.dart';
@@ -199,7 +199,7 @@ class PettexoApp extends StatelessWidget {
               document: LegalPoliciesCatalog.providerPolicy,
             ),
         "/explore": (context) => const ExploreScreen(),
-        "/create": (context) => const CreatePostScreen(),
+        "/create": (context) => const CreatePostFlowScreen(),
         "/alerts": (context) => const NotificationsScreen(),
         "/messages": (context) => const MessagesScreen(),
         "/profile": (context) => const ProfileScreen(),

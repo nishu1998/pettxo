@@ -88,6 +88,20 @@ async function seedVerification(uid, {status, submissionId, path}) {
   });
 }
 
+async function seedDirectChat(customerId, providerId) {
+  const chatId = `chat_${customerId}_${providerId}`;
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'chats', chatId), {
+      chatType: 'directUser',
+      participantIds: [customerId, providerId],
+      customerId,
+      providerId,
+      status: 'active',
+    });
+  });
+  return chatId;
+}
+
 before(async () => {
   testEnv = await initializeTestEnvironment({
     projectId,
@@ -114,6 +128,83 @@ test('owner can upload a supported image under their own UID', async () => {
       contentType: 'image/png',
     }),
   );
+});
+
+test('social post media remains owner-write and authenticated-read only', async () => {
+  const ownerUid = 'social-storage-owner';
+  const otherUid = 'social-storage-other';
+  await seedUser(ownerUid);
+  await seedUser(otherUid);
+  const path = `socialPosts/${ownerUid}/synthetic-post/images/0.jpg`;
+  const ownerRef = ref(authedStorage(ownerUid), path);
+  const otherRef = ref(authedStorage(otherUid), path);
+  const guestRef = ref(unauthedStorage(), path);
+
+  await assertSucceeds(uploadBytes(
+    ownerRef,
+    Uint8Array.from([1, 2, 3]),
+    {contentType: 'image/jpeg'},
+  ));
+  await assertSucceeds(getBytes(otherRef));
+  await assertFails(getBytes(guestRef));
+  await assertFails(uploadBytes(
+    otherRef,
+    Uint8Array.from([4, 5, 6]),
+    {contentType: 'image/jpeg'},
+  ));
+  await assertFails(deleteObject(otherRef));
+  await assertSucceeds(deleteObject(ownerRef));
+});
+
+test('social post media rejects unsupported folders and content types', async () => {
+  const uid = 'social-storage-shape';
+  await seedUser(uid);
+  const storage = authedStorage(uid);
+
+  await assertFails(uploadBytes(
+    ref(storage, `socialPosts/${uid}/synthetic-post/private/0.jpg`),
+    Uint8Array.from([1, 2, 3]),
+    {contentType: 'image/jpeg'},
+  ));
+  await assertFails(uploadBytes(
+    ref(storage, `socialPosts/${uid}/synthetic-post/thumbs/0.txt`),
+    Uint8Array.from([1, 2, 3]),
+    {contentType: 'text/plain'},
+  ));
+});
+
+test('social originals allow exactly 10 MiB and reject one byte more', async () => {
+  const uid = 'social-storage-size';
+  await seedUser(uid);
+  const storage = authedStorage(uid);
+
+  await assertSucceeds(uploadBytes(
+    ref(storage, `socialPosts/${uid}/post-10m/images/0.jpg`),
+    new Uint8Array(10 * 1024 * 1024),
+    {contentType: 'image/jpeg'},
+  ));
+  await assertFails(uploadBytes(
+    ref(storage, `socialPosts/${uid}/post-over/images/0.jpg`),
+    new Uint8Array(10 * 1024 * 1024 + 1),
+    {contentType: 'image/jpeg'},
+  ));
+});
+
+test('social thumbnails retain the existing 5 MiB limit', async () => {
+  const uid = 'social-thumbnail-size';
+  await seedUser(uid);
+  const storage = authedStorage(uid);
+
+  await assertSucceeds(uploadBytes(
+    ref(storage, `socialPosts/${uid}/post-thumb/thumbs/0.jpg`),
+    new Uint8Array(5 * 1024 * 1024),
+    {contentType: 'image/jpeg'},
+  ));
+  await assertFails(uploadBytes(
+    ref(storage, `socialPosts/${uid}/post-thumb-over/thumbs/0.jpg`),
+    new Uint8Array(5 * 1024 * 1024 + 1),
+    {contentType: 'image/jpeg'},
+  ));
 });
 
 test('owner can upload a supported PDF', async () => {
@@ -147,6 +238,45 @@ test('files larger than 10 MB are rejected', async () => {
       contentType: 'application/pdf',
     }),
   );
+});
+
+test('verification documents still allow exactly 10 MiB', async () => {
+  const uid = 'verification-size-boundary';
+  await seedUser(uid);
+  await assertSucceeds(uploadBytes(
+    ref(
+      authedStorage(uid),
+      `providerVerification/${uid}/identity/submission-size/front.pdf`,
+    ),
+    new Uint8Array(10 * 1024 * 1024),
+    {contentType: 'application/pdf'},
+  ));
+});
+
+test('chat media retains the existing 3 MiB limit', async () => {
+  const customerId = 'chat-size-customer';
+  const providerId = 'chat-size-provider';
+  await seedUser(customerId);
+  await seedUser(providerId);
+  const chatId = await seedDirectChat(customerId, providerId);
+  const storage = authedStorage(customerId);
+  const allowedMessageId = 'abcdefghijklmnopqrst';
+  const deniedMessageId = 'uvwxyzabcdefghijklmn';
+  const metadata = (messageId) => ({
+    contentType: 'image/jpeg',
+    customMetadata: {chatId, messageId, senderId: customerId},
+  });
+
+  await assertSucceeds(uploadBytes(
+    ref(storage, `chatMedia/${chatId}/${allowedMessageId}/image.jpg`),
+    new Uint8Array(3 * 1024 * 1024),
+    metadata(allowedMessageId),
+  ));
+  await assertFails(uploadBytes(
+    ref(storage, `chatMedia/${chatId}/${deniedMessageId}/image.jpg`),
+    new Uint8Array(3 * 1024 * 1024 + 1),
+    metadata(deniedMessageId),
+  ));
 });
 
 test('unsupported content types are rejected', async () => {

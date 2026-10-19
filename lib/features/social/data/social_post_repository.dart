@@ -1544,28 +1544,26 @@ class SocialPostRepository {
     Uint8List originalBytes, {
     required SocialPostAspectRatio aspectRatio,
   }) async {
-    final decoded = img.decodeImage(originalBytes);
-    if (decoded == null) {
+    final targetRatio = switch (aspectRatio) {
+      SocialPostAspectRatio.square => 1.0,
+      SocialPostAspectRatio.portrait => 4 / 5,
+      SocialPostAspectRatio.landscape => 1.91 / 1,
+    };
+    final encoded = await compute(_prepareSocialPostImageJpegs, (
+      bytes: originalBytes,
+      targetRatio: targetRatio,
+    ));
+    if (encoded == null) {
       throw Exception('One of the selected images could not be processed.');
     }
 
-    final cropped = _cropImageToAspectRatio(decoded, aspectRatio);
-    final resizedFeed = img.copyResize(
-      cropped,
-      width: math.min(cropped.width, 1080),
-    );
-    final resizedThumb = img.copyResize(
-      cropped,
-      width: math.min(cropped.width, 300),
-    );
-
     final feedBytes = await FlutterImageCompress.compressWithList(
-      Uint8List.fromList(img.encodeJpg(resizedFeed, quality: 88)),
+      encoded.feed,
       quality: 78,
       format: CompressFormat.jpeg,
     );
     final thumbBytes = await FlutterImageCompress.compressWithList(
-      Uint8List.fromList(img.encodeJpg(resizedThumb, quality: 80)),
+      encoded.thumbnail,
       quality: 70,
       format: CompressFormat.jpeg,
     );
@@ -1573,44 +1571,6 @@ class SocialPostRepository {
     return _ProcessedImageBytes(
       feedBytes: Uint8List.fromList(feedBytes),
       thumbnailBytes: Uint8List.fromList(thumbBytes),
-    );
-  }
-
-  img.Image _cropImageToAspectRatio(
-    img.Image source,
-    SocialPostAspectRatio aspectRatio,
-  ) {
-    final targetRatio = switch (aspectRatio) {
-      SocialPostAspectRatio.square => 1.0,
-      SocialPostAspectRatio.portrait => 4 / 5,
-      SocialPostAspectRatio.landscape => 1.91 / 1,
-    };
-
-    final sourceRatio = source.width / source.height;
-    if ((sourceRatio - targetRatio).abs() < 0.01) {
-      return source;
-    }
-
-    if (sourceRatio > targetRatio) {
-      final targetWidth = math.max(1, (source.height * targetRatio).round());
-      final offsetX = ((source.width - targetWidth) / 2).round();
-      return img.copyCrop(
-        source,
-        x: offsetX.clamp(0, math.max(0, source.width - targetWidth)),
-        y: 0,
-        width: targetWidth,
-        height: source.height,
-      );
-    }
-
-    final targetHeight = math.max(1, (source.width / targetRatio).round());
-    final offsetY = ((source.height - targetHeight) / 2).round();
-    return img.copyCrop(
-      source,
-      x: 0,
-      y: offsetY.clamp(0, math.max(0, source.height - targetHeight)),
-      width: source.width,
-      height: targetHeight,
     );
   }
 
@@ -1705,6 +1665,54 @@ String _sanitizeStoragePath(String path) {
     }
   }
   return '<redacted-storage-path>';
+}
+
+({Uint8List feed, Uint8List thumbnail})? _prepareSocialPostImageJpegs(
+  ({Uint8List bytes, double targetRatio}) request,
+) {
+  final decoded = img.decodeImage(request.bytes);
+  if (decoded == null) return null;
+  final sourceRatio = decoded.width / decoded.height;
+  img.Image cropped;
+  if ((sourceRatio - request.targetRatio).abs() < 0.01) {
+    cropped = decoded;
+  } else if (sourceRatio > request.targetRatio) {
+    final targetWidth = math.max(
+      1,
+      (decoded.height * request.targetRatio).round(),
+    );
+    final offsetX = ((decoded.width - targetWidth) / 2).round();
+    cropped = img.copyCrop(
+      decoded,
+      x: offsetX.clamp(0, math.max(0, decoded.width - targetWidth)),
+      y: 0,
+      width: targetWidth,
+      height: decoded.height,
+    );
+  } else {
+    final targetHeight = math.max(
+      1,
+      (decoded.width / request.targetRatio).round(),
+    );
+    final offsetY = ((decoded.height - targetHeight) / 2).round();
+    cropped = img.copyCrop(
+      decoded,
+      x: 0,
+      y: offsetY.clamp(0, math.max(0, decoded.height - targetHeight)),
+      width: decoded.width,
+      height: targetHeight,
+    );
+  }
+
+  final feed = img.copyResize(cropped, width: math.min(cropped.width, 1080));
+  final thumbnail = img.copyResize(
+    cropped,
+    width: math.min(cropped.width, 300),
+  );
+  return (
+    feed: Uint8List.fromList(img.encodeJpg(feed, quality: 88)),
+    thumbnail: Uint8List.fromList(img.encodeJpg(thumbnail, quality: 80)),
+  );
 }
 
 class _SocialPostPublishDiagnosticsTracker {

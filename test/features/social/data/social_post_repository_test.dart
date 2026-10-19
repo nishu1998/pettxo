@@ -7,6 +7,156 @@ import 'package:pettexo/features/social/domain/models/social_post_model.dart';
 import 'package:pettexo/features/explore/domain/models/explore_location_snapshot.dart';
 
 void main() {
+  group('SocialPostPublishException diagnostics', () {
+    test(
+      'retains the original Firebase exception and sanitized stage data',
+      () {
+        final firebaseError = FirebaseException(
+          plugin: 'firebase_storage',
+          code: 'unauthorized',
+          message:
+              'Denied socialPosts/privateUid/privatePost/images/0.jpg for '
+              '+919876543210 at https://example.test/private-download-token',
+        );
+        const diagnostics = SocialPostPublishDiagnostics(
+          failedStage: 'original-image-upload',
+          firebasePlugin: 'firebase_storage',
+          firebaseCode: 'unauthorized',
+          sanitizedMessage: 'sanitized',
+          sanitizedStoragePath: 'socialPosts/{uid}/{postId}/images/{index}.jpg',
+          originalUploadsCompleted: 0,
+          thumbnailUploadsCompleted: 0,
+          expectedImageCount: 1,
+          firestoreBatchStatus: SocialPostFirestoreBatchStatus.notStarted,
+          locationIntentStatus: SocialPostLocationIntentStatus.pending,
+          imageIndex: 1,
+          originalFileExists: true,
+          originalFileReadable: true,
+          originalByteSize: 6 * 1024 * 1024,
+          processedByteSize: 1024,
+          thumbnailByteSize: 256,
+          processedFormat: 'jpeg',
+          thumbnailCreated: true,
+          storageTaskState: 'running',
+          uploadStarted: true,
+          bytesTransferred: 128,
+          networkClassification: 'wifi',
+          failureDurationMs: 50,
+          originalErrorType: 'FirebaseException',
+        );
+        final exception = SocialPostPublishException(
+          userMessage: 'Please try again.',
+          originalException: firebaseError,
+          diagnostics: diagnostics,
+        );
+
+        expect(exception.firebaseException, same(firebaseError));
+        expect(exception.firebaseException?.code, 'unauthorized');
+        expect(exception.diagnostics.failedStage, 'original-image-upload');
+        expect(exception.toString(), 'Exception: Please try again.');
+      },
+    );
+
+    test('sanitizes private values from Firebase diagnostic messages', () {
+      final sanitized = sanitizeSocialPublishDiagnosticMessage(
+        'Denied socialPosts/privateUid/privatePost/thumbs/0.jpg for '
+        'owner@example.test, +919876543210, '
+        'https://example.test/download?token=secret',
+      );
+
+      expect(sanitized, contains('socialPosts/{uid}/{postId}/{asset}/{file}'));
+      expect(sanitized, contains('<redacted-email>'));
+      expect(sanitized, contains('<redacted-phone>'));
+      expect(sanitized, contains('<redacted-url>'));
+      expect(sanitized, isNot(contains('privateUid')));
+      expect(sanitized, isNot(contains('9876543210')));
+      expect(sanitized, isNot(contains('secret')));
+    });
+
+    test('retains a non-Firebase source exception', () {
+      final sourceError = Exception('local image failure');
+      const diagnostics = SocialPostPublishDiagnostics(
+        failedStage: 'image-read',
+        firebasePlugin: 'not-firebase',
+        firebaseCode: 'local-error',
+        sanitizedMessage: 'Exception: local image failure',
+        sanitizedStoragePath: 'not-started',
+        originalUploadsCompleted: 0,
+        thumbnailUploadsCompleted: 0,
+        expectedImageCount: 1,
+        firestoreBatchStatus: SocialPostFirestoreBatchStatus.notStarted,
+        locationIntentStatus: SocialPostLocationIntentStatus.notRequested,
+        imageIndex: 1,
+        originalFileExists: false,
+        originalFileReadable: false,
+        originalByteSize: null,
+        processedByteSize: null,
+        thumbnailByteSize: null,
+        processedFormat: 'not-created',
+        thumbnailCreated: false,
+        storageTaskState: 'not-started',
+        uploadStarted: false,
+        bytesTransferred: null,
+        networkClassification: 'none',
+        failureDurationMs: 10,
+        originalErrorType: '_Exception',
+      );
+
+      final exception = SocialPostPublishException(
+        userMessage: 'local image failure',
+        originalException: sourceError,
+        diagnostics: diagnostics,
+      );
+
+      expect(exception.originalException, same(sourceError));
+      expect(exception.firebaseException, isNull);
+      expect(exception.diagnostics.uploadStarted, isFalse);
+    });
+
+    test('redacts Android local paths from diagnostic messages', () {
+      final sanitized = sanitizeSocialPublishDiagnosticMessage(
+        'Cannot open /data/user/0/com.pettexo/cache/private/photo.jpg or '
+        'content://media/external/images/42',
+      );
+
+      expect(sanitized, isNot(contains('/data/user')));
+      expect(sanitized, isNot(contains('content://')));
+      expect(sanitized, contains('<redacted-local-path>'));
+    });
+  });
+
+  group('SocialPostRepository processed upload size validation', () {
+    test('accepts processed upload bytes at exactly 10 MiB', () {
+      expect(
+        () => SocialPostRepository.validateProcessedUploadSizes(
+          feedByteLength: 10 * 1024 * 1024,
+          thumbnailByteLength: 128 * 1024,
+        ),
+        returnsNormally,
+      );
+    });
+
+    test('rejects a processed upload over 10 MiB', () {
+      expect(
+        () => SocialPostRepository.validateProcessedUploadSizes(
+          feedByteLength: (10 * 1024 * 1024) + 1,
+          thumbnailByteLength: 128 * 1024,
+        ),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test('retains the 5 MiB processed thumbnail limit', () {
+      expect(
+        () => SocialPostRepository.validateProcessedUploadSizes(
+          feedByteLength: 7 * 1024 * 1024,
+          thumbnailByteLength: (5 * 1024 * 1024) + 1,
+        ),
+        throwsA(isA<Exception>()),
+      );
+    });
+  });
+
   group('SocialPostRepository.buildCreatePostPayload', () {
     test('contains only permitted client-owned create fields', () {
       final payload = SocialPostRepository.buildCreatePostPayload(
