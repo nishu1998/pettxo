@@ -690,9 +690,6 @@ class _ExploreScreenState extends State<ExploreScreen>
             error.message ?? 'We could not load nearby posts right now.';
       });
     } catch (error) {
-      if (kDebugMode) {
-        debugPrint('Explore nearby parse debug -> error=$error');
-      }
       if (!mounted ||
           requestGeneration != _nearbyRequestGeneration ||
           requestUid != _authGenerationUid) {
@@ -1339,16 +1336,6 @@ class _ExploreScreenState extends State<ExploreScreen>
   }
 
   Widget _buildNearbyContent() {
-    if (kDebugMode) {
-      debugPrint(
-        '[NearbyDiag] screen-state uid=$_currentUserId '
-        'generation=$_nearbyRequestGeneration mode=${_nearbyLocationMode.name} '
-        'postCount=${_nearbyPosts.length} '
-        'postIds=${_nearbyPosts.map((post) => post.id).toList(growable: false)} '
-        'hasMore=$_hasMoreNearbyPosts loading=$_isLoadingNearbyPosts '
-        'loadingMore=$_isLoadingMoreNearbyPosts',
-      );
-    }
     if (_isLoadingNearbyPosts && _nearbyPosts.isEmpty) {
       return const _ExploreLoadingState();
     }

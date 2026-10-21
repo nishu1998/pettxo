@@ -1,5 +1,3 @@
-import 'package:flutter/foundation.dart';
-
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../social/domain/models/social_post_model.dart';
 import '../domain/models/explore_feed_viewer_context.dart';
@@ -18,7 +16,6 @@ class ExploreFeedFilterService {
     required List<SocialPostModel> posts,
     required ExploreFeedViewerContext viewerContext,
     required Set<String> seenPostIds,
-    String? diagnosticsLabel,
   }) async {
     if (posts.isEmpty) return const <SocialPostModel>[];
 
@@ -40,7 +37,6 @@ class ExploreFeedFilterService {
           final postId = post.id.trim();
           final authorId = post.authorId.trim();
           bool exclude(String reason) {
-            _logDecision(diagnosticsLabel, postId, authorId, false, reason);
             return false;
           }
 
@@ -61,23 +57,8 @@ class ExploreFeedFilterService {
             return exclude('AUTHOR_MUTED');
           }
           seenPostIds.add(postId);
-          _logDecision(diagnosticsLabel, postId, authorId, true, 'INCLUDED');
           return true;
         })
         .toList(growable: false);
-  }
-
-  void _logDecision(
-    String? label,
-    String postId,
-    String authorId,
-    bool included,
-    String reason,
-  ) {
-    if (!kDebugMode || label != 'nearby') return;
-    debugPrint(
-      '[NearbyDiag] client-filter postId=$postId authorId=$authorId '
-      'included=$included reason=$reason',
-    );
   }
 }

@@ -556,7 +556,6 @@ class _FakeAuthSession implements ExploreNearbyAuthSession {
       uid: session.uid,
       getIdToken: session.getIdToken,
       reload: reloadCurrentSession,
-      providerIds: session.providerIds,
     );
   }
 }
@@ -572,7 +571,6 @@ class _FakeUserSession extends ExploreAuthenticatedUserSession {
            throw UnimplementedError();
          },
          reload: reload ?? _noopReload,
-         providerIds: const <String>['phone'],
        );
 
   final String? token;
@@ -604,7 +602,6 @@ class _PassthroughFilterService extends ExploreFeedFilterService {
     required List<SocialPostModel> posts,
     required ExploreFeedViewerContext viewerContext,
     required Set<String> seenPostIds,
-    String? diagnosticsLabel,
   }) async {
     return posts
         .where((post) => seenPostIds.add(post.id))
@@ -618,7 +615,6 @@ class _SelectiveFilterService extends ExploreFeedFilterService {
     required List<SocialPostModel> posts,
     required ExploreFeedViewerContext viewerContext,
     required Set<String> seenPostIds,
-    String? diagnosticsLabel,
   }) async {
     return posts
         .where((post) => !post.id.startsWith('filtered-'))
