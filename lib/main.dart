@@ -7,6 +7,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
 import 'core/services/analytics_service.dart';
+import 'core/app_update/app_update_gate.dart';
 import 'core/services/app_loader.dart';
 import 'core/services/firebase_app_scope.dart';
 import 'core/services/network_status_service.dart';
@@ -139,19 +140,21 @@ class PettexoApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: AppLoader.navigatorKey,
       builder: (context, child) {
-        return NetworkStatusBannerHost(
-          child: Stack(
-            children: [
-              SafeArea(
-                top: false,
-                left: false,
-                right: false,
-                bottom: true,
-                maintainBottomViewPadding: true,
-                child: child ?? const SizedBox.shrink(),
-              ),
-              const PostPublishStatusHost(),
-            ],
+        return AppUpdateGate(
+          child: NetworkStatusBannerHost(
+            child: Stack(
+              children: [
+                SafeArea(
+                  top: false,
+                  left: false,
+                  right: false,
+                  bottom: true,
+                  maintainBottomViewPadding: true,
+                  child: child ?? const SizedBox.shrink(),
+                ),
+                const PostPublishStatusHost(),
+              ],
+            ),
           ),
         );
       },

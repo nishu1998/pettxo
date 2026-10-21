@@ -26,6 +26,12 @@ class RemoteConfigService {
   static Future<void>? _initFuture;
 
   static const Map<String, Object> _defaults = {
+    'android_min_build': 0,
+    'android_latest_build': 0,
+    'android_force_update': false,
+    'android_update_message': 'A new Pettxo experience is available.',
+    'android_store_url':
+        'https://play.google.com/store/apps/details?id=com.pettexo.app',
     'tagline_1': 'Premium pet experience',
     'title_1': 'Connect & Explore Pets',
     'subtitle_1': 'Join a community of pet lovers and share moments.',
@@ -74,6 +80,13 @@ class RemoteConfigService {
       _initFuture = null;
     }
   }
+
+  Future<bool> refresh() async {
+    await init();
+    return remoteConfig.fetchAndActivate();
+  }
+
+  Stream<RemoteConfigUpdate> get configUpdates => remoteConfig.onConfigUpdated;
 
   String getString(String key, String fallback) {
     try {
