@@ -5,6 +5,9 @@ const path = require("node:path");
 const {
   buildCustomerBookableSlotsV3,
 } = require("../lib/booking/application/serviceSlotAvailabilityV3.js");
+const {
+  buildServiceSlotCandidates,
+} = require("../lib/services/serviceSlotCandidates.js");
 
 const now = new Date("2026-09-14T00:00:00.000Z");
 const service = {
@@ -147,4 +150,75 @@ test("callable batches occupancy reads and does not expose slotOccupancy directl
   const body = source.slice(start, end);
   assert.ok(body.includes("await db.getAll("));
   assert.equal(body.includes("bookingClaims"), false);
+});
+
+const reportedService = {
+  ownerUserId: "provider-anita",
+  status: "active",
+  isActive: true,
+  isDeleted: false,
+  isPaused: false,
+  isVisibleToMarketplace: true,
+  providerVerificationStatus: "approved",
+  schedulingMode: "fixedDuration",
+  availableDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+  startMinutes: 60,
+  endMinutes: 23 * 60,
+  sessionDurationMinutes: 60,
+  capacity: 1,
+  timezone: "Asia/Kolkata",
+};
+
+function reportedCase(authoritativeNow) {
+  const candidates = buildServiceSlotCandidates(
+    "demo-rabit",
+    reportedService,
+    authoritativeNow.getTime(),
+  ).candidates.filter((candidate) => candidate.dateKey === "2026-10-21");
+  const slots = candidates.map((candidate) => ({
+    id: candidate.id,
+    serviceId: candidate.serviceId,
+    serviceOwnerId: candidate.serviceOwnerId,
+    startAt: new Date(candidate.startAtMs),
+    endAt: new Date(candidate.endAtMs),
+    dateKey: candidate.dateKey,
+    capacity: candidate.capacity,
+    acceptedCount: 0,
+    isBookable: candidate.isBookable,
+    status: candidate.status,
+  }));
+  return buildCustomerBookableSlotsV3({
+    serviceId: "demo-rabit",
+    service: reportedService,
+    dateKey: "2026-10-21",
+    slots,
+    occupancyBySlotId: new Map(),
+    authoritativeNow,
+  });
+}
+
+test("reported 01:00-23:00 Wednesday returns every hourly window in order", () => {
+  const result = reportedCase(new Date("2026-10-20T12:00:00.000Z"));
+  assert.equal(result.length, 22);
+  assert.equal(result[0].startAt, "2026-10-20T19:30:00.000Z");
+  assert.equal(result[0].endAt, "2026-10-20T20:30:00.000Z");
+  assert.equal(result.at(-1).startAt, "2026-10-21T16:30:00.000Z");
+  assert.equal(result.at(-1).endAt, "2026-10-21T17:30:00.000Z");
+  assert.ok(result.every((entry, index) =>
+    index === 0 || entry.startAt > result[index - 1].startAt));
+  assert.ok(result.every((entry) => {
+    const startMinutes = (new Date(entry.startAt).getUTCHours() * 60 +
+      new Date(entry.startAt).getUTCMinutes() + 330) % 1440;
+    const endMinutes = (new Date(entry.endAt).getUTCHours() * 60 +
+      new Date(entry.endAt).getUTCMinutes() + 330) % 1440;
+    return startMinutes >= 60 && endMinutes <= 23 * 60;
+  }));
+});
+
+test("150-minute runway removes only too-soon slots from the reported window", () => {
+  // 08:00 IST on the service date gives a 10:30 IST runway boundary.
+  const result = reportedCase(new Date("2026-10-21T02:30:00.000Z"));
+  assert.equal(result.length, 12);
+  assert.equal(result[0].startAt, "2026-10-21T05:30:00.000Z"); // 11:00 IST
+  assert.equal(result.at(-1).endAt, "2026-10-21T17:30:00.000Z"); // 23:00 IST
 });

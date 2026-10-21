@@ -26,6 +26,29 @@ test("fixed-duration scheduling generates repeating 180-minute slots", () => {
   ]);
 });
 
+test("09:00-17:00 hourly availability includes the closing boundary exactly", () => {
+  const slots = generateSlotWindows({
+    schedulingMode: SERVICE_SCHEDULING_MODE_FIXED_DURATION,
+    sessionDurationMinutes: 60,
+    startMinutes: 9 * 60,
+    endMinutes: 17 * 60,
+  });
+
+  assert.equal(slots.length, 8);
+  assert.deepEqual(slots[0], {
+    startMinutes: 9 * 60,
+    endMinutes: 10 * 60,
+    durationMinutes: 60,
+  });
+  assert.deepEqual(slots.at(-1), {
+    startMinutes: 16 * 60,
+    endMinutes: 17 * 60,
+    durationMinutes: 60,
+  });
+  assert.ok(slots.every((slot) =>
+    slot.startMinutes >= 9 * 60 && slot.endMinutes <= 17 * 60));
+});
+
 test("day care scheduling generates exactly one slot for the full range", () => {
   const slots = generateSlotWindows({
     schedulingMode: SERVICE_SCHEDULING_MODE_DAY_CARE,

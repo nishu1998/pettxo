@@ -140,4 +140,38 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'callable slots render the complete 01:00-23:00 IST window chronologically',
+    (tester) async {
+      await pump(tester);
+      final firstStart = DateTime.parse('2026-10-20T19:30:00.000Z');
+      final slots = List<ServiceSlotModel>.generate(22, (index) {
+        final start = firstStart.add(Duration(hours: index));
+        final end = start.add(const Duration(hours: 1));
+        return ServiceSlotModel.fromCallableMap(<String, dynamic>{
+          'id': '2026-10-21_${(60 + index * 60).toString().padLeft(4, '0')}',
+          'serviceId': 'service',
+          'serviceOwnerId': 'provider',
+          'startAt': start.toIso8601String(),
+          'endAt': end.toIso8601String(),
+          'dateKey': '2026-10-21',
+          'capacity': 1,
+          'confirmedUnits': 0,
+          'isBookable': true,
+          'status': 'open',
+        });
+      });
+
+      repository.changes.add(slots);
+      await tester.pumpAndSettle();
+      expect(find.text('1:00 AM - 2:00 AM'), findsOneWidget);
+      expect(find.text('11:30 AM - 12:30 PM'), findsNothing);
+
+      await tester.drag(find.byType(ListView).last, const Offset(-5000, 0));
+      await tester.pumpAndSettle();
+      expect(find.text('10:00 PM - 11:00 PM'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 }

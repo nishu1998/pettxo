@@ -22,6 +22,11 @@ void main() {
       expect(slots, hasLength(1));
       expect(slots.single.confirmedUnits, 1);
       expect(slots.single.remainingCapacity, 1);
+      expect(
+        slots.single.startAt,
+        DateTime.parse('2026-09-14T03:30:00.000Z').toLocal(),
+      );
+      expect(slots.single.startAt.isUtc, isFalse);
     },
   );
 
