@@ -5,3 +5,5 @@ export {
   applyUserRestriction,
   removeUserRestriction,
 } from "../legacyFunctions";
+
+export {submitReport} from "./reportFunctions";

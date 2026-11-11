@@ -65,6 +65,9 @@ import {
   isServiceModerationAction,
 } from "./moderation/serviceModerationAuthorization";
 import {
+  enqueueReportModerationData,
+} from "./moderation/reportContract";
+import {
   normalizeOfferAudienceInput,
   type OfferAudience,
 } from "./offers/domain/offerAudience";
@@ -3437,22 +3440,29 @@ export const enqueueReportModeration = onDocumentCreated(
   },
   async (event) => {
     const reportId = event.params.reportId;
-    const report = event.data?.data();
-    if (!report) return;
-
-    await db.collection("moderationQueue").add({
-      targetType: report.targetType ?? "",
-      targetId: report.targetId ?? "",
-      targetOwnerId: report.targetOwnerId ?? "",
-      source: "report",
+    const result = await enqueueReportModerationData({
+      firestore: db,
       reportId,
-      severity: "medium",
-      status: "pending",
-      reason: report.reason ?? "User report",
-      assignedAdminId: "",
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
+      reportData: event.data?.data(),
     });
+    if (result.outcome === "skipped") {
+      console.warn("Report moderation enqueue skipped", {
+        reportId,
+        diagnosticCode: result.diagnosticCode,
+      });
+      return;
+    }
+    if (result.diagnosticCode !== "resolved_from_service" &&
+        result.diagnosticCode !== "resolved_from_review_parent") {
+      console.warn("Report target ownership unresolved", {
+        reportId,
+        targetType: result.targetType,
+        diagnosticCode: result.diagnosticCode,
+      });
+    }
+    if (result.outcome === "duplicate") {
+      console.info("Report moderation enqueue already completed", {reportId});
+    }
   },
 );
 

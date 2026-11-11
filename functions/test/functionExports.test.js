@@ -126,6 +126,7 @@ const expectedExportNames = [
   "startDirectUserChat",
   "startProviderChat",
   "submitBookingReviewV3",
+  "submitReport",
   "syncAuthIdentity",
   "syncNotificationToken",
   "syncProfileFollowCounts",
