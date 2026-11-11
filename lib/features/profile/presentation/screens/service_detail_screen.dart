@@ -1520,7 +1520,10 @@ class _ServiceReviewsSection extends StatelessWidget {
               ...latestReviews.map(
                 (review) => Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: _ReviewPreviewCard(review: review),
+                  child: _ReviewPreviewCard(
+                    review: review,
+                    serviceId: service.id,
+                  ),
                 ),
               ),
               if (hasMoreReviews) ...[
@@ -1620,7 +1623,10 @@ void _showAllReviewsSheet({
                     itemCount: reviews.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 12),
                     itemBuilder: (context, index) {
-                      return _ReviewPreviewCard(review: reviews[index]);
+                      return _ReviewPreviewCard(
+                        review: reviews[index],
+                        serviceId: service.id,
+                      );
                     },
                   ),
                 ),
@@ -1635,8 +1641,9 @@ void _showAllReviewsSheet({
 
 class _ReviewPreviewCard extends StatelessWidget {
   final BookingReviewModel review;
+  final String serviceId;
 
-  const _ReviewPreviewCard({required this.review});
+  const _ReviewPreviewCard({required this.review, required this.serviceId});
 
   @override
   Widget build(BuildContext context) {
@@ -1742,6 +1749,7 @@ class _ReviewPreviewCard extends StatelessWidget {
                       context: context,
                       type: 'review',
                       targetId: review.id,
+                      contextId: serviceId,
                     ),
             ),
           ),

@@ -21,8 +21,11 @@ class ReportSheet {
     required BuildContext context,
     required String type,
     required String targetId,
+    String? contextId,
+    ReportRepository? repository,
+    bool? isAuthenticated,
   }) async {
-    if (FirebaseAuth.instance.currentUser == null) {
+    if (!(isAuthenticated ?? FirebaseAuth.instance.currentUser != null)) {
       AppSnackbar.showWarning(context, 'Please sign in to submit a report.');
       return;
     }
@@ -32,7 +35,12 @@ class ReportSheet {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (context) {
-        return _ReportSheetView(type: type, targetId: targetId);
+        return _ReportSheetView(
+          type: type,
+          targetId: targetId,
+          contextId: contextId,
+          repository: repository ?? ReportRepository(),
+        );
       },
     );
   }
@@ -41,15 +49,21 @@ class ReportSheet {
 class _ReportSheetView extends StatefulWidget {
   final String type;
   final String targetId;
+  final String? contextId;
+  final ReportRepository repository;
 
-  const _ReportSheetView({required this.type, required this.targetId});
+  const _ReportSheetView({
+    required this.type,
+    required this.targetId,
+    required this.contextId,
+    required this.repository,
+  });
 
   @override
   State<_ReportSheetView> createState() => _ReportSheetViewState();
 }
 
 class _ReportSheetViewState extends State<_ReportSheetView> {
-  final ReportRepository _reportRepository = ReportRepository();
   final TextEditingController _descriptionController = TextEditingController();
   String? _selectedReason;
   bool _isSubmitting = false;
@@ -66,18 +80,31 @@ class _ReportSheetViewState extends State<_ReportSheetView> {
 
     setState(() => _isSubmitting = true);
     try {
-      await _reportRepository.createReport(
+      final result = await widget.repository.createReport(
         type: widget.type,
         targetId: widget.targetId,
+        contextId: widget.contextId,
         reason: reason,
         description: _descriptionController.text,
       );
       if (!mounted) return;
       Navigator.pop(context);
-      AppSnackbar.showSuccess(
-        context,
-        'Report submitted. Our team will review it.',
-      );
+      if (result.duplicate) {
+        AppSnackbar.showWarning(context, "You've already reported this.");
+      } else {
+        AppSnackbar.showSuccess(
+          context,
+          'Report submitted. Our team will review it.',
+        );
+      }
+    } on ReportSubmissionException catch (error) {
+      if (!mounted) return;
+      if (error.kind == ReportSubmissionFailureKind.alreadyReported) {
+        AppSnackbar.showWarning(context, error.userMessage);
+      } else {
+        AppSnackbar.showError(context, error.userMessage);
+      }
+      setState(() => _isSubmitting = false);
     } catch (_) {
       if (!mounted) return;
       AppSnackbar.showError(
