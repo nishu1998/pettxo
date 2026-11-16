@@ -7,3 +7,9 @@ export {
 } from "../legacyFunctions";
 
 export {submitReport} from "./reportFunctions";
+export {
+  hideReportedReview,
+  hideReportedService,
+  rejectReport,
+  resolveReport,
+} from "./reportModerationFunctions";
