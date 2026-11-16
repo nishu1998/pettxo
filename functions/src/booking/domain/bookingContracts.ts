@@ -48,6 +48,7 @@ export const BOOKING_CANCELLATION_TYPES = [
   "service_not_started",
   "no_show",
   "dispute_resolution",
+  "user_blocked",
 ] as const;
 export type BookingCancellationType = typeof BOOKING_CANCELLATION_TYPES[number];
 

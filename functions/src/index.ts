@@ -15,6 +15,7 @@ export {
   syncNotificationToken,
 } from "./notifications/notificationFunctions";
 export * from "./chat/chatFunctions";
+export * from "./blocking/blockingFunctions";
 export * from "./services/serviceFunctions";
 export * from "./moderation/moderationFunctions";
 export {

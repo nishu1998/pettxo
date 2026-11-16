@@ -67,6 +67,14 @@ import {
   canonicalParticipantIds,
   canonicalUserDocumentMatches,
 } from "../../chat/chatIdentity";
+import {
+  USER_BLOCKS_COLLECTION,
+  assertRelationshipAllowsProtectedMutation,
+  canonicalUserPair,
+  directedBlockId,
+  openRelationshipGuardMutation,
+  relationshipGuardRef,
+} from "../../blocking/relationshipGuard";
 
 const CAPTURE_DEADLINE_TOLERANCE_MS = 2 * 60 * 1000;
 const MAX_RANGE_OCCUPANCY_NIGHTS = 30;
@@ -1881,6 +1889,19 @@ export async function persistFinalizePaymentResultV3(params: {
       params.firestore.collection("users").doc(params.result.booking.providerId) : null;
     const canonicalChatRef = params.result.ok ?
       params.firestore.collection("chats").doc(canonicalChatId) : null;
+    const relationshipPair = canonicalUserPair(
+      params.result.booking.parentId,
+      params.result.booking.providerId,
+    );
+    const relationshipRef = relationshipGuardRef(
+      params.firestore,
+      relationshipPair.uidA,
+      relationshipPair.uidB,
+    );
+    const firstDirectedBlockRef = params.firestore.collection(USER_BLOCKS_COLLECTION)
+      .doc(directedBlockId(relationshipPair.uidA, relationshipPair.uidB));
+    const secondDirectedBlockRef = params.firestore.collection(USER_BLOCKS_COLLECTION)
+      .doc(directedBlockId(relationshipPair.uidB, relationshipPair.uidA));
     const [
       currentBookingSnapshot,
       currentAttemptSnapshot,
@@ -1889,6 +1910,9 @@ export async function persistFinalizePaymentResultV3(params: {
       parentUserSnapshot,
       providerUserSnapshot,
       canonicalChatSnapshot,
+      relationshipSnapshot,
+      firstDirectedBlockSnapshot,
+      secondDirectedBlockSnapshot,
     ] = await Promise.all([
       transaction.get(currentBookingRef),
       transaction.get(currentAttemptRef),
@@ -1897,7 +1921,16 @@ export async function persistFinalizePaymentResultV3(params: {
       parentUserRef ? transaction.get(parentUserRef) : Promise.resolve(null),
       providerUserRef ? transaction.get(providerUserRef) : Promise.resolve(null),
       canonicalChatRef ? transaction.get(canonicalChatRef) : Promise.resolve(null),
+      transaction.get(relationshipRef),
+      transaction.get(firstDirectedBlockRef),
+      transaction.get(secondDirectedBlockRef),
     ]);
+    if (params.result.ok) {
+      assertRelationshipAllowsProtectedMutation(relationshipSnapshot, [
+        firstDirectedBlockSnapshot,
+        secondDirectedBlockSnapshot,
+      ]);
+    }
     const currentBooking = currentBookingSnapshot.data() ?? {};
     const currentAttempt = currentAttemptSnapshot.data() ?? {};
     // Revalidate at commit: a late capture/reconciliation may race a refund.
@@ -2070,6 +2103,11 @@ export async function persistFinalizePaymentResultV3(params: {
         ...serializeBookingForFirestore(params.result.booking),
         chatId: canonicalChatId,
       }, {merge: true});
+      transaction.set(relationshipRef, openRelationshipGuardMutation({
+        pair: relationshipPair,
+        bookingId: params.bookingId,
+        operation: "payment_confirmed",
+      }), {merge: true});
       transaction.set(
         bookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId),
         serializePaymentAttemptForFirestore(params.result.paymentAttempt),

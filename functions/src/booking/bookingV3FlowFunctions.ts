@@ -111,6 +111,11 @@ import {
 } from "../offers/data/offerRepository";
 import {PromoCodeValidationError} from "../offers/domain/promoCode";
 import {buildCustomerBookableSlotsV3} from "./application/serviceSlotAvailabilityV3";
+import {
+  assertRelationshipOpen,
+  openRelationshipGuardMutation,
+  readOpenRelationshipGuardInTransaction,
+} from "../blocking/relationshipGuard";
 
 type CanonicalBookingRequestResponse = {
   bookingId: string;
@@ -2150,6 +2155,11 @@ async function authorizeCanonicalPaymentCommand(params: {
       code: "SERVICE_UNAVAILABLE",
     });
   }
+  await assertRelationshipOpen({
+    firestore: db,
+    firstUid: booking.parentId,
+    secondUid: booking.providerId,
+  });
 
   const requiresContinuationOnly =
     booking.state === "CONFIRMED" ||
@@ -2380,6 +2390,14 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
     const result = await db.runTransaction(async (transaction) => {
       const existingAttemptSnapshot = await transaction.get(attemptRef);
       const existingAttempt = parseExistingAttempt(existingAttemptSnapshot.data());
+      const relationshipGuard = !existingAttempt ?
+        await readOpenRelationshipGuardInTransaction({
+          firestore: db,
+          transaction,
+          firstUid: uid,
+          secondUid: canonicalService.ownerUserId,
+        }) :
+        null;
       if (!existingAttempt && parsed.bookingType === "SLOT") {
         await lockServiceSlotSelection(db, transaction, parsed.serviceId, service, schedule as SlotBookingSelection);
       }
@@ -2421,6 +2439,13 @@ export const createBookingRequestV3 = onCall({invoker: "private"}, async (reques
         writeLifecycleReleaseBoundaryV3({firestore: db, transaction,
           bookingId: createResult.bookingId, booking: createResult.booking});
         transaction.set(attemptRef, serializeAttemptRecord(createResult.attemptRecord), {merge: true});
+        if (relationshipGuard) {
+          transaction.set(relationshipGuard.ref, openRelationshipGuardMutation({
+            pair: relationshipGuard.pair,
+            bookingId: createResult.bookingId,
+            operation: "booking_request_created",
+          }), {merge: true});
+        }
         for (const event of createResult.events) {
           transaction.set(
             canonicalBookingRef.collection("events").doc(event.eventId),
@@ -2580,6 +2605,12 @@ export const acceptBookingRequestV3 = onCall({invoker: "private"}, async (reques
   const result = await db.runTransaction(async (transaction) => {
     const currentSnapshot = await transaction.get(authorized.bookingRef);
     const booking = ensureCanonicalBooking(currentSnapshot.data());
+    const relationshipGuard = await readOpenRelationshipGuardInTransaction({
+      firestore: db,
+      transaction,
+      firstUid: booking.parentId,
+      secondUid: booking.providerId,
+    });
     const lifecycleResult = acceptBookingRequestApplicationV3({
       bookingId,
       booking,
@@ -2603,6 +2634,11 @@ export const acceptBookingRequestV3 = onCall({invoker: "private"}, async (reques
     }
     if (lifecycleResult.code === "UPDATED") {
       transaction.set(authorized.bookingRef, lifecycleResult.booking, {merge: false});
+      transaction.set(relationshipGuard.ref, openRelationshipGuardMutation({
+        pair: relationshipGuard.pair,
+        bookingId,
+        operation: "booking_request_accepted",
+      }), {merge: true});
       for (const event of lifecycleResult.events) {
         transaction.set(
           authorized.bookingRef.collection("events").doc(event.eventId),
@@ -2917,6 +2953,12 @@ export const createRazorpayPaymentOrderV3 = onCall(
     authoritativeNow,
   });
   await db.runTransaction(async (transaction) => {
+    const relationshipGuard = await readOpenRelationshipGuardInTransaction({
+      firestore: db,
+      transaction,
+      firstUid: updatedBooking.parentId,
+      secondUid: updatedBooking.providerId,
+    });
     transaction.set(authorized.bookingRef, updatedBooking, {merge: false});
     transaction.set(
       authorized.bookingRef
@@ -2942,6 +2984,11 @@ export const createRazorpayPaymentOrderV3 = onCall(
         {merge: false},
       );
     }
+    transaction.set(relationshipGuard.ref, openRelationshipGuardMutation({
+      pair: relationshipGuard.pair,
+      bookingId,
+      operation: "payment_order_created",
+    }), {merge: true});
   });
   await persistNotifications({
     notifications: createResult.notifications,
@@ -3188,20 +3235,44 @@ export const createBookingQrPaymentV3 = onCall(
     financials: qrAttempt.pricingSnapshot.financials as Record<string, unknown>,
     authoritativeNow,
   });
-  await db.runTransaction(async (transaction) => {
-    transaction.set(authorized.bookingRef, updatedBooking, {merge: false});
-    transaction.set(qrAttemptRef, qrAttempt, {merge: false});
-    transaction.set(canonicalQrPaymentMappingRef(db, qrCode.id), {
-      schemaVersion: 1,
-      bookingId,
-      paymentAttemptId: qrAttempt.paymentAttemptId,
-      customerUid: uid,
-      razorpayQrCodeId: qrCode.id,
-      status: "ACTIVE",
-      createdAt: Timestamp.fromDate(authoritativeNow),
-      updatedAt: Timestamp.fromDate(authoritativeNow),
-    }, {merge: false});
-  });
+  try {
+    await db.runTransaction(async (transaction) => {
+      const relationshipGuard = await readOpenRelationshipGuardInTransaction({
+        firestore: db,
+        transaction,
+        firstUid: updatedBooking.parentId,
+        secondUid: updatedBooking.providerId,
+      });
+      transaction.set(authorized.bookingRef, updatedBooking, {merge: false});
+      transaction.set(qrAttemptRef, qrAttempt, {merge: false});
+      transaction.set(canonicalQrPaymentMappingRef(db, qrCode.id), {
+        schemaVersion: 1,
+        bookingId,
+        paymentAttemptId: qrAttempt.paymentAttemptId,
+        customerUid: uid,
+        razorpayQrCodeId: qrCode.id,
+        status: "ACTIVE",
+        createdAt: Timestamp.fromDate(authoritativeNow),
+        updatedAt: Timestamp.fromDate(authoritativeNow),
+      }, {merge: false});
+      transaction.set(relationshipGuard.ref, openRelationshipGuardMutation({
+        pair: relationshipGuard.pair,
+        bookingId,
+        operation: "qr_payment_created",
+      }), {merge: true});
+    });
+  } catch (error) {
+    try {
+      await closeRazorpayQrCodeV3({keyId, keySecret, qrCodeId: qrCode.id});
+    } catch (closeError) {
+      logger.error("booking-qr-orphan-close-failed", {
+        bookingId,
+        qrCodeId: qrCode.id,
+        error: closeError instanceof Error ? closeError.message : String(closeError),
+      });
+    }
+    throw error;
+  }
   logger.info("booking-qr-create-success", {
     bookingId,
     paymentAttemptId: qrAttempt.paymentAttemptId,

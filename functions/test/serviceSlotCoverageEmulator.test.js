@@ -147,6 +147,10 @@ emulator('payment confirmation immediately removes the last slot from a fresh re
   fixture.booking.serviceId=id;
   fixture.booking.schedule.slots[0].slotId=c.id;
   fixture.booking.schedule.slots[0].serviceId=id;
+  await Promise.all([
+    db.doc(`users/${fixture.booking.parentId}`).set({uid:fixture.booking.parentId}),
+    db.doc(`users/${fixture.booking.providerId}`).set({uid:fixture.booking.providerId}),
+  ]);
   const result=finalizeCapturedBookingPaymentV3({...fixture,bookingId:'customerA',verificationSource:'callable'});
   assert.equal(result.ok,true);
   await persistFinalizePaymentResultV3({firestore:db,result,bookingId:'customerA'});

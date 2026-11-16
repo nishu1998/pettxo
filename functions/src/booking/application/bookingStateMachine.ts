@@ -39,7 +39,7 @@ const ALLOWED_TRANSITIONS: Record<CanonicalBookingState, CanonicalBookingState[]
     "EXPIRED",
     "CANCELLED_BY_PARENT",
   ],
-  ACCEPTED_AWAITING_PAYMENT: ["PAYMENT_EXPIRED"],
+  ACCEPTED_AWAITING_PAYMENT: ["PAYMENT_EXPIRED", "CANCELLED"],
   CONFIRMED: ["IN_PROGRESS", "CANCELLED", "NO_SHOW"],
   IN_PROGRESS: ["COMPLETED_PENDING_REVIEW"],
   COMPLETED_PENDING_REVIEW: ["COMPLETED_FINAL"],
@@ -74,6 +74,9 @@ function allowedActorsForTransition(
   }
   if (fromState === "ACCEPTED_AWAITING_PAYMENT" && toState === "PAYMENT_EXPIRED") {
     return ["system", "admin"];
+  }
+  if (fromState === "ACCEPTED_AWAITING_PAYMENT" && toState === "CANCELLED") {
+    return ["system"];
   }
   if (fromState === "CONFIRMED" && toState === "CANCELLED") {
     return ["parent", "provider", "admin"];

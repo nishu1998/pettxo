@@ -494,7 +494,7 @@ test("transition table matches the Block 3 state machine", () => {
     "EXPIRED",
     "CANCELLED_BY_PARENT",
   ]);
-  assert.deepEqual(transitionTable().ACCEPTED_AWAITING_PAYMENT, ["PAYMENT_EXPIRED"]);
+  assert.deepEqual(transitionTable().ACCEPTED_AWAITING_PAYMENT, ["PAYMENT_EXPIRED", "CANCELLED"]);
 });
 
 test("state machine allows and rejects expected transitions", () => {

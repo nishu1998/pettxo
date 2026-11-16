@@ -538,6 +538,7 @@ function parseCancellation(raw: Record<string, unknown>): CanonicalCancellationV
     "service_not_started",
     "no_show",
     "dispute_resolution",
+    "user_blocked",
   ].includes(cancellationTypeValue) ? cancellationTypeValue as BookingCancellationType : null;
 
   return {
