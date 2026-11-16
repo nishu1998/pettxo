@@ -6,7 +6,7 @@ const {
   assertSucceeds,
   initializeTestEnvironment,
 } = require("@firebase/rules-unit-testing");
-const {doc, setDoc} = require("firebase/firestore");
+const {deleteDoc, doc, setDoc} = require("firebase/firestore");
 const {deleteObject, getBytes, listAll, ref, uploadBytes} = require("firebase/storage");
 
 const hasEmulators = Boolean(
@@ -76,6 +76,38 @@ test("participants can create and read historical media after either app upgrade
       chatId, messageId: "BcDeFgHiJkLmNoPqRsTu", senderId: "uid-c",
     }},
   ));
+});
+
+test("a directed block prevents new media uploads in both directions but preserves history", {
+  skip: !hasEmulators,
+}, async () => {
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "userBlocks/uid-b_uid-a"), {
+      ownerUserId: "uid-b",
+      blockedUserId: "uid-a",
+      createdAt: new Date(),
+    });
+  });
+  try {
+    for (const [uid, id] of [["uid-a", "IjKlMnOpQrStUvWxYzAb"], ["uid-b", "JkLmNoPqRsTuVwXyZaBc"]]) {
+      await assertFails(uploadBytes(
+        ref(environment.authenticatedContext(uid).storage(),
+          `chatMedia/${chatId}/${id}/image.jpg`),
+        bytes,
+        {contentType: "image/jpeg", customMetadata: {chatId, messageId: id, senderId: uid}},
+      ));
+    }
+    await assertSucceeds(getBytes(
+      ref(environment.authenticatedContext("uid-a").storage(), imagePath),
+    ));
+    await assertSucceeds(getBytes(
+      ref(environment.authenticatedContext("uid-b").storage(), imagePath),
+    ));
+  } finally {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await deleteDoc(doc(context.firestore(), "userBlocks/uid-b_uid-a"));
+    });
+  }
 });
 
 test("metadata, MIME, size, overwrite, and listing restrictions are enforced", {skip: !hasEmulators}, async () => {
