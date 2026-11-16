@@ -8,6 +8,7 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../../../../core/services/firestore_cache_service.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../blocking/data/blocked_relationship_repository.dart';
 import '../../../profile/domain/models/profile_service_listing.dart';
 import '../../domain/models/service_model.dart';
 
@@ -16,6 +17,8 @@ class ServicesRepository {
   final FirebaseAuth _auth;
   final FirebaseStorage _storage;
   final ProfileRepository _profileRepository = ProfileRepository();
+  late final BlockedRelationshipRepository _blockedRelationships =
+      BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
   final Map<String, bool> _ownerVisibilityCache = <String, bool>{};
 
   ServicesRepository({
@@ -141,6 +144,10 @@ class ServicesRepository {
     }
     final service = ServiceModel.fromMap(snapshot.id, serviceData);
     if (!_isServicePubliclyVisible(service)) return null;
+    if (ownerUserId != _currentUid &&
+        await _blockedRelationships.isEffectivelyBlocked(ownerUserId)) {
+      return null;
+    }
     return await _isOwnerVisible(service.ownerUserId) ? service : null;
   }
 
@@ -362,6 +369,8 @@ class ServicesRepository {
     List<ServiceModel> services,
   ) async {
     if (services.isEmpty) return const <ServiceModel>[];
+    final blockedOwnerIds = await _blockedRelationships
+        .loadEffectiveBlockedUserIds();
 
     final missingOwnerIds = services
         .map((service) => service.ownerUserId.trim())
@@ -380,6 +389,7 @@ class ServicesRepository {
         .where((service) {
           final ownerId = service.ownerUserId.trim();
           if (ownerId.isEmpty) return false;
+          if (blockedOwnerIds.contains(ownerId)) return false;
           if (!_isServicePubliclyVisible(service)) return false;
           return _ownerVisibilityCache[ownerId] ?? false;
         })
@@ -389,6 +399,10 @@ class ServicesRepository {
   Future<bool> _isOwnerVisible(String ownerUserId) async {
     final trimmedOwnerId = ownerUserId.trim();
     if (trimmedOwnerId.isEmpty) return false;
+    if (trimmedOwnerId != _currentUid &&
+        await _blockedRelationships.isEffectivelyBlocked(trimmedOwnerId)) {
+      return false;
+    }
 
     final cached = _ownerVisibilityCache[trimmedOwnerId];
     if (cached != null) {

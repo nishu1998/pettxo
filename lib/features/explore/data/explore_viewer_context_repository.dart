@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../profile/domain/models/user_profile.dart';
 import '../../social/data/follow_repository.dart';
+import '../../blocking/data/blocked_relationship_repository.dart';
 import '../domain/models/explore_feed_viewer_context.dart';
 import 'explore_location_repository.dart';
 
@@ -27,6 +28,8 @@ class ExploreViewerContextRepository {
   final ProfileRepository _profileRepository;
   final FollowRepository _followRepository;
   final ExploreLocationRepository _locationRepository;
+  late final BlockedRelationshipRepository _blockedRelationships =
+      BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
 
   String get _currentUserId => _auth.currentUser?.uid.trim() ?? '';
 
@@ -96,9 +99,6 @@ class ExploreViewerContextRepository {
   }
 
   Future<Set<String>> _loadBlockedUserIds() async {
-    // User-to-user blocking is not currently a Pettxo product feature.
-    // Keep the viewer-context shape intact so block-based filtering can be
-    // enabled here later without changing the Discover/Near You consumers.
-    return const <String>{};
+    return _blockedRelationships.loadEffectiveBlockedUserIds();
   }
 }

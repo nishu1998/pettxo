@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +9,7 @@ import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/follow_repository.dart';
@@ -50,14 +53,26 @@ class _UserListScreenState extends State<UserListScreen> {
   bool _hasMore = true;
   String? _error;
   DocumentSnapshot<Map<String, dynamic>>? _lastDocument;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
 
   String get _currentUserId => _auth.currentUser?.uid ?? '';
 
   @override
   void initState() {
     super.initState();
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((_) {
+          unawaited(_primeFollowingState());
+          unawaited(_loadInitialPage());
+        });
     _primeFollowingState();
     _loadInitialPage();
+  }
+
+  @override
+  void dispose() {
+    _blockingChangeSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _primeFollowingState() async {

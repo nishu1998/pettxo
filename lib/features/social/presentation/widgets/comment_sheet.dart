@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -11,6 +12,7 @@ import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/app_glass_overlay.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/models/comment_model.dart';
@@ -70,6 +72,7 @@ class _CommentSheetState extends State<CommentSheet> {
   bool _isMutatingComment = false;
   String? _error;
   DocumentSnapshot<Map<String, dynamic>>? _lastDocument;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
 
   @override
   void initState() {
@@ -77,12 +80,15 @@ class _CommentSheetState extends State<CommentSheet> {
     _commentCount = widget.post.commentCount;
     _commentController.addListener(_handleComposerChanged);
     _scrollController.addListener(_handleScroll);
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((_) => unawaited(_loadInitialComments()));
     _loadInitialComments();
   }
 
   @override
   void dispose() {
     _commentController.removeListener(_handleComposerChanged);
+    _blockingChangeSubscription?.cancel();
     _commentController.dispose();
     _scrollController.dispose();
     super.dispose();

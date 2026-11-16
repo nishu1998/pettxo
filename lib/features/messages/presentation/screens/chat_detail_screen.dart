@@ -11,6 +11,9 @@ import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/app_feedback.dart';
 import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
+import '../../../blocking/data/blocked_relationship_repository.dart';
+import '../../../blocking/presentation/user_safety_dialogs.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../../data/repositories/chat_media_repository.dart';
 import '../../data/services/chat_image_processing_service.dart';
@@ -30,13 +33,16 @@ class ChatDetailScreen extends StatefulWidget {
   State<ChatDetailScreen> createState() => _ChatDetailScreenState();
 }
 
-class _ChatDetailScreenState extends State<ChatDetailScreen> {
+class _ChatDetailScreenState extends State<ChatDetailScreen>
+    with WidgetsBindingObserver {
   final ChatRepository _repository = ChatRepository();
   final ChatMediaRepository _mediaRepository = ChatMediaRepository();
   final ChatImageSelectionService _imageSelectionService =
       ChatImageSelectionService();
   final ChatImageProcessingService _imageProcessingService =
       const ChatImageProcessingService();
+  final BlockedRelationshipRepository _blockingRepository =
+      BlockedRelationshipRepository();
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
@@ -57,6 +63,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   int _imageSendAttempt = 0;
   double _uploadProgress = 0;
   String _imageSendError = '';
+  String _relationshipTargetUid = '';
+  UserRelationshipState? _relationshipState;
+  bool _relationshipLoading = false;
+  bool _relationshipLoadFailed = false;
+  bool _blockingActionRunning = false;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
 
   String get _currentUid => FirebaseAuth.instance.currentUser?.uid ?? '';
   String get _activeChatId =>
@@ -65,19 +77,36 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_handleScroll);
     _resolvedChatId = widget.chatId;
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((change) {
+          if (change.targetUid == _relationshipTargetUid) {
+            unawaited(_loadRelationshipState(force: true));
+          }
+        });
     unawaited(_resolveChatId());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _uploadProgressSubscription?.cancel();
+    _blockingChangeSubscription?.cancel();
     _messageController.dispose();
     _scrollController
       ..removeListener(_handleScroll)
       ..dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed &&
+        _relationshipTargetUid.isNotEmpty) {
+      unawaited(_loadRelationshipState(force: true));
+    }
   }
 
   void _handleScroll() {
@@ -150,6 +179,166 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (mounted) setState(() => _imageMessagingEnabled = enabled);
     } catch (_) {
       if (mounted) setState(() => _imageMessagingEnabled = false);
+    }
+  }
+
+  void _syncRelationshipTarget(ChatModel chat) {
+    final targetUid = chat.otherParticipantIdFor(_currentUid).trim();
+    if (targetUid.isEmpty || targetUid == _relationshipTargetUid) return;
+    _relationshipTargetUid = targetUid;
+    _relationshipState = null;
+    _relationshipLoadFailed = false;
+    unawaited(_loadRelationshipState(force: true));
+  }
+
+  Future<void> _loadRelationshipState({bool force = false}) async {
+    final targetUid = _relationshipTargetUid;
+    if (targetUid.isEmpty || (_relationshipLoading && !force)) return;
+    _relationshipLoading = true;
+    try {
+      final state = await _blockingRepository.getRelationshipState(targetUid);
+      if (!mounted || targetUid != _relationshipTargetUid) return;
+      setState(() {
+        _relationshipState = state;
+        _relationshipLoadFailed = false;
+      });
+      if (state.relationshipBlocked && _pendingImageSend != null) {
+        unawaited(_cancelImageSend());
+      }
+      await _loadImageMessagingCapability();
+    } catch (_) {
+      // Fail closed in the composer until the authoritative state is known.
+      if (mounted && targetUid == _relationshipTargetUid) {
+        setState(() => _relationshipLoadFailed = true);
+      }
+    } finally {
+      _relationshipLoading = false;
+    }
+  }
+
+  Future<void> _updateBlockState() async {
+    final targetUid = _relationshipTargetUid;
+    if (targetUid.isEmpty || _blockingActionRunning) return;
+    UserRelationshipState state;
+    try {
+      state =
+          _relationshipState ??
+          await _blockingRepository.getRelationshipState(targetUid);
+    } on BlockingException catch (error) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: blockingFailureMessage(error.kind),
+        tone: AppFeedbackTone.error,
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (state.blockedByCaller) {
+      if (!await showUnblockConfirmation(context) || !mounted) return;
+      setState(() => _blockingActionRunning = true);
+      try {
+        final result = await _blockingRepository.unblockUser(targetUid);
+        if (!mounted) return;
+        setState(() {
+          _relationshipState = UserRelationshipState(
+            relationshipBlocked: result.relationshipBlocked,
+            blockedByCaller: result.blockedByCaller,
+            canBlock: true,
+            reasonCode: '',
+            acceptedUnpaidBookingCount: 0,
+          );
+        });
+        BlockingChangeCoordinator.instance.publish(
+          BlockingChange(
+            targetUid: targetUid,
+            relationshipBlocked: result.relationshipBlocked,
+            blockedByCaller: result.blockedByCaller,
+          ),
+        );
+        AppFeedback.show(
+          context,
+          message: result.relationshipBlocked
+              ? 'Your block was removed. Some restrictions remain.'
+              : 'User unblocked successfully.',
+          tone: AppFeedbackTone.success,
+        );
+      } on BlockingException catch (error) {
+        if (mounted) {
+          AppFeedback.show(
+            context,
+            message: blockingFailureMessage(error.kind),
+            tone: AppFeedbackTone.error,
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _blockingActionRunning = false);
+      }
+      return;
+    }
+    if (!state.canBlock) {
+      await showBlockingUnavailable(
+        context,
+        reasonCode: state.reasonCode,
+        reportTargetUid: targetUid,
+      );
+      return;
+    }
+    if (!await showBlockConfirmation(context, state) || !mounted) return;
+    setState(() => _blockingActionRunning = true);
+    try {
+      final result = await _blockingRepository.blockUser(targetUid);
+      if (!mounted) return;
+      setState(() {
+        _relationshipState = UserRelationshipState(
+          relationshipBlocked: result.relationshipBlocked,
+          blockedByCaller: result.blockedByCaller,
+          canBlock: true,
+          reasonCode: '',
+          acceptedUnpaidBookingCount: 0,
+        );
+        _imageMessagingEnabled = false;
+      });
+      if (_pendingImageSend != null) unawaited(_cancelImageSend());
+      BlockingChangeCoordinator.instance.publish(
+        BlockingChange(
+          targetUid: targetUid,
+          relationshipBlocked: result.relationshipBlocked,
+          blockedByCaller: result.blockedByCaller,
+        ),
+      );
+      AppFeedback.show(
+        context,
+        message: result.cancelledBookingCount > 0
+            ? 'User blocked. Eligible unpaid bookings were cancelled.'
+            : 'User blocked successfully.',
+        tone: AppFeedbackTone.success,
+      );
+    } on BlockingException catch (error) {
+      if (!mounted) return;
+      if (error.kind == BlockingFailureKind.protectedBooking ||
+          error.kind == BlockingFailureKind.paymentReconciliation ||
+          error.kind == BlockingFailureKind.supportRequired) {
+        await showBlockingUnavailable(
+          context,
+          reasonCode: switch (error.kind) {
+            BlockingFailureKind.paymentReconciliation =>
+              'PAYMENT_RECONCILIATION_REQUIRED',
+            BlockingFailureKind.supportRequired =>
+              'PAIR_BOOKING_LIMIT_EXCEEDED',
+            _ => 'PROTECTED_BOOKING_EXISTS',
+          },
+          reportTargetUid: targetUid,
+        );
+      } else {
+        AppFeedback.show(
+          context,
+          message: blockingFailureMessage(error.kind),
+          tone: AppFeedbackTone.error,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _blockingActionRunning = false);
     }
   }
 
@@ -393,7 +582,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   Future<void> _sendMessage(ChatModel? chat) async {
     final text = _messageController.text.trim();
-    if (text.isEmpty || _isSending || chat == null || chat.isClosed) return;
+    if (text.isEmpty ||
+        _isSending ||
+        chat == null ||
+        chat.isClosed ||
+        (_relationshipState?.relationshipBlocked ?? true)) {
+      return;
+    }
 
     setState(() => _isSending = true);
     try {
@@ -434,6 +629,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       stream: _repository.watchChat(_activeChatId),
       builder: (context, chatSnapshot) {
         final chat = chatSnapshot.data;
+        if (chat != null) _syncRelationshipTarget(chat);
+        final interactionBlocked =
+            _relationshipState?.relationshipBlocked ?? true;
         if (chat != null && chat.unreadCountFor(_currentUid) > 0) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             unawaited(_markDeliveredAndRead(chat: chat));
@@ -485,6 +683,55 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       );
                     },
                   ),
+            actions: [
+              PopupMenuButton<String>(
+                tooltip: 'Conversation safety actions',
+                enabled: !_blockingActionRunning,
+                onSelected: (action) {
+                  if (action == 'report') {
+                    showUserReport(context, targetUid: _relationshipTargetUid);
+                  } else if (action == 'block') {
+                    _updateBlockState();
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem<String>(
+                    value: 'block',
+                    enabled:
+                        _relationshipState != null || _relationshipLoadFailed,
+                    child: Row(
+                      children: [
+                        Icon(
+                          _relationshipState?.blockedByCaller == true
+                              ? Icons.person_add_alt_1_outlined
+                              : Icons.person_off_outlined,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          _relationshipLoadFailed
+                              ? 'Retry block status'
+                              : _relationshipState == null
+                              ? 'Checking block status...'
+                              : _relationshipState!.blockedByCaller
+                              ? 'Unblock User'
+                              : 'Block User',
+                        ),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'report',
+                    child: Row(
+                      children: [
+                        Icon(Icons.flag_outlined),
+                        SizedBox(width: 10),
+                        Text('Report User'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
           body: Column(
             children: [
@@ -685,8 +932,26 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   stage: _imageSendStage,
                   progress: _uploadProgress,
                   error: _imageSendError,
-                  onRetry: _retryImageSend,
+                  onRetry: interactionBlocked ? null : _retryImageSend,
                   onCancel: _cancelImageSend,
+                ),
+              if (interactionBlocked && _relationshipState != null)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                  padding: const EdgeInsets.all(13),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF1EF),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Text(
+                    'Messaging is unavailable because this relationship is blocked. Your conversation history remains available.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppColors.textDark,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               SafeArea(
                 top: false,
@@ -703,14 +968,16 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      if (_imageMessagingEnabled) ...[
+                      if (_imageMessagingEnabled && !interactionBlocked) ...[
                         SizedBox(
                           width: 44,
                           height: 52,
                           child: IconButton(
                             tooltip: 'Send photo',
                             onPressed:
-                                _imageSendBusy || (chat?.isClosed ?? false)
+                                _imageSendBusy ||
+                                    interactionBlocked ||
+                                    (chat?.isClosed ?? false)
                                 ? null
                                 : () => _selectAndPreviewImage(chat),
                             icon: const Icon(
@@ -727,7 +994,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                           minLines: 1,
                           maxLines: 5,
                           textCapitalization: TextCapitalization.sentences,
-                          enabled: !_isSending && !(chat?.isClosed ?? false),
+                          enabled:
+                              !_isSending &&
+                              !interactionBlocked &&
+                              !(chat?.isClosed ?? false),
                           decoration: InputDecoration(
                             hintText: 'Type a message',
                             filled: true,
@@ -750,13 +1020,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                         height: 52,
                         child: DecoratedBox(
                           decoration: BoxDecoration(
-                            color: _isSending || (chat?.isClosed ?? false)
+                            color:
+                                _isSending ||
+                                    interactionBlocked ||
+                                    (chat?.isClosed ?? false)
                                 ? AppColors.primary.withValues(alpha: 0.45)
                                 : AppColors.primary,
                             shape: BoxShape.circle,
                           ),
                           child: IconButton(
-                            onPressed: _isSending || (chat?.isClosed ?? false)
+                            onPressed:
+                                _isSending ||
+                                    interactionBlocked ||
+                                    (chat?.isClosed ?? false)
                                 ? null
                                 : () => _sendMessage(chat),
                             icon: _isSending
@@ -838,7 +1114,7 @@ class _ImageSendStatusCard extends StatelessWidget {
   final ChatImageSendStage stage;
   final double progress;
   final String error;
-  final VoidCallback onRetry;
+  final VoidCallback? onRetry;
   final VoidCallback onCancel;
 
   @override

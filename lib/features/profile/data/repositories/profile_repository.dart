@@ -10,6 +10,7 @@ import '../../../../core/identity/username_utils.dart' as username_utils;
 import '../../../../core/services/firestore_cache_service.dart';
 import '../../../auth/domain/models/profile_type.dart';
 import '../../../restrictions/domain/models/user_restriction_state.dart';
+import '../../../blocking/data/blocked_relationship_repository.dart';
 import '../../domain/models/user_profile.dart';
 
 @visibleForTesting
@@ -42,6 +43,8 @@ class ProfileRepository {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  late final BlockedRelationshipRepository _blockedRelationships =
+      BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
 
   DocumentReference<Map<String, dynamic>> _publicUserDoc(String userId) {
     return _firestore.collection('users').doc(userId);
@@ -163,6 +166,8 @@ class ProfileRepository {
     if (normalizedIds.isEmpty) {
       return <String, bool>{};
     }
+    final blockedUserIds = await _blockedRelationships
+        .loadEffectiveBlockedUserIds();
 
     final visibilityById = <String, bool>{};
     const chunkSize = 10;
@@ -184,7 +189,8 @@ class ProfileRepository {
         final profileId = profile.uid.trim();
         if (profileId.isEmpty) continue;
         foundIds.add(profileId);
-        visibilityById[profileId] = profile.isPubliclyVisible;
+        visibilityById[profileId] =
+            profile.isPubliclyVisible && !blockedUserIds.contains(profileId);
       }
 
       for (final userId in chunk) {
@@ -317,6 +323,8 @@ class ProfileRepository {
         '${normalized[0].toUpperCase()}${normalized.substring(1)}';
     final exactExcludedId = excludeUserId?.trim() ?? '';
     final resultsById = <String, UserProfile>{};
+    final blockedUserIds = await _blockedRelationships
+        .loadEffectiveBlockedUserIds();
 
     Future<void> collect(
       Future<QuerySnapshot<Map<String, dynamic>>> Function() loader,
@@ -327,6 +335,7 @@ class ProfileRepository {
         if (profile == null) continue;
         final profileId = profile.uid.trim();
         if (profileId.isEmpty || profileId == exactExcludedId) continue;
+        if (blockedUserIds.contains(profileId)) continue;
         if (!profile.isPubliclyVisible) continue;
 
         if (profileMatchesSearchPrefix(profile, normalized)) {

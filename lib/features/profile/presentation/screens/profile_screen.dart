@@ -14,6 +14,9 @@ import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../messages/data/repositories/chat_repository.dart';
 import '../../../messages/presentation/screens/chat_detail_screen.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
+import '../../../blocking/data/blocked_relationship_repository.dart';
+import '../../../blocking/presentation/user_safety_dialogs.dart';
 import '../../../provider/data/repositories/provider_onboarding_repository.dart';
 import '../../../provider/domain/models/provider_onboarding_models.dart';
 import '../../../profile/data/repositories/pet_repository.dart';
@@ -49,7 +52,8 @@ class _ProfileTourReadinessSignal extends ChangeNotifier {
   void signal() => notifyListeners();
 }
 
-class _ProfileScreenState extends State<ProfileScreen> {
+class _ProfileScreenState extends State<ProfileScreen>
+    with WidgetsBindingObserver {
   final Map<String, ProfileFollowCounts> _followCountCache =
       <String, ProfileFollowCounts>{};
   final Map<String, ProfileFollowCounts> _observedProjectedCounts =
@@ -65,6 +69,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final SettingsService _settingsService = SettingsService();
   final FollowRepository _followRepository = FollowRepository();
   final ChatRepository _chatRepository = ChatRepository();
+  final BlockedRelationshipRepository _blockingRepository =
+      BlockedRelationshipRepository();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   late final ScrollController _profileScrollController;
   final ScrollController _petsTourScrollController = ScrollController();
@@ -92,6 +98,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool? _followStateOverride;
   bool _isFollowActionRunning = false;
   bool _isOpeningDirectChat = false;
+  String _relationshipTargetUid = '';
+  Future<UserRelationshipState>? _relationshipStateFuture;
+  UserRelationshipState? _relationshipState;
+  bool _relationshipLoadFailed = false;
+  bool _isBlockingActionRunning = false;
   bool _isGlobalServiceActionRunning = false;
   String _runningServiceActionId = '';
   final Map<String, Future<ProfileFollowCounts>> _followCountRequests =
@@ -110,6 +121,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _profileScrollController = ScrollController(
       onAttach: _handleProfileScrollAttach,
       onDetach: _handleProfileScrollDetach,
@@ -135,6 +147,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _profileTourDisposing = true;
     _profileTourReadiness.signal();
     _profileTourController.isActive.removeListener(
@@ -150,6 +163,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _followChangeSubscription?.cancel();
     _profileTourReadiness.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed ||
+        _relationshipTargetUid.isEmpty ||
+        !mounted) {
+      return;
+    }
+    setState(() {
+      _relationshipTargetUid = '';
+      _relationshipStateFuture = null;
+      _relationshipState = null;
+      _relationshipLoadFailed = false;
+    });
   }
 
   Iterable<ProfileTourTargetHandle> get _profileTourTargetHandles =>
@@ -218,6 +246,161 @@ class _ProfileScreenState extends State<ProfileScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_startProfileTour());
       });
+    }
+  }
+
+  void _syncRelationshipState({
+    required String targetUid,
+    required bool isOwnProfile,
+  }) {
+    if (isOwnProfile || targetUid.isEmpty) return;
+    if (_relationshipTargetUid == targetUid &&
+        _relationshipStateFuture != null) {
+      return;
+    }
+    _relationshipTargetUid = targetUid;
+    _relationshipState = null;
+    _relationshipLoadFailed = false;
+    final request = _blockingRepository.getRelationshipState(targetUid);
+    _relationshipStateFuture = request;
+    request
+        .then((state) {
+          if (!mounted || _relationshipTargetUid != targetUid) return;
+          setState(() {
+            _relationshipState = state;
+            _relationshipLoadFailed = false;
+          });
+        })
+        .catchError((Object _) {
+          if (!mounted || _relationshipTargetUid != targetUid) return;
+          setState(() => _relationshipLoadFailed = true);
+        });
+  }
+
+  Future<void> _updateBlockState(String targetUid) async {
+    if (_isBlockingActionRunning) return;
+    UserRelationshipState state;
+    try {
+      state =
+          _relationshipState ??
+          await (_relationshipLoadFailed
+              ? _blockingRepository.getRelationshipState(targetUid)
+              : _relationshipStateFuture ??
+                    _blockingRepository.getRelationshipState(targetUid));
+      _relationshipLoadFailed = false;
+    } on BlockingException catch (error) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: blockingFailureMessage(error.kind),
+        tone: AppFeedbackTone.error,
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    if (state.blockedByCaller) {
+      if (!await showUnblockConfirmation(context) || !mounted) return;
+      setState(() => _isBlockingActionRunning = true);
+      try {
+        final result = await _blockingRepository.unblockUser(targetUid);
+        if (!mounted) return;
+        final next = UserRelationshipState(
+          relationshipBlocked: result.relationshipBlocked,
+          blockedByCaller: result.blockedByCaller,
+          canBlock: true,
+          reasonCode: '',
+          acceptedUnpaidBookingCount: 0,
+        );
+        setState(() => _relationshipState = next);
+        BlockingChangeCoordinator.instance.publish(
+          BlockingChange(
+            targetUid: targetUid,
+            relationshipBlocked: result.relationshipBlocked,
+            blockedByCaller: result.blockedByCaller,
+          ),
+        );
+        AppFeedback.show(
+          context,
+          message: result.relationshipBlocked
+              ? 'Your block was removed. Some restrictions remain.'
+              : 'User unblocked successfully.',
+          tone: AppFeedbackTone.success,
+        );
+      } on BlockingException catch (error) {
+        if (!mounted) return;
+        AppFeedback.show(
+          context,
+          message: blockingFailureMessage(error.kind),
+          tone: AppFeedbackTone.error,
+        );
+      } finally {
+        if (mounted) setState(() => _isBlockingActionRunning = false);
+      }
+      return;
+    }
+
+    if (!state.canBlock) {
+      await showBlockingUnavailable(
+        context,
+        reasonCode: state.reasonCode,
+        reportTargetUid: targetUid,
+      );
+      return;
+    }
+    if (!await showBlockConfirmation(context, state) || !mounted) return;
+    setState(() => _isBlockingActionRunning = true);
+    try {
+      final result = await _blockingRepository.blockUser(targetUid);
+      if (!mounted) return;
+      setState(() {
+        _relationshipState = UserRelationshipState(
+          relationshipBlocked: result.relationshipBlocked,
+          blockedByCaller: result.blockedByCaller,
+          canBlock: true,
+          reasonCode: '',
+          acceptedUnpaidBookingCount: 0,
+        );
+      });
+      BlockingChangeCoordinator.instance.publish(
+        BlockingChange(
+          targetUid: targetUid,
+          relationshipBlocked: result.relationshipBlocked,
+          blockedByCaller: result.blockedByCaller,
+        ),
+      );
+      AppFeedback.show(
+        context,
+        message: result.cancelledBookingCount > 0
+            ? 'User blocked. Eligible unpaid bookings were cancelled.'
+            : 'User blocked successfully.',
+        tone: AppFeedbackTone.success,
+      );
+    } on BlockingException catch (error) {
+      if (!mounted) return;
+      if (error.kind == BlockingFailureKind.protectedBooking ||
+          error.kind == BlockingFailureKind.paymentReconciliation ||
+          error.kind == BlockingFailureKind.supportRequired) {
+        await showBlockingUnavailable(
+          context,
+          reasonCode: switch (error.kind) {
+            BlockingFailureKind.paymentReconciliation =>
+              'PAYMENT_RECONCILIATION_REQUIRED',
+            BlockingFailureKind.supportRequired =>
+              'PAIR_BOOKING_LIMIT_EXCEEDED',
+            _ => 'PROTECTED_BOOKING_EXISTS',
+          },
+          reportTargetUid: targetUid,
+        );
+      } else {
+        AppFeedback.show(
+          context,
+          message: blockingFailureMessage(error.kind),
+          tone: AppFeedbackTone.error,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isBlockingActionRunning = false);
     }
   }
 
@@ -959,6 +1142,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   if (!isOwnProfile && !profile.isPubliclyVisible) {
                     return const _ProfileUnavailableState();
                   }
+                  _syncRelationshipState(
+                    targetUid: profile.uid,
+                    isOwnProfile: isOwnProfile,
+                  );
+                  final relationshipState = _relationshipState;
+                  final relationshipReady =
+                      isOwnProfile || relationshipState != null;
+                  final relationshipBlocked =
+                      relationshipState?.relationshipBlocked ?? false;
                   _syncFollowState(
                     currentUserId: currentUserId,
                     profileUserId: profile.uid,
@@ -978,7 +1170,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   ))
                             .map((services) => services.toProfileListings()),
                     builder: (context, servicesSnapshot) {
-                      final services = servicesSnapshot.data ?? const [];
+                      final services = relationshipBlocked
+                          ? const <ProfileServiceListing>[]
+                          : servicesSnapshot.data ?? const [];
                       final hasApprovedProviderVerification = services.any(
                         (service) =>
                             service.providerVerificationStatus ==
@@ -989,17 +1183,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       return StreamBuilder<List<PetProfile>>(
                         stream: _petRepository.watchVisiblePets(profile.uid),
                         builder: (context, petsSnapshot) {
-                          final pets =
-                              petsSnapshot.data ?? const <PetProfile>[];
+                          final pets = relationshipBlocked
+                              ? const <PetProfile>[]
+                              : petsSnapshot.data ?? const <PetProfile>[];
 
                           return StreamBuilder<List<SocialPostModel>>(
                             stream: _contentRepository.watchPostsForProfile(
                               profile,
                             ),
                             builder: (context, postsSnapshot) {
-                              final posts =
-                                  postsSnapshot.data ??
-                                  const <SocialPostModel>[];
+                              final posts = relationshipBlocked
+                                  ? const <SocialPostModel>[]
+                                  : postsSnapshot.data ??
+                                        const <SocialPostModel>[];
 
                               return Stack(
                                 children: [
@@ -1200,6 +1396,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                                   final onPressed =
                                                                       currentUserId
                                                                               .isEmpty ||
+                                                                          !relationshipReady ||
+                                                                          relationshipBlocked ||
                                                                           followSnapshot.connectionState ==
                                                                               ConnectionState.waiting
                                                                       ? null
@@ -1257,14 +1455,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                           )
                                                         : SecondaryButton(
                                                             label:
-                                                                _isOpeningDirectChat
+                                                                relationshipBlocked
+                                                                ? 'Blocked'
+                                                                : _isOpeningDirectChat
                                                                 ? "Opening..."
                                                                 : "Message",
                                                             size: AppButtonSize
                                                                 .compact,
                                                             onPressed:
                                                                 currentUserId
-                                                                    .isEmpty
+                                                                        .isEmpty ||
+                                                                    !relationshipReady ||
+                                                                    relationshipBlocked
                                                                 ? null
                                                                 : () => _openDirectChat(
                                                                     profile:
@@ -1618,7 +1820,91 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                     ),
                                                   )
                                                 else
-                                                  const SizedBox(width: 48),
+                                                  SizedBox(
+                                                    width: 48,
+                                                    height: 48,
+                                                    child: PopupMenuButton<String>(
+                                                      tooltip:
+                                                          'User safety actions',
+                                                      enabled:
+                                                          !_isBlockingActionRunning,
+                                                      icon: const Icon(
+                                                        Icons
+                                                            .more_horiz_rounded,
+                                                        color:
+                                                            AppColors.textDark,
+                                                      ),
+                                                      onSelected: (action) {
+                                                        if (action ==
+                                                            'report') {
+                                                          showUserReport(
+                                                            context,
+                                                            targetUid:
+                                                                profile.uid,
+                                                          );
+                                                        } else if (action ==
+                                                            'block') {
+                                                          _updateBlockState(
+                                                            profile.uid,
+                                                          );
+                                                        }
+                                                      },
+                                                      itemBuilder: (context) => [
+                                                        PopupMenuItem<String>(
+                                                          value: 'block',
+                                                          enabled:
+                                                              relationshipReady ||
+                                                              _relationshipLoadFailed,
+                                                          child: Row(
+                                                            children: [
+                                                              Icon(
+                                                                relationshipState
+                                                                            ?.blockedByCaller ==
+                                                                        true
+                                                                    ? Icons
+                                                                          .person_add_alt_1_outlined
+                                                                    : Icons
+                                                                          .person_off_outlined,
+                                                              ),
+                                                              const SizedBox(
+                                                                width: 10,
+                                                              ),
+                                                              Text(
+                                                                _relationshipLoadFailed
+                                                                    ? 'Retry block status'
+                                                                    : !relationshipReady
+                                                                    ? 'Checking block status...'
+                                                                    : relationshipState
+                                                                              ?.blockedByCaller ==
+                                                                          true
+                                                                    ? 'Unblock User'
+                                                                    : 'Block User',
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ),
+                                                        const PopupMenuItem<
+                                                          String
+                                                        >(
+                                                          value: 'report',
+                                                          child: Row(
+                                                            children: [
+                                                              Icon(
+                                                                Icons
+                                                                    .flag_outlined,
+                                                              ),
+                                                              SizedBox(
+                                                                width: 10,
+                                                              ),
+                                                              Text(
+                                                                'Report User',
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
                                               ],
                                             ),
                                           ),

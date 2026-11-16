@@ -14,6 +14,7 @@ import '../../notifications/data/repositories/notification_repository.dart';
 import '../../explore/domain/models/explore_location_snapshot.dart';
 import '../../profile/data/repositories/profile_repository.dart';
 import '../../profile/domain/models/user_profile.dart';
+import '../../blocking/data/blocked_relationship_repository.dart';
 import '../domain/models/comment_model.dart';
 import '../domain/models/social_post_model.dart';
 import '../domain/hashtag_normalizer.dart' as hashtag_normalizer;
@@ -221,6 +222,8 @@ class SocialPostRepository {
   final FirebaseAuth _auth;
   final ProfileRepository _profileRepository;
   final NotificationRepository _notificationRepository;
+  late final BlockedRelationshipRepository _blockedRelationships =
+      BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
   final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
   static const Set<String> _backendOwnedCreateFields = <String>{
@@ -860,7 +863,7 @@ class SocialPostRepository {
         throw Exception('This post is no longer available for reports.');
       }
       final authorId = (postData['authorId'] as String? ?? '').trim();
-      if (!await _isUserVisible(authorId)) {
+      if (!await _isUserPubliclyVisibleIgnoringBlock(authorId)) {
         throw Exception('This post is no longer available for reports.');
       }
 
@@ -896,6 +899,8 @@ class SocialPostRepository {
   }) async {
     try {
       final comments = <CommentModel>[];
+      final blockedAuthorIds = await _blockedRelationships
+          .loadEffectiveBlockedUserIds();
       DocumentSnapshot<Map<String, dynamic>>? cursor = startAfter;
       var hasMore = true;
       final pageSize = math.max(limit * 2, 20);
@@ -920,11 +925,28 @@ class SocialPostRepository {
         cursor = snapshot.docs.last;
         hasMore = snapshot.docs.length == pageSize;
 
-        for (final doc in snapshot.docs) {
-          final comment = CommentModel.fromDocument(doc);
+        final pageComments = snapshot.docs
+            .map(CommentModel.fromDocument)
+            .toList(growable: false);
+        final missingAuthorIds = pageComments
+            .map((comment) => comment.authorId.trim())
+            .where((authorId) => authorId.isNotEmpty)
+            .where((authorId) => !blockedAuthorIds.contains(authorId))
+            .where((authorId) => !_authorVisibilityCache.containsKey(authorId))
+            .toSet()
+            .toList(growable: false);
+        if (missingAuthorIds.isNotEmpty) {
+          final fetchedVisibility = await _profileRepository
+              .fetchPublicVisibilityByIds(missingAuthorIds);
+          _authorVisibilityCache.addAll(fetchedVisibility);
+        }
+
+        for (final comment in pageComments) {
+          final authorId = comment.authorId.trim();
           if (comment.visibilityStatus == 'visible' &&
               comment.moderationStatus == 'approved' &&
-              await _isUserVisible(comment.authorId)) {
+              !blockedAuthorIds.contains(authorId) &&
+              (_authorVisibilityCache[authorId] ?? false)) {
             comments.add(comment);
             if (comments.length == limit) {
               break;
@@ -1578,6 +1600,8 @@ class SocialPostRepository {
     List<SocialPostModel> posts,
   ) async {
     if (posts.isEmpty) return const <SocialPostModel>[];
+    final blockedAuthorIds = await _blockedRelationships
+        .loadEffectiveBlockedUserIds();
 
     final missingAuthorIds = posts
         .map((post) => post.authorId.trim())
@@ -1596,12 +1620,23 @@ class SocialPostRepository {
         .where((post) {
           final authorId = post.authorId.trim();
           if (authorId.isEmpty) return false;
+          if (blockedAuthorIds.contains(authorId)) return false;
           return _authorVisibilityCache[authorId] ?? false;
         })
         .toList(growable: false);
   }
 
   Future<bool> _isUserVisible(String userId) async {
+    final trimmedUserId = userId.trim();
+    if (trimmedUserId.isEmpty) return false;
+    if (await _blockedRelationships.isEffectivelyBlocked(trimmedUserId)) {
+      return false;
+    }
+
+    return _isUserPubliclyVisibleIgnoringBlock(trimmedUserId);
+  }
+
+  Future<bool> _isUserPubliclyVisibleIgnoringBlock(String userId) async {
     final trimmedUserId = userId.trim();
     if (trimmedUserId.isEmpty) return false;
 

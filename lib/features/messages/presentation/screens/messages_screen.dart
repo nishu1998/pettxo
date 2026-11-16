@@ -11,6 +11,7 @@ import '../../../../core/widgets/glass_surface.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../../domain/models/chat_model.dart';
@@ -23,7 +24,8 @@ class MessagesScreen extends StatefulWidget {
   State<MessagesScreen> createState() => _MessagesScreenState();
 }
 
-class _MessagesScreenState extends State<MessagesScreen> {
+class _MessagesScreenState extends State<MessagesScreen>
+    with WidgetsBindingObserver {
   final ChatRepository _repository = ChatRepository();
   final ProfileRepository _profileRepository = ProfileRepository();
   final TextEditingController _searchController = TextEditingController();
@@ -32,6 +34,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
   final Map<String, UserProfile> _profilesByUid = <String, UserProfile>{};
   final Map<String, StreamSubscription<UserProfile>>
   _profileSubscriptionsByUid = <String, StreamSubscription<UserProfile>>{};
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
 
   bool _isHeaderVisible = true;
   String _searchQuery = '';
@@ -45,20 +48,37 @@ class _MessagesScreenState extends State<MessagesScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_handleScroll);
     _searchController.addListener(_handleSearchChanged);
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((_) {
+          if (!mounted) return;
+          setState(() {});
+          unawaited(_refreshMessages());
+        });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     _searchController.removeListener(_handleSearchChanged);
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _blockingChangeSubscription?.cancel();
     for (final subscription in _profileSubscriptionsByUid.values) {
       subscription.cancel();
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      setState(() {});
+      unawaited(_refreshMessages());
+    }
   }
 
   Future<void> _refreshMessages() async {

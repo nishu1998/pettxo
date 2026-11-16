@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
 
@@ -18,6 +19,7 @@ import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/app_snackbar.dart';
 import '../../../bookings/data/repositories/booking_review_repository.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../bookings/domain/models/booking_review_model.dart';
 import '../../../bookings/presentation/screens/slot_selection_screen.dart';
 import '../../../messages/data/repositories/chat_repository.dart';
@@ -57,6 +59,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
   double _lastScrollOffset = 0;
   double _scrollDeltaAccumulator = 0;
   double? _resolvedDistanceKm;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
 
   ProfileServiceListing get service => widget.service;
   bool get showRebookHint => widget.showRebookHint;
@@ -69,12 +72,22 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
       widget.service.distanceKm,
     );
     _scrollController.addListener(_handleScroll);
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((change) {
+          if (!change.relationshipBlocked ||
+              change.targetUid != service.ownerUserId.trim() ||
+              !mounted) {
+            return;
+          }
+          Navigator.of(context).maybePop();
+        });
     _primeDistanceFallbackIfNeeded();
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _blockingChangeSubscription?.cancel();
     super.dispose();
   }
 

@@ -19,6 +19,7 @@ import '../../../../core/widgets/live_user_identity_resolver.dart';
 import '../../../../core/widgets/pettxo_loading_animation.dart';
 import '../../../../core/widgets/social_bottom_nav.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../data/repositories/services_repository.dart';
 import '../../domain/models/service_model.dart';
@@ -32,7 +33,8 @@ class ServicesScreen extends StatefulWidget {
   State<ServicesScreen> createState() => _ServicesScreenState();
 }
 
-class _ServicesScreenState extends State<ServicesScreen> {
+class _ServicesScreenState extends State<ServicesScreen>
+    with WidgetsBindingObserver {
   final ForegroundLocationManager _locationManager =
       ForegroundLocationManager.instance;
   final ServicesRepository _servicesRepository = ServicesRepository();
@@ -48,6 +50,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
       ServicesGuidedTourController();
   late Stream<List<ServiceModel>> _activeServicesStream;
   StreamSubscription<User?>? _authStateSubscription;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
   String _tourUid = '';
   String _selectedAnimal = 'All';
   String _selectedCategory = 'All';
@@ -108,11 +111,17 @@ class _ServicesScreenState extends State<ServicesScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refreshServicesStream();
     _tourUid = _auth.currentUser?.uid.trim() ?? '';
     _authStateSubscription = _auth.authStateChanges().listen(
       _handleAuthChanged,
     );
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((_) {
+          if (!mounted) return;
+          setState(_refreshServicesStream);
+        });
     _scrollController.addListener(_handleScroll);
     _primeUserLocation();
     _primeCurrentUserProfile();
@@ -123,11 +132,20 @@ class _ServicesScreenState extends State<ServicesScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _servicesTourController.dispose();
     _authStateSubscription?.cancel();
+    _blockingChangeSubscription?.cancel();
     _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      setState(_refreshServicesStream);
+    }
   }
 
   void _handleAuthChanged(User? user) {

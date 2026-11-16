@@ -24,6 +24,7 @@ import '../../domain/home_feed_session.dart';
 import '../widgets/home_feed_refresh_surface.dart';
 import '../widgets/home_guided_tour.dart';
 import '../../../notifications/domain/notification_visibility.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../offer_wall/data/services/offer_wall_coordinator.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
 import '../../../profile/domain/models/user_profile.dart';
@@ -114,6 +115,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final HomeFeedRequestTracker _feedRequestTracker = HomeFeedRequestTracker();
   int _latestPaginationRequestId = 0;
   StreamSubscription<User?>? _authStateSubscription;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
   String _viewerUid = '';
 
   static const double _topBarTopResetOffset = 12;
@@ -128,6 +130,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _authStateSubscription = _auth.authStateChanges().listen(
       _handleAuthChanged,
     );
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((_) => unawaited(_refreshHome()));
     _suggestionSeed = DateTime.now().millisecondsSinceEpoch;
     _scrollController.addListener(_handleScroll);
     _networkStatusListener = () {
@@ -165,6 +169,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _homeTourFeedTarget.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _authStateSubscription?.cancel();
+    _blockingChangeSubscription?.cancel();
     PostPublishCoordinator.instance.stateListenable.removeListener(
       _postPublishListener,
     );
@@ -258,6 +263,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_locationManager.refreshPermissionStatus());
+      unawaited(_refreshHome());
     }
   }
 

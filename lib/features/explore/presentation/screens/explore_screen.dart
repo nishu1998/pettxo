@@ -27,6 +27,7 @@ import '../../domain/utils/explore_search_policy.dart';
 import '../../domain/utils/nearby_error_message.dart';
 import '../widgets/explore_guided_tour.dart';
 import '../../../profile/data/repositories/profile_repository.dart';
+import '../../../blocking/application/blocking_change_coordinator.dart';
 import '../../../profile/domain/models/user_profile.dart';
 import '../../../profile/presentation/screens/profile_screen.dart';
 import '../../../social/data/follow_repository.dart';
@@ -72,6 +73,7 @@ class _ExploreScreenState extends State<ExploreScreen>
   final ExploreSearchRequestTracker _searchRequestTracker =
       ExploreSearchRequestTracker();
   StreamSubscription<User?>? _authStateSubscription;
+  StreamSubscription<BlockingChange>? _blockingChangeSubscription;
   bool _isLoadingSections = true;
   bool _isLoadingMoreDiscoverPosts = false;
   bool _isLoadingNearbyPosts = false;
@@ -131,6 +133,8 @@ class _ExploreScreenState extends State<ExploreScreen>
     _authStateSubscription = _auth.authStateChanges().listen(
       _handleAuthChanged,
     );
+    _blockingChangeSubscription = BlockingChangeCoordinator.instance.changes
+        .listen((_) => unawaited(_refreshExploreSections()));
     _scrollController.addListener(_handleScroll);
     _searchController.addListener(_handleSearchChanged);
     final cache = _memoryCache;
@@ -170,6 +174,7 @@ class _ExploreScreenState extends State<ExploreScreen>
     _exploreTourController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _authStateSubscription?.cancel();
+    _blockingChangeSubscription?.cancel();
     _searchDebounce?.cancel();
     _scrollController.dispose();
     _searchController.removeListener(_handleSearchChanged);
@@ -180,10 +185,8 @@ class _ExploreScreenState extends State<ExploreScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed &&
-        _activeFeedKind == ExploreFeedKind.nearby &&
-        _currentUserId.isNotEmpty) {
-      unawaited(_loadNearbyPosts(forceRefresh: true, refreshLocation: true));
+    if (state == AppLifecycleState.resumed && _currentUserId.isNotEmpty) {
+      unawaited(_refreshExploreSections());
     }
   }
 

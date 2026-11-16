@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../../../core/services/firebase_resilience_service.dart';
 import '../../../core/services/network_status_service.dart';
 import '../../profile/data/repositories/profile_repository.dart';
+import '../../blocking/data/blocked_relationship_repository.dart';
 import '../../social/data/follow_repository.dart';
 import '../../social/domain/models/social_post_model.dart';
 import '../../social/domain/social_feed_pagination.dart';
@@ -67,6 +68,8 @@ class HomeFeedRepository {
   final FirebaseAuth _auth;
   final ProfileRepository _profileRepository;
   final FollowRepository _followRepository;
+  late final BlockedRelationshipRepository _blockedRelationships =
+      BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
   final Map<String, bool> _authorVisibilityCache = <String, bool>{};
 
   Future<HomeFeedViewerContext> loadViewerContext() async {
@@ -85,7 +88,6 @@ class HomeFeedRepository {
         targetField: 'mutedUserId',
         ownerUserId: currentUserId,
       ),
-      _loadCreatorsWhoBlockedViewerIds(),
     ]);
 
     final profile = results[0];
@@ -96,7 +98,7 @@ class HomeFeedRepository {
       followingIds: results[1] as Set<String>,
       blockedUserIds: results[2] as Set<String>,
       mutedUserIds: results[3] as Set<String>,
-      creatorsWhoBlockedViewerIds: results[4] as Set<String>,
+      creatorsWhoBlockedViewerIds: results[2] as Set<String>,
     );
   }
 
@@ -255,16 +257,6 @@ class HomeFeedRepository {
   }
 
   Future<Set<String>> _loadBlockedUserIds() async {
-    // User-to-user blocking is not currently a Pettxo product feature.
-    // Keep the viewer-context shape intact so block-based filtering can be
-    // re-enabled here later without changing the feed consumers.
-    return const <String>{};
-  }
-
-  Future<Set<String>> _loadCreatorsWhoBlockedViewerIds() async {
-    // User-to-user blocking is not currently a Pettxo product feature.
-    // Keep the viewer-context shape intact so reciprocal block filtering can
-    // be re-enabled here later without changing the feed consumers.
-    return const <String>{};
+    return _blockedRelationships.loadEffectiveBlockedUserIds();
   }
 }

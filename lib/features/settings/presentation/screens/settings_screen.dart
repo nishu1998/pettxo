@@ -16,6 +16,7 @@ import '../../domain/models/app_settings.dart';
 import 'account_security_screen.dart';
 import '../../../auth/presentation/screens/auth_gateway_screen.dart';
 import '../../../support/presentation/screens/help_support_screen.dart';
+import '../../../blocking/presentation/screens/blocked_users_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -403,6 +404,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 builder: (_) => AccountSecurityScreen(
                                   initialProfile: profile,
                                 ),
+                              ),
+                            );
+                          },
+                        ),
+                        const Divider(height: 1),
+                        _NavTile(
+                          icon: Icons.person_off_outlined,
+                          title: 'Blocked Users',
+                          subtitle: const Text(
+                            'Review and unblock people you blocked',
+                            style: TextStyle(
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                            ),
+                          ),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const BlockedUsersScreen(),
                               ),
                             );
                           },

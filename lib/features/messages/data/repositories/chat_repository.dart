@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../domain/models/chat_model.dart';
 import '../../domain/models/message_model.dart';
+import '../../../blocking/data/blocked_relationship_repository.dart';
 
 @visibleForTesting
 List<ChatModel> dedupeChatsForInbox(Iterable<ChatModel> chats) {
@@ -80,6 +81,8 @@ class ChatRepository {
   final FirebaseFirestore _firestore;
   final FirebaseFunctions _functions;
   final FirebaseAuth _auth;
+  late final BlockedRelationshipRepository _blockedRelationships =
+      BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
 
   void _debugLog(String message) {
     if (kDebugMode) {
@@ -103,9 +106,18 @@ class ChatRepository {
         .orderBy('lastMessageAt', descending: true)
         .limit(fetchLimit)
         .snapshots()
-        .map((snapshot) {
+        .asyncMap((snapshot) async {
+          final blockedUserIds = await _blockedRelationships
+              .loadEffectiveBlockedUserIds();
           final chats = snapshot.docs
               .map(ChatModel.fromDocument)
+              .where(
+                (chat) => !chat.participantIds.any(
+                  (participantId) =>
+                      participantId != uid &&
+                      blockedUserIds.contains(participantId),
+                ),
+              )
               .toList(growable: false);
           return dedupeChatsForInbox(
             chats,
