@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-blocking-cross-feature-rules"});
 const test = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -14,9 +15,7 @@ const {
   writeBatch,
 } = require("firebase/firestore");
 
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(
-  process.env.FIRESTORE_EMULATOR_HOST ?? "",
-);
+const enabled = firebaseEmulator.enabled;
 let environment;
 
 function commentPayload() {

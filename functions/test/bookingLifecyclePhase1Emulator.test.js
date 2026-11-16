@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-lifecycle-phase1"});
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {randomUUID,createHash}=require('node:crypto');
@@ -7,7 +8,7 @@ const {buildConfirmedSlotBookingFixture}=require('../lib/booking/schema/bookingF
 const {verifyBookingStartOtpV3,reconcileCanonicalServiceStartArtifactsV3,finalizeCanonicalNoShowV3,SERVICE_START_POLICY_VERSION}=require('../lib/booking/application/serviceStartOrchestrationV3');
 const {reconcileCanonicalCompletionStateV3,finalizeCompletedBookingV3}=require('../lib/booking/application/serviceCompletionOrchestrationV3');
 const {buildProviderEarningsProjectionV3}=require('../lib/booking/application/providerEarningsV3');
-const enabled=/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'');
+const enabled = firebaseEmulator.enabled;
 async function fixture(fn){
  const app=initializeApp({projectId:'demo-lifecycle-phase1'},randomUUID());const db=getFirestore(app);db.settings({ignoreUndefinedProperties:true});
  const id=randomUUID(),booking=buildConfirmedSlotBookingFixture(),at=new Date('2026-07-23T05:55:00Z');

@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-report-moderation-rules"});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -9,9 +10,7 @@ const {
 } = require("@firebase/rules-unit-testing");
 const {deleteDoc, doc, getDoc, setDoc, updateDoc} = require("firebase/firestore");
 
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(
-  process.env.FIRESTORE_EMULATOR_HOST ?? "",
-);
+const enabled = firebaseEmulator.enabled;
 let environment;
 
 test.before(async () => {

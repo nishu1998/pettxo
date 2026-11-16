@@ -1,10 +1,11 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-earnings-backfill"});
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {randomUUID} = require('node:crypto');
 const {initializeApp, deleteApp} = require('firebase-admin/app');
 const {getFirestore, Timestamp} = require('firebase-admin/firestore');
 const {reconcileProviderEarningsBatchDataV3: reconcile} = require('../lib/booking/application/providerEarningsBackfillV3');
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST ?? '');
+const enabled = firebaseEmulator.enabled;
 async function fixture(fn) {
   const app=initializeApp({projectId:'demo-earnings-backfill'},randomUUID());
   const db=getFirestore(app); const id=randomUUID(); const at=Timestamp.now();

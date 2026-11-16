@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"]});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -9,7 +10,7 @@ const {
 } = require("@firebase/rules-unit-testing");
 const {doc, setDoc, serverTimestamp, writeBatch} = require("firebase/firestore");
 
-const projectId = "pettexo-d9409";
+const projectId = firebaseEmulator.projectId;
 const rules = fs.readFileSync(
   path.resolve(__dirname, "../../firestore.rules"),
   "utf8",
@@ -70,7 +71,7 @@ const omissionSafeDefaults = {
   feedStateKey: "",
 };
 
-test("social post create accepts runtime payload without backend-owned feed defaults", async () => {
+test("social post create accepts runtime payload without backend-owned feed defaults", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: { rules },
@@ -102,7 +103,7 @@ test("social post create accepts runtime payload without backend-owned feed defa
   }
 });
 
-test("social post hashtags enforce 30 characters each and retain the five-tag limit", async () => {
+test("social post hashtags enforce 30 characters each and retain the five-tag limit", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: {rules},
@@ -140,7 +141,7 @@ test("social post hashtags enforce 30 characters each and retain the five-tag li
   }
 });
 
-test("social post and private creation-location intent are created atomically", async () => {
+test("social post and private creation-location intent are created atomically", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: {rules},
@@ -176,7 +177,7 @@ test("social post and private creation-location intent are created atomically", 
   }
 });
 
-test("creation-location intent cannot be written without the matching post create", async () => {
+test("creation-location intent cannot be written without the matching post create", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: {rules},
@@ -208,7 +209,7 @@ test("creation-location intent cannot be written without the matching post creat
   }
 });
 
-test("social post create keeps non-backend omission-safe defaults optional", async () => {
+test("social post create keeps non-backend omission-safe defaults optional", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: { rules },
@@ -258,7 +259,7 @@ test("social post create keeps non-backend omission-safe defaults optional", asy
   }
 });
 
-test("social post create rejects backend-owned feed defaults if client writes non-defaults", async () => {
+test("social post create rejects backend-owned feed defaults if client writes non-defaults", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: { rules },
@@ -294,7 +295,7 @@ test("social post create rejects backend-owned feed defaults if client writes no
   }
 });
 
-test("social post create still rejects another user's authorId", async () => {
+test("social post create still rejects another user's authorId", {skip: !firebaseEmulator.enabled}, async () => {
   const testEnv = await initializeTestEnvironment({
     projectId,
     firestore: { rules },

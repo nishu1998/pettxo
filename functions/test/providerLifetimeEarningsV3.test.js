@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-lifetime"});
 const {test, before, after} = require('node:test');
 const assert = require('node:assert/strict');
 const {initializeApp, deleteApp} = require('firebase-admin/app');
@@ -7,7 +8,7 @@ const {reconcileProviderEarningsBatchDataV3: reconcile} = require('../lib/bookin
 const {buildProviderEarningsProjectionV3: projection} = require('../lib/booking/application/providerEarningsV3');
 
 // An isolated emulator project prevents these financial fixtures reaching production.
-const enabled = /^127\.0\.0\.1:|^localhost:/.test(process.env.FIRESTORE_EMULATOR_HOST || '');
+const enabled = firebaseEmulator.enabled;
 const integration = (name, fn) => test(name, {skip: !enabled}, fn);
 let app, db, sequence = 0;
 const at = Timestamp.fromMillis(1780000000000);

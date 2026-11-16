@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"]});
 const test = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -8,7 +9,7 @@ const {
 } = require("@firebase/rules-unit-testing");
 const {deleteDoc, doc, serverTimestamp, setDoc} = require("firebase/firestore");
 
-const projectId = "pettexo-d9409";
+const projectId = firebaseEmulator.projectId;
 const rules = fs.readFileSync(path.resolve(__dirname, "../../firestore.rules"), "utf8");
 
 async function withFollowEnvironment(run) {
@@ -24,7 +25,7 @@ async function withFollowEnvironment(run) {
   }
 }
 
-test("legacy client follow create remains constrained to the authenticated follower", async () => {
+test("legacy client follow create remains constrained to the authenticated follower", {skip: !firebaseEmulator.enabled}, async () => {
   await withFollowEnvironment(async (testEnv) => {
     const firestore = testEnv.authenticatedContext("a").firestore();
     await assertSucceeds(setDoc(doc(firestore, "follows", "a_b"), {
@@ -40,7 +41,7 @@ test("legacy client follow create remains constrained to the authenticated follo
   });
 });
 
-test("another user cannot delete a relationship and self-follow is rejected", async () => {
+test("another user cannot delete a relationship and self-follow is rejected", {skip: !firebaseEmulator.enabled}, async () => {
   await withFollowEnvironment(async (testEnv) => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), "follows", "a_b"), {

@@ -1,10 +1,8 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore", "storage"]});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const hasEmulators = Boolean(
-  process.env.FIRESTORE_EMULATOR_HOST &&
-  process.env.FIREBASE_STORAGE_EMULATOR_HOST,
-);
+const hasEmulators = firebaseEmulator.enabled;
 
 let auth;
 let db;

@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore", "storage"]});
 const test = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -9,9 +10,7 @@ const {
 const {deleteDoc, doc, setDoc} = require("firebase/firestore");
 const {deleteObject, getBytes, listAll, ref, uploadBytes} = require("firebase/storage");
 
-const hasEmulators = Boolean(
-  process.env.FIRESTORE_EMULATOR_HOST && process.env.FIREBASE_STORAGE_EMULATOR_HOST,
-);
+const hasEmulators = firebaseEmulator.enabled;
 let environment;
 const chatId = "chat_uid-a_uid-b";
 const closedChatId = "chat_uid-a_uid-c";
@@ -30,7 +29,7 @@ function uploadMetadata(overrides = {}) {
 test.before(async () => {
   if (!hasEmulators) return;
   environment = await initializeTestEnvironment({
-    projectId: "pettexo-d9409",
+    projectId: firebaseEmulator.projectId,
     firestore: {rules: fs.readFileSync(path.resolve(__dirname, "../../firestore.rules"), "utf8")},
     storage: {rules: fs.readFileSync(path.resolve(__dirname, "../../storage.rules"), "utf8")},
   });

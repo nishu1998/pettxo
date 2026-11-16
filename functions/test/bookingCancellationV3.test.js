@@ -1,3 +1,4 @@
+require("./helpers/firebaseTestSafety").assertUnitTestIsolation();
 const assertCanonicalEarning = require('./helpers/assertCanonicalEarning');
 const test = require("node:test");
 const assert = require("node:assert/strict");

@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-slot-coverage"});
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {randomUUID} = require('node:crypto');
@@ -8,7 +9,7 @@ const {buildServiceSlotCandidates} = require('../lib/services/serviceSlotCandida
 const {assertPreCheckoutSlotCapacity,lockServiceSlotSelection} = require('../lib/services/serviceSlotBookingGuard');
 const {buildCanonicalPaymentRaceFixture}=require('./helpers/canonicalPaymentRaceFixture');
 const {finalizeCapturedBookingPaymentV3,persistFinalizePaymentResultV3}=require('../lib/booking/application/paymentOrchestrationV3');
-const enabled=!!process.env.FIRESTORE_EMULATOR_HOST;
+const enabled = firebaseEmulator.enabled;
 const now=Date.parse('2026-09-14T00:00:00+05:30');
 const source={ownerUserId:'provider',status:'active',isActive:true,isVisibleToMarketplace:true,
   isDeleted:false,isPaused:false,availableDays:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],

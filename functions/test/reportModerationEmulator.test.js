@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-report-moderation"});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {randomUUID} = require("node:crypto");
@@ -11,9 +12,7 @@ const {
   moderationQueueIdForReport,
 } = require("../lib/moderation/reportContract.js");
 
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(
-  process.env.FIRESTORE_EMULATOR_HOST ?? "",
-);
+const enabled = firebaseEmulator.enabled;
 
 function assertHttpsCode(code) {
   return (error) => {

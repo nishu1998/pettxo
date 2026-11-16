@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-pettxo-phase1"});
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {FakeFirestore} = require('./helpers/canonicalPaymentRaceHarness');
@@ -189,7 +190,7 @@ test('in-flight payout cannot be recorded even when the obligation is stale READ
   assert.equal(f.db.store.get(`providerPayouts/${f.id}`).status,'PROCESSING');
 });
 
-const emulatorEnabled = /^127\.0\.0\.1:\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST ?? '');
+const emulatorEnabled = firebaseEmulator.enabled;
 test('emulator: concurrent confirmations and payout recordings settle once', {skip: !emulatorEnabled}, async () => {
   const {initializeApp, deleteApp} = require('firebase-admin/app');
   const {getFirestore} = require('firebase-admin/firestore');

@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"]});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -32,10 +33,12 @@ async function cleanup() {
   await batch.commit();
 }
 
-test.beforeEach(seedUsers);
-test.afterEach(cleanup);
+if (firebaseEmulator.enabled) {
+  test.beforeEach(seedUsers);
+  test.afterEach(cleanup);
+}
 
-test("server transaction atomically follows once and duplicate follow is idempotent", async () => {
+test("server transaction atomically follows once and duplicate follow is idempotent", {skip: !firebaseEmulator.enabled}, async () => {
   const first = await applyFollowState({
     followerId: "follower",
     followeeId: "followee",
@@ -58,7 +61,7 @@ test("server transaction atomically follows once and duplicate follow is idempot
   assert.equal(followee.data().followerCount, 1);
 });
 
-test("historical directed block without a guard denies follow but still permits unfollow", async () => {
+test("historical directed block without a guard denies follow but still permits unfollow", {skip: !firebaseEmulator.enabled}, async () => {
   await db.collection("userBlocks").doc("followee_follower").set({
     ownerUserId: "followee",
     blockedUserId: "follower",
@@ -87,7 +90,7 @@ test("historical directed block without a guard denies follow but still permits 
   assert.equal(result.isFollowing, false);
 });
 
-test("server transaction atomically unfollows once and duplicate unfollow is idempotent", async () => {
+test("server transaction atomically unfollows once and duplicate unfollow is idempotent", {skip: !firebaseEmulator.enabled}, async () => {
   await applyFollowState({
     followerId: "follower",
     followeeId: "followee",
@@ -115,7 +118,7 @@ test("server transaction atomically unfollows once and duplicate unfollow is ide
   assert.equal(followee.data().followerCount, 0);
 });
 
-test("concurrent duplicate follows converge to one relationship and one count", async () => {
+test("concurrent duplicate follows converge to one relationship and one count", {skip: !firebaseEmulator.enabled}, async () => {
   await Promise.all([
     applyFollowState({followerId: "follower", followeeId: "followee", desiredFollowing: true}),
     applyFollowState({followerId: "follower", followeeId: "followee", desiredFollowing: true}),
@@ -128,7 +131,7 @@ test("concurrent duplicate follows converge to one relationship and one count", 
   assert.equal(followee.data().followerCount, 1);
 });
 
-test("unauthorized restricted actor cannot mutate a relationship", async () => {
+test("unauthorized restricted actor cannot mutate a relationship", {skip: !firebaseEmulator.enabled}, async () => {
   await db.collection("users").doc("follower").update({accountStatus: "restricted"});
   await assert.rejects(
     applyFollowState({

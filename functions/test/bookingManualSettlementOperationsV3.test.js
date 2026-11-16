@@ -1,3 +1,4 @@
+require("./helpers/firebaseTestSafety").assertUnitTestIsolation();
 const mergeFirestoreSet = require("./helpers/mergeFirestoreSet");
 const test = require("node:test");
 const assert = require("node:assert/strict");

@@ -1,3 +1,4 @@
+require("./helpers/firebaseTestSafety").assertUnitTestIsolation();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {FakeFirestore} = require('./helpers/canonicalPaymentRaceHarness');

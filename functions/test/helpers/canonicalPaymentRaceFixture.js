@@ -1,3 +1,4 @@
+require("./firebaseTestSafety").assertUnitTestIsolation();
 const {
   buildAcceptedAwaitingPaymentSlotBookingFixture,
 } = require("../../lib/booking/schema/bookingFixtures.js");

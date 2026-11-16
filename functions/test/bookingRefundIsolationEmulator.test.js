@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-refund-isolation"});
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {randomUUID} = require('node:crypto');
@@ -6,8 +7,7 @@ const {getFirestore} = require('firebase-admin/firestore');
 const {applyPaymentRefundEventV3} = require('../lib/booking/application/paymentRefundsV3');
 
 // Never open a production connection. These checks need the local emulator.
-const emulator = process.env.FIRESTORE_EMULATOR_HOST;
-const enabled = Boolean(emulator && /^(127\.0\.0\.1|localhost):\d+$/.test(emulator));
+const enabled = firebaseEmulator.enabled;
 async function withFixture(run) {
   const app = initializeApp({projectId: 'demo-refund-isolation'}, `refund-${randomUUID()}`);
   const db = getFirestore(app);

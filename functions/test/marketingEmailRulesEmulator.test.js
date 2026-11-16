@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"]});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -14,13 +15,13 @@ const {
   updateDoc,
 } = require("firebase/firestore");
 
-const hasEmulator = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
+const hasEmulator = firebaseEmulator.enabled;
 let environment;
 
 test.before(async () => {
   if (!hasEmulator) return;
   environment = await initializeTestEnvironment({
-    projectId: "pettexo-d9409",
+    projectId: firebaseEmulator.projectId,
     firestore: {
       rules: fs.readFileSync(path.resolve(__dirname, "../../firestore.rules"), "utf8"),
     },

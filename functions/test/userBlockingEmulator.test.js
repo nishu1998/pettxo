@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-user-blocking"});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {randomUUID} = require("node:crypto");
@@ -25,9 +26,7 @@ const {
   recordBlockingRolloutTransition,
 } = require("../lib/blocking/blockingActivationGate.js");
 
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(
-  process.env.FIRESTORE_EMULATOR_HOST ?? "",
-);
+const enabled = firebaseEmulator.enabled;
 
 async function enableBlocking(firestore, runId = "test-migration-run") {
   await Promise.all([

@@ -1,9 +1,8 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"]});
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(
-  process.env.FIRESTORE_EMULATOR_HOST ?? "",
-);
+const enabled = firebaseEmulator.enabled;
 let db;
 let startDirectUserChat;
 let sendChatMessage;

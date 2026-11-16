@@ -1,3 +1,4 @@
+require("./firebaseTestSafety").assertUnitTestIsolation();
 const assert = require("node:assert/strict");
 
 const {

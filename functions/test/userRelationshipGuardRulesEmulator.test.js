@@ -1,3 +1,4 @@
+const firebaseEmulator = require("./helpers/firebaseTestSafety").emulatorGate({services: ["firestore"], projectId: "demo-user-relationship-guard-rules"});
 const test = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -8,9 +9,7 @@ const {
 } = require("@firebase/rules-unit-testing");
 const {doc, getDoc, setDoc, updateDoc, deleteDoc} = require("firebase/firestore");
 
-const enabled = /^(127\.0\.0\.1|localhost):\d+$/.test(
-  process.env.FIRESTORE_EMULATOR_HOST ?? "",
-);
+const enabled = firebaseEmulator.enabled;
 let environment;
 
 test.before(async () => {
