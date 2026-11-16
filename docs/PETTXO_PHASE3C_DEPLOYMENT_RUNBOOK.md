@@ -1,6 +1,6 @@
 # Pettxo Phase 3C: production deployment runbook
 
-Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. **For owner approval. Nothing in this runbook has been run against production.**
+Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. Updated in Phase 3C-3: local deploy-day verification, prebuilt Dashboard, Play checks. **For owner approval. Nothing in this runbook has been run against production.**
 
 **What the deploy does:**
 - Deploys the new backend (74 Cloud Functions) and the new Firestore and Storage Rules, with user blocking **disabled**.
@@ -22,7 +22,14 @@ Blocking activation is Phase 3B-4 and is **not** part of this runbook.
 - the main working tree `/Users/nishantgautam/development/pettexo`, which holds uncommitted iOS and `pubspec.yaml` work;
 - the Admin Dashboard repo (Functions or a bare deploy).
 
-**Never run** `npm run deploy`, a bare `firebase deploy`, or `firebase deploy --only functions`. Each of these deploys every function or every service.
+**Never run** `npm run deploy`, a bare `firebase deploy`, or `firebase deploy --only functions`. Each of these deploys every function or every service. Also never run `firebase deploy --only hosting` from this repo. Its `firebase.json` has a default `hosting` block (public `web/`, the main site's `assetlinks.json` and `/post/**` redirect) that is not part of this release.
+
+**Config verified in Phase 3C-3:**
+- `--only firestore:rules` deploys `firestore.rules` to the **(default)** database only; no named databases are configured.
+- `--only storage` deploys `storage.rules` to the **default bucket** only: a single `storage` object with no targets or bucket list.
+- `.firebaserc` has `default: pettexo-d9409` and no targets.
+- The functions predeploy hook is `npm --prefix "$RESOURCE_DIR" run build` (= `tsc` in `functions/`).
+- The CLI reads `functions/.env.pettexo-d9409` (param `CHAT_IMAGE_MESSAGING_ENABLED`) from the source directory at deploy time. The `.env.*` entry in `ignore` only keeps the file out of the upload.
 
 ## 1. Pre-deploy checks (all must pass)
 
@@ -37,8 +44,16 @@ firebase login:list                          # must show the owner account you i
 node --version                               # v22.x
 ls -l functions/.env.pettexo-d9409           # symlink to the main tree's file; must exist (see below)
 (cd functions && npm ci && npm run build)    # lockfile install, no upgrades
-(cd functions && npm run test:emulator)      # expected: 1120 passed, 3 known failures (#206, #209, #599)
+(cd functions && npm run test:emulator)      # expected: 1131 tests, 1128 passed, 3 known failures (#206, #209, #599)
 ```
+
+All of the above was re-verified locally on 2026-11-17 in Phase 3C-3 (see `PETTXO_PHASE3C3_REPORT.md`). The keystore, AAB checksum and symlink targets were also checked after the disk clean-up. The deploy-day command list is in `docs/PETTXO_PHASE3C_DEPLOY_DAY_CHECKLIST.md`.
+
+**Play Console check (owner).** Play Console → Testing → Closed testing:
+- The closed-testing track you will release to exists.
+- Your own tester account is on its tester list (email list or Google Group), and you have accepted the opt-in link.
+
+Without this you cannot install 1.0.5 from Play to verify it.
 
 **Secrets and params.** Secret values are never printed. Check each one exists in Google Cloud Console → Security → Secret Manager (project `pettexo-d9409`), with an enabled latest version.
 
@@ -221,7 +236,17 @@ firebase functions:delete blockUserV1 unblockUserV1 getUserRelationshipStateV1 r
 - The Dashboard working tree has 6 uncommitted finance and offer-wall files, including `lib/`.
 - The repo is on the iCloud-synced Desktop.
 
-So build from a **clean detached checkout outside iCloud**:
+So build from a **clean detached checkout outside iCloud**.
+
+**Already prebuilt (Phase 3C-3, 2026-11-17).** The Dashboard is prebuilt at `/Users/nishantgautam/development/pettxo-admin-build`: a detached worktree at `d07df166…`, `git status` clean.
+- `flutter pub get --enforce-lockfile`: `pubspec.lock` unchanged.
+- Full `flutter test`: **264 passed, 0 failed**. The "271" seen before was counted on the Dashboard's dirty working tree; its uncommitted diff adds exactly 7 tests.
+- `flutter build web --release` succeeded.
+- The four report actions are called through `FirebaseFunctions.instanceFor(region: 'asia-south1')`.
+
+On deploy day, **skip** the `worktree add` and the build below. Just `cd` there, re-run the `git rev-parse HEAD`, `git status --porcelain` and `"functions"` checks, then deploy. Do not run `worktree add` again: the path already exists, so it would fail.
+
+Full procedure (for a rebuild from scratch):
 
 ```bash
 D="/Users/nishantgautam/Desktop/Pettxo/admin_ Dashboard"
@@ -246,6 +271,8 @@ firebase deploy --only hosting:admin --project pettexo-d9409
    `53:77:95:53:24:F0:13:E6:1D:AC:47:45:5B:1C:00:E6:34:E3:3C:D5:89:9E:37:57:42:13:4A:9B:B4:8A:33:3C`
 3. **Create the release.** Play Console → Testing → Closed testing → (track) → Create release. Upload `pettxo-1.0.5+24-release.aab` and check that it shows **versionCode 24**, versionName **1.0.5**.
 4. Paste the release notes, review, and roll out to the closed track only.
+
+**Play review time.** Google Play reviews closed-testing releases too. The release can stay "In review" for **a few hours up to several days**, especially for an app's first releases or after policy-relevant changes such as reporting or user-generated content. Testers only see 1.0.5 after review completes. Plan the smoke tests on 1.0.5 for later. The backend deploy does not depend on it, because the live build 23 is what runs against the new backend in the meantime.
 
 **Draft release notes for testers (en-IN):**
 
