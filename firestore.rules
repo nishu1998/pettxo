@@ -28,6 +28,21 @@ service cloud.firestore {
         );
     }
 
+    // Author of a social post, used ONLY for block checks. Every app version
+    // writes authorId (required by the create rule since the first socialPosts
+    // rules); posts created outside the app may lack it. Returns '' when no
+    // string author is present so the block check is skipped instead of
+    // failing closed on legacy data. Add legacy author fields here, in order,
+    // if any are ever found in production.
+    function socialPostAuthorUid(post) {
+      return post.get('authorId', '') is string ? post.get('authorId', '') : '';
+    }
+
+    function socialPostAllowsInteraction(post) {
+      return socialPostAuthorUid(post) == '' ||
+        relationshipAllowsInteraction(request.auth.uid, socialPostAuthorUid(post));
+    }
+
     function requesterUserPath() {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
@@ -1128,7 +1143,7 @@ service cloud.firestore {
       (
         (
           request.resource.data.commentCount == resource.data.commentCount + 1 &&
-          relationshipAllowsInteraction(request.auth.uid, resource.data.authorId)
+          socialPostAllowsInteraction(resource.data)
         ) ||
         request.resource.data.commentCount == resource.data.commentCount - 1
       );
@@ -1140,7 +1155,7 @@ service cloud.firestore {
       ]) &&
       resource.data.visibilityStatus == 'visible' &&
       resource.data.moderationStatus == 'approved' &&
-      relationshipAllowsInteraction(request.auth.uid, resource.data.authorId) &&
+      socialPostAllowsInteraction(resource.data) &&
       request.resource.data.shareCount == resource.data.shareCount + 1;
     }
 
@@ -1185,7 +1200,7 @@ service cloud.firestore {
       (
         (
           request.resource.data.likeCount == resource.data.likeCount + 1 &&
-          relationshipAllowsInteraction(request.auth.uid, resource.data.authorId) &&
+          socialPostAllowsInteraction(resource.data) &&
           !exists(likeDocPath(postId)) &&
           existsAfter(likeDocPath(postId))
         ) ||
@@ -1247,11 +1262,8 @@ service cloud.firestore {
       request.resource.data.postId == postId &&
       request.resource.data.authorId == request.auth.uid &&
       request.resource.data.parentPostAuthorId ==
-        get(/databases/$(database)/documents/socialPosts/$(postId)).data.authorId &&
-      relationshipAllowsInteraction(
-        request.auth.uid,
-        request.resource.data.parentPostAuthorId
-      ) &&
+        socialPostAuthorUid(get(/databases/$(database)/documents/socialPosts/$(postId)).data) &&
+      socialPostAllowsInteraction(get(/databases/$(database)/documents/socialPosts/$(postId)).data) &&
       request.resource.data.likeCount == 0 &&
       request.resource.data.reportCount == 0 &&
       request.resource.data.visibilityStatus == 'visible' &&
@@ -2011,9 +2023,8 @@ service cloud.firestore {
           request.auth.uid == userId &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.visibilityStatus == 'visible' &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.moderationStatus == 'approved' &&
-          relationshipAllowsInteraction(
-            request.auth.uid,
-            get(/databases/$(database)/documents/socialPosts/$(postId)).data.authorId
+          socialPostAllowsInteraction(
+            get(/databases/$(database)/documents/socialPosts/$(postId)).data
           ) &&
           request.resource.data.diff({}).changedKeys().hasOnly([
             'userId',
