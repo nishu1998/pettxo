@@ -120,6 +120,31 @@ test("report ownership emulator: contextual review resolves only through its par
   });
 });
 
+test("report ownership emulator: user target exposes only a safe queue summary", {
+  skip: !enabled,
+}, async () => {
+  await fixture(async (firestore) => {
+    await firestore.doc("users/user-2").set({
+      displayName: "Target User",
+      username: "@target_user",
+      email: "private@example.test",
+      accountStatus: "active",
+    });
+    const ownership = await resolveReportTargetOwnership({
+      firestore,
+      report: normalizedReport({type: "user", targetId: "user-2"}),
+    });
+    assert.deepEqual(ownership, {
+      status: "resolved",
+      targetOwnerId: "user-2",
+      safeTargetDisplayName: "Target User",
+      safeTargetUsername: "target_user",
+      diagnosticCode: "resolved_from_user",
+    });
+    assert.equal(JSON.stringify(ownership).includes("private@example.test"), false);
+  });
+});
+
 test("report queue emulator: concurrent deliveries create one deterministic case", {
   skip: !enabled,
 }, async () => {

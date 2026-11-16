@@ -7,7 +7,7 @@ import type {
   Transaction,
 } from "firebase-admin/firestore";
 
-export const supportedReportTargetTypes = ["service", "review"] as const;
+export const supportedReportTargetTypes = ["service", "review", "user"] as const;
 
 export type SupportedReportTargetType = typeof supportedReportTargetTypes[number];
 
@@ -179,6 +179,9 @@ export function normalizeReportContract(value: unknown): ReportContractResult {
         "invalid_service_context",
     };
   }
+  if (type.value === "user" && serviceContext.value) {
+    return {ok: false, code: "invalid_service_context"};
+  }
 
   const reason = readStringField(data, "reason");
   if (!reason.ok) return {ok: false, code: "invalid_reason"};
@@ -244,13 +247,18 @@ export async function createReportModerationQueueItemOnce(params: {
 export type ReportTargetOwnership = {
   status: "resolved" | "unresolved";
   targetOwnerId: string;
+  safeTargetDisplayName?: string;
+  safeTargetUsername?: string;
   diagnosticCode:
     | "resolved_from_review_parent"
     | "resolved_from_service"
+    | "resolved_from_user"
     | "review_context_missing"
     | "review_not_found"
     | "review_owner_mismatch"
     | "service_not_found"
+    | "user_not_found"
+    | "user_unavailable"
     | "target_owner_missing";
 };
 
@@ -291,6 +299,41 @@ export async function resolveReportTargetOwnership(params: {
       status: "resolved",
       targetOwnerId,
       diagnosticCode: "resolved_from_service",
+    };
+  }
+
+  if (report.targetType === "user") {
+    const userSnapshot = await read(
+      firestore.collection("users").doc(report.targetId),
+    );
+    if (!userSnapshot.exists) {
+      return {
+        status: "unresolved",
+        targetOwnerId: "",
+        diagnosticCode: "user_not_found",
+      };
+    }
+    const user = userSnapshot.data() ?? {};
+    const accountStatus = trimmedString(user.accountStatus).toLowerCase();
+    if (user.isDeleted === true ||
+        accountStatus === "deleted" ||
+        accountStatus === "pendingdeletion" ||
+        accountStatus === "pending_deletion") {
+      return {
+        status: "unresolved",
+        targetOwnerId: "",
+        diagnosticCode: "user_unavailable",
+      };
+    }
+    const displayName = trimmedString(user.name) ||
+      trimmedString(user.displayName);
+    const username = trimmedString(user.username).replace(/^@/, "");
+    return {
+      status: "resolved",
+      targetOwnerId: report.targetId,
+      safeTargetDisplayName: displayName.slice(0, 120),
+      safeTargetUsername: username.slice(0, 120),
+      diagnosticCode: "resolved_from_user",
     };
   }
 
@@ -380,6 +423,9 @@ export async function enqueueReportModerationData(params: {
       targetType: result.report.targetType,
       targetId: result.report.targetId,
       targetOwnerId: ownership.targetOwnerId,
+      ...(result.report.targetType === "user" ? {
+        targetSubjectId: result.report.targetId,
+      } : {}),
       source: "report",
       reportId: params.reportId,
       severity: "medium",
@@ -388,6 +434,12 @@ export async function enqueueReportModerationData(params: {
       assignedAdminId: "",
       targetResolutionStatus: ownership.status,
       targetResolutionReason: ownership.diagnosticCode,
+      ...(ownership.safeTargetDisplayName ? {
+        targetDisplayName: ownership.safeTargetDisplayName,
+      } : {}),
+      ...(ownership.safeTargetUsername ? {
+        targetUsername: ownership.safeTargetUsername,
+      } : {}),
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     },

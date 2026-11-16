@@ -74,6 +74,31 @@ test("normalizes the canonical report aliases", () => {
   assert.equal(result.report.status, "open");
 });
 
+test("normalizes canonical user reports", () => {
+  const result = normalizeReportContract({
+    targetType: "user",
+    targetId: "user-2",
+    reporterId: "reporter-2",
+    targetOwnerId: "user-2",
+    contextId: "",
+    status: "pending",
+    reason: "safety_concern",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.report.targetType, "user");
+  assert.equal(result.report.targetId, "user-2");
+});
+
+test("rejects user reports with a non-empty context", () => {
+  assert.deepEqual(normalizeReportContract({
+    targetType: "user",
+    targetId: "user-2",
+    reporterId: "reporter-2",
+    contextId: "chat-1",
+    status: "pending",
+  }), {ok: false, code: "invalid_service_context"});
+});
+
 test("normalizes matching dual legacy and canonical aliases", () => {
   const result = normalizeReportContract(legacyReport({
     type: " Service ",
@@ -135,7 +160,7 @@ test("rejects a missing target ID", () => {
 });
 
 test("rejects unsupported report types without enabling post or comment reports", () => {
-  for (const type of ["post", "comment", "user", "message"]) {
+  for (const type of ["post", "comment", "message"]) {
     assert.deepEqual(normalizeReportContract(legacyReport({type})), {
       ok: false,
       code: "unsupported_type",

@@ -85,6 +85,39 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('user report submits the target UID and success feedback', (
+    tester,
+  ) async {
+    final functions = _PendingFunctions();
+    await _pumpLauncher(
+      tester,
+      repository: ReportRepository(functions: functions),
+      type: 'user',
+      targetId: 'target-user-1',
+    );
+
+    await tester.tap(find.text('Open report'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Safety concern'));
+    await tester.ensureVisible(find.text('Submit Report'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Submit Report'));
+    await tester.pump();
+
+    expect(functions.parameters, <String, dynamic>{
+      'type': 'user',
+      'targetId': 'target-user-1',
+      'reason': 'safety_concern',
+    });
+
+    functions.complete(duplicate: false);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Report submitted. Our team will review it.'),
+      findsOneWidget,
+    );
+  });
 }
 
 Future<void> _pumpLauncher(

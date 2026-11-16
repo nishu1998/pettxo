@@ -49,6 +49,24 @@ void main() {
       });
     });
 
+    test('submits a canonical user payload without context', () async {
+      final functions = _FakeFunctions();
+
+      await ReportRepository(functions: functions).createReport(
+        type: 'user',
+        targetId: ' user-1 ',
+        reason: 'Safety concern',
+        description: ' Threatening messages ',
+      );
+
+      expect(functions.parameters, <String, dynamic>{
+        'type': 'user',
+        'targetId': 'user-1',
+        'reason': 'safety_concern',
+        'description': 'Threatening messages',
+      });
+    });
+
     test('maps every required display label to a canonical reason code', () {
       expect(ReportRepository.reasonCodeForLabel('Spam'), 'spam');
       expect(

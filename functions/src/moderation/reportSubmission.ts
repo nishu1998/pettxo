@@ -28,6 +28,7 @@ const supportedReasons = new Set([
 ]);
 const maxDescriptionLength = 2000;
 const maxClientRequestIdLength = 128;
+export const userReportIncidentWindowMs = 30 * 24 * 60 * 60 * 1000;
 
 export type SubmitReportInput = {
   type: SupportedReportTargetType;
@@ -85,7 +86,7 @@ export function parseSubmitReportInput(value: unknown): SubmitReportInput {
   }
 
   const type = trimmedString(data.type).toLowerCase();
-  if (type !== "service" && type !== "review") {
+  if (type !== "service" && type !== "review" && type !== "user") {
     throw new HttpsError("invalid-argument", "Report type is unsupported.");
   }
   const targetId = trimmedString(data.targetId);
@@ -99,10 +100,10 @@ export function parseSubmitReportInput(value: unknown): SubmitReportInput {
       "A valid service context is required for review reports.",
     );
   }
-  if (type === "service" && contextId) {
+  if ((type === "service" || type === "user") && contextId) {
     throw new HttpsError(
       "invalid-argument",
-      "Service reports do not accept a context ID.",
+      `${type === "user" ? "User" : "Service"} reports do not accept a context ID.`,
     );
   }
 
@@ -139,15 +140,26 @@ export function reportIdForSubmission(params: {
   type: SupportedReportTargetType;
   targetId: string;
   contextId: string;
+  incidentBucket?: string;
 }): string {
+  const version = params.type === "user" ? "v2" : "v1";
   const identity = [
-    "v1",
+    version,
     params.reporterId,
     params.type,
     params.contextId,
     params.targetId,
+    ...(params.type === "user" ? [params.incidentBucket ?? ""] : []),
   ].join("\u001f");
   return `report_${createHash("sha256").update(identity).digest("hex")}`;
+}
+
+export function userReportIncidentBucket(now: Date): string {
+  const milliseconds = now.getTime();
+  if (!Number.isFinite(milliseconds)) {
+    throw new HttpsError("internal", "The report time is invalid.");
+  }
+  return Math.floor(milliseconds / userReportIncidentWindowMs).toString(36);
 }
 
 function reporterNameFromUser(data: Record<string, unknown>): string {
@@ -205,6 +217,7 @@ export async function submitReportData(params: {
   firestore: Firestore;
   authUid: string;
   input: unknown;
+  authoritativeNow?: Date;
 }): Promise<SubmitReportResult> {
   const reporterId = params.authUid.trim();
   if (!reporterId) {
@@ -212,11 +225,15 @@ export async function submitReportData(params: {
   }
   const input = parseSubmitReportInput(params.input);
   const report = normalizedContractForSubmission(input, reporterId);
+  const incidentBucket = report.targetType === "user" ?
+    userReportIncidentBucket(params.authoritativeNow ?? new Date()) :
+    "";
   const reportId = reportIdForSubmission({
     reporterId,
     type: report.targetType,
     targetId: report.targetId,
     contextId: report.serviceId,
+    incidentBucket,
   });
   const userRef = params.firestore.collection("users").doc(reporterId);
   const reportRef = params.firestore.collection("reports").doc(reportId);
@@ -246,7 +263,8 @@ export async function submitReportData(params: {
     });
     if (ownership.status !== "resolved") {
       const missing = ownership.diagnosticCode === "service_not_found" ||
-        ownership.diagnosticCode === "review_not_found";
+        ownership.diagnosticCode === "review_not_found" ||
+        ownership.diagnosticCode === "user_not_found";
       throw new HttpsError(
         missing ? "not-found" : "failed-precondition",
         missing ? "Report target not found." : "Report target is unavailable.",
@@ -260,8 +278,9 @@ export async function submitReportData(params: {
     }
 
     const targetPath = report.targetType === "service" ?
-      `services/${report.targetId}` :
-      `services/${report.serviceId}/reviews/${report.targetId}`;
+      `services/${report.targetId}` : report.targetType === "user" ?
+        `users/${report.targetId}` :
+        `services/${report.serviceId}/reviews/${report.targetId}`;
     transaction.create(reportRef, {
       schemaVersion: 2,
       type: report.targetType,
@@ -272,10 +291,18 @@ export async function submitReportData(params: {
       reportedBy: reporterId,
       reporterId,
       reporterName: reporterNameFromUser(user),
-      targetOwnerId: ownership.targetOwnerId,
+      ...(report.targetType === "user" ? {
+        targetSubjectId: report.targetId,
+      } : {
+        targetOwnerId: ownership.targetOwnerId,
+      }),
       status: "pending",
       reason: report.reason,
       description: report.description,
+      ...(report.targetType === "user" ? {
+        deduplicationPolicy: "reporter_target_30_day_bucket_v1",
+        incidentBucket,
+      } : {}),
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });

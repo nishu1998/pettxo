@@ -97,10 +97,12 @@ class ReportRepository {
     final normalizedContextId = contextId?.trim() ?? '';
     final normalizedDescription = description?.trim() ?? '';
 
-    if ((normalizedType != 'service' && normalizedType != 'review') ||
+    if ((normalizedType != 'service' &&
+            normalizedType != 'review' &&
+            normalizedType != 'user') ||
         normalizedTargetId.isEmpty ||
         (normalizedType == 'review' && normalizedContextId.isEmpty) ||
-        (normalizedType == 'service' && normalizedContextId.isNotEmpty)) {
+        (normalizedType != 'review' && normalizedContextId.isNotEmpty)) {
       throw const ReportSubmissionException(
         ReportSubmissionFailureKind.invalidArgument,
       );

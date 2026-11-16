@@ -5,6 +5,7 @@ const {
   parseSubmitReportInput,
   reportIdForSubmission,
   submitReportData,
+  userReportIncidentBucket,
 } = require("../lib/moderation/reportSubmission.js");
 
 function assertHttpsCode(code) {
@@ -38,6 +39,28 @@ test("parses bounded canonical service and review requests", () => {
   }).contextId, "service-1");
 });
 
+test("parses a canonical user report without accepting context", () => {
+  assert.deepEqual(parseSubmitReportInput({
+    type: "user",
+    targetId: "user-1",
+    reason: "safety_concern",
+    description: "Threatening messages",
+  }), {
+    type: "user",
+    targetId: "user-1",
+    contextId: "",
+    reason: "safety_concern",
+    description: "Threatening messages",
+    clientRequestId: "",
+  });
+  assert.throws(() => parseSubmitReportInput({
+    type: "user",
+    targetId: "user-1",
+    contextId: "chat-1",
+    reason: "spam",
+  }), assertHttpsCode("invalid-argument"));
+});
+
 test("requires review context and rejects service context", () => {
   assert.throws(() => parseSubmitReportInput({
     type: "review",
@@ -53,13 +76,37 @@ test("requires review context and rejects service context", () => {
 });
 
 test("rejects unsupported report types", () => {
-  for (const type of ["user", "profile", "chat", "message", "post", "comment"]) {
+  for (const type of ["profile", "chat", "message", "post", "comment"]) {
     assert.throws(() => parseSubmitReportInput({
       type,
       targetId: "target-1",
       reason: "spam",
     }), assertHttpsCode("invalid-argument"));
   }
+});
+
+test("user submission IDs deduplicate within a bounded server-time incident window", () => {
+  const firstTime = new Date("2026-01-10T00:00:00.000Z");
+  const laterWindow = new Date(firstTime.getTime() + 31 * 24 * 60 * 60 * 1000);
+  const base = {
+    reporterId: "reporter-1",
+    type: "user",
+    targetId: "user-1",
+    contextId: "",
+  };
+  const firstBucket = userReportIncidentBucket(firstTime);
+  assert.equal(firstBucket, userReportIncidentBucket(new Date(firstTime.getTime() + 1000)));
+  assert.equal(
+    reportIdForSubmission({...base, incidentBucket: firstBucket}),
+    reportIdForSubmission({...base, incidentBucket: firstBucket}),
+  );
+  assert.notEqual(
+    reportIdForSubmission({...base, incidentBucket: firstBucket}),
+    reportIdForSubmission({
+      ...base,
+      incidentBucket: userReportIncidentBucket(laterWindow),
+    }),
+  );
 });
 
 test("rejects forged server-owned and administrative fields", () => {
