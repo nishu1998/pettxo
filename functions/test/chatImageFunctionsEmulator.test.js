@@ -151,6 +151,35 @@ test("public gate grants capability to every eligible compatible participant", {
   assert.deepEqual(otherParticipant, {enabled: true, reason: "enabled"});
 });
 
+test("historical directed block disables capability and image commit in both directions", {
+  skip: !hasEmulators,
+}, async () => {
+  const blockRef = db.collection("userBlocks").doc(`${receiverId}_${senderId}`);
+  const messageId = "KkLlMmNnOoPpQqRrSsTt";
+  await blockRef.set({
+    ownerUserId: receiverId,
+    blockedUserId: senderId,
+    createdAt: new Date(),
+  });
+  await upload(chatId, messageId);
+  try {
+    assert.deepEqual(await getChatImageMessagingCapability.run({
+      auth: {uid: senderId}, data: {chatId},
+    }), {enabled: false, reason: "relationship-blocked"});
+    assert.deepEqual(await getChatImageMessagingCapability.run({
+      auth: {uid: receiverId}, data: {chatId},
+    }), {enabled: false, reason: "relationship-blocked"});
+    await expectCode(
+      sendChatImageMessage.run(request(senderId, chatId, messageId)),
+      "failed-precondition",
+    );
+  } finally {
+    await blockRef.delete();
+  }
+  assert.equal((await db.collection("chats").doc(chatId)
+    .collection("messages").doc(messageId).get()).exists, false);
+});
+
 test("an ordinary compatible participant can send when the public gate is enabled", {skip: !hasEmulators}, async () => {
   const messageId = "ZzYyXxWwVvUuTtSsRrQq";
   const storagePath = await upload(outsiderChatId, messageId, outsiderId);

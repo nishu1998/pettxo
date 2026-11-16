@@ -90,6 +90,12 @@ import {
   otherDirectParticipantUid,
   type CanonicalDirectChatIdentity,
 } from "./chat/chatIdentity";
+import {
+  assertEffectiveRelationshipOpen,
+  assertRelationshipOpen,
+  getEffectiveRelationshipState,
+  getEffectiveRelationshipStateInTransaction,
+} from "./blocking/relationshipGuard";
 const defaultPushChannelId = "pettxo_general_notifications";
 const chatPushChannelId = "pettxo_chat_messages";
 const bookingsPaymentsPushChannelId = "pettxo_bookings_payments";
@@ -3017,6 +3023,28 @@ export const sendPushForNotification = onDocumentWritten(
       return;
     }
 
+    const isOrdinaryRelationshipNotification = senderId.length > 0 &&
+      (category === "social" || category === "chat" || notificationType === "chat");
+    if (isOrdinaryRelationshipNotification) {
+      const relationshipState = await getEffectiveRelationshipState({
+        firestore: db,
+        firstUid: senderId,
+        secondUid: recipientId,
+      });
+      if (relationshipState.blocked) {
+        console.info("Notification skipped", {
+          notificationId: event.params.notificationId,
+          reason: "user-relationship-blocked",
+          recipientUserId: recipientId,
+          senderUserId: senderId,
+          chatId,
+          notificationType,
+          tokenCount: 0,
+        });
+        return;
+      }
+    }
+
     const recipientSnapshot = await db.collection("users").doc(userId).get();
     const recipientData = recipientSnapshot.data() ?? {};
     if (!userAllowsNotification(recipientData, category)) {
@@ -3925,12 +3953,15 @@ export const deleteOfferCampaign = onCall(async (request) => {
 });
 
 export const getProfileFollowCounts = onCall({invoker: "public"}, async (request) => {
-  requireUid(request.auth);
+  const viewerUid = requireUid(request.auth);
 
   const payload = (request.data ?? {}) as Record<string, unknown>;
   const userId = asTrimmedString(payload.userId);
   if (!userId) {
     throw new HttpsError("invalid-argument", "User id is required.");
+  }
+  if (viewerUid !== userId) {
+    await assertRelationshipOpen({firestore: db, firstUid: viewerUid, secondUid: userId});
   }
 
   const [followerAggregate, followingAggregate] = await Promise.all([
@@ -3965,6 +3996,7 @@ export const createSocialNotification = onCall({
   if (!recipientId || recipientId === senderId) {
     return {ok: true, created: false};
   }
+  await assertRelationshipOpen({firestore: db, firstUid: senderId, secondUid: recipientId});
 
   const senderSnapshot = await db.collection("users").doc(senderId).get();
   if (!senderSnapshot.exists) {
@@ -4151,6 +4183,12 @@ export const startProviderChat = onCall({
     const providerRef = db.collection("users").doc(providerId);
     const customerSnapshot = await transaction.get(customerRef);
     const providerSnapshot = await transaction.get(providerRef);
+    assertEffectiveRelationshipOpen(await getEffectiveRelationshipStateInTransaction({
+      firestore: db,
+      transaction,
+      firstUid: customerId,
+      secondUid: providerId,
+    }));
 
     assertCanonicalUserSnapshot(
       customerId,
@@ -4283,6 +4321,12 @@ export const startDirectUserChat = onCall({
         transaction.get(otherUserRef),
         transaction.get(chatRef),
       ]);
+    assertEffectiveRelationshipOpen(await getEffectiveRelationshipStateInTransaction({
+      firestore: db,
+      transaction,
+      firstUid: currentUserId,
+      secondUid: otherUserId,
+    }));
 
     assertCanonicalUserSnapshot(
       currentUserId,
@@ -4506,6 +4550,12 @@ export const sendChatMessage = onCall({
         "Direct chat participant identity changed unexpectedly.",
       );
     }
+    assertEffectiveRelationshipOpen(await getEffectiveRelationshipStateInTransaction({
+      firestore: db,
+      transaction,
+      firstUid: senderId,
+      secondUid: receiverId,
+    }));
 
     const existingNotification = receiverId !== senderId ?
       await transaction.get(notificationRef) :
@@ -4617,6 +4667,7 @@ export const markChatDelivered = onCall({invoker: "public"}, async (request) => 
 
   const otherUid = otherDirectParticipantUid(directIdentity, uid) ?? "";
   if (!otherUid) return {updated: 0};
+  await assertRelationshipOpen({firestore: db, firstUid: uid, secondUid: otherUid});
 
   const recentMessages = await chatRef
     .collection("messages")
@@ -4679,6 +4730,7 @@ export const markChatRead = onCall({
   if (!otherUid) {
     throw new HttpsError("failed-precondition", "Chat participant is missing.");
   }
+  await assertRelationshipOpen({firestore: db, firstUid: uid, secondUid: otherUid});
 
   const expectedPairKey = [customerId, providerId].sort().join("_");
   const clearTargets: Array<{

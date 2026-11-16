@@ -4,6 +4,12 @@ import {defineBoolean} from "firebase-functions/params";
 
 import {auth, db, storage} from "../shared/firebase";
 import {
+  assertEffectiveRelationshipOpen,
+  assertRelationshipOpen,
+  getEffectiveRelationshipState,
+  getEffectiveRelationshipStateInTransaction,
+} from "../blocking/relationshipGuard";
+import {
   canonicalDirectChatDocumentIdentity,
   canonicalUserDocumentMatches,
   chatStatusAllowsMessages,
@@ -129,6 +135,15 @@ export const getChatImageMessagingCapability = onCall(
     if (!identity.participantIds.includes(uid)) {
       throw new HttpsError("permission-denied", "You are not a participant in this chat.");
     }
+    const otherUid = otherDirectParticipantUid(identity, uid) ?? "";
+    if (!otherUid) throw new HttpsError("failed-precondition", "Chat receiver is missing.");
+    if ((await getEffectiveRelationshipState({
+      firestore: db,
+      firstUid: uid,
+      secondUid: otherUid,
+    })).blocked) {
+      return {enabled: false, reason: "relationship-blocked"};
+    }
     if (!publicFeatureEnabled()) {
       return {enabled: false, reason: "sender-not-allowed"};
     }
@@ -175,6 +190,7 @@ export const sendChatImageMessage = onCall(
     }
     const receiverId = otherDirectParticipantUid(identity, senderId) ?? "";
     if (!receiverId) throw new HttpsError("failed-precondition", "Chat receiver is missing.");
+    await assertRelationshipOpen({firestore: db, firstUid: senderId, secondUid: receiverId});
 
     if (!publicFeatureEnabled()) {
       throw new HttpsError("failed-precondition", "Image messaging is not enabled yet.");
@@ -268,6 +284,12 @@ export const sendChatImageMessage = onCall(
       if (latestReceiverId !== receiverId) {
         throw new HttpsError("failed-precondition", "Direct chat participant identity changed unexpectedly.");
       }
+      assertEffectiveRelationshipOpen(await getEffectiveRelationshipStateInTransaction({
+        firestore: db,
+        transaction,
+        firstUid: senderId,
+        secondUid: receiverId,
+      }));
 
       if (latestMessageSnapshot.exists) {
         if (isIdenticalCommittedImageMessage({

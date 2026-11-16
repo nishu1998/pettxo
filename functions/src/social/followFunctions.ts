@@ -4,6 +4,10 @@ import {onDocumentWritten} from "firebase-functions/v2/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 
 import {db} from "../shared/firebase";
+import {
+  getEffectiveRelationshipStateInTransaction,
+  assertEffectiveRelationshipOpen,
+} from "../blocking/relationshipGuard";
 
 type FollowTransitionInput = {
   relationshipExists: boolean;
@@ -130,10 +134,16 @@ export async function applyFollowState({
   const followRef = db.collection("follows").doc(`${followerId}_${followeeId}`);
 
   return db.runTransaction(async (transaction) => {
-    const [followerSnapshot, followeeSnapshot, followSnapshot] = await Promise.all([
+    const [followerSnapshot, followeeSnapshot, followSnapshot, relationshipState] = await Promise.all([
       transaction.get(followerRef),
       transaction.get(followeeRef),
       transaction.get(followRef),
+      desiredFollowing ? getEffectiveRelationshipStateInTransaction({
+        firestore: db,
+        transaction,
+        firstUid: followerId,
+        secondUid: followeeId,
+      }) : Promise.resolve(null),
     ]);
     if (!followerSnapshot.exists) {
       throw new HttpsError("failed-precondition", "Your profile is unavailable.");
@@ -150,6 +160,7 @@ export async function applyFollowState({
     if (desiredFollowing && !profileIsPubliclyVisible(followee)) {
       throw new HttpsError("failed-precondition", "This account is no longer available.");
     }
+    if (relationshipState) assertEffectiveRelationshipOpen(relationshipState);
 
     const transition = deriveFollowTransition({
       relationshipExists: followSnapshot.exists,
