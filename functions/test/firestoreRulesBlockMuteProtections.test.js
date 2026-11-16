@@ -12,10 +12,10 @@ const exploreRepositoryPath = path.resolve(
 const rules = fs.readFileSync(rulesPath, "utf8");
 const exploreRepository = fs.readFileSync(exploreRepositoryPath, "utf8");
 
-test("userBlocks rules keep reads owner-only and preserve create/delete restrictions", () => {
+test("userBlocks are readable by either participant but backend-only for mutations", () => {
   assert.match(
     rules,
-    /match \/userBlocks\/\{blockId\}\s*\{[\s\S]*allow get: if signedIn\(\) && resource\.data\.ownerUserId == request\.auth\.uid;[\s\S]*allow list: if signedIn\(\) && resource\.data\.ownerUserId == request\.auth\.uid;[\s\S]*allow create: if requesterAccountIsActive\(\) &&[\s\S]*request\.resource\.data\.ownerUserId == request\.auth\.uid[\s\S]*request\.resource\.data\.blockedUserId is string[\s\S]*request\.resource\.data\.blockedUserId != request\.auth\.uid[\s\S]*request\.resource\.id == \(request\.resource\.data\.ownerUserId \+ '_' \+ request\.resource\.data\.blockedUserId\)[\s\S]*allow delete: if requesterAccountIsActive\(\) &&[\s\S]*resource\.data\.ownerUserId == request\.auth\.uid;[\s\S]*allow update: if false;/,
+    /match \/userBlocks\/\{blockId\}\s*\{[\s\S]*allow get, list: if signedIn\(\)[\s\S]*resource\.data\.ownerUserId == request\.auth\.uid[\s\S]*resource\.data\.blockedUserId == request\.auth\.uid[\s\S]*allow create, update, delete: if false;/,
   );
 });
 
@@ -26,10 +26,10 @@ test("userMutes rules keep reads owner-only and preserve create/delete restricti
   );
 });
 
-test("Explore viewer context queries blocks and mutes by ownerUserId only", () => {
+test("Explore viewer context loads effective bilateral blocks and owner-scoped mutes", () => {
   assert.match(
     exploreRepository,
-    /collection: 'userBlocks'[\s\S]*ownerField: 'ownerUserId'[\s\S]*targetField: 'blockedUserId'[\s\S]*ownerUserId: currentUserId/,
+    /BlockedRelationshipRepository\(firestore: _firestore, auth: _auth\)/,
   );
   assert.match(
     exploreRepository,

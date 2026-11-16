@@ -10,6 +10,24 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
+    function directedUserBlockExists(ownerUid, blockedUid) {
+      return exists(
+        /databases/$(database)/documents/userBlocks/$(ownerUid + '_' + blockedUid)
+      );
+    }
+
+    function relationshipAllowsInteraction(firstUid, secondUid) {
+      return firstUid is string &&
+        secondUid is string &&
+        (
+          firstUid == secondUid ||
+          (
+            !directedUserBlockExists(firstUid, secondUid) &&
+            !directedUserBlockExists(secondUid, firstUid)
+          )
+        );
+    }
+
     function requesterUserPath() {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
@@ -1108,7 +1126,10 @@ service cloud.firestore {
       resource.data.moderationStatus == 'approved' &&
       request.resource.data.commentCount >= 0 &&
       (
-        request.resource.data.commentCount == resource.data.commentCount + 1 ||
+        (
+          request.resource.data.commentCount == resource.data.commentCount + 1 &&
+          relationshipAllowsInteraction(request.auth.uid, resource.data.authorId)
+        ) ||
         request.resource.data.commentCount == resource.data.commentCount - 1
       );
     }
@@ -1119,6 +1140,7 @@ service cloud.firestore {
       ]) &&
       resource.data.visibilityStatus == 'visible' &&
       resource.data.moderationStatus == 'approved' &&
+      relationshipAllowsInteraction(request.auth.uid, resource.data.authorId) &&
       request.resource.data.shareCount == resource.data.shareCount + 1;
     }
 
@@ -1163,6 +1185,7 @@ service cloud.firestore {
       (
         (
           request.resource.data.likeCount == resource.data.likeCount + 1 &&
+          relationshipAllowsInteraction(request.auth.uid, resource.data.authorId) &&
           !exists(likeDocPath(postId)) &&
           existsAfter(likeDocPath(postId))
         ) ||
@@ -1223,6 +1246,12 @@ service cloud.firestore {
       request.resource.data.id == commentId &&
       request.resource.data.postId == postId &&
       request.resource.data.authorId == request.auth.uid &&
+      request.resource.data.parentPostAuthorId ==
+        get(/databases/$(database)/documents/socialPosts/$(postId)).data.authorId &&
+      relationshipAllowsInteraction(
+        request.auth.uid,
+        request.resource.data.parentPostAuthorId
+      ) &&
       request.resource.data.likeCount == 0 &&
       request.resource.data.reportCount == 0 &&
       request.resource.data.visibilityStatus == 'visible' &&
@@ -1877,6 +1906,10 @@ service cloud.firestore {
         request.resource.data.followerId == request.auth.uid &&
         request.resource.data.followeeId is string &&
         request.resource.data.followeeId != request.auth.uid &&
+        relationshipAllowsInteraction(
+          request.resource.data.followerId,
+          request.resource.data.followeeId
+        ) &&
         request.resource.id == (request.resource.data.followerId + '_' + request.resource.data.followeeId) &&
         request.resource.data.createdAt == request.time;
       allow delete: if requesterAccountIsActive() &&
@@ -1885,22 +1918,41 @@ service cloud.firestore {
     }
 
     match /userBlocks/{blockId} {
-      allow get: if signedIn() && resource.data.ownerUserId == request.auth.uid;
-      allow list: if signedIn() && resource.data.ownerUserId == request.auth.uid;
-      allow create: if requesterAccountIsActive() &&
-        request.resource.data.diff({}).changedKeys().hasOnly([
-          'ownerUserId',
-          'blockedUserId',
-          'createdAt'
-        ]) &&
-        request.resource.data.ownerUserId == request.auth.uid &&
-        request.resource.data.blockedUserId is string &&
-        request.resource.data.blockedUserId != request.auth.uid &&
-        request.resource.id == (request.resource.data.ownerUserId + '_' + request.resource.data.blockedUserId) &&
-        request.resource.data.createdAt == request.time;
-      allow delete: if requesterAccountIsActive() &&
-        resource.data.ownerUserId == request.auth.uid;
-      allow update: if false;
+      allow get, list: if signedIn() &&
+        (
+          resource.data.ownerUserId == request.auth.uid ||
+          resource.data.blockedUserId == request.auth.uid
+        );
+      // Stage 1B: block mutations are booking-sensitive and must use the
+      // server-authoritative blockUserV1/unblockUserV1 transactions.
+      allow create, update, delete: if false;
+    }
+
+    match /userRelationshipGuards/{pairId} {
+      allow get: if signedIn() &&
+        resource.data.uidA is string &&
+        resource.data.uidB is string &&
+        request.auth.uid in [resource.data.uidA, resource.data.uidB];
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // Rollout, migration, and activation history are backend-only. In
+    // particular, an old client cannot enable blocking by writing config.
+    match /_rollouts/{documentId} {
+      allow read, write: if false;
+    }
+
+    match /_migrations/{documentId} {
+      allow read, write: if false;
+    }
+
+    match /userBlockingActivationAudit/{auditId} {
+      allow read, write: if false;
+    }
+
+    match /relationshipMigrationEvidence/{evidenceId} {
+      allow read, write: if false;
     }
 
     match /userMutes/{muteId} {
@@ -1959,6 +2011,10 @@ service cloud.firestore {
           request.auth.uid == userId &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.visibilityStatus == 'visible' &&
           get(/databases/$(database)/documents/socialPosts/$(postId)).data.moderationStatus == 'approved' &&
+          relationshipAllowsInteraction(
+            request.auth.uid,
+            get(/databases/$(database)/documents/socialPosts/$(postId)).data.authorId
+          ) &&
           request.resource.data.diff({}).changedKeys().hasOnly([
             'userId',
             'createdAt'
@@ -2084,7 +2140,10 @@ service cloud.firestore {
         allow read: if signedIn();
         allow create: if requesterAccountIsActive() &&
           request.resource.data.reviewerId == request.auth.uid;
-        allow update, delete: if isAdmin();
+        // Review moderation decisions are transactional backend operations.
+        // Client SDK writes would bypass target checks, queue synchronization,
+        // audit logging, and duplicate/conflicting-decision protection.
+        allow update, delete: if false;
       }
 
       match /slots/{slotId} {
@@ -2396,7 +2455,8 @@ service cloud.firestore {
           request.resource.data.reportedBy == request.auth.uid ||
           request.resource.data.reporterId == request.auth.uid
         );
-      allow update, delete: if isAdmin();
+      // Report decisions must go through the secure moderation callables.
+      allow update, delete: if false;
     }
 
     match /accountDeletionJobs/{jobId} {
