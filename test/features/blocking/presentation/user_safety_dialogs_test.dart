@@ -89,6 +89,94 @@ void main() {
     expect(find.textContaining('booking-'), findsNothing);
   });
 
+  for (final reasonCode in const [
+    'USER_BLOCKING_DISABLED',
+    'RELATIONSHIP_MIGRATION_NOT_VERIFIED',
+    'BLOCKING_ACTIVATION_NOT_AUDITED',
+  ]) {
+    testWidgets(
+      '$reasonCode shows the disabled message and keeps Report User',
+      (tester) async {
+        await _pumpLauncher(
+          tester,
+          onPressed: (context) => showBlockingUnavailable(
+            context,
+            reasonCode: reasonCode,
+            reportTargetUid: 'target-user',
+          ),
+        );
+        await tester.tap(find.text('Open'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Blocking temporarily unavailable'), findsOneWidget);
+        expect(find.text(blockingDisabledMessage), findsOneWidget);
+        expect(find.textContaining('active paid booking'), findsNothing);
+        expect(find.text('Report User'), findsOneWidget);
+        expect(find.text('Contact Support'), findsOneWidget);
+      },
+    );
+  }
+
+  testWidgets('every other unavailable reason keeps its own message', (
+    tester,
+  ) async {
+    const expectations = <String, String>{
+      'PROTECTED_BOOKING_EXISTS': 'active paid booking',
+      'DISPUTE_WINDOW_ACTIVE': 'active paid booking',
+      'HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED': 'active paid booking',
+      'PAYMENT_RECONCILIATION_REQUIRED': 'payment needs verification',
+      'INVALID_CANONICAL_BOOKING': 'payment needs verification',
+      'PAIR_BOOKING_LIMIT_EXCEEDED': 'review your booking history',
+    };
+    for (final entry in expectations.entries) {
+      await _pumpLauncher(
+        tester,
+        onPressed: (context) => showBlockingUnavailable(
+          context,
+          reasonCode: entry.key,
+          reportTargetUid: 'target-user',
+        ),
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining(entry.value),
+        findsOneWidget,
+        reason: entry.key,
+      );
+      expect(
+        find.text(blockingDisabledMessage),
+        findsNothing,
+        reason: entry.key,
+      );
+      expect(find.text('Report User'), findsOneWidget, reason: entry.key);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+    }
+  });
+
+  test(
+    'stale-state block attempt while disabled maps to the disabled text',
+    () {
+      expect(
+        blockingFailureMessage(BlockingFailureKind.blockingDisabled),
+        blockingDisabledMessage,
+      );
+      expect(
+        blockingFailureMessage(BlockingFailureKind.supportRequired),
+        contains('Pettxo Support needs to review'),
+      );
+      expect(
+        blockingFailureMessage(BlockingFailureKind.timeout),
+        'Check your connection and try again.',
+      );
+      expect(
+        blockingFailureMessage(BlockingFailureKind.unexpected),
+        'We could not update this relationship right now.',
+      );
+    },
+  );
+
   test('error mapping never exposes Firebase or booking identifiers', () {
     expect(
       blockingFailureMessage(BlockingFailureKind.paymentReconciliation),

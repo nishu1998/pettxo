@@ -4,12 +4,24 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+/// Server reason codes meaning blocking is switched off globally (the
+/// activation gate in functions/src/blocking/blockingActivationGate.ts).
+const Set<String> blockingDisabledReasonCodes = {
+  'USER_BLOCKING_DISABLED',
+  'RELATIONSHIP_MIGRATION_NOT_VERIFIED',
+  'BLOCKING_ACTIVATION_NOT_AUDITED',
+};
+
+bool isBlockingDisabledReason(String reasonCode) =>
+    blockingDisabledReasonCodes.contains(reasonCode.trim().toUpperCase());
+
 enum BlockingFailureKind {
   unauthenticated,
   invalidTarget,
   protectedBooking,
   paymentReconciliation,
   supportRequired,
+  blockingDisabled,
   notFound,
   permissionDenied,
   unavailable,
@@ -298,6 +310,9 @@ class BlockedRelationshipRepository {
   BlockingFailureKind _failureKind(FirebaseFunctionsException error) {
     final details = error.details;
     final detailCode = details is Map ? details['code']?.toString() ?? '' : '';
+    if (isBlockingDisabledReason(detailCode)) {
+      return BlockingFailureKind.blockingDisabled;
+    }
     switch (detailCode.trim().toUpperCase()) {
       case 'PROTECTED_BOOKING_EXISTS':
         return BlockingFailureKind.protectedBooking;

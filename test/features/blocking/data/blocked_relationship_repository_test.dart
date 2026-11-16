@@ -68,6 +68,10 @@ void main() {
         'PAYMENT_RECONCILIATION_REQUIRED':
             BlockingFailureKind.paymentReconciliation,
         'PAIR_BOOKING_LIMIT_EXCEEDED': BlockingFailureKind.supportRequired,
+        'USER_BLOCKING_DISABLED': BlockingFailureKind.blockingDisabled,
+        'RELATIONSHIP_MIGRATION_NOT_VERIFIED':
+            BlockingFailureKind.blockingDisabled,
+        'BLOCKING_ACTIVATION_NOT_AUDITED': BlockingFailureKind.blockingDisabled,
       }.entries) {
         final functions = _FakeFunctions(
           const <String, dynamic>{},

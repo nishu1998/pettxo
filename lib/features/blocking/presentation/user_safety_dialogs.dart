@@ -5,6 +5,9 @@ import '../../support/presentation/screens/help_support_screen.dart';
 import '../../moderation/presentation/widgets/report_sheet.dart';
 import '../data/blocked_relationship_repository.dart';
 
+const String blockingDisabledMessage =
+    "Blocking isn't available yet. If you feel unsafe, you can report this user and our team will review it.";
+
 String blockingFailureMessage(BlockingFailureKind kind) {
   switch (kind) {
     case BlockingFailureKind.unauthenticated:
@@ -17,6 +20,8 @@ String blockingFailureMessage(BlockingFailureKind kind) {
       return 'Blocking is temporarily unavailable because a booking payment needs verification. Contact Pettxo Support.';
     case BlockingFailureKind.supportRequired:
       return 'Pettxo Support needs to review this relationship before blocking can continue.';
+    case BlockingFailureKind.blockingDisabled:
+      return blockingDisabledMessage;
     case BlockingFailureKind.notFound:
       return 'This user is no longer available.';
     case BlockingFailureKind.permissionDenied:
@@ -99,12 +104,15 @@ Future<void> showBlockingUnavailable(
       reasonCode.trim().toUpperCase() == 'INVALID_CANONICAL_BOOKING';
   final supportRequired =
       reasonCode.trim().toUpperCase() == 'PAIR_BOOKING_LIMIT_EXCEEDED';
+  final disabled = isBlockingDisabledReason(reasonCode);
   await showDialog<void>(
     context: context,
     builder: (dialogContext) => AlertDialog(
       title: const Text('Blocking temporarily unavailable'),
       content: Text(
-        reconciliation
+        disabled
+            ? blockingDisabledMessage
+            : reconciliation
             ? 'A booking payment needs verification before blocking can continue. Contact Pettxo Support.'
             : supportRequired
             ? 'Pettxo Support needs to review your booking history before blocking can continue.'
