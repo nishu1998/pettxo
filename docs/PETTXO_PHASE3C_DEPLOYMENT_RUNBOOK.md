@@ -1,6 +1,6 @@
 # Pettxo Phase 3C: production deployment runbook
 
-Prepared: 2026-11-17 (Asia/Kolkata). **For owner approval. Nothing in this runbook has been run against production.**
+Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. **For owner approval. Nothing in this runbook has been run against production.**
 
 **What the deploy does:**
 - Deploys the new backend (74 Cloud Functions) and the new Firestore and Storage Rules, with user blocking **disabled**.
@@ -13,10 +13,10 @@ Blocking activation is Phase 3B-4 and is **not** part of this runbook.
 |---|---|
 | Firebase project | `pettexo-d9409` (pass `--project pettexo-d9409` on **every** command) |
 | Functions | Gen 2, `asia-south1`, Node 22 |
-| Deploy source (main) | Clean worktree `/Users/nishantgautam/development/pettexo-android-release`, branch `release/android-1.0.5-closed-testing`. Backend, Rules and indexes are byte-identical to release commit `c74fbd46b38ac54a9a45bcf0ffcec868873f0d1c` (and `15b7336`). |
+| Deploy source (main) | Clean worktree `/Users/nishantgautam/development/pettexo-android-release`, branch `release/android-1.0.5-closed-testing` (also on GitHub). **Deploy commit: `9ce090a5f2e72978679f6091cc3c9d605ec439c8`**, or a later commit on this branch that changes only `docs/`. Functions and Storage Rules are byte-identical to `c74fbd46…`. `firestore.rules` differs from `c74fbd4` only by the Phase 3C-2 legacy-author fix (`5bb2661`). |
 | Base (rollback) commit | `1652aac6732273b945843a418b3273a88109ab42` |
 | Admin Dashboard source | `d07df166a73503a2da4bf95bc0ec1dca799717ca` (`release/phase3b1-admin-reporting-2026-11-16`) |
-| Android build | `1.0.5+24`, `/Users/nishantgautam/PettxoReleaseBackups/builds/1.0.5+24/pettxo-1.0.5+24-release.aab` |
+| Android build | `1.0.5+24`, built at `9ce090a`: `/Users/nishantgautam/PettxoReleaseBackups/builds/1.0.5+24/pettxo-1.0.5+24-release.aab` (SHA-256 `edc72148234c23d7d28c639228fff97b1f7ff65be64679d78f47ec219cdcbc87`). The 3C-1 AAB in `superseded-3C1/` must not be uploaded. |
 
 **Never deploy from:**
 - the main working tree `/Users/nishantgautam/development/pettexo`, which holds uncommitted iOS and `pubspec.yaml` work;
@@ -30,8 +30,8 @@ Blocking activation is Phase 3B-4 and is **not** part of this runbook.
 cd /Users/nishantgautam/development/pettexo-android-release
 git status --porcelain                       # must print nothing
 git rev-parse HEAD                           # the approved branch HEAD (see Phase 3C-1 report)
-git diff --stat c74fbd46b38ac54a9a45bcf0ffcec868873f0d1c HEAD -- functions/src firestore.rules storage.rules firestore.indexes.json firebase.json
-#   must print nothing (backend, Rules, indexes and config identical to c74fbd4)
+git diff --stat 9ce090a5f2e72978679f6091cc3c9d605ec439c8 HEAD -- functions/src firestore.rules storage.rules firestore.indexes.json firebase.json lib android pubspec.yaml
+#   must print nothing (deploy source identical to the approved commit 9ce090a)
 firebase --version                           # recorded during 3C-1: 15.24.0
 firebase login:list                          # must show the owner account you intend to deploy with
 node --version                               # v22.x
@@ -56,7 +56,7 @@ ls -l functions/.env.pettexo-d9409           # symlink to the main tree's file; 
 - `userBlocks` is still empty. You verified this on 2026-11-17; re-check on deploy day.
 - `_rollouts/userBlockingV1` does **not** exist.
 - `userRelationshipGuards` is empty or absent.
-- Spot-check 3–5 recent `socialPosts` documents for a string `authorId`. The new comment rule requires `parentPostAuthorId == post.authorId`, so a post without a string `authorId` cannot receive comments (Phase 3B-3a finding).
+- Optional: note whether any `socialPosts` document lacks a string `authorId`. After the Phase 3C-2 fix such posts are no longer refused by Rules: the block check is skipped when no author resolves. If you find another author field name, report it so it can be added to `socialPostAuthorUid` in `firestore.rules`.
 
 **Save the currently-live Rules.** Firebase console → Firestore Database → Rules, and Storage → Rules: copy the full text of each into `~/PettxoReleaseBackups/rules-live-<date>/firestore.rules` and `storage.rules`. This is the exact rollback source. Production Rules provenance is Not Verified, so do not assume it equals the base commit.
 
@@ -75,7 +75,7 @@ firebase deploy --only storage --project pettexo-d9409
 - **What the new Rules depend on.** They only check whether `userBlocks/{a}_{b}` documents exist, and read existing `chats` and `socialPosts`. They do not depend on anything the new functions create.
 - **Safe with old functions.** The old functions use the Admin SDK and are unaffected by Rules.
 - **The gap they close.** Deploying them first means there is **no window** in which a client can still write `userBlocks` directly (the old Rules allow owner create and delete) while new functions already honour directed blocks. That window is the "direct userBlocks write" gap (3B-3a §D/C4): a crafted block plus a new function could fail a payment capture.
-- **Build 23 behaviour.** The live app is unaffected while `userBlocks` is empty, except that comments are refused on posts without a string `authorId`.
+- **Build 23 behaviour.** The live app is unaffected while `userBlocks` is empty. Rules no longer refuse likes, comments or shares on posts without a string `authorId` (fixed in `5bb2661`). The app itself already hides authorless posts and refuses those actions client-side, unchanged from before the deploy.
 
 ### Step 2: Functions, in waves (74 functions = 7 new + 17 direct + 5 shared + 45 schema-consistency)
 
@@ -151,7 +151,8 @@ No write is needed, and the gate stays **OFF**:
 
 The owner does these in about 15 minutes, on a real phone running the **live build 23 (1.0.4)**, with two test accounts A and B:
 1. Log in as A. The feed loads.
-2. Like and unlike a post by B. Comment on B's post, on one that has an `authorId`.
+2. Like and unlike a post by B. Comment on B's post.
+   - **Old-post Rules check:** also like and comment on an **OLD** post, one created months ago, for example from the earliest posts in the feed or on a profile. It must succeed. A `permission-denied` here means the legacy-author Rules fix is not live; roll back the Rules.
 3. Follow, then unfollow B. Check the profile follow counts.
 4. Chat: A↔B text message, then an image message, both ways.
 5. Browse services and open a service detail.
@@ -256,4 +257,4 @@ Pettxo 1.0.5 (closed testing)
 Please test: login, feed, likes/comments, follow, chat (text and photos), service browsing, booking requests, and reporting. Do not make real payments unless asked.
 ```
 
-**Known tester-visible issue.** With blocking disabled, the "Blocking temporarily unavailable" dialog body currently says "You can't block this user while you have an active paid booking or an open dispute…" (`lib/features/blocking/presentation/user_safety_dialogs.dart:105-111`). The `USER_BLOCKING_DISABLED` reason falls through to the booking-protection wording. The title and the "Report User" action are correct. A copy fix is recommended before a wider rollout.
+**Blocking-disabled message (fixed in `9ce090a`).** With blocking disabled, the dialog shows "Blocking isn't available yet. If you feel unsafe, you can report this user and our team will review it." with Report User and Contact Support. The 3C-1 copy issue is resolved in this AAB.
