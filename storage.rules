@@ -64,20 +64,6 @@ service firebase.storage {
       );
     }
 
-    function directedUserBlockExists(ownerUid, blockedUid) {
-      return firestore.exists(
-        /databases/(default)/documents/userBlocks/$(ownerUid + "_" + blockedUid)
-      );
-    }
-
-    function chatRelationshipAllowsMedia(chatId) {
-      let chat = chatForMedia(chatId).data;
-      let firstUid = chat.participantIds[0];
-      let secondUid = chat.participantIds[1];
-      return !directedUserBlockExists(firstUid, secondUid) &&
-        !directedUserBlockExists(secondUid, firstUid);
-    }
-
     function isChatMediaParticipant(chatId) {
       return signedIn() &&
         firestore.exists(/databases/(default)/documents/chats/$(chatId)) &&
@@ -214,7 +200,6 @@ service firebase.storage {
       allow get: if isChatMediaParticipant(chatId) || canMonitorChatMedia();
       allow list: if false;
       allow create: if isChatMediaParticipant(chatId) &&
-        chatRelationshipAllowsMedia(chatId) &&
         resource == null &&
         messageId.matches('^[A-Za-z0-9]{20}$') &&
         chatForMedia(chatId).data.status == "active" &&

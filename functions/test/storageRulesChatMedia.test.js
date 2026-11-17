@@ -77,7 +77,16 @@ test("participants can create and read historical media after either app upgrade
   ));
 });
 
-test("a directed block prevents new media uploads in both directions but preserves history", {
+// Phase 3C-4: Storage Rules must not read userBlocks. Production Storage Rules
+// may access at most two Firestore documents per evaluation; chat media create
+// already reads chats/{chatId}, and checking both directed userBlocks documents
+// made it three, which production denies (the emulator does not enforce the
+// limit; see storageRulesFirestoreBudget.test.js). A blocked pair is refused
+// server-side instead: getChatImageMessagingCapability reports
+// relationship-blocked and sendChatImageMessage refuses the commit in both
+// directions (chatImageFunctionsEmulator.test.js), so no image message can be
+// created. The Rules-level result here is therefore independent of blocks.
+test("chat media Rules are independent of directed blocks and preserve history", {
   skip: !hasEmulators,
 }, async () => {
   await environment.withSecurityRulesDisabled(async (context) => {
@@ -89,7 +98,7 @@ test("a directed block prevents new media uploads in both directions but preserv
   });
   try {
     for (const [uid, id] of [["uid-a", "IjKlMnOpQrStUvWxYzAb"], ["uid-b", "JkLmNoPqRsTuVwXyZaBc"]]) {
-      await assertFails(uploadBytes(
+      await assertSucceeds(uploadBytes(
         ref(environment.authenticatedContext(uid).storage(),
           `chatMedia/${chatId}/${id}/image.jpg`),
         bytes,

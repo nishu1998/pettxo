@@ -72,7 +72,12 @@ function scrubbedEnvironment(projectId, scratch) {
   return env;
 }
 
-function runNodeTests(env, files) {
+function loadsStorageRules(file) {
+  const source = fs.readFileSync(path.resolve(FUNCTIONS_DIR, file), "utf8");
+  return source.includes("initializeTestEnvironment") && source.includes("storage.rules");
+}
+
+function runNodeTests(env, files, nodeTestArgs = []) {
   const childEnv = {...env, NODE_OPTIONS: `--require ${PREFLIGHT}`};
   try {
     assertTestProcessPreflight(childEnv);
@@ -85,7 +90,7 @@ function runNodeTests(env, files) {
     `HOME=<scrubbed> CLOUDSDK_CONFIG=<scrubbed> GOOGLE_APPLICATION_CREDENTIALS=<unset>\n`,
   );
   const extra = process.env.PETTXO_TEST_REPORTER ? [`--test-reporter=${process.env.PETTXO_TEST_REPORTER}`] : [];
-  const result = spawnSync(process.execPath, ["--test", ...extra, ...files], {
+  const result = spawnSync(process.execPath, ["--test", ...nodeTestArgs, ...extra, ...files], {
     cwd: FUNCTIONS_DIR,
     env: childEnv,
     stdio: "inherit",
@@ -110,7 +115,20 @@ function main() {
     }
     const env = {...process.env, GOOGLE_CLOUD_PROJECT: EMULATOR_PROJECT_ID};
     delete env.NODE_OPTIONS;
-    process.exit(runNodeTests(env, files));
+    // Files that load storage.rules into the shared Storage emulator
+    // (initializeTestEnvironment) reset its ruleset; while a reload is in
+    // progress the emulator denies every request ("no Storage ruleset is
+    // currently loaded") and cross-service Firestore lookups can stall. Run
+    // those files one at a time after the parallel batch so no Storage Rules
+    // reload overlaps another file's Storage requests.
+    const storageRulesFiles = files.filter(loadsStorageRules);
+    const parallelFiles = files.filter((file) => !storageRulesFiles.includes(file));
+    let status = 0;
+    if (parallelFiles.length > 0) status = runNodeTests(env, parallelFiles) || status;
+    if (storageRulesFiles.length > 0) {
+      status = runNodeTests(env, storageRulesFiles, ["--test-concurrency=1"]) || status;
+    }
+    process.exit(status);
   }
 
   if (mode !== "unit" && mode !== "emulator") {
