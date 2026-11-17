@@ -1,6 +1,12 @@
 # Pettxo Phase 3C: deploy-day checklist (owner)
 
-Prepared 2026-11-17 in Phase 3C-3. Use this alongside `docs/PETTXO_PHASE3C_DEPLOYMENT_RUNBOOK.md`; section numbers like "§5" refer to that runbook.
+Prepared 2026-11-17 in Phase 3C-3; updated in Phase 3C-4 after the chat-photo incident. Use this alongside `docs/PETTXO_PHASE3C_DEPLOYMENT_RUNBOOK.md`; section numbers like "§5" refer to that runbook.
+
+> **Phase 3C-4 status:**
+> - **Steps 1–5 are done.** Firestore Rules have been live since about 05:00 IST.
+> - **Step 6 (Storage Rules) is CANCELLED.** Production runs the previous Storage Rules, and the repository `storage.rules` at deploy commit `d1c5c85c171c08d9c1192f898e7ee9a0e0d353da` is byte-identical to them. Never run `firebase deploy --only storage` for this release.
+> - **Continue from step 7.** Deploy source: `/Users/nishantgautam/development/pettexo-android-release` at `d1c5c85c171c08d9c1192f898e7ee9a0e0d353da` or a later docs-only commit.
+> - **Live Admin Dashboard.** The old Dashboard's report-status action fails under the new Firestore Rules. Do not moderate reports in it until step 15 is done.
 
 This list contains **only** production commands and owner checks, in order. The local checks were all verified in Phase 3C-3 and are **not** repeated here:
 - clean tree, and deploy source identical to `9ce090a`;
@@ -68,7 +74,7 @@ Then copy the **full** text of each into that folder:
 
 ## B. Rules (first)
 
-**5. Firestore Rules.**
+**5. Firestore Rules.** **DONE** on 2026-11-17 at about 05:00 IST; live and working. Re-run only if they were rolled back.
 
 ```bash
 firebase deploy --only firestore:rules --project pettexo-d9409
@@ -83,22 +89,26 @@ firebase deploy --only firestore:rules --project pettexo-d9409
   - **Auth or permission error:** check `firebase login:list`, then STOP.
 - **STOP**
 
-**6. Storage Rules.**
+**6. Storage Rules: CANCELLED (Phase 3C-4). Do NOT deploy.** The `9ce090a` Storage Rules denied every chat photo in production, so they were rolled back. The repository file now equals what production runs. Local confirmation, which is not a production command:
 
 ```bash
-firebase deploy --only storage --project pettexo-d9409
+cd /Users/nishantgautam/development/pettexo-android-release
+git diff 1652aac6732273b945843a418b3273a88109ab42 HEAD -- storage.rules   # must print nothing
 ```
 
-- Expected: `released rules storage.rules to firebase.storage`, then `Deploy complete!`.
-- If it fails: STOP. The Firestore Rules alone are safe with the old functions. Report before retrying.
+- Expected: nothing printed. Do not run `firebase deploy --only storage`.
+- If it fails (something is printed): STOP. The deploy source is not the approved commit.
 - **STOP**
 
 **7. Quick Rules smoke (live app, build 23).** On your phone:
 - like, then unlike, a post;
 - comment on a recent post;
-- **like and comment on an OLD post** (months old).
-- Expected: all succeed.
-- If it fails: a `permission-denied` or a failed like or comment means roll back the **Rules** now from the files saved in step 3 (§5, Rules, preferred path). Then STOP.
+- **like and comment on an OLD post** (months old);
+- **chat photo, both ways** (A→B, then B→A). Each photo uploads, appears for the other user, and opens.
+- Expected: all succeed. The like, comment and old-post checks passed on 2026-11-17. The chat photo passed after the Storage rollback; re-check it now.
+- If it fails:
+  - **Like or comment:** a `permission-denied` or failure means roll back the **Firestore Rules** from the files saved in step 3 (§5, Rules, preferred path). Then STOP.
+  - **Chat photo shows "You do not have permission to send this photo":** the Storage Rules are not the saved live version. Re-publish the saved `storage.rules` from step 3 (Storage → Rules), then STOP.
 - **STOP**
 
 ---
@@ -150,7 +160,10 @@ firebase deploy --project pettexo-d9409 --only "functions:getChatImageMessagingC
 ```
 
 - Expected: 11 × update, with **no prompt** for `CHAT_IMAGE_MESSAGING_ENABLED`.
-- If it fails: a prompt for that param means the `.env` file was not read. Press Ctrl-C, STOP, and check that `ls -l functions/.env.pettexo-d9409` resolves.
+- Then, on build 23: send a **chat photo both ways** (A→B, then B→A). This exercises the new `getChatImageMessagingCapability` and `sendChatImageMessage`.
+- If it fails:
+  - **A prompt for that param:** the `.env` file was not read. Press Ctrl-C, STOP, and check that `ls -l functions/.env.pettexo-d9409` resolves.
+  - **The chat photo fails after the deploy:** STOP. Roll back `getChatImageMessagingCapability` and `sendChatImageMessage` from base per §5, then report.
 - **STOP**
 
 **11. Wave 4: blocking callables (3, all creates; the gate stays OFF).**
@@ -212,7 +225,7 @@ Do **not** run `firebase deploy --only firestore:indexes`; no index changes are 
 1. Feed loads.
 2. Like, unlike and comment, including on an old post.
 3. Follow and unfollow, and check the counts.
-4. Chat text and image, both ways.
+4. Chat text, then a **chat photo, both ways**: the photo uploads, appears for the other user, and opens.
 5. Browse services.
 6. Booking request, then cancel it without paying.
 7. Report a service and a review.
@@ -275,6 +288,9 @@ cd ~/PettxoReleaseBackups/builds/1.0.5+24 && shasum -a 256 -c SHA256SUMS
 - **STOP**
 
 **18. Wait for Play review.** Closed-testing review can take **a few hours to several days**. When it shows as available, install it from the tester opt-in link on your tester account. Check the blocking-disabled dialog text: "Blocking isn't available yet. If you feel unsafe, you can report this user and our team will review it."
-- Expected: 1.0.5 (24) installs; the smoke items from step 14 pass on 1.0.5.
+- Expected:
+  - 1.0.5 (24) installs;
+  - the smoke items from step 14 pass on 1.0.5, including a **chat photo both ways** between 1.0.5 and build 23 (each direction).
+  - On 1.0.5 the chat composer and photo button need `getUserRelationshipStateV1` (Wave 4). If they are missing, check that step 11 succeeded.
 - If it fails: halt the rollout in Play Console (Closed testing → Halt) and report. The backend can stay deployed, because build 23 is unaffected.
 - **STOP**: done.

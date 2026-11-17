@@ -1,6 +1,19 @@
 # Pettxo Phase 3C: production deployment runbook
 
-Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. Updated in Phase 3C-3: local deploy-day verification, prebuilt Dashboard, Play checks. **For owner approval. Nothing in this runbook has been run against production.**
+Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. Updated in Phase 3C-3: local deploy-day verification, prebuilt Dashboard, Play checks. Updated in Phase 3C-4: chat-photo incident after the Rules deploy; Storage Rules restored to base. **For owner approval.**
+
+> **Production status (2026-11-17, about 05:00 IST, owner-run).**
+>
+> **What is live now:**
+> - **Firestore Rules: the NEW version** (from `e8f97f3`, identical to `9ce090a`). They are working: feed, likes, comments, old-post like and comment, and chat text all pass.
+> - **Storage Rules: the PREVIOUS live version** (rolled back). This equals base `1652aac`, and the repository `storage.rules` at `d1c5c85c171c08d9c1192f898e7ee9a0e0d353da` is now byte-identical to it.
+> - **Functions:** still all base `1652aac`; none are deployed yet.
+>
+> **Incident.** The new `storage.rules` (`9ce090a`) denied every chat photo in production. The chat-media `create` rule read three Firestore documents: `chats/{id}`, `userBlocks/a_b` and `userBlocks/b_a`. Production Storage Rules may access at most **two** Firestore documents per evaluation. The emulator does not enforce this limit, so the tests passed. Details are in `PETTXO_PHASE3C4_REPORT.md`.
+>
+> **The fix (`d1c5c85c171c08d9c1192f898e7ee9a0e0d353da`)** restores `storage.rules` to base. It adds a static test (`storageRulesFirestoreBudget.test.js`) that fails any Storage rule reaching more than two Firestore documents, and an end-to-end chat-photo emulator test. Blocked pairs remain refused at the server: `getChatImageMessagingCapability` and `sendChatImageMessage`, which ship in Wave 3. **Do not deploy Storage Rules again for this release.**
+>
+> **Live Admin Dashboard.** The live (old) Dashboard updates `reports` status with a client-side transaction. The new Firestore Rules deny that (`reports` update/delete is `false`), so its report-status action fails until Wave 2 and the new Dashboard (§6) are deployed. Reading reports still works.
 
 **What the deploy does:**
 - Deploys the new backend (74 Cloud Functions) and the new Firestore and Storage Rules, with user blocking **disabled**.
@@ -13,7 +26,10 @@ Blocking activation is Phase 3B-4 and is **not** part of this runbook.
 |---|---|
 | Firebase project | `pettexo-d9409` (pass `--project pettexo-d9409` on **every** command) |
 | Functions | Gen 2, `asia-south1`, Node 22 |
-| Deploy source (main) | Clean worktree `/Users/nishantgautam/development/pettexo-android-release`, branch `release/android-1.0.5-closed-testing` (also on GitHub). **Deploy commit: `9ce090a5f2e72978679f6091cc3c9d605ec439c8`**, or a later commit on this branch that changes only `docs/`. Functions and Storage Rules are byte-identical to `c74fbd46…`. `firestore.rules` differs from `c74fbd4` only by the Phase 3C-2 legacy-author fix (`5bb2661`). |
+| Deploy source (main) | Clean worktree `/Users/nishantgautam/development/pettexo-android-release`, branch `release/android-1.0.5-closed-testing` (also on GitHub). **Deploy commit: `d1c5c85c171c08d9c1192f898e7ee9a0e0d353da`** (Phase 3C-4), or a later commit on this branch that changes only `docs/`.
+- **Functions source:** byte-identical to `9ce090a` and to `c74fbd46…`. The fix changed only `functions/test` and `functions/scripts`, which are not deployed.
+- **`firestore.rules`:** identical to `9ce090a`; already live.
+- **`storage.rules`:** byte-identical to base `1652aac`, which is what is live. Do not redeploy it. |
 | Base (rollback) commit | `1652aac6732273b945843a418b3273a88109ab42` |
 | Admin Dashboard source | `d07df166a73503a2da4bf95bc0ec1dca799717ca` (`release/phase3b1-admin-reporting-2026-11-16`) |
 | Android build | `1.0.5+24`, built at `9ce090a`: `/Users/nishantgautam/PettxoReleaseBackups/builds/1.0.5+24/pettxo-1.0.5+24-release.aab` (SHA-256 `edc72148234c23d7d28c639228fff97b1f7ff65be64679d78f47ec219cdcbc87`). The 3C-1 AAB in `superseded-3C1/` must not be uploaded. |
@@ -37,14 +53,17 @@ Blocking activation is Phase 3B-4 and is **not** part of this runbook.
 cd /Users/nishantgautam/development/pettexo-android-release
 git status --porcelain                       # must print nothing
 git rev-parse HEAD                           # the approved branch HEAD (see Phase 3C-1 report)
-git diff --stat 9ce090a5f2e72978679f6091cc3c9d605ec439c8 HEAD -- functions/src firestore.rules storage.rules firestore.indexes.json firebase.json lib android pubspec.yaml
-#   must print nothing (deploy source identical to the approved commit 9ce090a)
+git diff --stat d1c5c85c171c08d9c1192f898e7ee9a0e0d353da HEAD -- functions/src firestore.rules storage.rules firestore.indexes.json firebase.json lib android pubspec.yaml
+#   must print nothing (deploy source identical to the approved Phase 3C-4 commit)
+git diff 1652aac6732273b945843a418b3273a88109ab42 HEAD -- storage.rules
+#   must print nothing (Storage Rules = base = what production runs)
 firebase --version                           # recorded during 3C-1: 15.24.0
 firebase login:list                          # must show the owner account you intend to deploy with
 node --version                               # v22.x
 ls -l functions/.env.pettexo-d9409           # symlink to the main tree's file; must exist (see below)
 (cd functions && npm ci && npm run build)    # lockfile install, no upgrades
-(cd functions && npm run test:emulator)      # expected: 1131 tests, 1128 passed, 3 known failures (#206, #209, #599)
+(cd functions && npm run test:emulator)      # expected (Phase 3C-4): 1137 tests, 1134 passed, 3 known failures (#206, #209, #599)
+#   printed as two batches: 1125 tests run in parallel, then 12 tests from Storage-Rules files run serially
 ```
 
 All of the above was re-verified locally on 2026-11-17 in Phase 3C-3 (see `PETTXO_PHASE3C3_REPORT.md`). The keystore, AAB checksum and symlink targets were also checked after the disk clean-up. The deploy-day command list is in `docs/PETTXO_PHASE3C_DEPLOY_DAY_CHECKLIST.md`.
@@ -79,12 +98,16 @@ Without this you cannot install 1.0.5 from Play to verify it.
 
 Run everything from `/Users/nishantgautam/development/pettexo-android-release`. After each step, wait for success, then check the logs (§4) before continuing.
 
-### Step 1: Firestore Rules, then Storage Rules (first)
+### Step 1: Firestore Rules (DONE 2026-11-17, about 05:00 IST); Storage Rules: do NOT deploy
 
 ```bash
+# Already done, and live and working. Re-run ONLY if the Firestore Rules were rolled back:
 firebase deploy --only firestore:rules --project pettexo-d9409
-firebase deploy --only storage --project pettexo-d9409
+# Do NOT run `firebase deploy --only storage`. Production already runs exactly
+# the repository storage.rules (base 1652aac); the 9ce090a version broke chat photos.
 ```
+
+**Phase 3C-4 lesson: the Storage Rules cross-service limit.** Production Storage Rules may access at most **2 distinct Firestore documents** per evaluation; a third is permission-denied. Repeat access to the same document is cached and counted once. The Storage emulator does **not** enforce this, so emulator tests cannot catch it. `functions/test/storageRulesFirestoreBudget.test.js` now checks every Storage rule statically. Firestore Rules have their own, larger limits: 10 per single-document request and 20 per batch or transaction.
 
 **Why Rules go first.** This changes the 3B-3a recommendation, which deployed Rules right after the functions.
 - **What the new Rules depend on.** They only check whether `userBlocks/{a}_{b}` documents exist, and read existing `chats` and `socialPosts`. They do not depend on anything the new functions create.
@@ -169,7 +192,7 @@ The owner does these in about 15 minutes, on a real phone running the **live bui
 2. Like and unlike a post by B. Comment on B's post.
    - **Old-post Rules check:** also like and comment on an **OLD** post, one created months ago, for example from the earliest posts in the feed or on a profile. It must succeed. A `permission-denied` here means the legacy-author Rules fix is not live; roll back the Rules.
 3. Follow, then unfollow B. Check the profile follow counts.
-4. Chat: A↔B text message, then an image message, both ways.
+4. Chat: A↔B text message, then a **chat photo, both ways** (A→B and B→A). Each photo must upload, appear for the other user, and open full-size. A "You do not have permission to send this photo" error means a Storage Rules denial: check that no one deployed `storage.rules`, and re-publish the saved live Storage Rules if they did.
 5. Browse services and open a service detail.
 6. Booking request as A to B's service. Do **not** pay with real money; cancel it.
 7. Legacy report: report a service and a review from the app. The document appears in `reports`, and `enqueueReportModeration` runs.
@@ -189,6 +212,8 @@ The owner does these in about 15 minutes, on a real phone running the **live bui
 ## 5. Rollback plan
 
 ### Rules
+
+**Storage Rules (Phase 3C-4):** production already runs the previous live Storage Rules, which equal base and the repository file. There is nothing to roll back unless someone deploys `storage.rules` again.
 
 1. **Preferred.** Re-publish the saved live Rules from §1:
    - Firebase console → Firestore Database → Rules: paste the saved `firestore.rules`, then **Publish**.
