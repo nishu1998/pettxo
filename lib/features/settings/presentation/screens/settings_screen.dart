@@ -16,6 +16,7 @@ import '../../domain/models/app_settings.dart';
 import 'account_security_screen.dart';
 import '../../../auth/presentation/screens/auth_gateway_screen.dart';
 import '../../../support/presentation/screens/help_support_screen.dart';
+import '../../../blocking/data/blocked_relationship_repository.dart';
 import '../../../blocking/presentation/screens/blocked_users_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -29,13 +30,15 @@ class SettingsScreen extends StatefulWidget {
     loadProviderOnboardingOverride,
     Future<AppSettings> Function()? loadSettingsOverride,
     Future<void> Function()? signOutOverride,
+    BlockedRelationshipRepository? blockedRelationshipRepository,
   }) : _profileRepository = profileRepository,
        _providerOnboardingRepository = providerOnboardingRepository,
        _settingsService = settingsService,
        _loadProfileOverride = loadProfileOverride,
        _loadProviderOnboardingOverride = loadProviderOnboardingOverride,
        _loadSettingsOverride = loadSettingsOverride,
-       _signOutOverride = signOutOverride;
+       _signOutOverride = signOutOverride,
+       _blockedRelationshipRepository = blockedRelationshipRepository;
 
   final ProfileRepository? _profileRepository;
   final ProviderOnboardingRepository? _providerOnboardingRepository;
@@ -45,6 +48,7 @@ class SettingsScreen extends StatefulWidget {
   _loadProviderOnboardingOverride;
   final Future<AppSettings> Function()? _loadSettingsOverride;
   final Future<void> Function()? _signOutOverride;
+  final BlockedRelationshipRepository? _blockedRelationshipRepository;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -410,10 +414,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const Divider(height: 1),
                         _NavTile(
+                          key: const ValueKey('settings-blocked-accounts'),
                           icon: Icons.person_off_outlined,
-                          title: 'Blocked Users',
+                          title: 'Blocked accounts',
                           subtitle: const Text(
-                            'Review and unblock people you blocked',
+                            'See and unblock accounts you blocked',
                             style: TextStyle(
                               color: AppColors.textGrey,
                               height: 1.4,
@@ -423,7 +428,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (_) => const BlockedUsersScreen(),
+                                builder: (_) => BlockedUsersScreen(
+                                  repository:
+                                      widget._blockedRelationshipRepository,
+                                ),
                               ),
                             );
                           },
@@ -704,6 +712,7 @@ class _NavTile extends StatelessWidget {
   final Color iconBackgroundColor;
 
   const _NavTile({
+    super.key,
     required this.icon,
     required this.title,
     required this.onTap,

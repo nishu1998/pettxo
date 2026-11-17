@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
@@ -81,7 +83,7 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen>
       setState(() => _error = blockingFailureMessage(error.kind));
     } catch (_) {
       if (!mounted) return;
-      setState(() => _error = 'Unable to load blocked users right now.');
+      setState(() => _error = 'Unable to load blocked accounts right now.');
     } finally {
       if (mounted) {
         setState(() {
@@ -117,11 +119,20 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen>
             : 'User unblocked successfully.',
         tone: AppFeedbackTone.success,
       );
+      // The backend confirmed the unblock; reload the authoritative list.
+      unawaited(_load(reset: true));
     } on BlockingException catch (error) {
       if (!mounted) return;
       AppFeedback.show(
         context,
         message: blockingFailureMessage(error.kind),
+        tone: AppFeedbackTone.error,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      AppFeedback.show(
+        context,
+        message: blockingFailureMessage(BlockingFailureKind.unexpected),
         tone: AppFeedbackTone.error,
       );
     } finally {
@@ -136,11 +147,11 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen>
       appBar: AppBar(
         backgroundColor: AppColors.background,
         foregroundColor: AppColors.textDark,
-        title: const Text('Blocked Users'),
+        title: const Text('Blocked accounts'),
       ),
       body: _loading && _users.isEmpty
           ? const Center(
-              child: PettxoLoader(semanticLabel: 'Loading blocked users'),
+              child: PettxoLoader(semanticLabel: 'Loading blocked accounts'),
             )
           : RefreshIndicator(
               onRefresh: () => _load(reset: true),
