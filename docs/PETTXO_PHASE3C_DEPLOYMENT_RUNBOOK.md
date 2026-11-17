@@ -1,6 +1,6 @@
 # Pettxo Phase 3C: production deployment runbook
 
-Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. Updated in Phase 3C-3: local deploy-day verification, prebuilt Dashboard, Play checks. Updated in Phase 3C-4: chat-photo incident after the Rules deploy; Storage Rules restored to base. **For owner approval.**
+Prepared: 2026-11-17 (Asia/Kolkata). Updated in Phase 3C-2: legacy-post Rules fix and the blocking-disabled message. Updated in Phase 3C-3: local deploy-day verification, prebuilt Dashboard, Play checks. Updated in Phase 3C-4: chat-photo incident after the Rules deploy; Storage Rules restored to base. Updated in Phase 3C-6: the deploy is **done**. See `docs/PETTXO_PHASE3C_PRODUCTION_DEPLOYMENT_RECORD.md` for what is live, and the new permanent section "New Cloud Functions under domain-restricted sharing" in §2. **For owner approval.**
 
 > **Production status (2026-11-17, about 05:00 IST, owner-run).**
 >
@@ -168,6 +168,40 @@ firebase deploy --project pettexo-d9409 --only "functions:getManualSettlementObl
 - Each `--only` list names exactly the intended functions, so the CLI never offers to delete anything.
 - The predeploy hook builds `functions/lib` from source. `functions/src/audit` is compiled and uploaded as code, but is **not** exported and creates no function.
 
+### New Cloud Functions under domain-restricted sharing (permanent; applies to every deploy)
+
+**Why.** The Google Cloud organisation enforces `iam.allowedPolicyMemberDomains` (domain-restricted sharing).
+- When the CLI **creates** a function whose code declares `invoker: "public"`, it tries to grant `allUsers` the Cloud Run invoker role. The policy refuses that principal.
+- The function's code is deployed, but the CLI reports that it could not set the invoker or IAM policy.
+- Until this is fixed, Cloud Run rejects every request with **HTTP 403** before the code runs.
+- This happened on 17 Nov 2026 to all 7 new functions (Waves 2 and 4).
+
+**After creating any NEW function, do this for each one:**
+
+1. **Disable the Cloud Run invoker IAM check.** The service name is normally the function name in lower case (for example `resolveReport` → `resolvereport`). Confirm it under Cloud Run → Services.
+
+   ```bash
+   gcloud run services update <service> --region=asia-south1 --project=pettexo-d9409 --no-invoker-iam-check
+   ```
+
+   Console alternative: Google Cloud console → **Cloud Run** → **Services** → `<service>` → **Security** tab → Authentication: **Allow public access** → **Save**.
+
+2. **Verify** with an unauthenticated POST:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{"data":{}}' "https://asia-south1-pettexo-d9409.cloudfunctions.net/<functionName>"
+   ```
+
+   - **Expected: `401`.** The request reached the function, which rejected the missing Firebase Auth token.
+   - **`403`:** Cloud Run is still blocking. Repeat step 1.
+   - **Any other code:** STOP and investigate.
+
+3. **Record** the function and the result in the deployment record.
+
+**Updates to existing functions are unaffected.** They keep their existing invoker setting and need no action. Only **creates** need this, including any function recreated after a rollback deleted it.
+
+**Why this is safe.** It gives the same exposure as the intended `invoker: "public"`. Callables still authenticate every request themselves, using Firebase Auth and, where needed, admin checks. Do **not** try to work around the policy by adding `allUsers` IAM bindings.
+
 ### Step 3: Firestore indexes
 
 **None required.**
@@ -239,6 +273,7 @@ ln -s /Users/nishantgautam/development/pettexo/functions/.env.pettexo-d9409 func
 (cd functions && npm ci)
 firebase deploy --project pettexo-d9409 --only "functions:acceptBookingRequestV3,functions:cancelBookingRequestByParentV3,functions:cancelConfirmedBookingByCustomerV3,functions:cancelConfirmedBookingByProviderV3,functions:completeBookingServiceV3,functions:createBookingDisputeV3,functions:createBookingQrPaymentV3,functions:createBookingRequestV3,functions:createRazorpayPaymentOrderV3,functions:createSocialNotification,functions:declineBookingRequestV3,functions:enqueueReportModeration,functions:expireAwaitingPaymentsV3,functions:expirePendingProviderBookingsV3,functions:finalizeCanonicalNoShowsV3,functions:finalizeCompletedBookingsV3,functions:getAdminDashboardMetricsV3,functions:getBookingFinancialLedgerV3,functions:getCanonicalBookingAdminDetailV3,functions:getCanonicalDisputeAdminDetailV3,functions:getCanonicalDisputeV3,functions:getCanonicalFinancialSummaryV3,functions:getCanonicalProviderPayoutAdminDetailV3,functions:getCanonicalRefundAdminDetailV3,functions:getChatImageMessagingCapability,functions:getManualSettlementObligationV3,functions:getProfileFollowCounts,functions:getProviderLifetimeEarningsV3,functions:getProviderPayoutV3,functions:listBookableServiceSlotsV3,functions:listCanonicalBookingsForAdminV3,functions:listCanonicalDisputesForAdminV3,functions:listCanonicalDisputesV3,functions:listCanonicalNoShowCasesV3,functions:listCanonicalProviderPayoutsForAdminV3,functions:listCanonicalRefundsForAdminV3,functions:listManualSettlementObligationsV3,functions:listProviderPayoutsV3,functions:markBookingViewedByProviderV3,functions:markChatDelivered,functions:markChatRead,functions:materializeManualSettlementObligationsForBookingV3,functions:previewBookingCancellationV3,functions:previewBookingDisputeResolutionV3,functions:previewBookingPaymentPricingV3,functions:razorpayWebhook,functions:reconcileBookingPaymentsV3,functions:reconcileProviderEarningsBatchV3,functions:recordManualCustomerRefundV3,functions:recordManualProviderPayoutV3,functions:resolveBookingDisputeV3,functions:retryProviderPayoutV3,functions:revealManualSettlementProviderDestinationV3,functions:runBookingFinancialReconciliationV3,functions:runProviderPayoutProcessingBatchV3,functions:sendChatImageMessage,functions:sendChatMessage,functions:sendProviderRequestRemindersV3,functions:sendPushForNotification,functions:setFollowState,functions:startDirectUserChat,functions:startProviderChat,functions:submitBookingReviewV3,functions:submitReport,functions:synchronizeManualSettlementPayoutsV3,functions:verifyBookingPaymentV3,functions:verifyBookingStartOtpV3"
 # Optional: remove the 7 functions that do not exist at base. The Dashboard's report actions stop working.
+# If any of the 7 are later recreated, apply "New Cloud Functions under domain-restricted sharing" (§2) again.
 firebase functions:delete blockUserV1 unblockUserV1 getUserRelationshipStateV1 resolveReport rejectReport hideReportedService hideReportedReview --region asia-south1 --project pettexo-d9409
 ```
 

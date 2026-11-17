@@ -1,6 +1,6 @@
 # Pettxo Phase 3C: deploy-day checklist (owner)
 
-Prepared 2026-11-17 in Phase 3C-3; updated in Phase 3C-4 after the chat-photo incident. Use this alongside `docs/PETTXO_PHASE3C_DEPLOYMENT_RUNBOOK.md`; section numbers like "§5" refer to that runbook.
+Prepared 2026-11-17 in Phase 3C-3; updated in Phase 3C-4 after the chat-photo incident. Updated in Phase 3C-6: the deploy was completed on 2026-11-17 (record: `docs/PETTXO_PHASE3C_PRODUCTION_DEPLOYMENT_RECORD.md`). The invoker procedure for new functions below is permanent. Use this alongside `docs/PETTXO_PHASE3C_DEPLOYMENT_RUNBOOK.md`; section numbers like "§5" refer to that runbook.
 
 > **Phase 3C-4 status:**
 > - **Steps 1–5 are done.** Firestore Rules have been live since about 05:00 IST.
@@ -151,6 +151,7 @@ firebase deploy --project pettexo-d9409 --only "functions:submitReport,functions
   - `submitReport` and `enqueueReportModeration`: update;
   - `resolveReport`, `rejectReport`, `hideReportedService` and `hideReportedReview`: **create**.
 - If it fails: STOP. The Dashboard deploy (step 15) depends on this wave.
+- **Then:** run "New Cloud Functions under domain-restricted sharing" (below) for the 4 created functions. Each must return `401`.
 - **STOP**
 
 **10. Wave 3: chat, social and notifications (11, all updates).**
@@ -174,6 +175,7 @@ firebase deploy --project pettexo-d9409 --only "functions:blockUserV1,functions:
 
 - Expected: 3 × **create**. No document writes are needed; blocking stays disabled (§3).
 - If it fails: STOP. Nothing else depends on this wave.
+- **Then:** run "New Cloud Functions under domain-restricted sharing" (below) for the 3 created functions. Each must return `401`.
 - **STOP**
 
 **12. Wave 5a (13, all updates).**
@@ -214,6 +216,32 @@ firebase deploy --project pettexo-d9409 --only "functions:getManualSettlementObl
 - Expected: 7 × update. That completes 74 functions.
 - If it fails: see "For every wave".
 - **STOP**
+
+### New Cloud Functions under domain-restricted sharing (permanent; every deploy)
+
+**When.** After any wave that **creates** a function. The CLI then reports that it could not set the invoker or IAM policy, because the org policy `iam.allowedPolicyMemberDomains` forbids `allUsers`. Until this is fixed, every call gets HTTP 403. Full background: runbook §2.
+
+**For each NEW function:**
+
+1. **Disable the invoker IAM check.** The service name is normally the function name in lower case; confirm it under Cloud Run → Services.
+
+   ```bash
+   gcloud run services update <service> --region=asia-south1 --project=pettexo-d9409 --no-invoker-iam-check
+   ```
+
+   Console alternative: Cloud Run → Services → `<service>` → **Security** → Authentication: **Allow public access** → **Save**.
+
+2. **Verify** (unauthenticated POST):
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{"data":{}}' "https://asia-south1-pettexo-d9409.cloudfunctions.net/<functionName>"
+   ```
+
+   - **Expected: `401`.**
+   - **`403`:** the check is still on; repeat step 1.
+   - **Anything else:** STOP.
+
+**Updates to existing functions are unaffected:** no action is needed.
 
 Do **not** run `firebase deploy --only firestore:indexes`; no index changes are needed.
 
