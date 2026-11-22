@@ -19,6 +19,7 @@ import type {CanonicalBookingDocumentV3} from "../schema/bookingDocumentV3";
 
 export type CanonicalWebhookOutcome =
   | "CONFIRMED"
+  | "HELD_BLOCKED_RELATIONSHIP"
   | "ALREADY_CONFIRMED"
   | "RECONCILIATION_REQUIRED"
   | "REFUND_REQUIRED"
@@ -560,6 +561,20 @@ async function findAlreadyConfirmedReplay(params: {
   return null;
 }
 
+function heldBlockedRelationshipResult(mapping: {
+  bookingId: string;
+  paymentAttemptId: string;
+}): CanonicalWebhookResult {
+  return {
+    outcome: "HELD_BLOCKED_RELATIONSHIP",
+    bookingId: mapping.bookingId,
+    paymentAttemptId: mapping.paymentAttemptId,
+    retryable: false,
+    failureCode: "USER_RELATIONSHIP_BLOCKED",
+    notifications: [],
+  };
+}
+
 function buildAlreadyConfirmedResult(mapping: {
   bookingId: string;
   paymentAttemptId: string;
@@ -925,6 +940,11 @@ export async function routeCanonicalWebhookEventV3(params: {
       keySecret: params.keySecret,
       authoritativeNow,
     });
+    if (!result.ok && result.code === "HELD_BLOCKED_RELATIONSHIP") {
+      // D1: recorded and held for Super Admin in the same transaction that
+      // refused to confirm. Acknowledge so Razorpay stops retrying.
+      return heldBlockedRelationshipResult(mapping);
+    }
     if (!result.ok && result.code !== "PRIVATE_REPAIR_REQUIRED") {
       logger.warn("captured-payment-duplicate-refund-required", {
         eventId: params.eventId,
@@ -1087,6 +1107,13 @@ export async function routeCanonicalWebhookEventV3(params: {
       keySecret: params.keySecret,
       authoritativeNow,
     });
+    if (!result.ok && result.code === "HELD_BLOCKED_RELATIONSHIP") {
+      await canonicalQrPaymentMappingRef(params.firestore, qrCodeId).set({
+        status: "HELD",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return heldBlockedRelationshipResult(mapping);
+    }
     await canonicalQrPaymentMappingRef(params.firestore, qrCodeId).set({
       status: result.ok ? "CONFIRMED" : "REFUND_REQUIRED",
       updatedAt: FieldValue.serverTimestamp(),

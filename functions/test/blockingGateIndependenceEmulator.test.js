@@ -291,7 +291,8 @@ for (const state of GATE_STATES) {
       auth: {uid: ids.a}, data: {bookingId: acceptedId},
     }), relationshipBlocked);
 
-    // Capture persistence refuses to confirm (paymentOrchestrationV3.ts:1929).
+    // Capture persistence never confirms for a blocked pair; since Phase 3B-4c
+    // (D1) a captured payment is held for Super Admin instead of throwing.
     const confirmedId = `gate-${state}-capture-${randomUUID().slice(0, 8)}`;
     const confirmed = bookingFor(ids, bookingFixtures.buildConfirmedSlotBookingFixture);
     const attempt = {paymentAttemptId: "gate-attempt", razorpayPaymentId: "gate-payment"};
@@ -300,7 +301,7 @@ for (const state of GATE_STATES) {
       db.collection("bookings").doc(confirmedId)
         .collection("paymentAttempts").doc(attempt.paymentAttemptId).set(attempt),
     ]);
-    await assert.rejects(persistFinalizePaymentResultV3({
+    const persisted = await persistFinalizePaymentResultV3({
       firestore: db,
       bookingId: confirmedId,
       result: {
@@ -312,7 +313,12 @@ for (const state of GATE_STATES) {
         events: [],
         occupancyWrites: {},
       },
-    }), relationshipBlocked);
+      holdContext: {verificationSource: "webhook", sourceEventId: `gate-${state}-event`},
+    });
+    assert.equal(persisted.held, true);
+    assert.equal((await db.collection("blockedRelationshipPaymentHolds").doc("gate-payment").get())
+      .data().bookingId, confirmedId);
+    await db.collection("blockedRelationshipPaymentHolds").doc("gate-payment").delete();
 
     // With pair bookings: gate on, a CONFIRMED booking protects the pair.
     const withBookings = await getUserRelationshipStateDataV1({

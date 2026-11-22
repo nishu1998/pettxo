@@ -2155,11 +2155,16 @@ async function authorizeCanonicalPaymentCommand(params: {
       code: "SERVICE_UNAVAILABLE",
     });
   }
-  await assertRelationshipOpen({
-    firestore: db,
-    firstUid: booking.parentId,
-    secondUid: booking.providerId,
-  });
+  if (params.command === "create_order") {
+    // New orders are refused for a blocked pair. Verification is not refused
+    // here: a captured payment must reach finalization, which refuses to
+    // confirm and records a Super Admin hold instead (Phase 3B-4 D1).
+    await assertRelationshipOpen({
+      firestore: db,
+      firstUid: booking.parentId,
+      secondUid: booking.providerId,
+    });
+  }
 
   const requiresContinuationOnly =
     booking.state === "CONFIRMED" ||
@@ -3478,6 +3483,13 @@ export const verifyBookingPaymentV3 = onCall(
         {
           code: result.code,
         },
+      );
+    }
+    if (result.code === "HELD_BLOCKED_RELATIONSHIP") {
+      throw new HttpsError(
+        "failed-precondition",
+        "We received your payment. It's being reviewed and our team will contact you.",
+        {code: "PAYMENT_HELD_FOR_REVIEW"},
       );
     }
     return buildPaymentVerificationResponse({

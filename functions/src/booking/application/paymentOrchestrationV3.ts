@@ -4,6 +4,7 @@ import {createHash, randomInt} from "node:crypto";
 
 import {FieldValue, Timestamp, type Firestore, type Transaction} from "firebase-admin/firestore";
 import {HttpsError} from "firebase-functions/https";
+import * as logger from "firebase-functions/logger";
 
 import {auth} from "../../shared/firebase";
 import {
@@ -47,6 +48,7 @@ import {buildBookingEventPlan, type BookingEventWritePlan} from "./bookingEvents
 import {
   buildBookingConfirmedNotification,
   buildPaymentFailedNotification,
+  buildPaymentHeldForReviewNotification,
   buildPaymentOrderReadyNotification,
   buildPaymentRefundRequiredNotification,
   buildZeroPayableConfirmationNotification,
@@ -74,6 +76,7 @@ import {
   directedBlockId,
   openRelationshipGuardMutation,
   relationshipGuardRef,
+  relationshipIsBlocked,
 } from "../../blocking/relationshipGuard";
 
 const CAPTURE_DEADLINE_TOLERANCE_MS = 2 * 60 * 1000;
@@ -200,6 +203,7 @@ export type FinalizePaymentSuccess = {
 export type FinalizePaymentFailure = {
   ok: false;
   code:
+    | "HELD_BLOCKED_RELATIONSHIP"
     | "REFUND_REQUIRED"
     | "PAYMENT_EXPIRED"
     | "CAPACITY_EXHAUSTED"
@@ -1846,11 +1850,38 @@ export function previewCanonicalPaymentPricingV3(params: {
   };
 }
 
+/**
+ * Phase 3B-4 D1. A capture that would confirm a booking for a blocked pair is
+ * recorded and held for Super Admin review: never confirmed, never refunded
+ * automatically. One hold document per Razorpay payment.
+ */
+export const BLOCKED_RELATIONSHIP_PAYMENT_HOLDS_COLLECTION = "blockedRelationshipPaymentHolds";
+export const BLOCKED_RELATIONSHIP_HOLD_CODE = "BLOCKED_RELATIONSHIP_HOLD";
+export const PAYMENT_HELD_BOOKING_EVENT = "payment_held_blocked_relationship";
+
+export type PaymentHoldContext = {
+  verificationSource: CanonicalPaymentFinalizeSource;
+  sourceEventId?: string;
+  capturedAt?: Date | null;
+  capturedAmountPaise?: number;
+  currency?: string;
+  razorpayOrderId?: string;
+};
+
+export type PersistFinalizePaymentOutcome =
+  | {held: false}
+  | {held: true; holdId: string; created: boolean};
+
+export function paymentHeldBookingEventId(razorpayPaymentId: string): string {
+  return `${PAYMENT_HELD_BOOKING_EVENT}_${razorpayPaymentId}`;
+}
+
 export async function persistFinalizePaymentResultV3(params: {
   firestore: Firestore;
   result: FinalizePaymentResult;
   bookingId: string;
-}): Promise<void> {
+  holdContext?: PaymentHoldContext;
+}): Promise<PersistFinalizePaymentOutcome> {
   const canonicalParticipants = params.result.ok ? canonicalParticipantIds(
     params.result.booking.parentId,
     params.result.booking.providerId,
@@ -1874,7 +1905,7 @@ export async function persistFinalizePaymentResultV3(params: {
     );
   }
 
-  await params.firestore.runTransaction(async (transaction) => {
+  return params.firestore.runTransaction(async (transaction): Promise<PersistFinalizePaymentOutcome> => {
     const currentBookingRef = params.firestore.collection("bookings").doc(params.bookingId);
     const currentAttemptRef = currentBookingRef.collection("paymentAttempts").doc(params.result.paymentAttempt.paymentAttemptId);
     const couponCampaignRef = params.result.ok && params.result.couponWrite ?
@@ -1925,25 +1956,50 @@ export async function persistFinalizePaymentResultV3(params: {
       transaction.get(firstDirectedBlockRef),
       transaction.get(secondDirectedBlockRef),
     ]);
-    if (params.result.ok) {
-      assertRelationshipAllowsProtectedMutation(relationshipSnapshot, [
-        firstDirectedBlockSnapshot,
-        secondDirectedBlockSnapshot,
-      ]);
-    }
     const currentBooking = currentBookingSnapshot.data() ?? {};
     const currentAttempt = currentAttemptSnapshot.data() ?? {};
+    const relationshipBlocked = relationshipIsBlocked(relationshipSnapshot) ||
+      firstDirectedBlockSnapshot.exists || secondDirectedBlockSnapshot.exists;
+    if (params.result.ok && relationshipBlocked) {
+      const razorpayPaymentId = asString(params.result.paymentAttempt.razorpayPaymentId);
+      if (!razorpayPaymentId) {
+        // Nothing was captured (zero-payable): refuse as before.
+        assertRelationshipAllowsProtectedMutation(relationshipSnapshot, [
+          firstDirectedBlockSnapshot,
+          secondDirectedBlockSnapshot,
+        ]);
+      }
+      if (authoritativePaymentIdV3(currentBooking) === razorpayPaymentId &&
+        currentBooking.lifecycle?.paidAt != null) {
+        // This payment already confirmed the booking before the block: nothing new.
+        return {held: false};
+      }
+      return writeBlockedRelationshipPaymentHold({
+        firestore: params.firestore,
+        transaction,
+        bookingId: params.bookingId,
+        result: params.result,
+        currentBooking,
+        currentAttempt,
+        holdContext: params.holdContext,
+        pairKey: relationshipPair.pairKey,
+        guardBlocked: relationshipIsBlocked(relationshipSnapshot),
+        directedBlockIds: [firstDirectedBlockSnapshot, secondDirectedBlockSnapshot]
+          .filter((snapshot) => snapshot.exists)
+          .map((snapshot) => snapshot.id),
+      });
+    }
     // Revalidate at commit: a late capture/reconciliation may race a refund.
     if (hasRefundEvidenceV3(currentAttempt)) {
       if (params.result.ok) throw new HttpsError("aborted", "Payment acquired refund history; retry finalization.");
-      return;
+      return {held: false};
     }
     const currentWinner = authoritativePaymentIdV3(currentBooking);
     if (params.result.ok && currentWinner && currentBooking.lifecycle?.paidAt != null) {
       if (currentWinner !== params.result.paymentAttempt.razorpayPaymentId) {
         throw new HttpsError("aborted", "Another payment won; retry finalization against current state.");
       }
-      if (currentBooking.state !== "CONFIRMED") return;
+      if (currentBooking.state !== "CONFIRMED") return {held: false};
     }
     if (!params.result.ok && currentWinner === params.result.paymentAttempt.razorpayPaymentId &&
       currentBooking.lifecycle?.paidAt != null && params.result.booking.lifecycle.paidAt == null) {
@@ -2006,7 +2062,7 @@ export async function persistFinalizePaymentResultV3(params: {
           );
         } catch {
           failOfferCommit();
-          return;
+          return {held: false};
         }
         const coupon = params.result.paymentAttempt.couponSnapshot;
         const userData = couponUserSnapshot?.data() ?? {};
@@ -2250,7 +2306,138 @@ export async function persistFinalizePaymentResultV3(params: {
         );
       }
     }
+    return {held: false};
   });
+}
+
+async function writeBlockedRelationshipPaymentHold(params: {
+  firestore: Firestore;
+  transaction: Transaction;
+  bookingId: string;
+  result: FinalizePaymentSuccess;
+  currentBooking: Record<string, unknown>;
+  currentAttempt: Record<string, unknown>;
+  holdContext?: PaymentHoldContext;
+  pairKey: string;
+  guardBlocked: boolean;
+  directedBlockIds: string[];
+}): Promise<PersistFinalizePaymentOutcome> {
+  const attempt = params.result.paymentAttempt;
+  const razorpayPaymentId = asString(attempt.razorpayPaymentId);
+  const paymentAttemptId = attempt.paymentAttemptId;
+  const bookingRef = params.firestore.collection("bookings").doc(params.bookingId);
+  const holdRef = params.firestore
+    .collection(BLOCKED_RELATIONSHIP_PAYMENT_HOLDS_COLLECTION).doc(razorpayPaymentId);
+  const holdSnapshot = await params.transaction.get(holdRef);
+  const source = params.holdContext?.verificationSource ??
+    (asString(attempt.verificationSource) || "unknown");
+  const sourceEventId = asString(params.holdContext?.sourceEventId);
+  const capturedAtRaw = params.holdContext?.capturedAt ?? attempt.captureCreatedAt ?? null;
+  const capturedAt = capturedAtRaw instanceof Date && !Number.isNaN(capturedAtRaw.getTime()) ?
+    capturedAtRaw : null;
+  // Every field must be defined: the default Admin app does not ignore
+  // undefined values, and a failed hold write must never be acknowledged.
+  const capturedAmountPaise = asInt(
+    params.holdContext?.capturedAmountPaise ?? attempt.capturedAmountPaise ?? attempt.amountPaise,
+    0,
+  );
+  const currency = asString(params.holdContext?.currency) || asString(attempt.currency) || "INR";
+  const razorpayOrderId = asString(params.holdContext?.razorpayOrderId) ||
+    asString(attempt.razorpayOrderId);
+  const parentId = asString(params.result.booking.parentId);
+
+  // The payment attempt records the capture and is taken out of automatic
+  // reconciliation (terminalFailureAt), so nothing retries or refunds it.
+  params.transaction.set(bookingRef.collection("paymentAttempts").doc(paymentAttemptId), {
+    razorpayPaymentId,
+    razorpayOrderId,
+    capturedAmountPaise,
+    currency,
+    captureCreatedAt: capturedAt ? Timestamp.fromDate(capturedAt) : null,
+    verificationSource: source === "unknown" ? "" : source,
+    state: "CAPTURED_REQUIRES_RECONCILIATION",
+    terminalFailureAt: params.currentAttempt.terminalFailureAt ?? FieldValue.serverTimestamp(),
+    nextReconciliationAt: null,
+    lastReconciliationCode: BLOCKED_RELATIONSHIP_HOLD_CODE,
+    adminHoldId: razorpayPaymentId,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  if (holdSnapshot.exists) {
+    params.transaction.set(holdRef, {
+      ...(sourceEventId ? {sourceEventIds: FieldValue.arrayUnion(sourceEventId)} : {}),
+      sources: FieldValue.arrayUnion(source),
+      lastSeenAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return {held: true, holdId: razorpayPaymentId, created: false};
+  }
+
+  params.transaction.create(holdRef, {
+    schemaVersion: 1,
+    bookingId: params.bookingId,
+    paymentAttemptId,
+    razorpayPaymentId,
+    razorpayOrderId,
+    amountPaise: capturedAmountPaise,
+    currency,
+    capturedAt: capturedAt ? Timestamp.fromDate(capturedAt) : null,
+    pairKey: params.pairKey,
+    parentId,
+    providerId: asString(params.result.booking.providerId),
+    blockSnapshot: {
+      guardBlocked: params.guardBlocked,
+      directedBlockIds: params.directedBlockIds,
+    },
+    bookingStateAtHold: asString(params.currentBooking.state),
+    refundEvidenceAtHold: hasRefundEvidenceV3(params.currentAttempt),
+    sourceEventIds: sourceEventId ? [sourceEventId] : [],
+    sources: [source],
+    status: "OPEN",
+    requiredRole: "superAdmin",
+    reasonCode: "USER_RELATIONSHIP_BLOCKED",
+    resolution: null,
+    createdAt: FieldValue.serverTimestamp(),
+    lastSeenAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  params.transaction.set(
+    bookingRef.collection("events").doc(paymentHeldBookingEventId(razorpayPaymentId)),
+    {
+      bookingId: params.bookingId,
+      event: PAYMENT_HELD_BOOKING_EVENT,
+      actor: "system",
+      at: FieldValue.serverTimestamp(),
+      meta: {
+        razorpayPaymentId,
+        paymentAttemptId,
+        holdId: razorpayPaymentId,
+        reasonCode: "USER_RELATIONSHIP_BLOCKED",
+      },
+      schemaVersion: 1,
+    },
+    {merge: false},
+  );
+  for (const notification of buildPaymentHeldForReviewNotification({
+    bookingId: params.bookingId,
+    parentId,
+    bookingType: asString(params.result.booking.bookingType),
+    state: asString(params.currentBooking.state),
+    razorpayPaymentId,
+  })) {
+    params.transaction.set(
+      params.firestore.collection("notifications").doc(notification.idempotencyKey),
+      buildStoredBookingNotificationDocument({
+        notification,
+        actorId: "system",
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        source: "canonical_v3_payment_hold",
+      }),
+      {merge: true},
+    );
+  }
+  return {held: true, holdId: razorpayPaymentId, created: true};
 }
 
 async function persistCanonicalNotificationsV3(params: {
@@ -2693,11 +2880,21 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     offerValidationFailure,
   });
 
+  const holdContext: PaymentHoldContext = {
+    verificationSource: params.facts.verificationSource,
+    sourceEventId: params.facts.sourceEventId,
+    capturedAt: params.facts.capturedAt,
+    capturedAmountPaise: params.facts.capturedAmountPaise,
+    currency: params.facts.currency,
+    razorpayOrderId: params.facts.razorpayOrderId,
+  };
+  let persistOutcome: PersistFinalizePaymentOutcome = {held: false};
   try {
-    await persistFinalizePaymentResultV3({
+    persistOutcome = await persistFinalizePaymentResultV3({
       firestore: params.firestore,
       result,
       bookingId: params.facts.bookingId,
+      holdContext,
     });
   } catch (error) {
     const persistenceFailureCode = error instanceof HttpsError ?
@@ -2732,10 +2929,11 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
           "The applied offer reached its usage limit." :
           "The applied offer changed before payment confirmation.",
       });
-      await persistFinalizePaymentResultV3({
+      persistOutcome = await persistFinalizePaymentResultV3({
         firestore: params.firestore,
         result,
         bookingId: params.facts.bookingId,
+        holdContext,
       });
     } else if (error instanceof HttpsError && error.code === "aborted" &&
       (error.details as {code?: string} | undefined)?.code === "CAPACITY_CHANGED_DURING_FINALIZATION" &&
@@ -2744,6 +2942,31 @@ export async function finalizeCapturedCanonicalPaymentV3(params: {
     } else {
       throw error;
     }
+  }
+  if (persistOutcome.held) {
+    logger.warn("captured-payment-held-blocked-relationship", {
+      bookingId: params.facts.bookingId,
+      paymentId: params.facts.razorpayPaymentId,
+      paymentAttemptId: params.facts.paymentAttemptId,
+      holdId: persistOutcome.holdId,
+      newHold: persistOutcome.created,
+      source: params.facts.verificationSource,
+    });
+    return {
+      ok: false,
+      code: "HELD_BLOCKED_RELATIONSHIP",
+      booking: structuredClone(loaded.booking),
+      paymentAttempt: {
+        ...structuredClone(loaded.paymentAttempt),
+        razorpayPaymentId: params.facts.razorpayPaymentId,
+        state: "CAPTURED_REQUIRES_RECONCILIATION",
+        lastReconciliationCode: BLOCKED_RELATIONSHIP_HOLD_CODE,
+      },
+      refundInstruction: null,
+      notifications: [],
+      events: [],
+      message: "The payment was received and is held for review.",
+    };
   }
   if (!result.ok &&
     result.refundInstruction &&
@@ -3026,7 +3249,9 @@ export async function reconcilePaymentAttemptsV3(params: {
           reconciliationAttemptCount: FieldValue.increment(1),
           lastReconciliationCode: result.ok ?
             (result.code === "IDEMPOTENT_REPLAY" ? "ALREADY_CONFIRMED" : "CONFIRMED") :
-            result.paymentAttempt.state,
+            result.code === "HELD_BLOCKED_RELATIONSHIP" ?
+              BLOCKED_RELATIONSHIP_HOLD_CODE :
+              result.paymentAttempt.state,
           updatedAt: FieldValue.serverTimestamp(),
         }, {merge: true});
         processed += 1;

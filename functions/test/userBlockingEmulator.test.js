@@ -591,7 +591,7 @@ test("payment mutation and block activation cannot both commit", {skip: !enabled
   });
 });
 
-test("canonical captured-payment persistence refuses a blocked relationship", {
+test("canonical captured-payment persistence holds (never confirms) for a blocked relationship", {
   skip: !enabled,
 }, async () => {
   await fixture(async ({firestore, ids}) => {
@@ -607,7 +607,7 @@ test("canonical captured-payment persistence refuses a blocked relationship", {
       firestore.collection("bookings").doc(bookingId)
         .collection("paymentAttempts").doc(attempt.paymentAttemptId).set(attempt),
     ]);
-    await assert.rejects(persistFinalizePaymentResultV3({
+    const outcome = await persistFinalizePaymentResultV3({
       firestore,
       bookingId,
       result: {
@@ -619,7 +619,17 @@ test("canonical captured-payment persistence refuses a blocked relationship", {
         events: [],
         occupancyWrites: {},
       },
-    }), errorCode("USER_RELATIONSHIP_BLOCKED"));
+      holdContext: {verificationSource: "webhook", sourceEventId: "late-event"},
+    });
+    assert.deepEqual(outcome, {held: true, holdId: "late-payment", created: true});
+    const hold = (await firestore.collection("blockedRelationshipPaymentHolds").doc("late-payment").get()).data();
+    assert.equal(hold.bookingId, bookingId);
+    assert.equal(hold.status, "OPEN");
+    const attemptAfter = (await firestore.collection("bookings").doc(bookingId)
+      .collection("paymentAttempts").doc("late-attempt").get()).data();
+    assert.equal(attemptAfter.lastReconciliationCode, "BLOCKED_RELATIONSHIP_HOLD");
+    // The stored booking is untouched by the hold (it was seeded as CONFIRMED here).
+
     assert.equal((await firestore.collection("bookings").doc(bookingId).get()).data().state, "CONFIRMED");
   });
 });

@@ -15,6 +15,7 @@ export type BookingNotificationType =
   | "customer_payment_ten_minute"
   | "payment_order_ready"
   | "payment_captured_processing"
+  | "payment_held_for_review"
   | "booking_confirmed"
   | "payment_refund_required"
   | "payment_failed"
@@ -265,6 +266,42 @@ export function buildPaymentCapturedProcessingNotification(params: {
       channels: ["in_app"],
       title: "Payment received",
       body: "Confirming your booking.",
+      data: {
+        bookingType: params.bookingType,
+        state: params.state,
+        recipientRole: "customer",
+        navigationIntent: "booking_detail",
+        bookingFlowVersion: "3.2",
+      },
+    }),
+  ];
+}
+
+/**
+ * Phase 3B-4 D1: a captured payment for a blocked pair is held for Super Admin
+ * review. Neutral wording; never the refund-required notice.
+ */
+export const PAYMENT_HELD_FOR_REVIEW_TITLE = "Payment received";
+export const PAYMENT_HELD_FOR_REVIEW_BODY =
+  "We received your payment. It's being reviewed and our team will contact you.";
+
+export function buildPaymentHeldForReviewNotification(params: {
+  bookingId: string;
+  parentId: string;
+  bookingType: string;
+  state: string;
+  razorpayPaymentId: string;
+}): BookingNotificationPlan[] {
+  return [
+    buildPlan({
+      bookingId: params.bookingId,
+      recipientUserId: params.parentId,
+      idempotencyKey:
+        `payment_held_for_review:${params.bookingId}:${params.parentId}:${params.razorpayPaymentId}`,
+      type: "payment_held_for_review",
+      channels: ["push", "in_app"],
+      title: PAYMENT_HELD_FOR_REVIEW_TITLE,
+      body: PAYMENT_HELD_FOR_REVIEW_BODY,
       data: {
         bookingType: params.bookingType,
         state: params.state,
