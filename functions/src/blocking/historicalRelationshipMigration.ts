@@ -15,6 +15,11 @@ import {
 import {assertValidCanonicalBookingDocumentV3} from "../booking/schema/bookingDocumentV3";
 import {directReader, liveCustomerObligationReason} from "./historicalProtection";
 import {
+  parseRelationshipActivationDecision,
+  relationshipActivationDecisionId,
+  type RelationshipActivationDecisionDocument,
+} from "./relationshipActivationDecisions";
+import {
   USER_RELATIONSHIP_GUARDS_COLLECTION,
   canonicalUserPair,
 } from "./relationshipGuard";
@@ -550,6 +555,241 @@ export async function runReadOnlyHistoricalRelationshipAudit(params: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3B-4d: activation readiness with D3 decisions.
+// ---------------------------------------------------------------------------
+
+const ZERO_BASELINE_SAFE_REASONS: ReadonlySet<string> = new Set([
+  "NO_PROTECTED_OBLIGATION",
+  "ACCEPTED_UNPAID_ACCOUNTED",
+]);
+
+export type RelationshipActivationFlaggedRecord = {
+  phase: HistoricalMigrationPhase;
+  sourceId: string;
+  recordKey: string;
+  pairKey: string;
+  reasonCode: string;
+  sourceUpdateTimeMillis: number;
+  anomaly: boolean;
+  protected: boolean;
+  zeroBaselineException: boolean;
+};
+
+export type RelationshipActivationUndecidedReason =
+  | "NO_DECISION"
+  | "STALE_DECISION"
+  | "BLOCK_ACTIVATION"
+  | "PROTECT_PAIR_WITHOUT_PAIR";
+
+export type RelationshipActivationReadiness = {
+  migrationVersion: number;
+  strategy: "zero-protected-baseline" | "exception-backfill";
+  authoritativeAt: string;
+  sourceFingerprint: string;
+  bookingCount: number;
+  directedBlockCount: number;
+  flagged: RelationshipActivationFlaggedRecord[];
+  decided: Array<{record: RelationshipActivationFlaggedRecord; decision: RelationshipActivationDecisionDocument}>;
+  undecided: Array<{record: RelationshipActivationFlaggedRecord; reason: RelationshipActivationUndecidedReason}>;
+  /** Decisions that match no flagged record, or that are not well-formed. */
+  extraDecisionKeys: string[];
+  invalidDecisionCount: number;
+  /** Records that need an evidence marker and guard state before activation. */
+  requiredEvidence: Array<{
+    phase: HistoricalMigrationPhase;
+    sourceId: string;
+    pairKey: string;
+    protected: boolean;
+    blocked: boolean;
+    reasonCode: string;
+  }>;
+  undecidedAnomalyCount: number;
+  undecidedExceptionCount: number;
+  ready: boolean;
+};
+
+type ScannedEvidence = HistoricalRelationshipEvidence & {phase: HistoricalMigrationPhase};
+
+function flaggedKey(phase: HistoricalMigrationPhase, sourceId: string): string {
+  return relationshipActivationDecisionId(phase, sourceId);
+}
+
+function classifyActivationReadiness(params: {
+  scan: MigrationSourceScan;
+  strategy: "zero-protected-baseline" | "exception-backfill";
+  decisions: ReadonlyArray<unknown>;
+  authoritativeNow: Date;
+}): RelationshipActivationReadiness {
+  const zeroBaseline = params.strategy === "zero-protected-baseline";
+  const decisionsByKey = new Map<string, RelationshipActivationDecisionDocument>();
+  let invalidDecisionCount = 0;
+  for (const raw of params.decisions) {
+    const parsed = parseRelationshipActivationDecision(
+      (raw ?? null) as Record<string, unknown> | null,
+    );
+    if (!parsed || decisionsByKey.has(parsed.recordKey)) {
+      invalidDecisionCount += 1;
+      continue;
+    }
+    decisionsByKey.set(parsed.recordKey, parsed);
+  }
+
+  const flagged: RelationshipActivationFlaggedRecord[] = [];
+  const evidenceByKey = new Map<string, ScannedEvidence>();
+  for (const item of params.scan.evidence) {
+    const exception = zeroBaseline && item.phase === "bookings" &&
+      !ZERO_BASELINE_SAFE_REASONS.has(item.reasonCode);
+    if (!item.anomaly && !exception) continue;
+    const recordKey = flaggedKey(item.phase, item.sourceId);
+    evidenceByKey.set(recordKey, item);
+    flagged.push({
+      phase: item.phase,
+      sourceId: item.sourceId,
+      recordKey,
+      pairKey: item.pairKey,
+      reasonCode: item.reasonCode,
+      sourceUpdateTimeMillis: item.sourceUpdateTimeMillis,
+      anomaly: item.anomaly,
+      protected: item.protected,
+      zeroBaselineException: exception,
+    });
+  }
+
+  const decided: RelationshipActivationReadiness["decided"] = [];
+  const undecided: RelationshipActivationReadiness["undecided"] = [];
+  for (const record of flagged) {
+    const decision = decisionsByKey.get(record.recordKey);
+    if (!decision) {
+      undecided.push({record, reason: "NO_DECISION"});
+    } else if (decision.phase !== record.phase || decision.sourceId !== record.sourceId ||
+      decision.expectedReasonCode !== record.reasonCode ||
+      decision.expectedSourceUpdateTimeMillis !== record.sourceUpdateTimeMillis) {
+      undecided.push({record, reason: "STALE_DECISION"});
+    } else if (decision.decision === "BLOCK_ACTIVATION") {
+      undecided.push({record, reason: "BLOCK_ACTIVATION"});
+    } else if (decision.decision === "PROTECT_PAIR" && !record.pairKey) {
+      undecided.push({record, reason: "PROTECT_PAIR_WITHOUT_PAIR"});
+    } else {
+      decided.push({record, decision});
+    }
+  }
+  const extraDecisionKeys = [...decisionsByKey.keys()]
+    .filter((key) => !evidenceByKey.has(key)).sort();
+
+  const decidedKeys = new Map(decided.map((entry) => [entry.record.recordKey, entry.decision]));
+  const required = params.scan.evidence.filter((item) => {
+    const decision = decidedKeys.get(flaggedKey(item.phase, item.sourceId));
+    if (item.phase === "blocks") return decision?.decision !== "NO_OBLIGATION";
+    if (!zeroBaseline) return true;
+    return decision?.decision === "PROTECT_PAIR";
+  });
+  const undecidedKeys = new Set(undecided.map((entry) => entry.record.recordKey));
+  const undecidedAnomalyCount = flagged
+    .filter((record) => record.anomaly && undecidedKeys.has(record.recordKey)).length;
+  const undecidedExceptionCount = flagged
+    .filter((record) => record.zeroBaselineException && undecidedKeys.has(record.recordKey)).length;
+  return {
+    migrationVersion: HISTORICAL_RELATIONSHIP_MIGRATION_VERSION,
+    strategy: params.strategy,
+    authoritativeAt: params.authoritativeNow.toISOString(),
+    sourceFingerprint: params.scan.sourceFingerprint,
+    bookingCount: params.scan.bookingCount,
+    directedBlockCount: params.scan.directedBlockCount,
+    flagged,
+    decided,
+    undecided,
+    extraDecisionKeys,
+    invalidDecisionCount,
+    requiredEvidence: required.map((item) => ({
+      phase: item.phase,
+      sourceId: item.sourceId,
+      pairKey: item.pairKey,
+      protected: item.protected,
+      blocked: item.blocked,
+      reasonCode: item.reasonCode,
+    })),
+    undecidedAnomalyCount,
+    undecidedExceptionCount,
+    ready: undecided.length === 0 && extraDecisionKeys.length === 0 &&
+      invalidDecisionCount === 0 && required.every((item) => item.pairKey !== ""),
+  };
+}
+
+/**
+ * Read-only readiness evaluation for the activation tool's verify step.
+ * Scans every directed block and booking twice; refuses if the sources change
+ * between the scans. Performs no write, so it can run on a read-only client.
+ */
+export async function evaluateRelationshipActivationReadiness(params: {
+  firestore: Firestore;
+  strategy?: "zero-protected-baseline";
+  decisions?: ReadonlyArray<unknown>;
+  authoritativeNow?: Date;
+  pageSize?: number;
+  onBetweenScans?: () => Promise<void>;
+}): Promise<RelationshipActivationReadiness> {
+  const pageSize = Math.min(Math.max(params.pageSize ?? 100, 1), 250);
+  const authoritativeNow = params.authoritativeNow ?? new Date();
+  const first = await scanMigrationSources({firestore: params.firestore, authoritativeNow, pageSize});
+  if (params.onBetweenScans) await params.onBetweenScans();
+  const second = await scanMigrationSources({firestore: params.firestore, authoritativeNow, pageSize});
+  if (first.sourceFingerprint !== second.sourceFingerprint ||
+    first.bookingCount !== second.bookingCount ||
+    first.directedBlockCount !== second.directedBlockCount) {
+    throw new Error("relationship_migration_concurrent_source_change");
+  }
+  return classifyActivationReadiness({
+    scan: first,
+    strategy: params.strategy ?? "zero-protected-baseline",
+    decisions: params.decisions ?? [],
+    authoritativeNow,
+  });
+}
+
+/**
+ * Applies evidence markers and guard state for specific source records (used
+ * by the activation tool for bookings decided PROTECT_PAIR). Same writes as
+ * runHistoricalRelationshipMigrationPage in apply mode, for named records.
+ */
+export async function applyHistoricalEvidenceForSources(params: {
+  firestore: Firestore;
+  runId: string;
+  phase: HistoricalMigrationPhase;
+  sourceIds: string[];
+  authoritativeNow?: Date;
+}): Promise<{applied: number; alreadyApplied: number}> {
+  if (!params.runId.trim()) throw new Error("migration_run_id_required");
+  const collectionName = params.phase === "blocks" ? "userBlocks" : "bookings";
+  let applied = 0;
+  let alreadyApplied = 0;
+  for (const sourceId of params.sourceIds) {
+    const snapshot = await params.firestore.collection(collectionName).doc(sourceId).get();
+    if (!snapshot.exists) throw new Error(`migration_source_missing:${params.phase}:${sourceId}`);
+    const document = snapshot as QueryDocumentSnapshot<DocumentData>;
+    const evidence = params.phase === "blocks" ?
+      blockEvidence(document) :
+      await bookingEvidence(params.firestore, document, params.authoritativeNow ?? new Date());
+    const outcome = await applyOrReconcileEvidence({
+      firestore: params.firestore,
+      phase: params.phase,
+      mode: "apply",
+      runId: params.runId,
+      evidence,
+    });
+    if (outcome === "applied") applied += 1;
+    if (outcome === "already-applied") alreadyApplied += 1;
+  }
+  return {applied, alreadyApplied};
+}
+
+export type RelationshipMigrationVerificationRecord = IndependentMigrationVerification & {
+  flaggedRecordCount: number;
+  decidedRecordCount: number;
+  decisionSetHash: string;
+  attestationId: string;
+};
+
 export async function verifyAndRecordRelationshipMigration(params: {
   firestore: Firestore;
   runId: string;
@@ -557,7 +797,13 @@ export async function verifyAndRecordRelationshipMigration(params: {
   strategy: "zero-protected-baseline" | "exception-backfill";
   authoritativeNow?: Date;
   pageSize?: number;
-}): Promise<IndependentMigrationVerification> {
+  /** D3 decision documents (relationshipActivationDecisions shape). */
+  decisions?: ReadonlyArray<unknown>;
+  decisionSetHash?: string;
+  attestationId?: string;
+  /** Test hook: runs between the two source scans. */
+  onBetweenScans?: () => Promise<void>;
+}): Promise<RelationshipMigrationVerificationRecord> {
   const runId = params.runId.trim();
   const operatorUid = params.operatorUid.trim();
   if (!runId || !operatorUid) {
@@ -570,20 +816,24 @@ export async function verifyAndRecordRelationshipMigration(params: {
     authoritativeNow,
     pageSize,
   });
-  const requiresBookingEvidence = params.strategy === "exception-backfill";
+  // D3: flagged records with a matching NO_OBLIGATION / PROTECT_PAIR decision
+  // are not counted. anomalyCount and mismatchCount below are UNDECIDED counts.
+  const readiness = classifyActivationReadiness({
+    scan: first,
+    strategy: params.strategy,
+    decisions: params.decisions ?? [],
+    authoritativeNow,
+  });
+  const requiredKeys = new Set(readiness.requiredEvidence
+    .map((item) => flaggedKey(item.phase, item.sourceId)));
   const required = first.evidence.filter((item) =>
-    item.phase === "blocks" || requiresBookingEvidence);
+    requiredKeys.has(flaggedKey(item.phase, item.sourceId)));
   let mismatchCount = 0;
-  const anomalyCount = first.evidence.filter((item) => item.anomaly).length;
-  const zeroBaselineSafeReasons = new Set([
-    "NO_PROTECTED_OBLIGATION",
-    "ACCEPTED_UNPAID_ACCOUNTED",
-  ]);
-  const zeroBaselineExceptions = first.evidence.filter((item) =>
-    item.phase === "bookings" && !zeroBaselineSafeReasons.has(item.reasonCode)).length;
-  if (params.strategy === "zero-protected-baseline" && zeroBaselineExceptions > 0) {
-    mismatchCount += zeroBaselineExceptions;
+  const anomalyCount = readiness.undecidedAnomalyCount;
+  if (params.strategy === "zero-protected-baseline") {
+    mismatchCount += readiness.undecidedExceptionCount;
   }
+  mismatchCount += readiness.extraDecisionKeys.length + readiness.invalidDecisionCount;
   for (const item of required) {
     if (!item.pairKey) {
       mismatchCount += 1;
@@ -612,6 +862,7 @@ export async function verifyAndRecordRelationshipMigration(params: {
   const evidenceSnapshot = await params.firestore.collection("relationshipMigrationEvidence")
     .where("runId", "==", runId).get();
   if (evidenceSnapshot.size !== required.length) mismatchCount += 1;
+  if (params.onBetweenScans) await params.onBetweenScans();
   const second = await scanMigrationSources({
     firestore: params.firestore,
     authoritativeNow,
@@ -625,7 +876,7 @@ export async function verifyAndRecordRelationshipMigration(params: {
   if (anomalyCount !== 0 || mismatchCount !== 0) {
     throw new Error("relationship_migration_not_verifiable");
   }
-  const verification: IndependentMigrationVerification = {
+  const verification: RelationshipMigrationVerificationRecord = {
     migrationVersion: HISTORICAL_RELATIONSHIP_MIGRATION_VERSION,
     strategy: params.strategy,
     sourceFingerprint: first.sourceFingerprint,
@@ -634,6 +885,10 @@ export async function verifyAndRecordRelationshipMigration(params: {
     requiredEvidenceCount: required.length,
     anomalyCount,
     mismatchCount,
+    flaggedRecordCount: readiness.flagged.length,
+    decidedRecordCount: readiness.decided.length,
+    decisionSetHash: (params.decisionSetHash ?? "").trim(),
+    attestationId: (params.attestationId ?? "").trim(),
   };
   await params.firestore.doc("_migrations/userRelationshipGuardV1").set({
     schemaVersion: 1,

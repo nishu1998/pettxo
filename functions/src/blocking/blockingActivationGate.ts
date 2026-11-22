@@ -117,6 +117,30 @@ export async function assertBlockingCreationEnabledInTransaction(params: {
   return state;
 }
 
+/**
+ * Optional, informational audit fields written by the Phase 3B-4d activation
+ * tool. They are stored on the audit document only; activationState() does
+ * not read them.
+ */
+export type BlockingRolloutAuditExtras = {
+  attestation?: Record<string, unknown>;
+  attestationHash?: string;
+  decisionSetHash?: string;
+  operatorEmail?: string;
+  toolGitSha?: string;
+};
+
+function auditExtraFields(extras: BlockingRolloutAuditExtras | undefined): Record<string, unknown> {
+  if (!extras) return {};
+  const out: Record<string, unknown> = {};
+  if (extras.attestation && typeof extras.attestation === "object") out.attestation = extras.attestation;
+  for (const key of ["attestationHash", "decisionSetHash", "operatorEmail", "toolGitSha"] as const) {
+    const value = text(extras[key]);
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 export async function recordBlockingRolloutTransition(params: {
   firestore: Firestore;
   enabled: boolean;
@@ -124,6 +148,7 @@ export async function recordBlockingRolloutTransition(params: {
   reason: string;
   auditId: string;
   migrationRunId: string;
+  auditExtras?: BlockingRolloutAuditExtras;
 }): Promise<{enabled: boolean; rolloutVersion: number; idempotentReplay: boolean}> {
   const operatorUid = params.operatorUid.trim();
   const reason = params.reason.trim();
@@ -181,6 +206,7 @@ export async function recordBlockingRolloutTransition(params: {
       rolloutVersion: nextVersion,
       operatorUid,
       reason,
+      ...auditExtraFields(params.auditExtras),
       createdAt: FieldValue.serverTimestamp(),
     });
     transaction.set(rolloutRef, {
