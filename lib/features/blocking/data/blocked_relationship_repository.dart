@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'blocked_user_set_cache.dart';
+
 /// Server reason codes meaning blocking is switched off globally (the
 /// activation gate in functions/src/blocking/blockingActivationGate.ts).
 const Set<String> blockingDisabledReasonCodes = {
@@ -114,22 +116,28 @@ class BlockedRelationshipRepository {
     FirebaseFunctions? functions,
     Duration timeout = const Duration(seconds: 15),
     String Function()? currentUidOverride,
+    BlockedUserSetCache? blockedUserSetCache,
   }) : _firestoreOverride = firestore,
        _authOverride = auth,
-       _functions =
-           functions ?? FirebaseFunctions.instanceFor(region: 'asia-south1'),
+       _functionsOverride = functions,
        _timeout = timeout,
-       _currentUidOverride = currentUidOverride;
+       _currentUidOverride = currentUidOverride,
+       _blockedUserSetCache =
+           blockedUserSetCache ?? BlockedUserSetCache.instance;
 
   final FirebaseFirestore? _firestoreOverride;
   final FirebaseAuth? _authOverride;
-  final FirebaseFunctions _functions;
+  final FirebaseFunctions? _functionsOverride;
   final Duration _timeout;
   final String Function()? _currentUidOverride;
+  final BlockedUserSetCache _blockedUserSetCache;
 
   FirebaseFirestore get _firestore =>
       _firestoreOverride ?? FirebaseFirestore.instance;
   FirebaseAuth get _auth => _authOverride ?? FirebaseAuth.instance;
+  FirebaseFunctions get _functions =>
+      _functionsOverride ??
+      FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   String get _uid =>
       _currentUidOverride?.call().trim() ?? _auth.currentUser?.uid.trim() ?? '';
@@ -166,15 +174,23 @@ class BlockedRelationshipRepository {
     return blocked;
   }
 
+  /// The effective blocked-user set from [loadEffectiveBlockedUserIds],
+  /// served from the in-memory [BlockedUserSetCache] (per user, cleared on
+  /// blocking changes, short TTL). A failed load throws and is not cached.
+  Future<Set<String>> loadCachedEffectiveBlockedUserIds() {
+    return _blockedUserSetCache.get(_uid, loadEffectiveBlockedUserIds);
+  }
+
+  /// Whether a block exists in either direction between the signed-in user
+  /// and [otherUserId]. UX only: Firestore Rules enforce blocks on writes.
+  /// Uses the cached set (two list queries), never point reads of
+  /// userBlocks/{a}_{b}. Throws if the set cannot be loaded.
   Future<bool> isEffectivelyBlocked(String otherUserId) async {
     final uid = _uid;
     final other = otherUserId.trim();
     if (uid.isEmpty || other.isEmpty || uid == other) return false;
-    final snapshots = await Future.wait([
-      _firestore.collection('userBlocks').doc('${uid}_$other').get(),
-      _firestore.collection('userBlocks').doc('${other}_$uid').get(),
-    ]);
-    return snapshots.any((snapshot) => snapshot.exists);
+    final blockedUserIds = await loadCachedEffectiveBlockedUserIds();
+    return blockedUserIds.contains(other);
   }
 
   Future<UserRelationshipState> getRelationshipState(String targetUid) async {

@@ -16,7 +16,7 @@ class ServicesRepository {
   final FirebaseFirestore _firestore;
   final FirebaseAuth _auth;
   final FirebaseStorage _storage;
-  final ProfileRepository _profileRepository = ProfileRepository();
+  final ProfileRepository _profileRepository;
   late final BlockedRelationshipRepository _blockedRelationships =
       BlockedRelationshipRepository(firestore: _firestore, auth: _auth);
   final Map<String, bool> _ownerVisibilityCache = <String, bool>{};
@@ -25,9 +25,11 @@ class ServicesRepository {
     FirebaseFirestore? firestore,
     FirebaseAuth? auth,
     FirebaseStorage? storage,
+    ProfileRepository? profileRepository,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
        _auth = auth ?? FirebaseAuth.instance,
-       _storage = storage ?? FirebaseStorage.instance;
+       _storage = storage ?? FirebaseStorage.instance,
+       _profileRepository = profileRepository ?? ProfileRepository();
 
   CollectionReference<Map<String, dynamic>> get _services =>
       _firestore.collection('services');

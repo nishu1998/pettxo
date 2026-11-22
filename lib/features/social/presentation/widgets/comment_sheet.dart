@@ -17,6 +17,7 @@ import '../../../restrictions/data/services/user_restriction_service.dart';
 import '../../data/social_post_repository.dart';
 import '../../domain/models/comment_model.dart';
 import '../../domain/models/social_post_model.dart';
+import 'comment_error_messages.dart';
 import 'live_author_resolver.dart';
 
 class CommentSheet extends StatefulWidget {
@@ -193,7 +194,7 @@ class _CommentSheetState extends State<CommentSheet> {
       if (!mounted) return;
       AppFeedback.show(
         context,
-        message: error.toString().replaceFirst('Exception: ', ''),
+        message: friendlyCommentErrorMessage(error, CommentAction.post),
         tone: AppFeedbackTone.error,
       );
     } finally {
@@ -292,7 +293,7 @@ class _CommentSheetState extends State<CommentSheet> {
       if (!mounted) return;
       AppFeedback.show(
         context,
-        message: error.toString().replaceFirst('Exception: ', ''),
+        message: friendlyCommentErrorMessage(error, CommentAction.delete),
         tone: AppFeedbackTone.error,
       );
     } finally {
@@ -363,7 +364,7 @@ class _CommentSheetState extends State<CommentSheet> {
       if (!mounted) return;
       AppFeedback.show(
         context,
-        message: error.toString().replaceFirst('Exception: ', ''),
+        message: friendlyCommentErrorMessage(error, CommentAction.report),
         tone: error.toString().contains('already reported')
             ? AppFeedbackTone.info
             : AppFeedbackTone.error,
