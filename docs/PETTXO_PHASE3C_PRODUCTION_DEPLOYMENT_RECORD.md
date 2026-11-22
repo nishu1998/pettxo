@@ -81,10 +81,11 @@ The permanent procedure is in runbook §2, "New Cloud Functions under domain-res
 | Firestore Rules | **`36558d0`** (Phase 3C-8, 22 Nov). Before that: `e8f97f3` (= `9ce090a` = `6f576f1` = `2e7a67a`), deployed 17 Nov ~05:00 | See the Phase 3C-8 section |
 | Storage Rules | **Previous** version (= base `1652aac` = repo `storage.rules` at `d1c5c85` and later) | New version deployed, then rolled back; deploy cancelled |
 | Firestore indexes | Unchanged | No index deploy in this release |
-| Cloud Functions (74 in scope) | `6f576f1` (code-identical to `2e7a67a`) | 67 updated, 7 created; Gen 2, `asia-south1`, Node 22 |
+| Cloud Functions (74 in scope) | `6f576f1` (code-identical to `2e7a67a`), **except the 9 below** | 67 updated, 7 created; Gen 2, `asia-south1`, Node 22 |
+| Cloud Functions, 9 blocking and payment functions | **`5a31576`** (Phase 3B-4e, 22 Nov). Before that: `347fa1c` (Phase 3B-4b/c, 22 Nov) | `blockUserV1`, `unblockUserV1`, `getUserRelationshipStateV1`, `razorpayWebhook`, `verifyBookingPaymentV3`, `reconcileBookingPaymentsV3`, `expireAwaitingPaymentsV3`, `createRazorpayPaymentOrderV3`, `createBookingQrPaymentV3`. Updates only; no invoker change. See the Phase 3B-4 sections |
 | Invoker on the 7 new functions | Invoker IAM check **disabled** | Verified with 401 on unauthenticated calls |
 | Other functions (not in the 74) | Unchanged from before the deploy | Not redeployed |
-| Blocking activation gate | **OFF**: no `_rollouts/userBlockingV1` document | Block creation is refused; `unblockUserV1` and the "Blocked accounts" screen work with the gate off (empty list) |
+| Blocking activation gate | **ON** since 22 Nov: audit `activate_2c45c2aabf7d_d1bbef25`, migration run `act_2c45c2aabf7d_d1bbef25` | Activated with `blocking_activation.js` (tool at `d7d0d0f`). OFF switch: `blocking_activation.js deactivate` (runbook `docs/PETTXO_PHASE3B4_ACTIVATION_RUNBOOK.md` §7) |
 | Admin Dashboard | `d07df166`, hosting target `admin`, site `pettxo-admin` (admin.pettxo.com) | Replaces the old Dashboard (`93503bd`), whose report-status action broke under the new Firestore Rules |
 | Main site hosting (default target) | Unchanged | Not part of this release |
 | Android, Play production | Build 23 (unchanged) | |
@@ -129,6 +130,63 @@ The permanent procedure is in runbook §2, "New Cloud Functions under domain-res
 - Re-publish the rollback copy in the console (Firestore Database → Rules), or restore the previous version from the console's version history.
 - After a rollback, 1.0.5 (24) like, comment and share break again. 1.0.4 is unaffected.
 
+## Phase 3B-4b/c: blocking eligibility and payment-hold functions (22 Nov 2026)
+
+**Deployed:** 22 November 2026, owner-run. Commit `347fa1c`, 9 **existing** functions (updates only; no invoker change): `blockUserV1`, `unblockUserV1`, `getUserRelationshipStateV1`, `razorpayWebhook`, `verifyBookingPaymentV3`, `reconcileBookingPaymentsV3`, `expireAwaitingPaymentsV3`, `createRazorpayPaymentOrderV3`, `createBookingQrPaymentV3`.
+
+**What changed:**
+- **D1:** a capture that would confirm a booking for a blocked pair is recorded and held for Super Admin review (`blockedRelationshipPaymentHolds/{paymentId}`). It is never confirmed and never refunded automatically, and the webhook gets 200.
+- **D2:** historical protection marks are re-judged from live state.
+- **D4:** a pending provider payout no longer prevents blocking.
+
+**Checks:** payment smoke test passed on 1.0.4 (23) and 1.0.5 (owner-reported). Pushed to `main`.
+
+**Report:** `~/PettxoReleaseBackups/reports/PHASE3B4BC_REPORT.md`.
+
+## Phase 3B-4d: blocking activation (22 Nov 2026)
+
+**Activated:** 22 November 2026, owner-run, following `docs/PETTXO_PHASE3B4_ACTIVATION_RUNBOOK.md`.
+
+| Item | Value |
+|---|---|
+| Tool | `functions/scripts/blocking_activation.js` at `d7d0d0f` |
+| Identity | Owner's own login through `gcloud auth application-default login`, revoked afterwards |
+| Gate | **Enabled** (`_rollouts/userBlockingV1`) |
+| Activation audit | `userBlockingActivationAudit/activate_2c45c2aabf7d_d1bbef25` |
+| Migration run | `act_2c45c2aabf7d_d1bbef25` |
+| Attestation | `att_079c2204c0f3f42f` (no real-user bookings, payments, disputes or refunds) |
+| Scan | 115 bookings scanned; 43 flagged, all decided `NO_OBLIGATION` |
+| Decisions file | Kept at `~/PettxoReleaseBackups/activation/` |
+| Check | Owner block/unblock test passed |
+
+**OFF switch:**
+```bash
+node scripts/blocking_activation.js deactivate --project=pettexo-d9409 --operator-uid=<owner UID> --reason="..." --confirm=DEACTIVATE
+```
+It is audited and refuses new blocks only. Existing blocks stay enforced and unblock keeps working. The console fallback is in runbook §7.
+
+**Known issue after activation (fixed by 3B-4e below):** pairs with past test bookings were refused with "A booking payment needs verification…". Diagnosis: `~/PettxoReleaseBackups/reports/PHASE3B4E_BLOCK_REFUSAL_DIAGNOSIS.md`.
+
+## Phase 3B-4e: block-refusal and confirmation fixes (22 Nov 2026)
+
+**Deployed:** 22 November 2026, owner-run. Commit `5a31576`, the same 9 **existing** functions.
+
+**What changed:**
+- **T1:** live block checks honour D3 `NO_OBLIGATION` decisions that match the booking's current version.
+- **R1:** payments Razorpay reports as failed or refunded-uncaptured end their attempt, so the booking can expire.
+- **R2:** a refunded late capture on an expired booking no longer protects the pair.
+- **Confirmation phone fix:** confirmation no longer fails when a participant has no Auth phone.
+
+**Checks (owner-reported):**
+- blocking a past-booking test account now works;
+- payment smoke test passed on 1.0.4 (23) and 1.0.5.
+
+Pushed to `main`.
+
+**Report:** `~/PettxoReleaseBackups/reports/PHASE3B4E_FIX_REPORT.md`.
+
+**Rollback:** redeploy the same 9 functions from `d7d0d0f`; see that report §7. Deactivating blocking is a separate step (OFF switch above).
+
 ## Rollback references
 
 Full procedure: runbook §5.
@@ -165,10 +223,7 @@ Full procedure: runbook §5.
 
 1. **Investigate the hourly `pauseServicesForExpiredProviderVerification` failures** (pre-existing). Find the error in the logs and fix it in a separate change.
 2. **Upgrade `firebase-functions`** (deferred). Do it as its own release, with the full emulator suite and a staged deploy.
-3. **Phase 3B-4: blocking activation.**
-   - Run the production migration and audit, then write the activation documents through the audited transition.
-   - Only then is `_rollouts/userBlockingV1` enabled. All 45 Wave 5 functions are already live, as activation requires.
-   - Any **new** function created in that phase needs the invoker fix.
+3. **Phase 3B-4: blocking activation. Done 22 Nov 2026** (see the Phase 3B-4 sections). Any **new** function created later still needs the invoker fix.
 4. **Merge the release branches into `main`.**
    - App repo: merge `release/android-1.0.5-closed-testing`. It contains all of `release/phase3b1-blocking-reporting-2026-11-16` plus the fixes. Do **not** merge the phase3b1 branch on its own: it has the incident `storage.rules` and lacks the legacy-post Firestore Rules fix.
    - Admin Dashboard: merge `release/phase3b1-admin-reporting-2026-11-16`.
