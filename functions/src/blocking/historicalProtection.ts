@@ -4,6 +4,7 @@ import type {
   DocumentSnapshot,
   Firestore,
   Query,
+  QueryDocumentSnapshot,
   QuerySnapshot,
   Transaction,
 } from "firebase-admin/firestore";
@@ -131,6 +132,44 @@ export async function liveCustomerObligationReason(params: {
     return "MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED";
   }
   return "";
+}
+
+/**
+ * Phase 3B-4e (T1): live blocking checks honour D3 decisions.
+ *
+ * A pair booking is left out of every live check (schema validity, protection
+ * classifier, accepted-unpaid payment evidence, D2 obligations) when
+ * relationshipActivationDecisions/bookings__{id} is a well-formed
+ * NO_OBLIGATION decision whose expectedSourceUpdateTimeMillis equals the
+ * booking's current updateTime. Any later change to the booking makes the
+ * decision stale, so the booking is checked again. PROTECT_PAIR and
+ * BLOCK_ACTIVATION never release a booking.
+ */
+export async function partitionBookingsByNoObligationDecision(params: {
+  firestore: Firestore;
+  reader: FirestoreReader;
+  bookingDocs: ReadonlyArray<QueryDocumentSnapshot<DocumentData>>;
+}): Promise<{
+  checked: QueryDocumentSnapshot<DocumentData>[];
+  releasedBookingIds: string[];
+}> {
+  const decisions = await Promise.all(params.bookingDocs.map((doc) => params.reader.getDoc(
+    params.firestore.collection(RELATIONSHIP_ACTIVATION_DECISIONS_COLLECTION)
+      .doc(relationshipActivationDecisionId("bookings", doc.id)),
+  )));
+  const checked: QueryDocumentSnapshot<DocumentData>[] = [];
+  const releasedBookingIds: string[] = [];
+  params.bookingDocs.forEach((doc, index) => {
+    const decision = parseRelationshipActivationDecision(decisions[index].data());
+    const released = decision != null &&
+      decision.decision === "NO_OBLIGATION" &&
+      decision.phase === "bookings" &&
+      decision.sourceId === doc.id &&
+      decision.expectedSourceUpdateTimeMillis === doc.updateTime.toMillis();
+    if (released) releasedBookingIds.push(doc.id);
+    else checked.push(doc);
+  });
+  return {checked, releasedBookingIds};
 }
 
 export type HistoricalProtectionJudgement =

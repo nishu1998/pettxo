@@ -25,6 +25,7 @@ import {
 import {
   directReader,
   judgeHistoricalProtection,
+  partitionBookingsByNoObligationDecision,
   transactionReader,
 } from "./historicalProtection";
 import {
@@ -371,11 +372,18 @@ export async function blockUserDataV1(params: {
     if (!targetSnapshot.exists) {
       throw new HttpsError("not-found", "User not found.", {code: "TARGET_USER_NOT_FOUND"});
     }
-    const bookingDocs = await loadPairBookings({
+    const pairBookingDocs = await loadPairBookings({
       firestore: params.firestore,
       transaction,
       uidA: pair.uidA,
       uidB: pair.uidB,
+    });
+    // T1: bookings released by a current D3 NO_OBLIGATION decision are left
+    // out of every check below.
+    const {checked: bookingDocs} = await partitionBookingsByNoObligationDecision({
+      firestore: params.firestore,
+      reader: transactionReader(transaction),
+      bookingDocs: pairBookingDocs,
     });
     const acceptedToCancel: Array<{
       ref: DocumentReference<DocumentData>;
@@ -600,7 +608,13 @@ export async function getUserRelationshipStateDataV1(params: {
   let acceptedUnpaidBookingCount = 0;
   let protectedReason = "";
   const acceptedBookingDocs: QueryDocumentSnapshot<DocumentData>[] = [];
-  for (const doc of docs.values()) {
+  // T1: the same release blockUserDataV1 applies.
+  const {checked: checkedDocs} = await partitionBookingsByNoObligationDecision({
+    firestore: params.firestore,
+    reader: directReader,
+    bookingDocs: [...docs.values()],
+  });
+  for (const doc of checkedDocs) {
     try {
       const booking = assertValidCanonicalBookingDocumentV3(doc.data());
       const protection = classifyRelationshipProtectionV1({booking, authoritativeNow});
@@ -638,7 +652,7 @@ export async function getUserRelationshipStateDataV1(params: {
       reader: directReader,
       pairKey: pair.pairKey,
       guardData: guardSnapshot.data(),
-      liveBookingIds: [...docs.keys()],
+      liveBookingIds: checkedDocs.map((doc) => doc.id),
     });
     if (historical.marked && historical.stillProtected) {
       protectedReason = "HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED";
