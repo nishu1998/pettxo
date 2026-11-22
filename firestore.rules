@@ -1930,10 +1930,29 @@ service cloud.firestore {
     }
 
     match /userBlocks/{blockId} {
-      allow get, list: if signedIn() &&
+      allow list: if signedIn() &&
         (
           resource.data.ownerUserId == request.auth.uid ||
           resource.data.blockedUserId == request.auth.uid
+        );
+      // Clients probe userBlocks/{a}_{b} and {b}_{a} by ID to learn whether a
+      // block exists. A missing doc has no fields to check, so without the
+      // resource == null branch every "no block" probe is permission-denied
+      // (Phase 3C-8). Only the two parties named in a well-formed pair ID
+      // ({a}_{b}, both halves non-empty) may read a missing doc; existing docs
+      // keep the field check. A self-pair such as {me}_{me} is readable by me
+      // when missing; harmless, the server never writes self-pairs.
+      allow get: if signedIn() &&
+        (
+          (
+            resource == null &&
+            blockId.matches('^[^_]+_[^_]+$') &&
+            request.auth.uid in blockId.split('_')
+          ) ||
+          (
+            resource.data.ownerUserId == request.auth.uid ||
+            resource.data.blockedUserId == request.auth.uid
+          )
         );
       // Stage 1B: block mutations are booking-sensitive and must use the
       // server-authoritative blockUserV1/unblockUserV1 transactions.

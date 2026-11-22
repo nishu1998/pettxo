@@ -13,9 +13,26 @@ const rules = fs.readFileSync(rulesPath, "utf8");
 const exploreRepository = fs.readFileSync(exploreRepositoryPath, "utf8");
 
 test("userBlocks are readable by either participant but backend-only for mutations", () => {
+  const block = rules.match(/match \/userBlocks\/\{blockId\}\s*\{([\s\S]*?)\n {4}\}\n/);
+  assert.ok(block, "userBlocks match block not found");
+  const body = block[1];
+
+  // List: only queries constrained to the caller as owner or blocked user.
   assert.match(
-    rules,
-    /match \/userBlocks\/\{blockId\}\s*\{[\s\S]*allow get, list: if signedIn\(\)[\s\S]*resource\.data\.ownerUserId == request\.auth\.uid[\s\S]*resource\.data\.blockedUserId == request\.auth\.uid[\s\S]*allow create, update, delete: if false;/,
+    body,
+    /allow list: if signedIn\(\) &&\s*\(\s*resource\.data\.ownerUserId == request\.auth\.uid \|\|\s*resource\.data\.blockedUserId == request\.auth\.uid\s*\);/,
+  );
+  // Get: a missing well-formed {a}_{b} pair doc for either party (Phase 3C-8),
+  // or an existing doc where the caller is owner or blocked user.
+  assert.match(
+    body,
+    /allow get: if signedIn\(\) &&\s*\(\s*\(\s*resource == null &&\s*blockId\.matches\('\^\[\^_\]\+_\[\^_\]\+\$'\) &&\s*request\.auth\.uid in blockId\.split\('_'\)\s*\) \|\|\s*\(\s*resource\.data\.ownerUserId == request\.auth\.uid \|\|\s*resource\.data\.blockedUserId == request\.auth\.uid\s*\)\s*\);/,
+  );
+  // Mutations stay backend-only, and no other allow statement exists.
+  assert.match(body, /allow create, update, delete: if false;/);
+  assert.deepEqual(
+    body.match(/^\s*allow [^:]+:/gm).map((line) => line.trim()),
+    ["allow list:", "allow get:", "allow create, update, delete:"],
   );
 });
 

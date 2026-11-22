@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:firestore": "firebase emulators:exec --only firestore --project demo-pettexo \"node --test firestore.rules.test.mjs\"",
+    "test:firestore": "firebase emulators:exec --only firestore --project demo-pettexo \"node --test firestore.rules.test.mjs firestore.userBlocks.rules.test.mjs\"",
     "test:storage": "firebase emulators:exec --only firestore,storage --project demo-pettexo \"node --test storage.rules.test.mjs\"",
     "test": "npm run test:firestore && npm run test:storage"
   },
