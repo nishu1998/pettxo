@@ -1852,3 +1852,27 @@ test('H-04 clients cannot create or restore exact location in public services', 
     updatedAt: serverTimestamp(),
   }));
 });
+
+test('item 27: adminRateLimits is server-only for every role, including Super Admin', async () => {
+  await seedUser('member', {role: 'petParent'});
+  for (const role of adminRoles) await seedUser(`rl-${role}`, {adminRole: role});
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'adminRateLimits', 'rl-superAdmin_contactReveal'), {
+      adminUid: 'rl-superAdmin',
+      bucket: 'contactReveal',
+      events: [1],
+    });
+  });
+  const contexts = [
+    testEnv.unauthenticatedContext().firestore(),
+    authedDb('member'),
+    ...adminRoles.map((role) => authedDb(`rl-${role}`)),
+  ];
+  for (const db of contexts) {
+    await assertFails(getDoc(doc(db, 'adminRateLimits', 'rl-superAdmin_contactReveal')));
+    await assertFails(getDocs(collection(db, 'adminRateLimits')));
+    await assertFails(setDoc(doc(db, 'adminRateLimits', 'rl-superAdmin_contactReveal'), {events: []}));
+    await assertFails(setDoc(doc(db, 'adminRateLimits', 'new-bucket'), {events: []}));
+    await assertFails(updateDoc(doc(db, 'adminRateLimits', 'rl-superAdmin_contactReveal'), {events: []}));
+  }
+});

@@ -2608,5 +2608,10 @@ service cloud.firestore {
     match /marketingEmailTestRateLimits/{userId} {
       allow read, write: if false;
     }
+
+    // Admin callable rate-limit buckets ({adminUid}_{bucket}); server only.
+    match /adminRateLimits/{limitId} {
+      allow read, write: if false;
+    }
   }
 }

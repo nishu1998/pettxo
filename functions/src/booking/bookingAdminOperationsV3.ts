@@ -22,6 +22,12 @@ import type {
 } from "./schema/bookingDocumentV3";
 import {parseCanonicalBookingDocumentV3} from "./schema/bookingDocumentV3";
 import {normalizeTimestampLike} from "./schema/timestampNormalization";
+import {
+  maskEmailOrNull,
+  maskPhoneOrNull,
+  pickPrivateEmail,
+  pickPrivatePhone,
+} from "../admin/contactMasking";
 
 type AdminRole = "superAdmin" | "financeAdmin" | "customerSupportAdmin";
 type AdminScope = "dispute_nonfinancial" | "financial";
@@ -82,6 +88,8 @@ type CanonicalProviderSummary = {
   completedBookingCount: number;
   maskedIdentity: string;
   bankReadiness: string | null;
+  /** Only on getCanonicalBookingAdminDetailV3 (item 27); never a full value. */
+  maskedPhone?: string | null;
 };
 
 type CanonicalServiceSummary = {
@@ -264,9 +272,25 @@ function buildRaisedByMaskedIdentity(params: {
     );
 }
 
+/** Masked contact taken from userPrivate (item 27; dashboard mask format). */
+type AdminMaskedContact = {
+  maskedPhone: string | null;
+  maskedEmail: string | null;
+};
+
+function adminMaskedContactFromPrivate(
+  privateData: Record<string, unknown> | null,
+): AdminMaskedContact {
+  return {
+    maskedPhone: maskPhoneOrNull(pickPrivatePhone(privateData)?.value),
+    maskedEmail: maskEmailOrNull(pickPrivateEmail(privateData)),
+  };
+}
+
 function customerSummaryFromBooking(
   booking: CanonicalBookingDocumentV3,
   rawUser: Record<string, unknown> | null,
+  privateContact?: AdminMaskedContact,
 ): CanonicalCustomerSummary {
   return {
     userId: booking.parentId,
@@ -278,14 +302,19 @@ function customerSummaryFromBooking(
       booking.participants.parent.displayFirstName,
       booking.participants.parent.lastInitial,
     ),
-    maskedEmail: maskEmail(asString(rawUser?.email)),
-    maskedPhone: maskPhone(asString(rawUser?.phoneNumber)),
+    maskedEmail: privateContact ?
+      privateContact.maskedEmail :
+      maskEmail(asString(rawUser?.email)),
+    maskedPhone: privateContact ?
+      privateContact.maskedPhone :
+      maskPhone(asString(rawUser?.phoneNumber)),
   };
 }
 
 function providerSummaryFromBooking(params: {
   booking: CanonicalBookingDocumentV3;
   bank: Record<string, unknown> | null;
+  privateContact?: AdminMaskedContact;
 }): CanonicalProviderSummary {
   return {
     userId: params.booking.providerId,
@@ -297,6 +326,7 @@ function providerSummaryFromBooking(params: {
       params.booking.participants.provider.completedBookingCount,
     maskedIdentity: params.booking.participants.provider.displayName,
     bankReadiness: asString(params.bank?.status) || null,
+    ...(params.privateContact ? {maskedPhone: params.privateContact.maskedPhone} : {}),
   };
 }
 
@@ -333,6 +363,15 @@ async function loadUserDoc(
 ): Promise<Record<string, unknown> | null> {
   if (!uid) return null;
   const snapshot = await firestore.collection("users").doc(uid).get();
+  return snapshot.exists ? asRecord(snapshot.data()) : null;
+}
+
+async function loadUserPrivateDoc(
+  firestore: Firestore,
+  uid: string,
+): Promise<Record<string, unknown> | null> {
+  if (!uid) return null;
+  const snapshot = await firestore.collection("userPrivate").doc(uid).get();
   return snapshot.exists ? asRecord(snapshot.data()) : null;
 }
 
@@ -1485,9 +1524,17 @@ export async function getCanonicalBookingAdminDetailDataV3(params: {
       issues: bookingState.issues,
     });
   }
-  const [related, customerUser, providerBank, ledger, statusHistory] = await Promise.all([
+  const [
+    related,
+    customerPrivate,
+    providerPrivate,
+    providerBank,
+    ledger,
+    statusHistory,
+  ] = await Promise.all([
     loadBookingRelatedState(params.firestore, bookingState.bookingId),
-    loadUserDoc(params.firestore, bookingState.booking.parentId),
+    loadUserPrivateDoc(params.firestore, bookingState.booking.parentId),
+    loadUserPrivateDoc(params.firestore, bookingState.booking.providerId),
     loadBankDoc(params.firestore, bookingState.booking.providerId),
     loadLedgerSummary(params.firestore, bookingState.bookingId),
     loadBookingEvents(params.firestore, bookingState.bookingId),
@@ -1508,10 +1555,16 @@ export async function getCanonicalBookingAdminDetailDataV3(params: {
     effectiveBookingStatus: effectiveState,
     paymentState: bookingState.booking.payment.status,
     bookingType: bookingState.booking.bookingType,
-    customer: customerSummaryFromBooking(bookingState.booking, customerUser),
+    // Item 27 / item 22: masked contact from userPrivate, not users.
+    customer: customerSummaryFromBooking(
+      bookingState.booking,
+      null,
+      adminMaskedContactFromPrivate(customerPrivate),
+    ),
     provider: providerSummaryFromBooking({
       booking: bookingState.booking,
       bank: providerBank,
+      privateContact: adminMaskedContactFromPrivate(providerPrivate),
     }),
     service: serviceSummaryFromBooking(bookingState.booking),
     lifecycleTimestamps: {

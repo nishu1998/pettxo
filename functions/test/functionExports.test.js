@@ -150,6 +150,10 @@ const expectedExportNames = [
   "verifyBookingPaymentV3",
   "verifyBookingStartOtpV3",
   "unsubscribeMarketingEmailV3",
+  "findUsersByContactForAdmin",
+  "getMaskedContactsForAdmin",
+  "listAdminMembersForSuperAdmin",
+  "revealContactForAdmin",
 ].sort();
 
 const intentionallyUnexportedBookingV3Names = [].sort();

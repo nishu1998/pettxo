@@ -808,3 +808,49 @@ test("getCanonicalFinancialSummaryDataV3 returns overview counts and booking sco
   assert.equal(booking.scope, "booking");
   assert.equal(booking.ledgerTotals.refundPaise, 12000);
 });
+
+test("item 27: booking detail masks customer and provider contact from userPrivate (item 22)", async () => {
+  const {firestore} = buildAdminSeed();
+  firestore.store.set("userPrivate/customer-1", {
+    phoneNumber: "+919000000001",
+    email: "asha@example.com",
+  });
+  // Provider has only the legacy `phone` key: the dashboard fallback order applies.
+  firestore.store.set("userPrivate/provider-1", {phone: "+919876500002"});
+  const actor = await loadAdminActor(firestore, {uid: "super-1"}, "financial");
+  const detail = await getCanonicalBookingAdminDetailDataV3({firestore, actor, bookingId: "booking-1"});
+
+  assert.equal(detail.customer.maskedPhone, "+91 90•••• •001");
+  assert.equal(detail.customer.maskedEmail, "as***@example.com");
+  assert.equal(detail.provider.maskedPhone, "+91 98•••• •002");
+  const serialized = JSON.stringify(detail);
+  for (const full of ["+919000000001", "9000000001", "asha@example.com", "+919876500002", "9876500002",
+    "+919876543210", "customer@example.com", "+919000111222"]) {
+    assert.ok(!serialized.includes(full), `detail leaks ${full}`);
+  }
+});
+
+test("item 27: booking detail returns null masks when userPrivate has no contact (users doc is ignored)", async () => {
+  const {firestore} = buildAdminSeed();
+  const actor = await loadAdminActor(firestore, {uid: "finance-1"}, "financial");
+  const detail = await getCanonicalBookingAdminDetailDataV3({firestore, actor, bookingId: "booking-1"});
+  assert.equal(detail.customer.maskedPhone, null);
+  assert.equal(detail.customer.maskedEmail, null);
+  assert.equal(detail.provider.maskedPhone, null);
+});
+
+test("item 27: other BAO readers keep their previous customer/provider shape", async () => {
+  const {firestore} = buildAdminSeed();
+  firestore.store.set("userPrivate/customer-1", {phoneNumber: "+919000000001", email: "asha@example.com"});
+  firestore.store.set("userPrivate/provider-1", {phoneNumber: "+919876500002"});
+  const actor = await loadAdminActor(firestore, {uid: "super-1"}, "financial");
+  const disputes = await listCanonicalDisputesForAdminDataV3({firestore, actor, input: {limit: 10, status: "OPEN"}});
+  // Unchanged: still built from the users doc with the old backend masks.
+  assert.equal(disputes.items[0].customer.maskedEmail, "cu***@example.com");
+  assert.equal(disputes.items[0].customer.maskedPhone, "********3210");
+  assert.equal("maskedPhone" in disputes.items[0].provider, false);
+  const bookings = await listCanonicalBookingsForAdminDataV3({firestore, actor, input: {limit: 10}});
+  for (const item of bookings.items) {
+    if (item.provider) assert.equal("maskedPhone" in item.provider, false);
+  }
+});
