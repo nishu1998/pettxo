@@ -135,8 +135,13 @@ export function classifyRelationshipProtectionV1(params: {
   if (financialObligationIsUnresolved(booking)) {
     return {kind: "protected", reason: "FINANCIAL_OBLIGATION_UNRESOLVED"};
   }
+  // Paid bookings stop protecting once customer money is settled (checked
+  // above) and the booking reached a terminal state. PAYMENT_EXPIRED covers a
+  // late capture that was refunded; EXPIRED and DECLINED are defensive
+  // (Phase 3B-4e R2).
   if (booking.state !== "COMPLETED_FINAL" &&
-    !["CANCELLED", "NO_SHOW", "SERVICE_NOT_STARTED"].includes(booking.state)) {
+    !["CANCELLED", "NO_SHOW", "SERVICE_NOT_STARTED", "PAYMENT_EXPIRED", "EXPIRED", "DECLINED"]
+      .includes(booking.state)) {
     return {kind: "protected", reason: `PAID_STATE_${booking.state}`};
   }
   return {kind: "unprotected", reason: "NO_PROTECTED_OBLIGATION"};

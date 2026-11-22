@@ -218,3 +218,29 @@ test("D4/D2: only PROVIDER_PAYOUT obligations stop protecting; unknown types fai
   }
   assert.equal(await reasonFor({obligationType: "CUSTOMER_REFUND", status: "COMPLETED"}), "");
 });
+
+test("R2: paid bookings in PAYMENT_EXPIRED / EXPIRED / DECLINED stop protecting once money is settled", () => {
+  const now = new Date("2026-11-22T10:00:00.000Z");
+  for (const state of ["PAYMENT_EXPIRED", "EXPIRED", "DECLINED"]) {
+    const booking = buildAcceptedAwaitingPaymentSlotBookingFixture();
+    booking.state = state;
+    booking.stateQueryValue = state;
+    booking.payment.razorpayPaymentId = "pay_late";
+    for (const status of ["refunded", "paid", "cancelled"]) {
+      booking.payment.status = status;
+      assert.deepEqual(classifyRelationshipProtectionV1({booking, authoritativeNow: now}),
+        {kind: "unprotected", reason: "NO_PROTECTED_OBLIGATION"}, `${state}/${status}`);
+    }
+    for (const status of ["refund_required", "refund_pending", "captured"]) {
+      booking.payment.status = status;
+      assert.deepEqual(classifyRelationshipProtectionV1({booking, authoritativeNow: now}),
+        {kind: "protected", reason: "FINANCIAL_OBLIGATION_UNRESOLVED"}, `${state}/${status}`);
+    }
+  }
+  // Other paid, non-terminal states still protect.
+  const accepted = buildAcceptedAwaitingPaymentSlotBookingFixture();
+  accepted.payment.razorpayPaymentId = "pay_x";
+  accepted.payment.status = "refunded";
+  assert.deepEqual(classifyRelationshipProtectionV1({booking: accepted, authoritativeNow: now}),
+    {kind: "protected", reason: "PAID_STATE_ACCEPTED_AWAITING_PAYMENT"});
+});
