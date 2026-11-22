@@ -340,3 +340,105 @@ test('client 1.0.5: fetchServiceById for a non-owner is allowed', async () => {
     await fetchPublicVisibility(fdb, '1.0.5', [ownerUserId]);
   })());
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3B-4a: block enforcement does not depend on the activation gate.
+// The rules never read _rollouts/_migrations; these tests document that the
+// outcome is identical whatever the gate documents say.
+// ---------------------------------------------------------------------------
+
+const GATE_STATES = {
+  'no rollout doc': null,
+  disabled: {
+    rollout: {schemaVersion: 1, enabled: false, status: 'disabled', rolloutVersion: 2},
+  },
+  'active without migration': {
+    rollout: {
+      enabled: true,
+      status: 'active',
+      migrationRunId: 'run-1',
+      sourceFingerprint: 'fp-1',
+      activationAuditId: 'audit-1',
+      rolloutVersion: 1,
+    },
+  },
+};
+
+function seedGate(state) {
+  return seed(async (sdb) => {
+    if (state?.rollout) await setDoc(doc(sdb, '_rollouts', 'userBlockingV1'), state.rollout);
+  });
+}
+
+function likeCreate(fdb) {
+  return setDoc(doc(fdb, 'socialPosts', 'othersPost', 'likes', ME), {
+    userId: ME,
+    createdAt: serverTimestamp(),
+  });
+}
+
+function commentCreate(fdb) {
+  const commentRef = doc(collection(fdb, 'socialPosts', 'othersPost', 'comments'));
+  return setDoc(commentRef, {
+    id: commentRef.id,
+    postId: 'othersPost',
+    authorId: ME,
+    authorDisplayName: ME,
+    authorUsername: ME,
+    authorPhotoUrl: '',
+    parentPostAuthorId: OTHER,
+    parentPostPreview: 'hello',
+    text: 'nice',
+    likeCount: 0,
+    reportCount: 0,
+    visibilityStatus: 'visible',
+    moderationStatus: 'approved',
+    moderationReason: '',
+    moderatedBy: '',
+    moderatedAt: null,
+    lastReportedAt: null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+function followCreate(fdb, follower, followee) {
+  return setDoc(doc(fdb, 'follows', `${follower}_${followee}`), {
+    followerId: follower,
+    followeeId: followee,
+    createdAt: serverTimestamp(),
+  });
+}
+
+async function clearFollows() {
+  await seed(async (sdb) => {
+    for (const id of [`${ME}_${OTHER}`, `${OTHER}_${ME}`]) {
+      await deleteDoc(doc(sdb, 'follows', id));
+    }
+  });
+}
+
+for (const [stateName, state] of Object.entries(GATE_STATES)) {
+  test(`gate ${stateName}: unblocked pair can like, comment and follow (control)`, async () => {
+    await seedGate(state);
+    await clearFollows();
+    const fdb = db(ME);
+    await assertSucceeds(likeCreate(fdb));
+    await assertSucceeds(commentCreate(fdb));
+    await assertSucceeds(followCreate(fdb, ME, OTHER));
+    await assertSucceeds(followCreate(db(OTHER), OTHER, ME));
+  });
+
+  for (const [owner, blocked] of [[ME, OTHER], [OTHER, ME]]) {
+    test(`gate ${stateName}: block ${owner}_${blocked} denies like, comment and follow creates`, async () => {
+      await seedGate(state);
+      await clearFollows();
+      await seedBlock(owner, blocked);
+      const meDb = db(ME);
+      await assertFails(likeCreate(meDb));
+      await assertFails(commentCreate(meDb));
+      await assertFails(followCreate(meDb, ME, OTHER));
+      await assertFails(followCreate(db(OTHER), OTHER, ME));
+    });
+  }
+}
