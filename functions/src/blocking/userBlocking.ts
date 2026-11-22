@@ -23,6 +23,11 @@ import {
   readBlockingActivationState,
 } from "./blockingActivationGate";
 import {
+  directReader,
+  judgeHistoricalProtection,
+  transactionReader,
+} from "./historicalProtection";
+import {
   USER_BLOCKS_COLLECTION,
   USER_RELATIONSHIP_GUARD_SCHEMA_VERSION,
   USER_RELATIONSHIP_GUARDS_COLLECTION,
@@ -37,14 +42,6 @@ const ACTIVE_DISPUTE_STATUSES = new Set([
   "pending",
   "escalated",
   "disputed",
-]);
-const SETTLED_PAYOUT_STATUSES = new Set([
-  "",
-  "not_eligible",
-  "released",
-  "paid",
-  "completed",
-  "cancelled",
 ]);
 const SETTLED_PAYMENT_STATUSES = new Set([
   "",
@@ -102,11 +99,13 @@ function disputeIsActive(booking: CanonicalBookingDocumentV3): boolean {
   return ACTIVE_DISPUTE_STATUSES.has(normalized(booking.dispute.status).toLowerCase());
 }
 
+/**
+ * Customer-side money only. A pending Pettxo->provider payout
+ * (booking.payout.status) never protects a pair (Phase 3B-4 D4).
+ */
 function financialObligationIsUnresolved(booking: CanonicalBookingDocumentV3): boolean {
-  const payoutStatus = normalized(booking.payout.status).toLowerCase();
   const paymentStatus = normalized(booking.payment.status).toLowerCase();
-  return !SETTLED_PAYOUT_STATUSES.has(payoutStatus) ||
-    !SETTLED_PAYMENT_STATUSES.has(paymentStatus);
+  return !SETTLED_PAYMENT_STATUSES.has(paymentStatus);
 }
 
 export function classifyRelationshipProtectionV1(params: {
@@ -288,6 +287,14 @@ async function loadPairBookings(params: {
   return [...byId.values()];
 }
 
+function historicalProtectionError(reason: string): never {
+  throw new HttpsError(
+    "failed-precondition",
+    "A historical booking or financial obligation must be reconciled before these users can be blocked.",
+    {code: "HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED", reason},
+  );
+}
+
 function protectedBookingError(bookingId: string, reason: string): never {
   throw new HttpsError(
     "failed-precondition",
@@ -364,14 +371,6 @@ export async function blockUserDataV1(params: {
     if (!targetSnapshot.exists) {
       throw new HttpsError("not-found", "User not found.", {code: "TARGET_USER_NOT_FOUND"});
     }
-    if (guardSnapshot.data()?.historicalProtectionBlocked === true) {
-      throw new HttpsError(
-        "failed-precondition",
-        "A historical booking or financial obligation must be reconciled before these users can be blocked.",
-        {code: "HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED"},
-      );
-    }
-
     const bookingDocs = await loadPairBookings({
       firestore: params.firestore,
       transaction,
@@ -410,6 +409,17 @@ export async function blockUserDataV1(params: {
         bookingId: accepted.bookingId,
         booking: accepted.booking,
       });
+    }
+    // D2: a historical mark protects only while something live still does.
+    const historical = await judgeHistoricalProtection({
+      firestore: params.firestore,
+      reader: transactionReader(transaction),
+      pairKey: pair.pairKey,
+      guardData: guardSnapshot.data(),
+      liveBookingIds: bookingDocs.map((doc) => doc.id),
+    });
+    if (historical.marked && historical.stillProtected) {
+      historicalProtectionError(historical.reason);
     }
 
     const cancelledBookingIds: string[] = [];
@@ -478,6 +488,12 @@ export async function blockUserDataV1(params: {
       relationshipVersion: FieldValue.increment(1),
       blockedAt: guardSnapshot.data()?.blockedAt ?? FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
+      // historicalProtectionReasons is left untouched as history.
+      ...(historical.marked ? {
+        historicalProtectionBlocked: false,
+        historicalProtectionClearedAt: FieldValue.serverTimestamp(),
+        historicalProtectionClearedReason: "LIVE_OBLIGATION_ENDED",
+      } : {}),
     }, {merge: true});
     return {
       success: true,
@@ -569,17 +585,6 @@ export async function getUserRelationshipStateDataV1(params: {
       acceptedUnpaidBookingCount: 0,
     };
   }
-  if (guardSnapshot.data()?.historicalProtectionBlocked === true) {
-    return {
-      pairKey: pair.pairKey,
-      relationshipBlocked: guardSnapshot.data()?.blocked === true ||
-        ownBlockSnapshot.exists || oppositeBlockSnapshot.exists,
-      blockedByCaller: ownBlockSnapshot.exists,
-      canBlock: false,
-      reasonCode: "HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED",
-      acceptedUnpaidBookingCount: 0,
-    };
-  }
   const docs = new Map([...aToB.docs, ...bToA.docs].map((doc) => [doc.id, doc]));
   if (docs.size > MAX_PAIR_BOOKINGS) {
     return {
@@ -625,6 +630,19 @@ export async function getUserRelationshipStateDataV1(params: {
       return !attempts.empty || !orderMappings.empty || !qrMappings.empty;
     }));
     if (evidence.some(Boolean)) protectedReason = "PAYMENT_RECONCILIATION_REQUIRED";
+  }
+  if (!protectedReason) {
+    // D2, read-only: the same judgement blockUserDataV1 makes.
+    const historical = await judgeHistoricalProtection({
+      firestore: params.firestore,
+      reader: directReader,
+      pairKey: pair.pairKey,
+      guardData: guardSnapshot.data(),
+      liveBookingIds: [...docs.keys()],
+    });
+    if (historical.marked && historical.stillProtected) {
+      protectedReason = "HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED";
+    }
   }
   return {
     pairKey: pair.pairKey,

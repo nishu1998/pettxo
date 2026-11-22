@@ -57,6 +57,37 @@ test("completed final booking is released only after deadlines and finance settl
   assert.equal(afterDeadline.kind, "unprotected");
 });
 
+test("D4: a pending provider payout no longer protects; customer refunds still do", () => {
+  const afterDeadlines = new Date("2026-07-25T10:00:00.000Z");
+  const settledBooking = () => {
+    const booking = buildCompletedFinalBookingFixture();
+    booking.lifecycle.reviewWindowEndsAt = new Date("2026-07-24T10:00:00.000Z");
+    booking.lifecycle.disputeDeadlineAt = new Date("2026-07-24T10:00:00.000Z");
+    booking.dispute.status = "resolved";
+    booking.payment.status = "paid";
+    return booking;
+  };
+  for (const payoutStatus of ["pending", "eligible", "held", "processing", "failed", "scheduled"]) {
+    const booking = settledBooking();
+    booking.payout.status = payoutStatus;
+    assert.deepEqual(
+      classifyRelationshipProtectionV1({booking, authoritativeNow: afterDeadlines}),
+      {kind: "unprotected", reason: "NO_PROTECTED_OBLIGATION"},
+      `payout.status ${payoutStatus}`,
+    );
+  }
+  for (const paymentStatus of ["refund_required", "refund_pending", "captured"]) {
+    const booking = settledBooking();
+    booking.payout.status = "released";
+    booking.payment.status = paymentStatus;
+    assert.deepEqual(
+      classifyRelationshipProtectionV1({booking, authoritativeNow: afterDeadlines}),
+      {kind: "protected", reason: "FINANCIAL_OBLIGATION_UNRESOLVED"},
+      `payment.status ${paymentStatus}`,
+    );
+  }
+});
+
 test("in-progress, dispute-window, active-dispute, and multi-day bookings stay protected", () => {
   const now = new Date("2026-07-23T10:00:00.000Z");
   const inProgress = buildConfirmedSlotBookingFixture();
@@ -154,4 +185,36 @@ test("activation documents must agree on migration run, audit, and rollout versi
     "BLOCKING_ACTIVATION_NOT_AUDITED");
   documents.get("userBlockingActivationAudit/audit-1").rolloutVersion = 2;
   assert.equal((await readBlockingActivationState(firestore)).enabled, true);
+});
+
+test("D4/D2: only PROVIDER_PAYOUT obligations stop protecting; unknown types fail closed", async () => {
+  const {liveCustomerObligationReason} = require("../lib/blocking/historicalProtection.js");
+  const fakeFirestore = {
+    collection: (name) => ({
+      doc: (id) => ({path: `${name}/${id}`}),
+      where: () => ({limit: () => ({collection: name})}),
+    }),
+  };
+  async function reasonFor(obligation) {
+    return liveCustomerObligationReason({
+      firestore: fakeFirestore,
+      bookingId: "booking-1",
+      reader: {
+        getDoc: async () => ({exists: false, data: () => undefined}),
+        getQuery: async () => ({docs: obligation ? [{data: () => obligation}] : []}),
+      },
+    });
+  }
+  assert.equal(await reasonFor(null), "");
+  assert.equal(await reasonFor({obligationType: "PROVIDER_PAYOUT", status: "HELD"}), "");
+  assert.equal(await reasonFor({obligationType: "provider_payout", status: "READY"}), "");
+  for (const obligation of [
+    {obligationType: "CUSTOMER_REFUND", status: "HELD"},
+    {status: "PROCESSING"},
+    {obligationType: "SOMETHING_NEW", status: "READY"},
+    {type: "CUSTOMER_REFUND", status: "NEEDS_ATTENTION"},
+  ]) {
+    assert.equal(await reasonFor(obligation), "MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED", JSON.stringify(obligation));
+  }
+  assert.equal(await reasonFor({obligationType: "CUSTOMER_REFUND", status: "COMPLETED"}), "");
 });

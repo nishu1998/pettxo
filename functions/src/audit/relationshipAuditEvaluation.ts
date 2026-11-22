@@ -337,7 +337,6 @@ function participant(data: Record<string, unknown>, primary: string, legacy: str
  */
 
 const ACTIVE_DISPUTE_STATUSES = new Set(["open", "under_review", "pending", "escalated", "disputed"]);
-const SETTLED_PAYOUT_STATUSES = new Set(["", "not_eligible", "released", "paid", "completed", "cancelled"]);
 const SETTLED_PAYMENT_STATUSES = new Set(["", "not_started", "confirmed", "paid", "refunded", "cancelled"]);
 
 export type AuditRelationshipProtection =
@@ -370,11 +369,10 @@ function disputeIsActive(booking: CanonicalBookingDocumentV3): boolean {
   return ACTIVE_DISPUTE_STATUSES.has(normalized(booking.dispute.status).toLowerCase());
 }
 
+// Parity with userBlocking.ts: provider payouts never protect (D4).
 function financialObligationIsUnresolved(booking: CanonicalBookingDocumentV3): boolean {
-  const payoutStatus = normalized(booking.payout.status).toLowerCase();
   const paymentStatus = normalized(booking.payment.status).toLowerCase();
-  return !SETTLED_PAYOUT_STATUSES.has(payoutStatus) ||
-    !SETTLED_PAYMENT_STATUSES.has(paymentStatus);
+  return !SETTLED_PAYMENT_STATUSES.has(paymentStatus);
 }
 
 export function classifyRelationshipProtectionForAudit(params: {

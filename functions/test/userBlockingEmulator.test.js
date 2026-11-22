@@ -7,8 +7,12 @@ const {getFirestore} = require("firebase-admin/firestore");
 
 const {
   blockUserDataV1,
+  getUserRelationshipStateDataV1,
   unblockUserDataV1,
 } = require("../lib/blocking/userBlocking.js");
+const {
+  relationshipActivationDecisionId,
+} = require("../lib/blocking/relationshipActivationDecisions.js");
 const {
   canonicalUserPair,
   openRelationshipGuardMutation,
@@ -317,24 +321,233 @@ test("paid protected booking prevents either participant from blocking", {
   });
 });
 
-test("historical migration protection blocks both booking directions until reconciled", {
-  skip: !enabled,
-}, async () => {
-  await fixture(async ({firestore, ids}) => {
-    const pair = canonicalUserPair(ids.a, ids.b);
-    await firestore.collection("userRelationshipGuards").doc(pair.pairKey).set({
-      pairKey: pair.pairKey,
-      uidA: pair.uidA,
-      uidB: pair.uidB,
-      historicalProtectionBlocked: true,
-      historicalProtectionReasons: ["MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED"],
+// --- D2: historical marks are re-judged from live state ----------------------
+
+const HISTORICAL_CODE = "HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED";
+
+async function seedHistoricalMark(firestore, ids, {reasons, markers = []}) {
+  const pair = canonicalUserPair(ids.a, ids.b);
+  await firestore.collection("userRelationshipGuards").doc(pair.pairKey).set({
+    pairKey: pair.pairKey,
+    uidA: pair.uidA,
+    uidB: pair.uidB,
+    historicalProtectionBlocked: true,
+    historicalProtectionReasons: reasons,
+  });
+  for (const marker of markers) {
+    await firestore.collection("relationshipMigrationEvidence")
+      .doc(`v1_${marker.phase}_${marker.sourceId}`).set({
+        schemaVersion: 1,
+        migrationVersion: 1,
+        runId: "historical-run",
+        pairKey: pair.pairKey,
+        protected: true,
+        blocked: false,
+        anomaly: marker.reasonCode === "INVALID_OR_LEGACY_BOOKING",
+        sourceUpdateTimeMillis: 1700000000000,
+        ...marker,
+      });
+  }
+  return pair;
+}
+
+async function seedDecision(firestore, {phase, sourceId, reasonCode, decision, updateTimeMillis}) {
+  const recordKey = relationshipActivationDecisionId(phase, sourceId);
+  await firestore.collection("relationshipActivationDecisions").doc(recordKey).set({
+    schemaVersion: 1,
+    phase,
+    sourceId,
+    recordKey,
+    pairKey: "",
+    expectedReasonCode: reasonCode,
+    expectedSourceUpdateTimeMillis: updateTimeMillis,
+    decision,
+    decidedByUid: "owner-uid",
+    decidedByEmail: "",
+    note: "test",
+    decisionSetHash: "",
+    decidedAt: new Date(),
+  });
+}
+
+/** blockUserDataV1 and getUserRelationshipStateDataV1 must agree. */
+async function expectBlockOutcome(firestore, actorUid, targetUid, pair, expected) {
+  const state = await getUserRelationshipStateDataV1({firestore, actorUid, targetUid});
+  if (expected.allowed) {
+    assert.equal(state.canBlock, true, `state reason ${state.reasonCode}`);
+    assert.equal(state.reasonCode, "");
+    const result = await blockUserDataV1({firestore, actorUid, targetUid});
+    assert.equal(result.relationshipBlocked, true);
+    const guard = (await firestore.collection("userRelationshipGuards").doc(pair.pairKey).get()).data();
+    assert.equal(guard.historicalProtectionBlocked, false);
+    assert.equal(guard.historicalProtectionClearedReason, "LIVE_OBLIGATION_ENDED");
+    assert.ok(guard.historicalProtectionClearedAt);
+    assert.deepEqual(guard.historicalProtectionReasons, expected.reasons, "reasons kept as history");
+    return;
+  }
+  assert.equal(state.canBlock, false);
+  assert.equal(state.reasonCode, HISTORICAL_CODE);
+  await assert.rejects(blockUserDataV1({firestore, actorUid, targetUid}), (error) => {
+    assert.equal(error.details?.code, HISTORICAL_CODE);
+    if (expected.reason) assert.equal(error.details?.reason, expected.reason);
+    return true;
+  });
+  assert.equal((await firestore.collection("userBlocks").doc(`${actorUid}_${targetUid}`).get()).exists, false);
+  const guard = (await firestore.collection("userRelationshipGuards").doc(pair.pairKey).get()).data();
+  assert.equal(guard.historicalProtectionBlocked, true, "refusal writes nothing");
+}
+
+function bothDirections(ids) {
+  return [[ids.a, ids.b], [ids.b, ids.a]];
+}
+
+const DIRECTIONS = ["a->b", "b->a"];
+
+for (const [index, label] of DIRECTIONS.entries()) {
+  test(`D2/D4 ${label}: a mark whose obligation is only a provider payout expires`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const reasons = ["MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED", "EXTERNAL_PAYOUT_UNRESOLVED"];
+      const bookingId = `hist-payout-${ids.a}`;
+      const pair = await seedHistoricalMark(firestore, ids, {
+        reasons,
+        markers: [{phase: "bookings", sourceId: bookingId, reasonCode: "MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED"}],
+      });
+      await Promise.all([
+        firestore.collection("manualSettlementObligations").doc(`provider_payout_${bookingId}`).set({
+          bookingId, obligationType: "PROVIDER_PAYOUT", status: "HELD",
+        }),
+        firestore.collection("payoutReadiness").doc(bookingId).set({bookingId, status: "HELD"}),
+      ]);
+      const [actor, target] = bothDirections(ids)[index];
+      await expectBlockOutcome(firestore, actor, target, pair, {allowed: true, reasons});
     });
-    for (const [actorUid, targetUid] of [[ids.a, ids.b], [ids.b, ids.a]]) {
-      await assert.rejects(
-        blockUserDataV1({firestore, actorUid, targetUid}),
-        errorCode("HISTORICAL_RELATIONSHIP_RECONCILIATION_REQUIRED"),
-      );
-    }
+  });
+
+  test(`D2 ${label}: a live customer-refund obligation keeps the mark`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const bookingId = `hist-refund-ob-${ids.a}`;
+      const pair = await seedHistoricalMark(firestore, ids, {
+        reasons: ["MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED"],
+        markers: [{phase: "bookings", sourceId: bookingId, reasonCode: "MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED"}],
+      });
+      await firestore.collection("manualSettlementObligations").doc(`customer_refund_${bookingId}`).set({
+        bookingId, obligationType: "CUSTOMER_REFUND", status: "HELD",
+      });
+      const [actor, target] = bothDirections(ids)[index];
+      await expectBlockOutcome(firestore, actor, target, pair, {
+        allowed: false, reason: "MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED",
+      });
+    });
+  });
+
+  test(`D2 ${label}: a pending refunds/{id} keeps the mark, and its completion releases it`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const bookingId = `hist-refund-${ids.a}`;
+      const reasons = ["EXTERNAL_REFUND_UNRESOLVED"];
+      const pair = await seedHistoricalMark(firestore, ids, {
+        reasons,
+        markers: [{phase: "bookings", sourceId: bookingId, reasonCode: "EXTERNAL_REFUND_UNRESOLVED"}],
+      });
+      await firestore.collection("refunds").doc(bookingId).set({bookingId, status: "PENDING"});
+      const [actor, target] = bothDirections(ids)[index];
+      await expectBlockOutcome(firestore, actor, target, pair, {
+        allowed: false, reason: "EXTERNAL_REFUND_UNRESOLVED",
+      });
+      await firestore.collection("refunds").doc(bookingId).set({bookingId, status: "PROCESSED"});
+      await expectBlockOutcome(firestore, actor, target, pair, {allowed: true, reasons});
+    });
+  });
+
+  test(`D2 ${label}: a live dispute record on a pair booking keeps the mark`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const bookingId = `hist-dispute-${ids.a}`;
+      const pair = await seedHistoricalMark(firestore, ids, {
+        reasons: ["EXTERNAL_DISPUTE_UNRESOLVED"],
+        markers: [{phase: "bookings", sourceId: bookingId, reasonCode: "EXTERNAL_DISPUTE_UNRESOLVED"}],
+      });
+      await firestore.collection("disputes").doc(bookingId).set({bookingId, status: "OPEN"});
+      const [actor, target] = bothDirections(ids)[index];
+      await expectBlockOutcome(firestore, actor, target, pair, {
+        allowed: false, reason: "EXTERNAL_DISPUTE_UNRESOLVED",
+      });
+    });
+  });
+
+  test(`D2/D3 ${label}: an unparsable record needs a matching NO_OBLIGATION decision`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const sourceId = `legacy-${ids.a}`;
+      const reasons = ["INVALID_OR_LEGACY_BOOKING"];
+      const pair = await seedHistoricalMark(firestore, ids, {
+        reasons,
+        markers: [{phase: "bookings", sourceId, reasonCode: "INVALID_OR_LEGACY_BOOKING"}],
+      });
+      const [actor, target] = bothDirections(ids)[index];
+      // No decision.
+      await expectBlockOutcome(firestore, actor, target, pair, {allowed: false, reason: "INVALID_OR_LEGACY_BOOKING"});
+      // Stale decision (record changed since the scan).
+      await seedDecision(firestore, {
+        phase: "bookings", sourceId, reasonCode: "INVALID_OR_LEGACY_BOOKING",
+        decision: "NO_OBLIGATION", updateTimeMillis: 1700000000001,
+      });
+      await expectBlockOutcome(firestore, actor, target, pair, {allowed: false, reason: "INVALID_OR_LEGACY_BOOKING"});
+      // PROTECT_PAIR keeps refusing.
+      await seedDecision(firestore, {
+        phase: "bookings", sourceId, reasonCode: "INVALID_OR_LEGACY_BOOKING",
+        decision: "PROTECT_PAIR", updateTimeMillis: 1700000000000,
+      });
+      await expectBlockOutcome(firestore, actor, target, pair, {allowed: false, reason: "INVALID_OR_LEGACY_BOOKING"});
+      // Matching NO_OBLIGATION releases.
+      await seedDecision(firestore, {
+        phase: "bookings", sourceId, reasonCode: "INVALID_OR_LEGACY_BOOKING",
+        decision: "NO_OBLIGATION", updateTimeMillis: 1700000000000,
+      });
+      await expectBlockOutcome(firestore, actor, target, pair, {allowed: true, reasons});
+    });
+  });
+
+  test(`D2 ${label}: fail closed without evidence or with an unknown reason`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const [actor, target] = bothDirections(ids)[index];
+      const missingEvidence = await seedHistoricalMark(firestore, ids, {reasons: ["INVALID_OR_LEGACY_BOOKING"]});
+      await expectBlockOutcome(firestore, actor, target, missingEvidence, {
+        allowed: false, reason: "INVALID_OR_LEGACY_BOOKING",
+      });
+      const unknown = await seedHistoricalMark(firestore, ids, {reasons: ["SOMETHING_NEW"]});
+      await expectBlockOutcome(firestore, actor, target, unknown, {allowed: false, reason: "SOMETHING_NEW"});
+      const empty = await seedHistoricalMark(firestore, ids, {reasons: []});
+      await expectBlockOutcome(firestore, actor, target, empty, {
+        allowed: false, reason: "HISTORICAL_REASON_UNKNOWN",
+      });
+    });
+  });
+
+  test(`D2 ${label}: a live protected booking still refuses through the live classifier`, {skip: !enabled}, async () => {
+    await fixture(async ({firestore, ids}) => {
+      const pair = await seedHistoricalMark(firestore, ids, {reasons: ["PROTECTED_STATE_CONFIRMED"]});
+      await firestore.collection("bookings").doc(`hist-live-${ids.a}`).set(confirmedBooking(ids));
+      const [actor, target] = bothDirections(ids)[index];
+      const state = await getUserRelationshipStateDataV1({firestore, actorUid: actor, targetUid: target});
+      assert.equal(state.canBlock, false);
+      assert.equal(state.reasonCode, "PROTECTED_STATE_CONFIRMED");
+      await assert.rejects(blockUserDataV1({firestore, actorUid: actor, targetUid: target}), (error) => {
+        assert.equal(error.details?.code, "PROTECTED_BOOKING_EXISTS");
+        assert.equal(error.details?.reason, "PROTECTED_STATE_CONFIRMED");
+        return true;
+      });
+      assert.equal((await firestore.collection("userRelationshipGuards").doc(pair.pairKey).get())
+        .data().historicalProtectionBlocked, true);
+    });
+  });
+}
+
+test("an unmarked pair does not read external obligation records", {skip: !enabled}, async () => {
+  await fixture(async ({firestore, ids}) => {
+    // A pending refund for a pair booking without a historical mark does not
+    // change today's behaviour: only the live booking classifier applies.
+    await firestore.collection("refunds").doc(`unmarked-${ids.a}`).set({status: "PENDING"});
+    const state = await getUserRelationshipStateDataV1({firestore, actorUid: ids.a, targetUid: ids.b});
+    assert.equal(state.canBlock, true);
+    await blockUserDataV1({firestore, actorUid: ids.a, targetUid: ids.b});
   });
 });
 

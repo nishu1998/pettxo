@@ -13,6 +13,7 @@ import {
   CANONICAL_QR_PAYMENT_MAPPINGS_COLLECTION,
 } from "../booking/application/paymentOrchestrationV3";
 import {assertValidCanonicalBookingDocumentV3} from "../booking/schema/bookingDocumentV3";
+import {directReader, liveCustomerObligationReason} from "./historicalProtection";
 import {
   USER_RELATIONSHIP_GUARDS_COLLECTION,
   canonicalUserPair,
@@ -63,31 +64,17 @@ function status(data: DocumentData | undefined): string {
   return typeof raw === "string" ? raw.trim().toUpperCase() : "";
 }
 
+/**
+ * Customer-side obligations outside the booking document. Provider payouts
+ * (payoutReadiness, PROVIDER_PAYOUT obligations) no longer protect (D4);
+ * obligations of unknown type still do (fail closed). The
+ * runtime uses the same helper for D2 re-judgement.
+ */
 async function externalFinancialProtectionReason(
   firestore: Firestore,
   bookingId: string,
 ): Promise<string> {
-  const [refund, payoutReadiness, dispute, reconciliation, obligations] = await Promise.all([
-    firestore.collection("refunds").doc(bookingId).get(),
-    firestore.collection("payoutReadiness").doc(bookingId).get(),
-    firestore.collection("disputes").doc(bookingId).get(),
-    firestore.collection("bookingFinancialReconciliation").doc(bookingId).get(),
-    firestore.collection("manualSettlementObligations")
-      .where("bookingId", "==", bookingId).limit(10).get(),
-  ]);
-  if (dispute.exists && !new Set(["RESOLVED", "CLOSED", "REJECTED"])
-    .has(status(dispute.data()))) return "EXTERNAL_DISPUTE_UNRESOLVED";
-  if (refund.exists && !new Set(["PAID", "PROCESSED", "REFUNDED", "COMPLETED", "CANCELLED"])
-    .has(status(refund.data()))) return "EXTERNAL_REFUND_UNRESOLVED";
-  if (payoutReadiness.exists && !new Set([
-    "PAID", "RELEASED", "COMPLETED", "CANCELLED", "NOT_ELIGIBLE",
-  ]).has(status(payoutReadiness.data()))) return "EXTERNAL_PAYOUT_UNRESOLVED";
-  if (reconciliation.exists && !new Set(["RESOLVED", "CLEAN", "COMPLETED"])
-    .has(status(reconciliation.data()))) return "PAYMENT_RECONCILIATION_REQUIRED";
-  if (obligations.docs.some((doc) => !new Set([
-    "COMPLETED", "PAID", "CANCELLED", "RESOLVED",
-  ]).has(status(doc.data())))) return "MANUAL_SETTLEMENT_OBLIGATION_UNRESOLVED";
-  return "";
+  return liveCustomerObligationReason({firestore, reader: directReader, bookingId});
 }
 
 async function bookingEvidence(
