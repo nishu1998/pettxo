@@ -1528,9 +1528,10 @@ function writeNotifications(
     data: Record<string, string>;
   }>,
   actorId: string,
+  firestore: FirebaseFirestore.Firestore = db,
 ): void {
   for (const notification of notifications) {
-    const notificationRef = db.collection("notifications").doc(notification.idempotencyKey);
+    const notificationRef = firestore.collection("notifications").doc(notification.idempotencyKey);
     transaction.set(notificationRef, buildStoredBookingNotificationDocument({
       notification,
       actorId,
@@ -1598,7 +1599,9 @@ async function applySchedulerLifecycleMutation(params: {
   if (params.lifecycleResult.code !== "UPDATED") {
     return false;
   }
-  await db.runTransaction(async (transaction) => {
+  // The booking's own Firestore instance (the default app in production).
+  const firestore = params.bookingRef.firestore;
+  await firestore.runTransaction(async (transaction) => {
     transaction.set(params.bookingRef, params.lifecycleResult.booking, {merge: false});
     for (const event of params.lifecycleResult.events) {
       transaction.set(
@@ -1607,7 +1610,7 @@ async function applySchedulerLifecycleMutation(params: {
         {merge: false},
       );
     }
-    writeNotifications(transaction, params.lifecycleResult.notifications, "system");
+    writeNotifications(transaction, params.lifecycleResult.notifications, "system", firestore);
   });
   return true;
 }
@@ -4638,6 +4641,118 @@ export const sendProviderRequestRemindersV3 = onSchedule(
   },
 );
 
+/**
+ * One pass of the payment-expiry scheduler: reconcile payment attempts, then
+ * expire unpaid ACCEPTED_AWAITING_PAYMENT bookings past their pay deadline.
+ * expireAwaitingPaymentsV3 calls this with the default Firestore; tests call
+ * it with an isolated emulator project.
+ */
+export async function runPaymentExpirySweepV3(params: {
+  firestore: FirebaseFirestore.Firestore;
+  keyId: string;
+  keySecret: string;
+  authoritativeNow: Date;
+}): Promise<{
+  processed: number;
+  scanned: number;
+  reconciledAttempts: number;
+  skippedForReconciliation: number;
+  expiredAttempts: number;
+}> {
+  const {authoritativeNow, keyId, keySecret} = params;
+  const reconciledAttempts = await reconcilePaymentAttemptsV3({
+    firestore: params.firestore,
+    keyId,
+    keySecret,
+    authoritativeNow,
+    limit: 100,
+  });
+
+  const dueSnapshot = await params.firestore
+    .collection("bookings")
+    .where("stateQueryValue", "==", "ACCEPTED_AWAITING_PAYMENT")
+    .where("payDeadlineAt", "<=", Timestamp.fromDate(authoritativeNow))
+    .limit(100)
+    .get();
+
+  let processed = 0;
+  let skippedForReconciliation = 0;
+  let expiredAttempts = 0;
+  for (const doc of dueSnapshot.docs) {
+    const booking = ensureCanonicalBooking(doc.data());
+    const attemptsSnapshot = await doc.ref.collection("paymentAttempts").limit(20).get();
+    const activeAttempts = attemptsSnapshot.docs
+      .map((snapshot) => ({ref: snapshot.ref, data: asRecord(snapshot.data())}))
+      .filter(({data}) => {
+        const state = asString(data.state).toUpperCase();
+        return state.length > 0 &&
+          state !== "REFUNDED" &&
+          state !== "FAILED" &&
+          state !== "EXPIRED";
+      });
+
+    if (activeAttempts.some(({data}) => isPaymentAttemptUncertainOrCaptured(asString(data.state).toUpperCase()) || asString(data.razorpayPaymentId).length > 0)) {
+      skippedForReconciliation += 1;
+      continue;
+    }
+
+    const lifecycleResult = expireAwaitingPaymentBookingApplicationV3({
+      bookingId: doc.id,
+      booking,
+      authoritativeNow,
+      existingProviderStats: emptyProviderStatsV3(),
+      existingParentStats: emptyParentStatsV3(),
+    });
+    if (!lifecycleResult.ok) continue;
+
+    const changed = await applySchedulerLifecycleMutation({
+      bookingRef: doc.ref,
+      lifecycleResult,
+    });
+    if (!changed) continue;
+
+    if (activeAttempts.length > 0) {
+      const batch = params.firestore.batch();
+      for (const attempt of activeAttempts) {
+        const expiredAttemptWrite: Record<string, unknown> = {
+          state: "EXPIRED",
+          nextReconciliationAt: null,
+          terminalFailureAt: FieldValue.serverTimestamp(),
+          lastReconciledAt: FieldValue.serverTimestamp(),
+          lastReconciliationCode: "PAYMENT_WINDOW_EXPIRED",
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+        if (asString(attempt.data.paymentMethod) === "qr") {
+          expiredAttemptWrite.qrState = "EXPIRED";
+          expiredAttemptWrite.qrClosedAt = FieldValue.serverTimestamp();
+          expiredAttemptWrite.qrCloseReason = "PAYMENT_WINDOW_EXPIRED";
+        }
+        batch.set(attempt.ref, expiredAttemptWrite, {merge: true});
+        expiredAttempts += 1;
+      }
+      await batch.commit();
+    }
+    await closeBookingQrAttemptsBestEffort({
+      bookingId: doc.id,
+      bookingRef: doc.ref,
+      keyId,
+      keySecret,
+      authoritativeNow,
+      reason: "EXPIRED",
+      localCloseReason: "PAYMENT_WINDOW_EXPIRED",
+    });
+    processed += 1;
+  }
+
+  return {
+    processed,
+    scanned: dueSnapshot.size,
+    reconciledAttempts,
+    skippedForReconciliation,
+    expiredAttempts,
+  };
+}
+
 export const expireAwaitingPaymentsV3 = onSchedule(
   {
     schedule: "every 5 minutes",
@@ -4646,98 +4761,18 @@ export const expireAwaitingPaymentsV3 = onSchedule(
   },
   async () => {
     const authoritativeNow = new Date();
-    const keyId = asString(RAZORPAY_KEY_ID.value());
-    const keySecret = asString(RAZORPAY_KEY_SECRET.value());
-    const reconciledAttempts = await reconcilePaymentAttemptsV3({
+    const result = await runPaymentExpirySweepV3({
       firestore: db,
-      keyId,
-      keySecret,
+      keyId: asString(RAZORPAY_KEY_ID.value()),
+      keySecret: asString(RAZORPAY_KEY_SECRET.value()),
       authoritativeNow,
-      limit: 100,
     });
-
-    const dueSnapshot = await db
-      .collection("bookings")
-      .where("stateQueryValue", "==", "ACCEPTED_AWAITING_PAYMENT")
-      .where("payDeadlineAt", "<=", Timestamp.fromDate(authoritativeNow))
-      .limit(100)
-      .get();
-
-    let processed = 0;
-    let skippedForReconciliation = 0;
-    let expiredAttempts = 0;
-    for (const doc of dueSnapshot.docs) {
-      const booking = ensureCanonicalBooking(doc.data());
-      const attemptsSnapshot = await doc.ref.collection("paymentAttempts").limit(20).get();
-      const activeAttempts = attemptsSnapshot.docs
-        .map((snapshot) => ({ref: snapshot.ref, data: asRecord(snapshot.data())}))
-        .filter(({data}) => {
-          const state = asString(data.state).toUpperCase();
-          return state.length > 0 &&
-            state !== "REFUNDED" &&
-            state !== "FAILED" &&
-            state !== "EXPIRED";
-        });
-
-      if (activeAttempts.some(({data}) => isPaymentAttemptUncertainOrCaptured(asString(data.state).toUpperCase()) || asString(data.razorpayPaymentId).length > 0)) {
-        skippedForReconciliation += 1;
-        continue;
-      }
-
-      const lifecycleResult = expireAwaitingPaymentBookingApplicationV3({
-        bookingId: doc.id,
-        booking,
-        authoritativeNow,
-        existingProviderStats: emptyProviderStatsV3(),
-        existingParentStats: emptyParentStatsV3(),
-      });
-      if (!lifecycleResult.ok) continue;
-
-      const changed = await applySchedulerLifecycleMutation({
-        bookingRef: doc.ref,
-        lifecycleResult,
-      });
-      if (!changed) continue;
-
-      if (activeAttempts.length > 0) {
-        const batch = db.batch();
-        for (const attempt of activeAttempts) {
-          const expiredAttemptWrite: Record<string, unknown> = {
-            state: "EXPIRED",
-            nextReconciliationAt: null,
-            terminalFailureAt: FieldValue.serverTimestamp(),
-            lastReconciledAt: FieldValue.serverTimestamp(),
-            lastReconciliationCode: "PAYMENT_WINDOW_EXPIRED",
-            updatedAt: FieldValue.serverTimestamp(),
-          };
-          if (asString(attempt.data.paymentMethod) === "qr") {
-            expiredAttemptWrite.qrState = "EXPIRED";
-            expiredAttemptWrite.qrClosedAt = FieldValue.serverTimestamp();
-            expiredAttemptWrite.qrCloseReason = "PAYMENT_WINDOW_EXPIRED";
-          }
-          batch.set(attempt.ref, expiredAttemptWrite, {merge: true});
-          expiredAttempts += 1;
-        }
-        await batch.commit();
-      }
-      await closeBookingQrAttemptsBestEffort({
-        bookingId: doc.id,
-        bookingRef: doc.ref,
-        keyId,
-        keySecret,
-        authoritativeNow,
-        reason: "EXPIRED",
-        localCloseReason: "PAYMENT_WINDOW_EXPIRED",
-      });
-      processed += 1;
-    }
-
     console.info("bookingV3.scheduler.paymentExpiry", {
-      processed,
-      scanned: dueSnapshot.size,
-      reconciledAttempts,
-      skippedForReconciliation,
-      expiredAttempts,
+      processed: result.processed,
+      scanned: result.scanned,
+      reconciledAttempts: result.reconciledAttempts,
+      skippedForReconciliation: result.skippedForReconciliation,
+      expiredAttempts: result.expiredAttempts,
       authoritativeAt: authoritativeNow.toISOString(),
     });
   },

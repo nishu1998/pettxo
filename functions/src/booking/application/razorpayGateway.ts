@@ -11,6 +11,8 @@ export type RazorpayPaymentRecord = {
   currency: string;
   createdAt: Date | null;
   capturedAt: Date | null;
+  /** Razorpay's boolean "captured" flag; null when the API did not send it. */
+  captured?: boolean | null;
   receipt: string;
   notes: Record<string, string>;
 };
@@ -218,6 +220,7 @@ function paymentRecordFromApi(data: Record<string, unknown>): RazorpayPaymentRec
     currency: asString(data.currency) || "INR",
     createdAt: asNullableDateFromEpochSeconds(data.created_at),
     capturedAt: asNullableDateFromEpochSeconds(data.captured_at),
+    captured: typeof data.captured === "boolean" ? data.captured : null,
     receipt: asString(data.receipt),
     notes: asStringRecord(data.notes),
   };

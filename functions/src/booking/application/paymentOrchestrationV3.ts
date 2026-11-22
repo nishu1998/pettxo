@@ -3074,6 +3074,37 @@ export function reconciliationDue(
   return nextReconciliationAt.getTime() <= now.getTime();
 }
 
+export type DefinitiveNonCaptureCode = "PAYMENT_FAILED" | "PAYMENT_REFUNDED_UNCAPTURED";
+
+/**
+ * Returns a code only when Razorpay definitively reports the payment can never
+ * be captured: status "failed", or "refunded" with captured === false (an
+ * authorisation that was released). Network errors, "authorized", "created",
+ * "captured", unknown statuses and a missing captured flag return null.
+ */
+export async function definitiveNonCaptureOutcome(params: {
+  fetchPayment: typeof fetchRazorpayPaymentV3;
+  keyId: string;
+  keySecret: string;
+  paymentId: string;
+}): Promise<DefinitiveNonCaptureCode | null> {
+  let payment;
+  try {
+    payment = await params.fetchPayment({
+      keyId: params.keyId,
+      keySecret: params.keySecret,
+      paymentId: params.paymentId,
+    });
+  } catch {
+    return null;
+  }
+  if (payment.id && payment.id !== params.paymentId) return null;
+  const status = asString(payment.status).toLowerCase();
+  if (status === "failed") return "PAYMENT_FAILED";
+  if (status === "refunded" && payment.captured === false) return "PAYMENT_REFUNDED_UNCAPTURED";
+  return null;
+}
+
 function isNotCapturedError(error: unknown): boolean {
   return error instanceof HttpsError &&
     (error.code === "failed-precondition" || error.code === "not-found") &&
@@ -3256,6 +3287,33 @@ export async function reconcilePaymentAttemptsV3(params: {
         }, {merge: true});
         processed += 1;
       } catch (error) {
+        if (isNotCapturedError(error)) {
+          // R1 (Phase 3B-4e): a payment Razorpay reports as definitively not
+          // capturable ends the attempt, so the booking can expire normally.
+          // Only a confirmed "failed", or "refunded" with captured === false,
+          // counts; any fetch error or other status stays retryable.
+          const outcome = await definitiveNonCaptureOutcome({
+            fetchPayment,
+            keyId: params.keyId,
+            keySecret: params.keySecret,
+            paymentId: attempt.razorpayPaymentId,
+          });
+          if (outcome) {
+            await doc.ref.set({
+              state: "FAILED",
+              failedAt: FieldValue.serverTimestamp(),
+              terminalFailureAt: FieldValue.serverTimestamp(),
+              nextReconciliationAt: null,
+              lastReconciledAt: FieldValue.serverTimestamp(),
+              reconciliationAttemptCount: FieldValue.increment(1),
+              lastReconciliationCode: outcome,
+              failureCode: outcome,
+              updatedAt: FieldValue.serverTimestamp(),
+            }, {merge: true});
+            processed += 1;
+            continue;
+          }
+        }
         if (isNotCapturedError(error) || isTransientGatewayError(error)) {
           await doc.ref.set({
             state: "CAPTURED_REQUIRES_RECONCILIATION",
