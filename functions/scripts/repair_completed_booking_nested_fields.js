@@ -1,11 +1,24 @@
-const admin = require("firebase-admin");
+#!/usr/bin/env node
+"use strict";
 
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
+/**
+ * Moves literal dotted keys (for example a top-level field named
+ * "lifecycle.completedAt") on one booking into the nested path they were
+ * meant to be.
+ *
+ * Usage (emulator only, or a non-production project via --allow-project):
+ *   FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 \
+ *     node scripts/repair_completed_booking_nested_fields.js <bookingId> \
+ *     --project=demo-<name> [--apply]
+ *
+ * Default is a dry run that prints the planned field moves. --apply writes.
+ * The target guard runs before firebase-admin is loaded and can never target
+ * pettexo-d9409.
+ */
 
-const db = admin.firestore();
-const {FieldValue, FieldPath} = admin.firestore;
+const {assertAppTarget, assertSafeScriptTarget} = require("./lib/targetGuard");
+
+const SCRIPT_NAME = "repair_completed_booking_nested_fields";
 
 const DOTTED_TO_NESTED_PATHS = [
   ["lifecycle.completedAt", "lifecycle.completedAt"],
@@ -29,39 +42,94 @@ function getNestedValue(source, path) {
   }, source);
 }
 
-async function main() {
-  const bookingId = (process.argv[2] || "").trim();
-  if (!bookingId) {
-    console.error("Usage: node scripts/repair_completed_booking_nested_fields.js <bookingId>");
-    process.exit(1);
+function parseArgs(argv) {
+  const positional = argv.filter((arg) => !arg.startsWith("--"));
+  const flags = argv.filter((arg) => arg.startsWith("--"));
+  const known = (flag) => flag === "--apply" || flag === "--dry-run" ||
+    flag.startsWith("--project=") || flag.startsWith("--allow-project=");
+  const unknown = flags.filter((flag) => !known(flag));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown option(s): ${unknown.join(", ")}`);
   }
-
-  const docRef = db.collection("bookings").doc(bookingId);
-  const snapshot = await docRef.get();
-  if (!snapshot.exists) {
-    console.error(`Booking not found: ${bookingId}`);
-    process.exit(1);
+  const apply = flags.includes("--apply");
+  if (apply && flags.includes("--dry-run")) {
+    throw new Error("--apply and --dry-run cannot be combined.");
   }
+  return {bookingId: (positional[0] || "").trim(), apply};
+}
 
-  const data = snapshot.data() || {};
-  const updates = [];
-  let appliedCount = 0;
-  let deletedLiteralCount = 0;
-
+function planFieldMoves(data) {
+  const moves = [];
   for (const [literalKey, nestedPath] of DOTTED_TO_NESTED_PATHS) {
     const literalValue = data[literalKey];
     if (literalValue !== undefined) {
-      updates.push(nestedPath, literalValue);
-      appliedCount += 1;
-      updates.push(new FieldPath(literalKey), FieldValue.delete());
-      deletedLiteralCount += 1;
-      continue;
+      moves.push({from: literalKey, to: nestedPath, value: literalValue});
     }
+  }
+  return moves;
+}
 
-    const nestedValue = getNestedValue(data, nestedPath);
-    if (nestedValue !== undefined) {
-      continue;
-    }
+async function main() {
+  const argv = process.argv.slice(2);
+  // Guard first: before firebase-admin is loaded or any credential is used.
+  const target = assertSafeScriptTarget({scriptName: SCRIPT_NAME, argv});
+  const options = parseArgs(argv);
+  if (!options.bookingId || options.bookingId.includes("/")) {
+    console.error(
+      "Usage: node scripts/repair_completed_booking_nested_fields.js <bookingId> " +
+      "--project=demo-<name> [--apply]",
+    );
+    process.exit(1);
+  }
+
+  const {deleteApp, initializeApp} = require("firebase-admin/app");
+  const {FieldPath, FieldValue, getFirestore} = require("firebase-admin/firestore");
+  const app = initializeApp({projectId: target.projectId}, `${SCRIPT_NAME}-${Date.now()}`);
+  try {
+    assertAppTarget(app, target);
+    await repairBooking({
+      db: getFirestore(app),
+      FieldPath,
+      FieldValue,
+      bookingId: options.bookingId,
+      apply: options.apply,
+      target,
+    });
+  } finally {
+    await deleteApp(app);
+  }
+}
+
+async function repairBooking({db, FieldPath, FieldValue, bookingId, apply, target}) {
+  const docRef = db.collection("bookings").doc(bookingId);
+  const snapshot = await docRef.get();
+  if (!snapshot.exists) {
+    throw new Error(`Booking not found: ${bookingId}`);
+  }
+
+  const data = snapshot.data() || {};
+  const moves = planFieldMoves(data);
+  console.log(JSON.stringify({
+    mode: apply ? "apply" : "dry-run",
+    target: target.mode,
+    projectId: target.projectId,
+    bookingId,
+    plannedFieldMoves: moves.map((move) => ({from: move.from, to: move.to})),
+  }, null, 2));
+
+  if (!apply) {
+    console.log("Dry run: no changes written. Re-run with --apply to write.");
+    return;
+  }
+
+  const updates = [];
+  let appliedCount = 0;
+  let deletedLiteralCount = 0;
+  for (const move of moves) {
+    updates.push(move.to, move.value);
+    appliedCount += 1;
+    updates.push(new FieldPath(move.from), FieldValue.delete());
+    deletedLiteralCount += 1;
   }
 
   if (updates.length > 0) {
