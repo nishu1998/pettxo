@@ -1078,11 +1078,9 @@ function buildBookingPrivateParticipantsDocument(params: {
       latitude: params.service?.location?.latitude ?? null,
       longitude: params.service?.location?.longitude ?? null,
     },
-    providerPrivate: providerPhoneNumber ?
-      {
-        phoneNumber: providerPhoneNumber,
-      } :
-      undefined,
+    // Omit the key when the provider has no Auth phone number: Firestore
+    // rejects undefined values and the default Admin app does not ignore them.
+    ...(providerPhoneNumber ? {providerPrivate: {phoneNumber: providerPhoneNumber}} : {}),
     createdAt: new Date(params.paidAt.getTime()),
     updatedAt: new Date(params.paidAt.getTime()),
   };
