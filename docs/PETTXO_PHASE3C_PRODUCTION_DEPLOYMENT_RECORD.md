@@ -78,7 +78,7 @@ The permanent procedure is in runbook §2, "New Cloud Functions under domain-res
 
 | Component | Live version | Notes |
 |---|---|---|
-| Firestore Rules | **New**: `e8f97f3` (= `9ce090a` = `6f576f1` = `2e7a67a`) | Deployed ~05:00 |
+| Firestore Rules | **`36558d0`** (Phase 3C-8, 22 Nov). Before that: `e8f97f3` (= `9ce090a` = `6f576f1` = `2e7a67a`), deployed 17 Nov ~05:00 | See the Phase 3C-8 section |
 | Storage Rules | **Previous** version (= base `1652aac` = repo `storage.rules` at `d1c5c85` and later) | New version deployed, then rolled back; deploy cancelled |
 | Firestore indexes | Unchanged | No index deploy in this release |
 | Cloud Functions (74 in scope) | `6f576f1` (code-identical to `2e7a67a`) | 67 updated, 7 created; Gen 2, `asia-south1`, Node 22 |
@@ -102,6 +102,32 @@ The permanent procedure is in runbook §2, "New Cloud Functions under domain-res
 
 **`firebase-functions` outdated warning.** The CLI warns that the `firebase-functions` SDK is outdated.
 - The upgrade was deferred so the release did not change the runtime SDK (open item 2).
+
+## Phase 3C-8: userBlocks Firestore Rules fix (22 Nov 2026)
+
+**Deployed:** 22 November 2026, owner-run. Scope: `firebase deploy --only firestore:rules --project pettexo-d9409`. **Firestore Rules only**: no Storage Rules, Functions, indexes or Hosting.
+
+| Item | Value |
+|---|---|
+| Commit | `36558d0` (`36558d0e27838f059aa1656febe506f4525b358c`), `fix(rules): allow parties to get missing userBlocks pair docs (Phase 3C-8)`. Pushed to `main`. |
+| Deployed `firestore.rules` SHA-256 | `1b17395af223eabc2ef46d99f57e4bd172dd6915cbb03db214ea140ffd1b9bfe` |
+| Live Rules before the deploy | Matched `18c9c2e` (= `e8f97f3`). The saved copy is byte-identical to `git show 18c9c2e:firestore.rules`. |
+| Rollback copy | `~/PettxoReleaseBackups/rules-live-2026-11-22/firestore.rules`, SHA-256 `8632791a688a45313d8e87fa995dd618ac8a377b4178ac2f94d2f34ce1ee7ed9`. Never modify it. |
+| Smoke tests | Passed on live 1.0.4 (23) and on 1.0.5 (24) closed testing (owner-reported). |
+
+**Why.** 1.0.5 (24) checks blocks with point reads of `userBlocks/{me}_{other}` and `userBlocks/{other}_{me}`. The old `allow get, list` only checked the document's fields, so reading a **missing** document was denied. While blocking is off, every pair is missing. Like, comment, share-count and opening a service from a booking ("Book again") therefore failed on 1.0.5 with `permission-denied`.
+
+**Change.**
+- `allow list` is unchanged.
+- `allow get` also allows a missing doc whose ID matches `^[^_]+_[^_]+$` and names the caller.
+- Writes stay backend-only.
+- 1.0.4 never reads `userBlocks`, so it is unaffected.
+
+**Reports.** Details are in `~/PettxoReleaseBackups/reports/PHASE3C8_LIKE_COMMENT_DIAGNOSIS.md` and `PHASE3C8_RULES_FIX_REPORT.md`.
+
+**Rollback.**
+- Re-publish the rollback copy in the console (Firestore Database → Rules), or restore the previous version from the console's version history.
+- After a rollback, 1.0.5 (24) like, comment and share break again. 1.0.4 is unaffected.
 
 ## Rollback references
 
