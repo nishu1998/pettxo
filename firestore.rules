@@ -2533,6 +2533,25 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Test-booking flags (docs/PETTXO_TEST_BOOKING_FLAG_DECISIONS.md): a doc
+    // exists = test booking. Read by an active Super Admin only (isAdmin()
+    // plus the superAdmin role and the requesterAccountIsActive() and
+    // disabled-flag checks); written only by setBookingTestFlagForAdmin.
+    match /bookingTestFlags/{bookingId} {
+      function requesterIsActiveSuperAdmin() {
+        return isAdmin() &&
+          requesterAccountIsActive() &&
+          get(requesterUserPath()).data.adminRole == "superAdmin" &&
+          get(requesterUserPath()).data.get('disabled', false) != true &&
+          get(requesterUserPath()).data.get('isDisabled', false) != true &&
+          get(requesterUserPath()).data.get('adminDisabled', false) != true &&
+          get(requesterUserPath()).data.get('isActive', true) != false;
+      }
+
+      allow read: if requesterIsActiveSuperAdmin();
+      allow write: if false;
+    }
+
     match /chats/{chatId} {
       allow read: if chatParticipant(resource.data) || canMonitorChats();
       allow create, update, delete: if false;

@@ -31,3 +31,4 @@ export * from "./offerWall/offerWallFunctions";
 export * from "./booking/bookingFunctions";
 export * from "./support/supportFunctions";
 export * from "./admin/contactRevealFunctions";
+export * from "./admin/bookingTestFlagFunctions";

@@ -9,6 +9,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   doc,
+  deleteDoc,
   deleteField,
   collection,
   getDoc,
@@ -1874,5 +1875,56 @@ test('item 27: adminRateLimits is server-only for every role, including Super Ad
     await assertFails(setDoc(doc(db, 'adminRateLimits', 'rl-superAdmin_contactReveal'), {events: []}));
     await assertFails(setDoc(doc(db, 'adminRateLimits', 'new-bucket'), {events: []}));
     await assertFails(updateDoc(doc(db, 'adminRateLimits', 'rl-superAdmin_contactReveal'), {events: []}));
+  }
+});
+
+test('test-booking flag: bookingTestFlags is readable by an active Super Admin only and never client-written', async () => {
+  await seedUser('tf-parent', {role: 'petParent'});
+  await seedUser('tf-provider', {role: 'serviceProvider'});
+  await seedUser('tf-sa', {adminRole: 'superAdmin', accountStatus: 'active'});
+  await seedUser('tf-sa-suspended', {adminRole: 'superAdmin', accountStatus: 'suspended'});
+  await seedUser('tf-sa-disabled', {adminRole: 'superAdmin', adminDisabled: true});
+  await seedUser('tf-sa-inactive', {adminRole: 'superAdmin', isActive: false});
+  await seedUser('tf-cs', {adminRole: 'customerSupportAdmin'});
+  await seedUser('tf-fa', {adminRole: 'financeAdmin'});
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'bookings', 'tf-booking'), {
+      customerId: 'tf-parent',
+      serviceOwnerId: 'tf-provider',
+      stateQueryValue: 'COMPLETED',
+    });
+    await setDoc(doc(db, 'bookingTestFlags', 'tf-booking'), {
+      bookingId: 'tf-booking',
+      source: 'admin',
+      markedAt: new Date(),
+      markedByUid: 'tf-sa',
+    });
+  });
+
+  const sa = authedDb('tf-sa');
+  await assertSucceeds(getDoc(doc(sa, 'bookingTestFlags', 'tf-booking')));
+  await assertSucceeds(getDoc(doc(sa, 'bookingTestFlags', 'tf-missing')));
+  await assertSucceeds(getDocs(collection(sa, 'bookingTestFlags')));
+
+  const denied = [
+    testEnv.unauthenticatedContext().firestore(),
+    authedDb('tf-parent'),
+    authedDb('tf-provider'),
+    authedDb('tf-cs'),
+    authedDb('tf-fa'),
+    authedDb('tf-sa-suspended'),
+    authedDb('tf-sa-disabled'),
+    authedDb('tf-sa-inactive'),
+  ];
+  for (const db of denied) {
+    await assertFails(getDoc(doc(db, 'bookingTestFlags', 'tf-booking')));
+    await assertFails(getDocs(collection(db, 'bookingTestFlags')));
+  }
+
+  for (const db of [sa, ...denied]) {
+    await assertFails(setDoc(doc(db, 'bookingTestFlags', 'tf-new'), {bookingId: 'tf-new', source: 'admin'}));
+    await assertFails(updateDoc(doc(db, 'bookingTestFlags', 'tf-booking'), {source: 'backfill'}));
+    await assertFails(deleteDoc(doc(db, 'bookingTestFlags', 'tf-booking')));
   }
 });

@@ -154,6 +154,7 @@ const expectedExportNames = [
   "getMaskedContactsForAdmin",
   "listAdminMembersForSuperAdmin",
   "revealContactForAdmin",
+  "setBookingTestFlagForAdmin",
 ].sort();
 
 const intentionallyUnexportedBookingV3Names = [].sort();

@@ -18,7 +18,7 @@ import {containsRawContact} from "./contactMasking";
 export const ADMIN_AUDIT_LOGS_COLLECTION = "adminAuditLogs";
 export const ADMIN_LOG_SCHEMA_VERSION = 2;
 
-export const ADMIN_LOG_TYPES = ["contact"] as const;
+export const ADMIN_LOG_TYPES = ["contact", "booking"] as const;
 export type AdminLogType = typeof ADMIN_LOG_TYPES[number];
 
 export const ADMIN_LOG_ACTIONS = [
@@ -28,10 +28,13 @@ export const ADMIN_LOG_ACTIONS = [
   "contact.reveal_denied",
   "contact.search",
   "contact.search_denied",
+  "booking.test_marked",
+  "booking.test_unmarked",
+  "booking.test_backfill",
 ] as const;
 export type AdminLogAction = typeof ADMIN_LOG_ACTIONS[number];
 
-export const ADMIN_LOG_TARGET_TYPES = ["user", "supportTicket", "query"] as const;
+export const ADMIN_LOG_TARGET_TYPES = ["user", "supportTicket", "query", "booking", "bookingSet"] as const;
 export type AdminLogTargetType = typeof ADMIN_LOG_TARGET_TYPES[number];
 
 export const ADMIN_LOG_REASON_MAX_LENGTH = 300;
